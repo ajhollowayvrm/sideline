@@ -198,9 +198,14 @@ const POS=[["QB","off",3,1.4],["RB","off",3,1],["WR","off",6,1.2],["TE","off",2,
 ["DE","def",3,1.1],["DT","def",3,1],["LB","def",5,1.1],["CB","def",4,1.1],["S","def",3,1],
 ["K","st",1,.4],["P","st",1,.3]];
 const CLASSES=["FR","RS-FR","SO","RS-SO","JR","RS-JR","SR","RS-SR"];
-const STAFF_ROLES=[["OC","Offensive Coordinator"],["DC","Defensive Coordinator"],["STC","Special Teams Coord."],
-["QB","QBs Coach"],["RB","RBs Coach"],["WR","WRs Coach"],["OL","OL Coach"],
-["DL","DL Coach"],["LB","LBs Coach"],["DB","DBs Coach"]];
+// Coordinators: fixed slots, one per side. [code, title, side]
+const COORD_ROLES=[["OC","Offensive Coordinator","off"],["DC","Defensive Coordinator","def"],
+["STC","Special Teams Coord.","st"]];
+// Additional (position) coaches: each buffs a position group. [code, title, scope, [posCodes]]
+const POS_COACHES=[["QB","QBs Coach","QB",["QB"]],["RB","RBs Coach","RB",["RB"]],
+["WR","Pass-Catchers Coach","WR/TE",["WR","TE"]],["OL","O-Line Coach","OL",["OT","OG","C"]],
+["DL","D-Line Coach","DL",["DE","DT"]],["LB","LBs Coach","LB",["LB"]],
+["DB","DBs Coach","DB",["CB","S"]]];
 
 const ARCHETYPES=[
 ["Recruiter","Closes on talent. Recruiting boards open wider and visits convert harder."],
@@ -319,25 +324,58 @@ function genRoster(r,prestige){
   if(field[0])field[0].cap=true; if(field[1])field[1].cap=true;
   return out;
 }
-function teamRatings(roster){
+// Per-position OVR boost the staff confers (coordinators buff a whole side; position
+// coaches buff their group). Returns { posCode: points }.
+function staffBoosts(staff){
+  const m={};
+  (staff||[]).forEach(c=>{if(!c.boost||!c.groups)return;c.groups.forEach(code=>{m[code]=(m[code]||0)+c.boost;});});
+  return m;
+}
+function teamRatings(roster,staff){
+  const boost=staffBoosts(staff);
+  const eff=p=>clamp(p.ov+(boost[p.pos]||0),40,99);
   const grp=s=>roster.filter(p=>POS.find(x=>x[0]===p.pos)[1]===s);
-  const avgTop=(arr,k)=>{const s=[...arr].sort((a,b)=>b.ov-a.ov).slice(0,k);return s.length?Math.round(s.reduce((t,p)=>t+p.ov,0)/s.length):60;};
+  const avgTop=(arr,k)=>{const s=[...arr].sort((a,b)=>eff(b)-eff(a)).slice(0,k);return s.length?Math.round(s.reduce((t,p)=>t+eff(p),0)/s.length):60;};
   const off=avgTop(grp('off'),11), def=avgTop(grp('def'),11);
   return {off,def,ovr:Math.round((off+def)/2)};
 }
+// boost = small, derived from rating. Coordinators 0..2 (side-wide); position coaches 0..3.
+function coachBoost(tier,rating){return tier==='coord'?clamp(Math.round((rating-55)/20),0,2):clamp(Math.round((rating-50)/15),0,3);}
 function genStaff(r,prestige){
-  return STAFF_ROLES.map(([code,title])=>{
+  const mk=(code,title,tier,scope,groups,mult)=>{
     const rt=clamp(Math.round(prestige*0.5+ri(r,-8,12)+35),45,95);
-    const sal=Math.round((prestige*9000 + rt*7000 + ri(r,-40,40)*1000) * (code==='OC'||code==='DC'?2.4:code==='STC'?1.3:1));
-    return {role:code,title,name:pick(r,FN)+' '+pick(r,LN),rating:rt,salary:Math.max(90000,sal),years:ri(r,1,4)};
+    const sal=Math.round((prestige*9000 + rt*7000 + ri(r,-40,40)*1000) * mult);
+    return {role:code,title,name:pick(r,FN)+' '+pick(r,LN),rating:rt,salary:Math.max(90000,sal),
+      years:ri(r,1,4),tier,scope,groups,boost:coachBoost(tier,rt)};
+  };
+  const out=[];
+  COORD_ROLES.forEach(([code,title,side])=>{
+    const groups=POS.filter(p=>p[1]===side).map(p=>p[0]);
+    const scope={off:'OFF',def:'DEF',st:'ST'}[side];
+    out.push(mk(code,title,'coord',scope,groups,code==='STC'?1.3:2.4));
   });
+  POS_COACHES.forEach(([code,title,scope,groups])=>out.push(mk(code,title,'pos',scope,groups,1)));
+  return out;
+}
+// Backfill structural fields on staff loaded from an older save (v1 had no tier/groups/boost).
+function normalizeStaff(staff){
+  if(!Array.isArray(staff))return staff;
+  staff.forEach(c=>{
+    if(c.tier)return;
+    const co=COORD_ROLES.find(x=>x[0]===c.role);
+    if(co){c.tier='coord';c.scope={off:'OFF',def:'DEF',st:'ST'}[co[2]];c.groups=POS.filter(p=>p[1]===co[2]).map(p=>p[0]);}
+    else{const pc=POS_COACHES.find(x=>x[0]===c.role)||['','','',[]];c.tier='pos';c.scope=pc[2]||c.role;c.groups=pc[3]||[];}
+    c.boost=coachBoost(c.tier,c.rating);
+  });
+  return staff;
 }
 function genWorld(seed){
   const r=rng(seed);
   const teams=TEAMS.map(([name,nick,abbr,conf,div,color])=>{
     const prestige=clamp(Math.round((CONF_BASE[conf]||45)+(BUMP[name]||0)+ri(r,-7,7)),20,98);
     const roster=genRoster(r,prestige);
-    const ratings=teamRatings(roster);
+    const staff=genStaff(r,prestige);
+    const ratings=teamRatings(roster,staff);
     const p4=["SEC","Big Ten","ACC","Big 12"].includes(conf);
     const fac={stadium:clamp(Math.round(prestige/11)+ri(r,-1,1),1,10),
       strength:clamp(Math.round(prestige/11)+ri(r,-1,1),1,10),
@@ -345,7 +383,6 @@ function genWorld(seed){
       academics:clamp(ri(r,3,9),1,10),
       nil:clamp(Math.round(prestige/10)+ri(r,-2,1),1,10)};
     const revenue=Math.round((p4?55:18)*1e6 + prestige*420000 + ri(r,-6,6)*1e6);
-    const staff=genStaff(r,prestige);
     const payroll=staff.reduce((t,s)=>t+s.salary,0);
     const budget=Math.round(revenue*0.18 + ri(r,-3,4)*1e6);
     return {id:abbr.toLowerCase().replace(/[^a-z0-9]/g,''),name,nick,abbr,conf,div,color,
@@ -444,7 +481,7 @@ function renderLoad(app){
         </div></div>`;
       const br=el('div','btn-row');
       const load=el('button','btn sm','Load');
-      load.onclick=()=>{S=slot.state;UI.view='home';render();};
+      load.onclick=()=>{S=migrateState(slot.state);UI.view='home';render();};
       const del=el('button','btn sm danger','Delete');
       del.onclick=()=>confirmSheet('Delete this career?',m.team+' — '+m.coach,()=>{deleteSlot(n);toast('Slot deleted');render();});
       br.append(load,del);c.append(br);
@@ -520,7 +557,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:1,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:2,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      week:0,phase:'Preseason',world:ng.world,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press before camp opens.'}};
   // choose a save slot
@@ -571,16 +608,17 @@ function mergeRosters(ng,data){
     if(roster.length){const byPos={};roster.forEach(p=>(byPos[p.pos]=byPos[p.pos]||[]).push(p));
       Object.values(byPos).forEach(a=>{a.sort((x,y)=>y.ov-x.ov);a.forEach((p,i)=>p.so=i);});}
     if(t){ // override existing
-      if(roster.length){t.roster=roster;t.ratings=teamRatings(roster);}
+      if(roster.length){t.roster=roster;t.ratings=teamRatings(roster,t.staff);}
       if(td.facilities)Object.assign(t.fac,td.facilities);
       if(td.prestige!=null)t.prestige=td.prestige;
       if(td.color)t.color=td.color;
     }else{ // brand new team
+      const staff=genStaff(rng(id.length*7+1),td.prestige||60);
       t={id,name:td.name||id,nick:td.nickname||'',abbr:(td.abbr||id.slice(0,4)).toUpperCase(),
          conf:td.conference||'Independent',div:td.division||'',color:td.color||'#888',
-         prestige:td.prestige||60,roster,ratings:teamRatings(roster),
+         prestige:td.prestige||60,roster,ratings:teamRatings(roster,staff),
          fac:Object.assign({stadium:5,strength:5,training:5,academics:5,nil:5},td.facilities||{}),
-         revenue:30e6,budget:6e6,staff:genStaff(rng(id.length*7+1),td.prestige||60),payroll:0,facilityDebt:0};
+         revenue:30e6,budget:6e6,staff,payroll:0,facilityDebt:0};
       t.payroll=t.staff.reduce((s,x)=>s+x.salary,0);
       ng.world.teams.push(t);
     }
@@ -595,6 +633,17 @@ function normPlayer(p){
     pos:p.pos||'WR',yr:p.year||'FR',age:+p.age||18,st:p.homeState||'TX',
     stars:+p.stars||(ov>=88?4:ov>=78?3:2),ov,pot:clamp(+p.potential||ov,ov,99),
     cap:!!p.captain,spd:+p.spd||ov,str:+p.str||ov,awr:+p.awr||ov,so:0};
+}
+// Bring an older save up to the current schema. v1 staff lacked coordinator/position
+// tiers and group boosts; backfill them, re-derive ratings (now coach-aware), re-rank.
+function migrateState(state){
+  if(!state||!state.world)return state;
+  if((state.version||1)<2){
+    state.world.teams.forEach(t=>{normalizeStaff(t.staff);t.ratings=teamRatings(t.roster,t.staff);});
+    recomputeRanks(state.world);
+    state.version=2;
+  }
+  return state;
 }
 function recomputeRanks(world){
   const ts=world.teams;
@@ -764,30 +813,46 @@ function editPlayerSheet(p,t){
   const save=el('button','btn','Save player');
   save.onclick=()=>{p.fn=f.fn??p.fn;p.ln=f.ln??p.ln;p.yr=f.yr??p.yr;
     if(f.ov)p.ov=clamp(+f.ov,40,99);if(f.pot)p.pot=clamp(+f.pot,p.ov,99);
-    t.ratings=teamRatings(t.roster);recomputeRanks(S.world);autosave();closeSheet();render();toast('Player updated');};
+    t.ratings=teamRatings(t.roster,t.staff);recomputeRanks(S.world);autosave();closeSheet();render();toast('Player updated');};
   body.append(save);
   openSheet('Edit '+p.ln,body);
 }
 
+function boostBadge(c){
+  if(!c.boost)return '<span class="tag" style="font-size:10px">no boost</span>';
+  return `<span class="tag accent" style="font-size:10px">+${c.boost} ${c.scope}</span>`;
+}
+function coachRow(c,t){
+  const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';
+  row.innerHTML=`<div class="ovr ${c.rating>=80?'elite':''}">${c.rating}</div>
+    <div style="flex:1"><div class="nm">${c.name}</div>
+    <div class="meta">${c.title} · ${c.years}yr deal</div></div>
+    <div style="text-align:right">
+      <div class="cond" style="font-size:15px;font-weight:700">${money(c.salary)}</div>
+      <div style="margin-top:3px">${boostBadge(c)}</div></div>`;
+  row.onclick=()=>coachSheet(c,t);
+  return row;
+}
 function renderCoaches(v,t){
-  v.append(el('h2','sec','Staff & Salaries'));
   v.append(el('div','card',`<div class="kv"><span class="k">Total payroll</span><span class="cond" style="font-size:17px">${money(t.payroll)}</span></div>
     <div class="kv"><span class="k">Operating budget</span><span class="cond" style="font-size:17px">${money(t.budget)}</span></div>`));
-  t.staff.forEach(c=>{
-    const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';
-    row.innerHTML=`<div class="ovr ${c.rating>=80?'elite':''}">${c.rating}</div>
-      <div style="flex:1"><div class="nm">${c.name}</div>
-      <div class="meta">${c.title} · ${c.years}yr deal</div></div>
-      <div class="cond" style="font-size:15px;font-weight:700">${money(c.salary)}</div>`;
-    row.onclick=()=>coachSheet(c,t);
-    v.append(row);
-  });
+  const coords=t.staff.filter(c=>c.tier==='coord'), extra=t.staff.filter(c=>c.tier!=='coord');
+  v.append(el('h2','sec','Coordinators'));
+  coords.forEach(c=>v.append(coachRow(c,t)));
+  const ah=el('div','row spread');ah.style.margin='18px 2px 8px';
+  ah.innerHTML=`<span class="cond" style="font-size:15px;font-weight:700;letter-spacing:.06em">ADDITIONAL COACHES <span class="dim" style="font-size:12px">(${extra.length})</span></span>`;
+  v.append(ah);
+  v.append(el('div','hint','Position coaches boost their group’s overall — for a price.'));
+  extra.forEach(c=>v.append(coachRow(c,t)));
+  v.append(el('div','hint center','Hiring, firing, and the coaching carousel arrive in a later phase.'));
   v.style.paddingBottom='10px';
 }
 function coachSheet(c,t){
   const body=el('div');const f={};
+  const affects=c.boost?`+${c.boost} OVR to ${c.tier==='coord'?'the '+c.scope+' unit':(c.groups||[]).map(posName).join(', ')}`:'No rating boost yet';
   body.innerHTML=`<div class="kv"><span class="k">Role</span><span>${c.title}</span></div>
     <div class="kv"><span class="k">Rating</span><span>${c.rating}</span></div>
+    <div class="kv"><span class="k">Group boost</span><span>${affects}</span></div>
     <div class="kv"><span class="k">Contract</span><span>${c.years} years</span></div>`;
   body.append(fld('Salary ($/yr)',inputEl(c.salary,x=>f.sal=x,'','number')));
   const save=el('button','btn','Update salary');

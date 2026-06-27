@@ -61,7 +61,10 @@ plain static files so Pages still serves it with zero config.
 ### Team page — two tabs
 - **Roster:** manage starters & depth, mark a position as needing recruits, promote/demote
   team captains, glance info (name, age, stats this year).
-- **Coaches:** manage coaches and their salaries.
+- **Coaches:** two sections. **Coordinators** (OC/DC/STC) are fixed slots — one per side,
+  always filled. **Additional Coaches** are position coaches; each carries a small OVR
+  *boost* to its position group that is applied live to `ratings` (see Team object).
+  Salary editing works; hire/fire still deferred to Phase 5.
 
 ---
 
@@ -97,6 +100,11 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - `recomputeRanks(world)` — re-sorts ranks after edits/imports.
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
+- `migrateState(state)` runs on load and upgrades old saves to the current `version`
+  (currently **2**). v1→v2 backfills staff tiers/boosts via `normalizeStaff` and
+  re-derives ratings/ranks. **Bump `version` + extend `migrateState` on any save-shape change.**
+- `teamRatings(roster, staff)` derives `{off,def,ovr}`; `staffBoosts(staff)` maps each
+  position code to the OVR points its coaches confer (applied inside `teamRatings`).
 - `S` — live game state. `UI` — current view/tab/wizard state. `render()` swaps `#app`.
 - `applyAccent(team)` — sets `--accent` to the controlled team's color (the signature).
 
@@ -117,10 +125,14 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 {
   id, name, nick, abbr, conf, div, color, prestige,
   roster: [Player],
-  ratings: { off, def, ovr },          // derived from roster
+  ratings: { off, def, ovr },          // derived from roster + staff boosts
   fac: { stadium, strength, training, academics, nil },  // 1..10
   revenue, budget, payroll, facilityDebt,
-  staff: [ { role, title, name, rating, salary, years } ],
+  staff: [ { role, title, name, rating, salary, years,
+             tier, scope, groups, boost } ],
+  //   tier: "coord" (OC/DC/STC, side-wide) | "pos" (position coach, group)
+  //   groups: [posCode,...] the coach buffs;  boost: OVR pts added to each (coord 0-2, pos 0-3)
+  //   scope: display label ("OFF"/"DEF"/"ST" for coords, role code for position coaches)
   natRank, confRank, divRank,
   needs: { [posCode]: true }           // positions flagged for recruiting
 }
@@ -188,7 +200,8 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - **No build step yet.** Everything is global in one `<script>`. If splitting into modules,
   preserve the deterministic seed → `genWorld` contract; saves store the full world today
   (a future optimization is seed + diff if `localStorage` quota gets tight — ~5MB/origin).
-- After any roster/ratings edit, call `teamRatings(roster)` then `recomputeRanks(S.world)`.
+- After any roster/ratings/staff edit, call `teamRatings(roster, staff)` then
+  `recomputeRanks(S.world)` (staff boosts feed into the rating, so pass the team's staff).
 - `autosave()` writes to the slot matching `S.createdAt`; explicit "Save game" is in the
   bottom-nav Menu sheet.
 - Conference alignment + team colors are best-read as of early 2026 and may have minor
