@@ -4,7 +4,8 @@
   "private": true,
   "description": "Mobile-first college football head-coach career sim (static HTML, GitHub Pages)",
   "scripts": {
-    "qa": "node test/qa.js"
+    "qa": "node test/qa.js",
+    "simlab": "node test/simlab.js"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

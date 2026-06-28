@@ -33,15 +33,45 @@ plain static files so Pages still serves it with zero config.
   15 weeks), week-by-week advancement, placeholder score sim (OVR gap + home field + variance),
   W/L + conference records, record-aware live rankings, and a Season view
   (schedule / standings / top 25 / weekly scores).
-- **Phase 3 — Play-by-play sim.** Drive/play engine. No coaching decisions yet (AJ's call).
-  *Do a short design note on the sim state machine + probability model before building.*
+- **Phase 3 — Play-by-play sim.** ✅ DONE. Deterministic drive/play engine (`simEngine`)
+  replaces the final-score-only model, producing the same `{hs, as}` the season layer expects
+  **plus** a per-game box score that folds into per-player season stats. No coaching decisions
+  yet (AJ's call). See "Phase 3 sim design" below.
+- **Phase 4 — Deep recruiting.** Scouting, visits, pitches, promises, commitments.
+  *Do a short design note on the recruiting loop before building.*
+- **Phase 3.5 — Watchable game + weekly honors.** A play-by-play viewer for the controlled
+  team's matchup, and **Player/Coach of the Week** (cheap — the per-game box already exists).
+  See "Planned: awards & honors" below.
 - **Phase 4 — Deep recruiting.** Scouting, visits, pitches, promises, commitments.
   *Do a short design note on the recruiting loop before building.*
 - **Phase 5 — Offseason & program.** Coaching carousel (hire/fire), player development,
-  finances depth, facility upgrades, and **non-conference series scheduling** (see design
-  note below).
+  finances depth, facility upgrades, **non-conference series scheduling**, and **season awards**
+  (national POY, all-conference/All-American, etc.) — see the design notes below.
 
 ---
+
+## Planned: awards & honors (weekly + season)
+
+Now that the sim produces per-game boxes and per-player season totals (`p.gs`), awards are the
+natural consumer. Split into two tiers by cadence:
+
+- **Player / Coach of the Week** (in-season, weekly → Phase 3.5). Pick standout performances
+  from the week just resolved, weighted by position (passing/rushing/receiving yds+TDs,
+  defensive splash plays; coach by upset margin vs the OVR gap). The per-game box is already
+  computed in `advanceWeek`; the only new data is "remember the week's honorees". Surface on
+  Home + a Season tab. **Low cost, no cross-season storage** if we only keep the current season's
+  weekly list.
+- **Season awards** (end of season → Phase 5). National POY (Heisman-like), All-Conference /
+  All-American teams, conference POY, Freshman of the Year, positional bests, Coach of the Year.
+  Driven by season `p.gs` totals (normalized by games) + team success. Belongs with the
+  offseason because it needs the **season-end ceremony flow** and an **award history that
+  persists across seasons**.
+
+**Save-shape implication (do it with the offseason, not piecemeal):** cross-season honors want a
+durable home — e.g. a per-player `p.honors: [{year, award}]` and/or a top-level `S.awards` log.
+That's a `version` bump + `migrateState` step, so land it alongside season rollover rather than
+adding a half-version now. Weekly POTW for the *current* season can ship in 3.5 without a
+shape change (recompute from the schedule, or stash a transient `S.weeklyHonors`).
 
 ## Planned: non-conference series scheduling (Phase 5)
 
@@ -278,30 +308,58 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
 ### Still stubbed (intentionally inert)
-- Game results are a placeholder score model (no play-by-play yet → Phase 3); the Home
-  "Play Week →" button resolves the whole league's week at once.
 - Offseason is a dead end for now: after week 15 the phase becomes "Offseason" with a
   season-complete card; rollover/recruiting/development land in Phases 4–5.
 - Coach hire/fire (→ Phase 5); only salary editing works now.
 - History/archetype mechanical effects (wire in with their systems).
-- Player "stats this year" show "— preseason —" until the sim exists.
 - Player development is **read-only grades** only (Ceiling/Development); actual ov→pot
   growth over seasons is Phase 5. Scouting fog is currently a fixed function of age/class;
   real scouting that sharpens it is Phase 4.
+- No **watchable** game screen yet: every game (controlled team included) is resolved
+  instantly by `simEngine`. A play-by-play viewer for your matchup is the natural Phase 3.5
+  follow-on — the engine already runs drive-by-drive, so a play log is a small extension.
 
 ---
 
-## Suggested next task (Phase 3 kickoff)
+## Phase 3 sim design (drive/play engine)
 
-*Do a short design note on the sim state machine + probability model before building.*
+The sim is `simEngine(home, away, seed)` in `index.html`, fenced by
+`// === SIM ENGINE (Phase 3) START/END ===`. It is **pure and deterministic**: it never
+mutates its inputs and re-running with the same seed reproduces both the score and the full
+box. That purity is load-bearing — the QA gate re-sims a played game to assert determinism,
+and `simGame` re-derives results regardless of advance order.
 
-1. Replace `simGame`'s final-score-only model with a drive/play engine (down & distance,
-   clock, possessions) that **produces the same `{hs, as}`** so the season layer is untouched.
-2. Accumulate per-player stats during the sim → fill the player sheet's "Stats (this year)".
-3. Optional: a watchable game screen for the controlled team's matchup; other games stay
-   resolved instantly (as today) so advancing a week is fast.
-4. Keep determinism: seed the play engine per game id like `simGame` does, so results remain
-   reproducible from `?seed`.
-5. Per-player season stats are a new field on the Player object → **bump save `version` to 4
-   and extend `migrateState`** (backfill empty stats on load). Rosters are already deep
-   (~84/team) so there are realistic bodies to attribute stats to.
+**Contract with the season layer (unchanged):** `simGame(g)` seeds the engine per game id
+(`rng(hashStr(g.id) ^ seed)`, exactly as the old model did), sets `g.hs/g.as/g.played`, and
+**returns the per-game box**. `advanceWeek` does `applyResult(g, simGame(g))`; `applyResult`
+updates `t.rec` as before **and** folds the box into per-player season stats. Re-simming a
+clone (the determinism test) never calls `applyResult`, so stats are never double-counted.
+
+**State machine.** `playDrive(off, def, startLos)` runs one possession on a single axis:
+`los` = the offense's own yard line (0→100, scoring end at 100). Possession flips by
+mirroring (`opp los = 100 - los`). Per play: choose run/pass (down & distance weighted),
+resolve yards from a short base + a long-tail breakaway, check for TD / turnover / sack /
+incompletion, credit a defender a tackle, then update down & distance. 4th down kicks a FG
+(in range), punts (net ≈ 42, touchback → 20), or occasionally goes for it. Regulation
+alternates drives until a ~3600s clock empties; ties go to college-style OT from the opp 25.
+
+**Probability model.** Per-play efficiency keys off `adv = off.off − def.def`, plus a home
+field bump (`HFA = 2.3` rating pts) and a per-game **form** roll per team (std ≈ 4 pts) so
+underdogs can steal games. Validated in `test/simlab.js` across many seasons: **~24 pts/team**,
+score spread ≈ 6–45 (p05–p95), **~54% home** wins, **~77% favorite** win rate, no ties.
+
+**Per-player stats.** The box maps `playerId → { gp, pAtt,pCmp,pYds,pTD,pInt, rAtt,rYds,rTD,
+rec,reYds,reTD, tkl,sk,dInt, fga,fgm,xpa,xpm }` (only nonzero keys). Touches are drawn from
+depth-weighted pools (`gamePools`) so starters dominate; QB→passing, RB→rushing,
+WR/TE/RB→receiving, LB/S/CB/DE/DT→tackles, etc. Season totals live on the Player object as
+`p.gs` (game stats), accumulated for **every** team's players, so league stat leaders are
+real. Empty stat objects are not stored, so the save-size hit is limited to players who
+actually saw the field (~rotation, not all ~84). Box-score realism + balance (team passing
+yards == team receiving yards) are asserted in `simlab.js`.
+
+**Save shape.** Per-player stats bumped the save to **version 4**; `migrateState` v3→v4 is a
+no-op structurally (absence of `p.gs` reads as "no stats") and just stamps the version.
+
+**Validation:** `npm run simlab` (offline statistical lab — extracts the engine from
+index.html between the markers so there's one source of truth, then sims many seasons) +
+`npm run qa` (in-browser end-to-end). Both are part of the per-phase QA gate.

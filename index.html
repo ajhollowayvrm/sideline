@@ -582,7 +582,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:3,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:4,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // choose a save slot
@@ -675,6 +675,9 @@ function migrateState(state){
     recomputeRanks(state.world);
     state.version=3;
   }
+  if((state.version||1)<4){            // Phase 3: per-player season stats (p.gs). Absence of
+    state.version=4;                   // p.gs reads as "no stats yet", so no backfill needed.
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -757,24 +760,143 @@ function startSeason(){
   autosave();
 }
 
-// Deterministic placeholder result driven by OVR gap + home field, with football-shaped
-// variance. Seeded per game id so outcomes are reproducible regardless of advance order.
+// === SIM ENGINE (Phase 3) START ===
+// Drive/play state machine. Pure + deterministic from `seed`: simEngine(home,away,seed)
+// returns { hs, as, box } and never mutates its inputs, so re-running reproduces the same
+// score AND the same per-player box. `box` maps playerId -> stat deltas for ONE game; the
+// season layer folds it into each player's season totals (see applyResult). Depends only on
+// rng/clamp/ri (no DOM, no globals) so test/simlab.js can extract + validate it offline.
+//
+// Coordinate: `los` = offense's own yard line, 0..100, scoring end at 100. Possession flips
+// by mirroring (opp los = 100 - los). Efficiency is driven by (offense.off - defense.def)
+// in rating points, plus a small home-field bump to the home offense.
+
+// Depth-weighted usage pools for one team-game (starters get the lion's share of touches).
+function gamePools(team){
+  const byPos={}; team.roster.forEach(p=>{(byPos[p.pos]=byPos[p.pos]||[]).push(p);});
+  for(const k in byPos) byPos[k].sort((a,b)=>a.so-b.so);
+  const dep=p=>1/Math.pow((p.so||0)+1,1.35);              // so 0 ≫ so 1 ≫ deep backups
+  const W=(codes,base)=>{const out=[];codes.forEach(([c,m])=>(byPos[c]||[]).forEach(p=>out.push([p,base*m*dep(p)])));return out;};
+  return {
+    qb:(byPos.QB||[])[0]||null,
+    k:(byPos.K||[])[0]||(byPos.QB||[])[0]||null,
+    rush:W([['RB',1.0]],1),                                // designed runs go to RBs
+    recv:W([['WR',1.15],['TE',0.75],['RB',0.55]],1),       // targets: WR > TE > checkdown RB
+    tkl:W([['LB',1.0],['S',0.8],['CB',0.7],['DE',0.55],['DT',0.45]],1),
+    rush4:W([['DE',1.0],['DT',0.7],['LB',0.5]],1),         // pass rush (sacks)
+    hawk:W([['CB',1.0],['S',0.85],['LB',0.4]],1)           // ball-hawks (INTs)
+  };
+}
+function wpick(pool,r){ let tot=0;for(const e of pool)tot+=e[1]; if(tot<=0)return null;
+  let x=r()*tot; for(const e of pool){x-=e[1];if(x<0)return e[0];} return pool[pool.length-1][0]; }
+
+function simEngine(home,away,seed){
+  const r=rng(seed>>>0);
+  const box={};
+  const add=(id,k,v)=>{ if(!id)return; (box[id]=box[id]||{gp:1})[k]=(box[id][k]||0)+(v==null?1:v); };
+  const pools={[home.id]:gamePools(home),[away.id]:gamePools(away)};
+  const score={[home.id]:0,[away.id]:0};
+  const HFA=2.3;                                           // home-field, in rating points
+  // per-game "form": each team runs a little hot or cold tonight (std ≈ 4 pts), which lets
+  // underdogs steal games and keeps the favorite from winning ~every time.
+  const form={[home.id]:(r()+r()+r()-1.5)*8, [away.id]:(r()+r()+r()-1.5)*8};
+  const flipTo=spot=>100-clamp(spot,1,99);                 // mirror a spot for the opponent
+
+  // One possession, start at `startLos` (offense's own yard line). Returns the spot the
+  // opponent takes over (mutates `score` + `box`); ~drive time charged to the caller's clock.
+  function playDrive(off,def,startLos){
+    const oP=pools[off.id], dP=pools[def.id];
+    const adv=(off.ratings.off-def.ratings.def)+(off===home?HFA:0)+form[off.id]-form[def.id];
+    let los=startLos, down=1, togo=10, time=0;
+    while(true){
+      // ---- 4th down: kick or go ----
+      if(down===4){
+        const fgDist=(100-los)+17, inFgRange=fgDist<=57, shortPlus=los>=58&&togo<=2;
+        if(inFgRange && !(shortPlus && r()<0.45)){          // field-goal attempt
+          time+=8; add(oP.k&&oP.k.id,'fga');
+          if(r()<clamp(0.965-(fgDist-20)*0.013,0.40,0.985)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; return {nextLos:25,time}; }
+          return {nextLos:flipTo(los),time};
+        } else if(!(shortPlus && r()<0.55)){                // punt (net ~42; into EZ → touchback @20)
+          time+=10; return {nextLos:clamp(flipTo(los+ri(r,38,46)),20,99),time};
+        } // else: go for it → fall through and run a normal play
+      }
+
+      // ---- run / pass ----
+      const passProb=clamp(0.45+(togo>7?0.18:togo<3?-0.18:0)+(down>=3?0.17:0)+adv*0.003,0.12,0.92);
+      let gain=0, turnover=false, scored=false, tackled=true;
+
+      if(r()<passProb){                                     // dropback (sacks aren't pass attempts)
+        if(r()<clamp(0.062-adv*0.0012,0.02,0.11)){          // sack
+          gain=-ri(r,4,9); time+=36; const s=wpick(dP.rush4,r); add(s&&s.id,'sk');
+        } else if(r()<clamp(0.615+adv*0.007,0.32,0.83)){    // completion
+          const rec=wpick(oP.recv,r);
+          gain=Math.max(-3,Math.round((2.2+r()*7.5)+(r()<0.18?r()*42:0)+adv*0.06));
+          add(oP.qb&&oP.qb.id,'pAtt'); add(oP.qb&&oP.qb.id,'pCmp'); add(oP.qb&&oP.qb.id,'pYds',gain);
+          add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain);
+          time+=(r()<0.28?14:34);
+          if(los+gain>=100){ scored=true; add(oP.qb&&oP.qb.id,'pTD'); add(rec&&rec.id,'reTD'); }
+        } else {                                            // incomplete (maybe picked)
+          time+=6; tackled=false; add(oP.qb&&oP.qb.id,'pAtt');
+          if(r()<clamp(0.030-adv*0.0008,0.008,0.06)){ turnover=true; add(oP.qb&&oP.qb.id,'pInt'); const h=wpick(dP.hawk,r); add(h&&h.id,'dInt'); }
+        }
+      } else {                                              // run
+        const rb=wpick(oP.rush,r)||oP.qb;
+        gain=Math.max(-4,Math.round((2.7+r()*4.1)+(r()<0.11?r()*30:0)+adv*0.035));
+        time+=36; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain);
+        if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
+        if(!scored && r()<0.011){ turnover=true; }          // fumble lost
+      }
+
+      // ---- resolve the play ----
+      if(scored){
+        score[off.id]+=6;
+        add(oP.k&&oP.k.id,'xpa'); if(r()<0.965){ add(oP.k&&oP.k.id,'xpm'); score[off.id]+=1; }
+        return {nextLos:25,time};
+      }
+      if(tackled){ const t=wpick(dP.tkl,r); add(t&&t.id,'tkl'); }
+      if(turnover){ return {nextLos:flipTo(clamp(los+gain,1,99)),time}; }
+
+      los=clamp(los+gain,1,99); togo-=gain;
+      if(togo<=0){ down=1; togo=10; }                       // first down
+      else if(++down>4){ return {nextLos:flipTo(los),time}; } // turnover on downs
+    }
+  }
+
+  // regulation: alternate possessions until the clock runs out (a drive may overrun the
+  // final seconds — symmetric, and the scoreboard impact is negligible).
+  let clock=3600, off=r()<0.5?home:away, def=off===home?away:home, startLos=25;
+  while(clock>0){
+    const d=playDrive(off,def,startLos);
+    clock-=Math.max(d.time,12); startLos=d.nextLos;
+    const swap=off; off=def; def=swap;
+  }
+  // overtime: each team a possession from the opponent's 25 (los 75) until someone leads.
+  let ot=0;
+  while(score[home.id]===score[away.id] && ot++<25){
+    playDrive(home,away,75); playDrive(away,home,75);
+  }
+
+  return { hs:score[home.id], as:score[away.id], box };
+}
+// === SIM ENGINE (Phase 3) END ===
+
+// Resolve a game with the drive/play engine. Seeded per game id so outcomes are reproducible
+// regardless of advance order. Sets g.hs/g.as/g.played and RETURNS the per-game box (player
+// id → stat deltas) for stat folding. Pure w.r.t. players/teams — re-simming a clone is safe.
 function simGame(g){
   const home=teamById(g.home),away=teamById(g.away);
-  const r=rng((hashStr(g.id)^(S.seed>>>0))>>>0);
-  const edge=(home.ratings.ovr-away.ratings.ovr)*0.85 + 3;   // +3 home field, in points
-  const noise=(r()+r()+r()-1.5)*24;                           // ~normal, std ≈ 12 pts
-  const margin=edge+noise;
-  const total=ri(r,34,62);
-  let hs=clamp(Math.round(total/2+margin/2),0,84);
-  let as=clamp(Math.round(total/2-margin/2),0,84);
-  if(hs===1)hs=r()<.5?0:3;                                    // 1 is an impossible football score
-  if(as===1)as=r()<.5?0:3;
-  if(hs===as){if(edge>=0)hs+=3;else as+=3;}                   // no ties (OT decides)
-  g.hs=hs;g.as=as;g.played=true;
-  return g;
+  const res=simEngine(home,away,(hashStr(g.id)^(S.seed>>>0))>>>0);
+  g.hs=res.hs;g.as=res.as;g.played=true;
+  return res.box;
 }
-function applyResult(g){
+// Fold a game's box score into each player's season totals (p.gs). Stored only for players
+// who recorded something, so the save-size hit is limited to players who saw the field.
+function applyStats(g,box){
+  if(!box)return;
+  [g.home,g.away].forEach(tid=>{const t=teamById(tid);
+    t.roster.forEach(p=>{const d=box[p.id];if(!d)return;const s=p.gs=p.gs||{};for(const k in d)s[k]=(s[k]||0)+d[k];});});
+}
+function applyResult(g,box){
   const home=teamById(g.home),away=teamById(g.away),homeWon=g.hs>g.as;
   home.rec.pf+=g.hs;home.rec.pa+=g.as;away.rec.pf+=g.as;away.rec.pa+=g.hs;
   const W=homeWon?home:away,L=homeWon?away:home;
@@ -782,9 +904,10 @@ function applyResult(g){
   W.rec.streak=W.rec.streak>=0?W.rec.streak+1:1;
   L.rec.streak=L.rec.streak<=0?L.rec.streak-1:-1;
   if(home.conf===away.conf){W.rec.cw++;L.rec.cl++;}
+  applyStats(g,box);
 }
 function advanceWeek(){
-  S.schedule.games.filter(g=>g.week===S.week&&!g.played).forEach(g=>{simGame(g);applyResult(g);});
+  S.schedule.games.filter(g=>g.week===S.week&&!g.played).forEach(g=>{applyResult(g,simGame(g));});
   S.lastPlayedWeek=S.week;S.week++;
   recomputeRanks(S.world);
   if(S.week>S.schedule.weeks)endSeason();else setWeeklyTask();
@@ -1065,6 +1188,27 @@ function scoutedCeiling(p){
 // Development stage from growth remaining (ov→pot gap). Qualitative; exact gap not shown.
 function devStage(p){const gap=p.pot-p.ov;return gap<=2?'Maxed':gap<=7?'Polished':gap<=13?'Developing':'Raw';}
 function ceilingChip(p){const sc=scoutedCeiling(p);return `<span class="tag ${sc.hot?'accent':''}" style="font-size:10px">${sc.text}</span>`;}
+// Season box for a player, grouped by what they actually did (only nonzero categories show).
+// Returns {gp, lines:[[label,value]]} or null if the player has logged nothing yet.
+function statLines(p){
+  const s=p.gs; if(!s) return null;
+  const L=[];
+  if(s.pAtt) L.push(['Passing', `${s.pCmp||0}/${s.pAtt} · ${s.pYds||0} yds · ${s.pTD||0} TD · ${s.pInt||0} INT`]);
+  if(s.rAtt) L.push(['Rushing', `${s.rAtt} car · ${s.rYds||0} yds · ${s.rTD||0} TD`]);
+  if(s.rec)  L.push(['Receiving', `${s.rec} rec · ${s.reYds||0} yds · ${s.reTD||0} TD`]);
+  if(s.tkl||s.sk||s.dInt){const d=[];if(s.tkl)d.push(s.tkl+' tkl');if(s.sk)d.push(s.sk+' sk');if(s.dInt)d.push(s.dInt+' INT');L.push(['Defense',d.join(' · ')]);}
+  if(s.fga||s.xpa){const d=[];if(s.fga)d.push(`${s.fgm||0}/${s.fga} FG`);if(s.xpa)d.push(`${s.xpm||0}/${s.xpa} XP`);L.push(['Kicking',d.join(' · ')]);}
+  return L.length?{gp:s.gp||0,lines:L}:null;
+}
+// "Stats (this year)" block for the player sheet: preseason → placeholder; in-season → the
+// player's box, or "did not play" if a body has logged nothing.
+function statBlock(p){
+  const preseason=!S.schedule||S.phase==='Preseason';
+  const sl=statLines(p);
+  if(preseason||!sl) return `<div class="kv"><span class="k">Stats (this year)</span><span class="dim">${preseason?'— preseason —':'— did not play —'}</span></div>`;
+  const rows=sl.lines.map(([k,v])=>`<div class="kv"><span class="k">${k}</span><span>${v}</span></div>`).join('');
+  return `<div class="kv"><span class="k">Stats (this year)</span><span class="dim">${sl.gp} game${sl.gp===1?'':'s'}</span></div>${rows}`;
+}
 function playerRow(p,isStarter,t){
   const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=p.id;
   row.innerHTML=`<div class="ovr ${p.ov>=85?'elite':''}">${p.ov}</div>
@@ -1089,7 +1233,7 @@ function playerSheet(p,t){
     <div class="kv"><span class="k">Ceiling</span><span>${sc.text}</span></div>
     <div class="kv"><span class="k">Development</span><span>${devStage(p)}${sc.uncertain?' · projection':''}</span></div>
     <div class="kv"><span class="k">Speed / Strength / Awareness</span><span>${p.spd} · ${p.str} · ${p.awr}</span></div>
-    <div class="kv"><span class="k">Stats (this year)</span><span class="dim">— preseason —</span></div>`;
+    ${statBlock(p)}`;
   const r1=el('div','btn-row');
   const starter=el('button','btn sm '+(p.so===0?'line':'ghost'),p.so===0?'Already starter':'Promote to starter');
   starter.disabled=p.so===0;

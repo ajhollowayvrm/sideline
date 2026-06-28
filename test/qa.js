@@ -230,6 +230,50 @@ function startServer() {
   });
   check('Season: game sim is deterministic (reproducible from id + seed)', detSim);
 
+  // ---------- PHASE 3: play-by-play sim + per-player stats ----------
+  const sim = await page.evaluate(() => {
+    const played = S.schedule.games.filter(g => g.played);
+    const scores = played.flatMap(g => [g.hs, g.as]);
+    const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+    const ties = played.filter(g => g.hs === g.as).length;
+    const t = controlled();
+    const qb = t.roster.filter(p => p.pos === 'QB').sort((a, b) => a.so - b.so)[0];
+    let leadPass = 0, leadPos = '', pInt = 0, dInt = 0;
+    S.world.teams.forEach(tm => tm.roster.forEach(p => { if (!p.gs) return; if (p.gs.pYds > leadPass) { leadPass = p.gs.pYds; leadPos = p.pos; } pInt += p.gs.pInt || 0; dInt += p.gs.dInt || 0; }));
+    return { mean, ties, max: Math.max(...scores), withStats: t.roster.filter(p => p.gs).length, qbYds: qb && qb.gs ? qb.gs.pYds : 0, qbGp: qb && qb.gs ? qb.gs.gp : 0, leadPass, leadPos, pInt, dInt };
+  });
+  check('Sim: realistic scoring (mean 15–35, max ≥ 35, no ties)', sim.mean >= 15 && sim.mean <= 35 && sim.max >= 35 && sim.ties === 0, `mean ${sim.mean.toFixed(1)}, max ${sim.max}, ${sim.ties} ties`);
+  check('Sim: per-player stats accumulate on the controlled roster', sim.withStats > 10, `${sim.withStats} players with stats`);
+  check('Sim: starting QB logs passing yards across games played', sim.qbYds > 0 && sim.qbGp > 0, `QB ${sim.qbYds} yds / ${sim.qbGp} gp`);
+  check('Sim: league passing leader is a QB', sim.leadPos === 'QB', `${sim.leadPos} ${sim.leadPass} yds`);
+  check('Sim: box reconciles (INTs thrown == INTs caught league-wide)', sim.pInt === sim.dInt, `pInt ${sim.pInt} / dInt ${sim.dInt}`);
+  const detBox = await page.evaluate(() => {
+    const g = S.schedule.games.find(x => x.played);
+    const a = simGame({ id: g.id, home: g.home, away: g.away });
+    const b = simGame({ id: g.id, home: g.home, away: g.away });
+    return JSON.stringify(a) === JSON.stringify(b) && Object.keys(a).length > 0;
+  });
+  check('Sim: per-game box score is deterministic (reproducible from id + seed)', detBox);
+
+  // player sheet now surfaces in-season stats instead of "— preseason —"
+  await page.locator('[data-tid="nav-team"]').click();
+  await page.waitForTimeout(120);
+  await page.locator('[data-tid="tab-roster"]').click(); // (coaches tab was left active earlier)
+  await page.waitForTimeout(150);
+  const sqb = await page.evaluate(() => { const t = controlled(); const qb = t.roster.filter(p => p.pos === 'QB' && p.gs && p.gs.pAtt).sort((a, b) => a.so - b.so)[0]; return qb ? qb.id : null; });
+  check('Sim: a QB with passing stats exists to inspect', !!sqb);
+  if (sqb) {
+    await page.locator(`[data-id="${sqb}"]`).click();
+    await page.waitForTimeout(120);
+    const sheetTxt = await page.locator('[data-tid="sheet"]').innerText();
+    check('Player sheet shows in-season Passing stats (not "— preseason —")', /Passing/.test(sheetTxt) && !/preseason/.test(sheetTxt));
+    await shot(page, '18-player-stats.png');
+    await page.locator('[data-tid="sheet-bg"]').click({ position: { x: 5, y: 5 } }).catch(() => {});
+    await page.waitForTimeout(100);
+  }
+  await page.locator('[data-tid="nav-home"]').click();
+  await page.waitForTimeout(120);
+
   // season view tabs
   await page.locator('[data-tid="nav-season"]').click();
   await page.waitForTimeout(150);
@@ -263,8 +307,9 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).first().click();
   await page.waitForTimeout(150);
   check('Persistence: save survives reload + loads to Home', (await screen(page)) === 'home');
-  const seasonPersist = await page.evaluate(() => ({ sched: !!S.schedule, week: S.week, phase: S.phase, played: S.schedule ? S.schedule.games.filter(g => g.played).length : 0 }));
+  const seasonPersist = await page.evaluate(() => ({ sched: !!S.schedule, week: S.week, phase: S.phase, played: S.schedule ? S.schedule.games.filter(g => g.played).length : 0, version: S.version, statPlayers: S.world.teams.reduce((n, t) => n + t.roster.filter(p => p.gs).length, 0) }));
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
+  check('Persistence: per-player stats (v4) survive reload', seasonPersist.version === 4 && seasonPersist.statPlayers > 50, `v${seasonPersist.version}, ${seasonPersist.statPlayers} players with stats`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -281,7 +326,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule }));
-  check('Migration: v1 save upgrades to current version (v3)', mig.v === 3, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v4)', mig.v === 4, 'version=' + mig.v);
   check('Migration: staff backfilled (tier/boost)', mig.tier != null && mig.boost != null, JSON.stringify({ tier: mig.tier, boost: mig.boost }));
   check('Migration: season fields backfilled (records, null schedule)', mig.rec && mig.rec.w === 0 && mig.rec.l === 0 && mig.sched === null, JSON.stringify(mig.rec));
 
