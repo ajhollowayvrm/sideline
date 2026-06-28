@@ -104,6 +104,10 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   const lo = resolveFinances({ id: 'a', conf: 'SEC', prestige: 70, fac: { stadium: 3 }, payroll: 0, budget: 0, facilityDebt: 0, rec: { w: 6, l: 6 } }, 2026, 1);
   const hi = resolveFinances({ id: 'a', conf: 'SEC', prestige: 70, fac: { stadium: 9 }, payroll: 0, budget: 0, facilityDebt: 0, rec: { w: 6, l: 6 } }, 2026, 1);
   check('A bigger stadium raises revenue', hi.revenue > lo.revenue, `+${((hi.revenue - lo.revenue) / 1e6).toFixed(1)}M`);
+  // Manager finance multiplier (Phase 7 flavor): a >1 mult scales revenue up
+  const base = resolveFinances({ id: 'm', conf: 'SEC', prestige: 70, fac: { stadium: 6 }, payroll: 0, budget: 0, facilityDebt: 0, rec: { w: 8, l: 4 } }, 2026, 1);
+  const mgr = resolveFinances({ id: 'm', conf: 'SEC', prestige: 70, fac: { stadium: 6 }, payroll: 0, budget: 0, facilityDebt: 0, rec: { w: 8, l: 4 } }, 2026, 1, 1.06);
+  check('Revenue multiplier scales revenue (Manager edge)', mgr.revenue > base.revenue, `${(base.revenue / 1e6).toFixed(1)}M → ${(mgr.revenue / 1e6).toFixed(1)}M`);
 })();
 
 /* 3) coach market: top-heavy on rating, deterministic by seed, varies across seeds */

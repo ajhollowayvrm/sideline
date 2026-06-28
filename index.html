@@ -630,9 +630,9 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:10,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:11,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
-     recruiting:null,coachMarket:null,awards:[],series:[],
+     recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // choose a save slot
   chooseSlotSheet();
@@ -753,6 +753,10 @@ function migrateState(state){
     if(!Array.isArray(state.series))state.series=[];
     state.world.teams.forEach(t=>{if(!t.homeState)t.homeState=TEAM_STATE[t.abbr]||'TX';});
     state.version=10;                  // p.honors stays optional (absence reads as no honors)
+  }
+  if((state.version||1)<11){           // Phase 8+: AI-initiated series offers (created when managing).
+    if(!('seriesOffers' in state))state.seriesOffers=null;
+    state.version=11;
   }
   return state;
 }
@@ -1224,7 +1228,7 @@ const FAC_BASE={stadium:6e6,strength:2.2e6,training:2.4e6,academics:1.9e6,nil:2.
 // budget += net (cash carries over, can go negative → constrains spending), pays down debt
 // (interest + principal), and stores a lean team.lastFinances for the Program UI / recap.
 // Deterministic: a light seeded jitter keys off (seed, year, team id). Returns lastFinances.
-function resolveFinances(team,year,seed){
+function resolveFinances(team,year,seed,mult){
   const fac=team.fac||{}, prestige=team.prestige||50, rec=team.rec||{w:0,l:0};
   const games=(rec.w||0)+(rec.l||0), winPct=games?rec.w/games:0;
   const confBase=(ECON_CONF_BASE[team.conf]||16)*1e6;
@@ -1233,7 +1237,7 @@ function resolveFinances(team,year,seed){
     + (winPct>0.5?(winPct-0.5)*18e6:0)                 // winning seasons pay (bowls/playoff)
     + (team.natRank&&team.natRank<=25?(26-team.natRank)*0.5e6:0);
   const jit=(rng((seed^hashStr('fin'+year+(team.id||'')))>>>0)()-0.5)*4e6;
-  const revenue=Math.round(confBase + prestige*450000 + stadiumTerm + perfBonus + jit);
+  const revenue=Math.round((confBase + prestige*450000 + stadiumTerm + perfBonus + jit)*(mult||1));
   const debt=team.facilityDebt||0;
   const interest=debt*0.08, principal=Math.min(debt, debt*0.18);
   const debtService=interest+principal;
@@ -1306,7 +1310,7 @@ function advanceCoachCarousel(world,market,seed,year,opts){
   // 2) a higher-prestige suitor may poach the player's best coordinator (loyal histories resist)
   if(meId){
     const me=world.teams.find(t=>t.id===meId);
-    const resist=opts.coach&&(opts.coach.history==='NFL Transplant'||opts.coach.history==='Lifer')?0.5:1;
+    const resist=opts.coach&&(opts.coach.history==='NFL Transplant'||opts.coach.history==='Lifer'||opts.coach.archetype==='Manager')?0.5:1;
     if(me&&me.staff){
       const star=me.staff.filter(c=>c.tier==='coord'&&c.rating>=82).sort((a,b)=>b.rating-a.rating)[0];
       const suitor=ai.find(t=>(t.prestige||50)>((me.prestige||50)+6));
@@ -1348,7 +1352,7 @@ function computeAwards(teams,year){
     t.roster.forEach(p=>{if(!p.gs||!p.gs.gp)return;
       cand.push({p,t,off:awardOff(p.gs),def:awardDef(p.gs),winPct,fr:p.yr==='FR'||p.yr==='RS-FR'});});
   });
-  const empty={year,heisman:null,poyDef:null,freshman:null,coy:null,byConf:{},allAmerican:[]};
+  const empty={year,heisman:null,poyDef:null,freshman:null,coy:null,byConf:{},allAmerican:[],allConference:{}};
   if(!cand.length)return empty;
   const snap=(c,side)=>c?{pid:c.p.id,teamId:c.t.id,name:c.p.fn+' '+c.p.ln,pos:c.p.pos,abbr:c.t.abbr,
     color:c.t.color,line:awardLine(c.p.gs,side),score:Math.round(side==='def'?c.def:c.off)}:null;
@@ -1361,15 +1365,18 @@ function computeAwards(teams,year){
   const frPoy=frs.length?frs.reduce((b,c)=>{const v=Math.max(c.off,c.def*1.2);return(!b||v>b._v)?Object.assign({_v:v},c):b;},null):null;
   const byConf={};[...new Set(cand.map(c=>c.t.conf))].forEach(cf=>{const cc=cand.filter(c=>c.t.conf===cf);
     byConf[cf]={off:snap(bestOff(cc),'off'),def:snap(bestDef(cc),'def')};});
-  const allAmerican=POS.map(([code])=>{const cc=cand.filter(c=>c.p.pos===code);if(!cc.length)return null;
+  // first-team at each position: All-America (national) + All-Conference (per league)
+  const bestAt=arr=>POS.map(([code])=>{const cc=arr.filter(c=>c.p.pos===code);if(!cc.length)return null;
     const best=cc.reduce((b,c)=>{const v=Math.max(c.off,c.def);return(!b||v>b._v)?Object.assign({_v:v},c):b;},null);
     return Object.assign({pos:code},snap(best,best.def>best.off?'def':'off'));}).filter(Boolean);
+  const allAmerican=bestAt(cand);
+  const allConference={};[...new Set(cand.map(c=>c.t.conf))].forEach(cf=>{allConference[cf]=bestAt(cand.filter(c=>c.t.conf===cf));});
   const coyT=teams.reduce((b,t)=>{if(!t.rec||(t.rec.w+t.rec.l)===0)return b;const over=t.rec.w-(t.prestige||50)/10;
     return(!b||over>b._o)?{_o:over,t}:b;},null);
   const coy=coyT?{teamId:coyT.t.id,abbr:coyT.t.abbr,color:coyT.t.color,name:coyT.t.name,
     rec:coyT.t.rec.w+'–'+coyT.t.rec.l,over:Math.round(coyT._o*10)/10}:null;
   return {year,heisman:snap(heis,'off'),poyDef:snap(defPoy,'def'),
-    freshman:frPoy?snap(frPoy,frPoy.def>frPoy.off?'def':'off'):null,coy,byConf,allAmerican};
+    freshman:frPoy?snap(frPoy,frPoy.def>frPoy.off?'def':'off'):null,coy,byConf,allAmerican,allConference};
 }
 // === AWARDS ENGINE (Phase 8) END ===
 
@@ -1479,6 +1486,7 @@ function stampHonors(aw){
   give(aw.freshman,'Freshman of the Year');
   (aw.allAmerican||[]).forEach(a=>give(a,'All-American'));
   const me=controlled();
+  ((aw.allConference||{})[me.conf]||[]).forEach(a=>give(a,'All-'+me.conf));   // first-team All-Conference
   Object.entries(aw.byConf||{}).forEach(([cf,v])=>{if(cf!==me.conf)return;   // stamp the player's conf POYs
     give(v.off,cf+' Offensive POY');give(v.def,cf+' Defensive POY');});
 }
@@ -1529,11 +1537,13 @@ function devRateFor(team,p){
 // risks a transfer out. Runs on the PRE-rollover roster (p.gs from last season still present).
 function resolvePromises(teamId,r){
   const t=teamById(teamId),departed=[];
+  // Strong academics keep players invested in the degree → a broken promise is likelier forgiven.
+  const aca=(t.fac&&t.fac.academics)||5, risk=clamp(0.45-(aca-5)*0.025,0.18,0.6);
   t.roster=t.roster.filter(p=>{
     if(!p.promise)return true;
     if(p.promise.type==='playingTime'){
       const played=(p.so!=null&&p.so<=1)||(p.gs&&p.gs.gp);
-      if(!played&&r()<0.45){departed.push({name:p.fn+' '+p.ln,pos:p.pos});return false;}
+      if(!played&&r()<risk){departed.push({name:p.fn+' '+p.ln,pos:p.pos});return false;}
     }
     p.promise=null;                       // obligation cleared (honored / kept on roster)
     return true;
@@ -1550,7 +1560,7 @@ function rolloverSeason(){
   const departed=resolvePromises(me,r);            // before rollover wipes last season's p.gs
   // (A) Finances settle once a year for EVERY team (uses last season's record, before it resets).
   const yr=S.year||2026;
-  S.world.teams.forEach(t=>resolveFinances(t,yr,S.seed));
+  S.world.teams.forEach(t=>resolveFinances(t,yr,S.seed,t.id===me?mgrFinanceMult():1));  // Manager runs a tighter books
   let summary=null;
   S.world.teams.forEach(t=>{
     const res=rolloverRoster(t.roster,signeesBy[t.id]||[],t.prestige,r,{rateFor:p=>devRateFor(t,p)});
@@ -1565,6 +1575,7 @@ function rolloverSeason(){
   S.world.teams.forEach(t=>{t.rec=emptyRec();t.ratings=teamRatings(t.roster,t.staff);});
   S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;
   S.week=0;S.phase='Preseason';
+  S.seriesOffers=genSeriesOffers(S.seed,S.year,me);   // a fresh wave of scheduling offers each offseason
   recomputeRanks(S.world);
   const nf=summary?summary.freshmen.length:0;
   S.task={type:'Media Day',label:S.year+' Media Day',
@@ -1591,11 +1602,16 @@ function ensureCoachMarket(){
 }
 // Spending is only allowed when the season isn't live (no in-season roster/staff churn).
 function canManage(){return S.phase==='Preseason'||S.phase==='Offseason';}
+// Coach-identity GM effects (Phase 7 flavor, completed): a Manager runs the program like a CEO
+// (more revenue, cheaper facility projects, stickier staff); a Lifer's loyal network comes cheap.
+function mgrFinanceMult(){return (S.coach&&S.coach.archetype==='Manager')?1.06:1;}
+function facilityDiscount(){return (S.coach&&S.coach.archetype==='Manager')?0.90:1;}
+function staffCostMult(){return (S.coach&&S.coach.history==='Lifer')?0.85:1;}
 // Buy a facility upgrade. `credit` finances it onto facilityDebt instead of paying cash.
 function applyFacilityUpgrade(team,key,credit){
   const lvl=team.fac[key]||1;
   if(lvl>=10){toast('Already maxed');return false;}
-  const cost=facilityUpgradeCost(key,lvl);
+  const cost=Math.round(facilityUpgradeCost(key,lvl)*(team.id===S.teamId?facilityDiscount():1));
   if(credit){team.facilityDebt=(team.facilityDebt||0)+cost;}
   else{if((team.budget||0)<cost){toast('Not enough budget — finance it or earn more');return false;}
     team.budget-=cost;}
@@ -1607,7 +1623,7 @@ function applyFacilityUpgrade(team,key,credit){
 // Fire a coach: pay the buyout from budget. Coordinators open a vacancy you must refill before
 // kickoff; position coaches may sit vacant (you simply lose their group boost).
 function fireCoach(team,coach){
-  const cost=buyoutCost(coach);
+  const cost=Math.round(buyoutCost(coach)*(team.id===S.teamId?staffCostMult():1));
   if((team.budget||0)<cost){toast('Can’t afford the buyout');return false;}
   team.budget-=cost;
   team.staff=team.staff.filter(c=>c!==coach);
@@ -1619,7 +1635,7 @@ function fireCoach(team,coach){
 // vacant); position coaches fill/replace their group's slot. Pays a signing fee from budget.
 function hireCoach(team,cand,slotRole){
   ensureCoachMarket();
-  const fee=hireCost(cand);
+  const fee=Math.round(hireCost(cand)*(team.id===S.teamId?staffCostMult():1));
   if((team.budget||0)<fee){toast('Can’t afford the signing fee');return false;}
   const r=rng((S.seed^hashStr('hire'+cand.id+(S.year||2026)))>>>0);
   let hired;
@@ -1652,19 +1668,29 @@ function vacantCoordSlots(team){return COORD_ROLES.filter(([code])=>!team.staff.
    pulled into the slate at kickoff via seriesLegsForYear (locked edges in genSchedule).
    ============================================================ */
 const SERIES_TYPES=[['home-home','Home-and-Home','Two games, alternating hosts, across two seasons.'],
+  ['2-for-1','2-for-1','You host twice, they host once — three games over three seasons (for a smaller opponent).'],
   ['neutral','Neutral-Site','One game at a neutral venue (a season-opening showcase).'],
   ['buy','Guarantee (Buy) Game','Pay a smaller program a guarantee to visit for one game.']];
 // The season the first leg lands: the upcoming one (this Preseason if not yet kicked off, else next).
 function nextSeriesYear(){return (!S.schedule)?(S.year||2026):((S.year||2026)+1);}
 // A smaller program's asking guarantee for a buy game (scales with its prestige).
 function seriesAsk(to){return Math.round(to.prestige*150000+1.0e6);}
-// Will `to` accept a series of `type` from `from`? Buy games hinge on the guarantee; home-and-homes
-// on prestige proximity (a smaller school will gladly host a marquee opponent for the payday/exposure).
+// Will `to` accept a series of `type` from `from`? Buy games hinge on the guarantee; a 2-for-1
+// needs `from` to be the bigger draw (the smaller side trades two road trips for a marquee + payday);
+// home-and-homes on prestige proximity (a smaller school gladly hosts a marquee opponent).
 function seriesWillingness(from,to,type,guarantee){
   if(from.conf===to.conf)return false;               // conference games are auto-scheduled
   const dp=Math.abs(from.prestige-to.prestige);
   if(type==='buy'){if(from.prestige<=to.prestige+8)return false;return (guarantee||0)>=seriesAsk(to);}
+  if(type==='2-for-1')return from.prestige>to.prestige+6 && to.prestige>=from.prestige-45;
   return dp<=24 || (from.prestige>to.prestige && to.prestige>=from.prestige-40);
+}
+// Build the leg schedule for a series of `type` from host-perspective `aId` vs `bId`, starting year Y.
+function seriesLegs(type,aId,bId,Y){
+  if(type==='home-home')return [{year:Y,home:aId,away:bId},{year:Y+1,home:bId,away:aId}];
+  if(type==='2-for-1')return [{year:Y,home:aId,away:bId},{year:Y+1,home:aId,away:bId},{year:Y+2,home:bId,away:aId}];
+  if(type==='neutral')return [{year:Y,home:aId,away:bId,neutralSite:true}];
+  return [{year:Y,home:aId,away:bId}];               // buy game: bId visits aId once
 }
 function mySeries(){return (S.series||[]).filter(s=>s.a===S.teamId||s.b===S.teamId);}
 function seriesExistsWith(toId){return (S.series||[]).some(s=>(s.a===S.teamId&&s.b===toId)||(s.b===S.teamId&&s.a===toId));}
@@ -1676,17 +1702,47 @@ function proposeSeries(toId,type,guarantee){
   if(from.conf===to.conf)return {ok:false,msg:'Conference games are auto-scheduled'};
   if(seriesExistsWith(toId))return {ok:false,msg:'You already have a series with them'};
   if(!seriesWillingness(from,to,type,guarantee))
-    return {ok:false,msg:type==='buy'?('They want at least '+money(seriesAsk(to))):'They declined — prestige mismatch'};
+    return {ok:false,msg:type==='buy'?('They want at least '+money(seriesAsk(to))):type==='2-for-1'?'Only a smaller program takes a 2-for-1':'They declined — prestige mismatch'};
   const Y=nextSeriesYear();
-  let legs;
-  if(type==='home-home')legs=[{year:Y,home:from.id,away:to.id},{year:Y+1,home:to.id,away:from.id}];
-  else if(type==='neutral')legs=[{year:Y,home:from.id,away:to.id,neutralSite:true}];
-  else legs=[{year:Y,home:from.id,away:to.id}];       // buy game: smaller program visits once
-  const s={id:'s'+(S.series.length).toString(36)+Y,type,a:from.id,b:to.id,legs};
+  const s={id:'s'+(S.series.length).toString(36)+Y,type,a:from.id,b:to.id,legs:seriesLegs(type,from.id,to.id,Y)};
   if(type==='buy'){s.guarantee=guarantee;from.budget-=guarantee;}   // pay the guarantee on booking
   S.series.push(s);autosave();
   return {ok:true,msg:'Series booked with '+to.name,series:s};
 }
+
+/* ---- AI-initiated series offers (the other half of "either side can initiate") ---- */
+// A deterministic handful of non-conference programs that want to schedule YOU, refreshed each
+// offseason (like the coach market). Bigger schools offer a 2-for-1 or a buy game (they pay YOU);
+// near-peers offer a home-and-home. Stored in S.seriesOffers; accept/decline from the series card.
+function genSeriesOffers(seed,year,meId){
+  const me=teamById(meId);if(!me)return [];
+  const r=rng((seed^hashStr('seriesoffers'+year))>>>0);
+  const pool=S.world.teams.filter(t=>t.id!==meId&&t.conf!==me.conf&&!seriesExistsWith(t.id));
+  const ranked=pool.map(t=>({t,k:r()+(1-Math.abs(t.prestige-me.prestige)/60)})).sort((a,b)=>b.k-a.k);
+  const out=[], n=ri(r,2,4);
+  for(let i=0;i<ranked.length&&out.length<n;i++){
+    const o=ranked[i].t, dp=o.prestige-me.prestige; let type='home-home', guarantee=0;
+    if(dp>12){ if(r()<0.5){type='2-for-1';} else {type='buy';guarantee=seriesAsk(me);} }  // they pay you to visit
+    out.push({id:'so'+year.toString(36)+i.toString(36),fromId:o.id,type,guarantee});
+  }
+  return out;
+}
+function ensureSeriesOffers(){if(!S.seriesOffers)S.seriesOffers=genSeriesOffers(S.seed,S.year||2026,S.teamId);return S.seriesOffers;}
+function acceptSeriesOffer(offerId){
+  const o=(S.seriesOffers||[]).find(x=>x.id===offerId);if(!o)return false;
+  const me=controlled(),from=teamById(o.fromId);if(!from){declineSeriesOffer(offerId);return false;}
+  if(seriesExistsWith(from.id)){declineSeriesOffer(offerId);return false;}
+  const Y=nextSeriesYear();
+  // AI is the initiator/host of record: home-home → you host first; 2-for-1 → they host twice; buy → you visit, they pay you
+  let legs;
+  if(o.type==='home-home')legs=[{year:Y,home:me.id,away:from.id},{year:Y+1,home:from.id,away:me.id}];
+  else legs=seriesLegs(o.type,from.id,me.id,Y);       // 2-for-1 / buy: `from` hosts
+  const s={id:'s'+S.series.length.toString(36)+Y,type:o.type,a:from.id,b:me.id,legs};
+  if(o.type==='buy'){s.guarantee=o.guarantee;me.budget+=o.guarantee;}   // you're bought → you receive
+  S.series.push(s);S.seriesOffers=S.seriesOffers.filter(x=>x.id!==offerId);autosave();
+  return true;
+}
+function declineSeriesOffer(offerId){S.seriesOffers=(S.seriesOffers||[]).filter(x=>x.id!==offerId);autosave();}
 
 /* ============================================================
    RECRUITING — weekly economy + player actions (Phase 4)
@@ -2111,6 +2167,30 @@ function seriesCard(v,t){
     add.onclick=()=>seriesSheet();wrap.append(add);
   }else wrap.append(el('div','hint center','Book series in the preseason or offseason.'));
   v.append(wrap);
+  // incoming offers from AI programs (the other side initiating)
+  if(canManage()){
+    const offers=ensureSeriesOffers();
+    if(offers&&offers.length){
+      v.append(el('h2','sec','Incoming Offers'));
+      const oc=el('div','card');oc.dataset.tid='series-offers';
+      offers.forEach(o=>{
+        const from=teamById(o.fromId);if(!from)return;
+        const tlabel=(SERIES_TYPES.find(x=>x[0]===o.type)||['','Series'])[1];
+        const note=o.type==='buy'?('pays you '+money(o.guarantee)):o.type==='2-for-1'?'they host twice':'home-and-home';
+        const row=el('div','row spread');row.style.cssText='margin:8px 0;gap:8px;flex-wrap:wrap';
+        row.innerHTML=`<div class="row" style="gap:8px;min-width:0;flex:1"><span class="dot" style="background:${from.color};flex:none"></span>
+          <div style="min-width:0"><div class="nm">${from.name} <span class="dim" style="font-weight:400">${from.conf}</span></div>
+          <div class="meta dim">${tlabel} · ${note}</div></div></div>`;
+        const br=el('div','btn-row');br.style.flex='none';
+        const acc=el('button','btn sm','Accept');acc.dataset.tid='accept-offer';
+        acc.onclick=()=>{if(acceptSeriesOffer(o.id)){render();toast('Series booked with '+from.name);}};
+        const dec=el('button','btn sm line','Decline');
+        dec.onclick=()=>{declineSeriesOffer(o.id);render();toast('Offer declined');};
+        br.append(acc,dec);row.append(br);oc.append(row);
+      });
+      v.append(oc);
+    }
+  }
 }
 // Propose a new non-conference series.
 function seriesSheet(){
@@ -2302,11 +2382,16 @@ function seasonAwards(v,t){
   if(cc){v.append(el('h2','sec',t.conf+' POY'));
     const cf=el('div','card');cf.innerHTML=awardRow('Offense',cc.off)+awardRow('Defense',cc.def);v.append(cf);}
   // All-America team
+  const aaRows=arr=>arr.map(a=>`<div class="row spread" style="margin:5px 0"><span class="meta"><b>${a.pos}</b> ${a.name} <span class="dim">${a.abbr}</span></span><span class="meta dim">${a.score}</span></div>`).join('');
   if(A.allAmerican&&A.allAmerican.length){
     v.append(el('h2','sec','All-America'));
-    const aa=el('div','card');
-    aa.innerHTML=A.allAmerican.map(a=>`<div class="row spread" style="margin:5px 0"><span class="meta"><b>${a.pos}</b> ${a.name} <span class="dim">${a.abbr}</span></span><span class="meta dim">${a.score}</span></div>`).join('');
-    v.append(aa);
+    v.append(el('div','card',aaRows(A.allAmerican)));
+  }
+  // All-Conference (controlled team's league)
+  const ac=A.allConference&&A.allConference[t.conf];
+  if(ac&&ac.length){
+    v.append(el('h2','sec','All-'+t.conf));
+    const acc=el('div','card');acc.dataset.tid='all-conference';acc.innerHTML=aaRows(ac);v.append(acc);
   }
 }
 

@@ -83,9 +83,14 @@ plain static files so Pages still serves it with zero config.
   winners' `p.honors`, logged in `S.awards`; **Coach of the Week** now crowned each week too) with a
   Season **Awards** tab + Home ceremony card + `npm run awardlab` (12 checks). **Non-conference
   series** (`S.series` multi-year agreements; `genSchedule` is now two-phase — series legs lock as
-  fixed edges, byte-identical when none; home-and-home / neutral / buy games proposed via a sheet,
-  AI accepts on prestige fit/guarantee). Save **v10** (`S.awards`, `S.series`, `team.homeState`,
-  optional `p.honors`). See "Planned: season awards" + "Planned: non-conference series".
+  fixed edges, byte-identical when none; **home-and-home / 2-for-1 / neutral / buy** games, and the
+  scheduling is **two-sided** — you propose via a sheet *and* AI programs send you offers each
+  offseason (`genSeriesOffers` → `S.seriesOffers`, accept/decline; a buy offer pays *you*).
+  Award set also includes **All-Conference** first teams per league. Save **v11** (`S.awards`,
+  `S.series`, `S.seriesOffers`, `team.homeState`, optional `p.honors`). Coach identity is fully
+  wired: **Manager** (revenue +6% via `resolveFinances` mult, −10% facility cost, staff-retention
+  poach resistance), **Lifer** (−15% hire/buyout cost + loyal staff), and **academics→lower
+  promise-break transfer risk**. See "Planned: season awards" + "Planned: non-conference series".
 - **Phase 9 — Tech debt & scale.** ✅ DONE (save optimization). A **storage codec** shrinks saves
   ~40% (a fresh/played save ~2.3 MB → ~1.4 MB, well under the ~5 MB cap). Rosters — 98% of the
   bytes — serialize **columnar** (`encRoster`/`decRoster`: the 15 core player fields become a flat
@@ -528,7 +533,8 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   per-team `lastFinances=null` (Phase 6 economy); v8→v9 is a structural no-op (per-player `p.dev`
   offseason growth, Phase 7 — absence reads as "no growth yet"); v9→v10 backfills `S.awards=[]` +
   `S.series=[]` + per-team `homeState` (from `TEAM_STATE`), with `p.honors` optional (Phase 8
-  geography/awards/series). Each step re-derives ratings/ranks where needed.
+  geography/awards/series); v10→v11 backfills `S.seriesOffers=null` (AI-initiated series offers,
+  created when managing). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into

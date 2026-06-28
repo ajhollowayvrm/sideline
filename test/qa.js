@@ -423,7 +423,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 10 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 11 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -439,8 +439,8 @@ function startServer() {
   await page.waitForTimeout(150);
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
-  const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances }));
-  check('Migration: v1 save upgrades to current version (v10)', mig.v === 10, 'version=' + mig.v);
+  const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState }));
+  check('Migration: v1 save upgrades to current version (v11)', mig.v === 11, 'version=' + mig.v);
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
   check('Migration: staff backfilled (tier/boost)', mig.tier != null && mig.boost != null, JSON.stringify({ tier: mig.tier, boost: mig.boost }));
   check('Migration: season fields backfilled (records, null schedule)', mig.rec && mig.rec.w === 0 && mig.rec.l === 0 && mig.sched === null, JSON.stringify(mig.rec));
@@ -448,6 +448,8 @@ function startServer() {
   check('Migration: recruiting backfilled (null until kickoff)', mig.recruiting === null, JSON.stringify(mig.recruiting));
   check('Migration: coach market backfilled (null until offseason, v7→v8)', mig.coachMarket === null, JSON.stringify(mig.coachMarket));
   check('Migration: lastFinances backfilled (null until settled, v7→v8)', mig.lastFinances === null, JSON.stringify(mig.lastFinances));
+  check('Migration: awards/series backfilled + homeState (v9→v10)', Array.isArray(mig.awards) && Array.isArray(mig.series) && !!mig.homeState, JSON.stringify({ aw: mig.awards.length, sr: mig.series.length, st: mig.homeState }));
+  check('Migration: seriesOffers backfilled (null until offseason, v10→v11)', mig.seriesOffers === null, JSON.stringify(mig.seriesOffers));
 
   // ---------- DELETE with confirm ----------
   await page.goto(BASE, { waitUntil: 'networkidle' }); // clean reload (no ?reset)
@@ -512,18 +514,42 @@ function startServer() {
     const me = controlled();
     const aw = S.awards && S.awards[S.awards.length - 1];
     const honored = S.world.teams.reduce((n, t) => n + t.roster.filter(p => p.honors && p.honors.length).length, 0);
-    // book a home-and-home with a willing non-conf opponent
+    // book a home-and-home with a willing non-conf opponent, plus a 2-for-1 with a smaller program
     const opp = S.world.teams.find(x => x.conf !== me.conf && !seriesExistsWith(x.id) && seriesWillingness(me, x, 'home-home', 0));
     const res = opp ? proposeSeries(opp.id, 'home-home', 0) : { ok: false };
+    const smaller = S.world.teams.find(x => x.conf !== me.conf && !seriesExistsWith(x.id) && seriesWillingness(me, x, '2-for-1', 0));
+    const res2 = smaller ? proposeSeries(smaller.id, '2-for-1', 0) : { ok: false };
+    const twoForOne = S.series.find(s => s.type === '2-for-1');
+    // AI-initiated offers: ensure a wave exists, then accept one
+    const offers = ensureSeriesOffers();
+    const offerN = offers.length;
+    const accepted = offers.length ? acceptSeriesOffer(offers[0].id) : false;
     return { hasAwards: !!aw, heisman: aw && aw.heisman ? aw.heisman.name : null, allAm: aw ? aw.allAmerican.length : 0,
-      honored, myState: me.homeState, oppState: opp ? opp.homeState : null,
-      seriesOk: res.ok, seriesN: S.series.length, legYears: S.series.flatMap(s => s.legs.map(l => l.year)) };
+      allConf: aw && aw.allConference && aw.allConference[me.conf] ? aw.allConference[me.conf].length : 0,
+      honored, myState: me.homeState,
+      seriesOk: res.ok, seriesN: S.series.length, legYears: S.series.flatMap(s => s.legs.map(l => l.year)),
+      twoForOneLegs: twoForOne ? twoForOne.legs.length : 0, offerN, accepted };
   });
   check('Phase 8: season awards computed at season end', p8.hasAwards && !!p8.heisman, 'Heisman: ' + p8.heisman);
   check('Phase 8: All-America team selected', p8.allAm > 5, p8.allAm + ' selections');
+  check('Phase 8: All-Conference team selected for the player conf', p8.allConf > 5, p8.allConf + ' selections');
   check('Phase 8: award winners stamped with honors (league-wide)', p8.honored > 0, p8.honored + ' honored players');
   check('Phase 8: AI geography — teams carry a home state', !!p8.myState && p8.myState.length === 2, 'mine ' + p8.myState);
   check('Phase 8: a non-conference series can be booked', p8.seriesOk && p8.seriesN > 0, p8.seriesN + ' series, legs ' + p8.legYears.join('/'));
+  check('Phase 8: a 2-for-1 books three legs', p8.twoForOneLegs === 3, p8.twoForOneLegs + ' legs');
+  check('Phase 8: AI-initiated series offers exist + can be accepted', p8.offerN > 0 && p8.accepted, p8.offerN + ' offers');
+  // coach-identity GM effects: Manager finances/facilities/retention, Lifer cheaper staff, academics→risk
+  const ident = await page.evaluate(() => {
+    const save = { a: S.coach.archetype, h: S.coach.history };
+    S.coach.archetype = 'Manager'; const mgrFin = mgrFinanceMult(), mgrFac = facilityDiscount();
+    S.coach.archetype = 'Recruiter'; const baseFin = mgrFinanceMult(), baseFac = facilityDiscount();
+    S.coach.history = 'Lifer'; const lifer = staffCostMult();
+    S.coach.history = 'Former Player'; const nonLifer = staffCostMult();
+    S.coach.archetype = save.a; S.coach.history = save.h;
+    return { mgrFin, baseFin, mgrFac, baseFac, lifer, nonLifer };
+  });
+  check('Phase 7+: Manager boosts revenue + discounts facilities', ident.mgrFin > ident.baseFin && ident.mgrFac < ident.baseFac);
+  check('Phase 7+: Lifer gets cheaper staff', ident.lifer < ident.nonLifer, `${ident.lifer} vs ${ident.nonLifer}`);
   // Home shows the awards ceremony card; the Season Awards tab renders
   await page.locator('[data-tid="nav-home"]').click();
   await page.waitForTimeout(120);
@@ -572,7 +598,7 @@ function startServer() {
   check('Rollover: advances to the next calendar year', roPost.year === roPre.year + 1, `${roPre.year} → ${roPost.year}`);
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
-  check('Rollover: save version bumped to 10', roPost.version === 10, 'v' + roPost.version);
+  check('Rollover: save version bumped to 11', roPost.version === 11, 'v' + roPost.version);
   check('Phase 8: player honors survive the rollover', roPost.honoredAfter > 0, roPost.honoredAfter + ' still honored');
   check('Phase 8: series + awards history persist across the rollover', roPost.seriesKept > 0 && roPost.awardsKept > 0, `series ${roPost.seriesKept}, awards ${roPost.awardsKept}`);
   check('Rollover: signed class enrolled as freshmen', roPost.myFresh === roPre.myClass && roPost.myFresh > 0, `${roPost.myFresh} enrolled (class ${roPre.myClass})`);

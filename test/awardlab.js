@@ -52,6 +52,8 @@ check('Conference POY computed per conference (SEC + Big Ten)', aw.byConf.SEC &&
 check('SEC offensive POY is the powerhouse QB', aw.byConf.SEC.off.pid === star.id);
 check('All-America team has one per position that produced', aw.allAmerican.length > 0 && new Set(aw.allAmerican.map(a => a.pos)).size === aw.allAmerican.length);
 check('All-America includes the QB and DE leaders', aw.allAmerican.some(a => a.pid === star.id) && aw.allAmerican.some(a => a.pid === sack.id));
+check('All-Conference computed per conference (one per position)', aw.allConference.SEC && aw.allConference['Big Ten'] && new Set(aw.allConference.SEC.map(a => a.pos)).size === aw.allConference.SEC.length);
+check('SEC All-Conference includes the SEC QB + DE leaders (not the Big Ten ones)', aw.allConference.SEC.some(a => a.pid === star.id) && aw.allConference.SEC.every(a => ['pow', 'mid'].includes(a.teamId)));
 // Coach of the Year: 'aces' (11-2 at prestige 40) overachieved most vs expectation
 check('Coach of the Year is the biggest overachiever', aw.coy && aw.coy.teamId === 'aces', aw.coy && `${aw.coy.abbr} ${aw.coy.rec}`);
 check('CoY beats the underachieving blue-blood (dud 3-9 @88)', aw.coy.teamId !== 'dud');
