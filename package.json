@@ -13,7 +13,8 @@
     "traitlab": "node test/traitlab.js",
     "legacylab": "node test/legacylab.js",
     "postlab": "node test/postlab.js",
-    "draftlab": "node test/draftlab.js"
+    "draftlab": "node test/draftlab.js",
+    "champlab": "node test/champlab.js"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

@@ -167,10 +167,23 @@ plain static files so Pages still serves it with zero config.
   enrolls it. `advanceRecruiting` gained a `finalize` flag so in-season passes are verbal-only (reclab stays
   green; the app just controls *when* the finalize/Signing-Day pass runs). Save **v16** (`S.recruiting.stage`).
   See "Phase 14 design — recruiting calendar" below.
+- **Phase 15 — Conference championships (real CFP format).** ✅ DONE. A **Championship Week** now sits
+  between the regular season and the playoff. `finishRegularSeason` hands off to `startConfChampionships`
+  (pure fenced **`CHAMPIONSHIP ENGINE`** — `confChampGames` picks each conference's title-game pair: the
+  top two by `rankScore`, or the two **division winners** for a divisioned conference like the Sun Belt;
+  higher seed hosts; independents get none). The controlled team's title game is **watchable** (same
+  watch-then-commit viewer, tagged `kind:'champ'`); others auto-resolve. `finishConfChampionships` crowns
+  champions (`team.confTitles`), pays a modest prestige + revenue reward (`CONF_TITLE_PAYOFF`), then runs
+  the **awards** (now incl. title-game stats — decided post-Championship-Week, pre-bowls, like real life)
+  and seeds the playoff. **`seedPlayoff` reworked** for real CFP auto-bids: the **four highest-ranked
+  conference champions take the top-4 byes**, a guaranteed **5th** champion auto-bid is slotted by rank
+  (down to seed 12), and the rest fill at-large by `rankScore` (falls back to top-12 with <4 champions).
+  Save **v17** (`S.champWeek`, per-team `confTitles`); new gate `npm run champlab` (19 checks); a Home
+  Championship-Week card + a Program **Trophy Case**. See "Phase 15 design — conference championships" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast); and
   the recruit board stays **top-300 only** (the long 2–3★ tail is approximated, never individually
-  modeled). These are design choices, not a backlog.
+  modeled — slated to be reversed in Phase 17). These are design choices, not a backlog.
 
 ---
 
@@ -532,6 +545,52 @@ for any in-progress class (`signed?'closed':'open'`). No new lab (it's a timing/
 `qa` end-to-end + the unchanged `reclab`). **Deliberately out of scope:** no transfer portal, no
 decommitments/flips of *signed* players, no per-recruit signing-date calendar — two periods, a push window,
 and the class closes.
+
+---
+
+## Phase 15 design — conference championships (real CFP format)
+
+Decided 2026-06-28 with AJ (first of the Phases 15–18 batch reversing earlier non-goals). Title games
+now sit in a **Championship Week** between the regular season and the playoff, and the 12-team CFP seeds
+with **conference-champion auto-bids** like the real format. House discipline: a pure fenced engine +
+node lab before UI, a save bump, all gates green.
+
+### Flow & timing
+`advanceWeek` past the final regular-season week → `finishRegularSeason` → **`startConfChampionships`**
+(was: awards + `startPostseason`). Awards now run **after** Championship Week (in `finishConfChampionships`)
+so title-game stats count — decided post-title-games, pre-bowls, like real life. New phase string
+`'Conference Championships'`. `S.champWeek = { year, games:[Game kind:'champ'], done, meDone }`, created
+here and nulled into the postseason (like `S.postseason` at rollover).
+
+### Pure `CHAMPIONSHIP ENGINE` (fenced, lab before UI)
+`confChampGames(teams, scoreOf)` (depends only on a caller-supplied `scoreOf` ordering — no `S`, no rng;
+scores come from `simEngine` in the app layer, so `test/champlab.js` validates it offline): for each
+conference, the top two by score meet (a **divisioned** conference like the Sun Belt pits its two division
+winners); higher score hosts; Independents play no title game. The reworked **`seedPlayoff(rankedIds,
+champIds)`** (in the POSTSEASON block) implements the real CFP: the **four highest-ranked conference
+champions take the top-4 byes**, a guaranteed **5th** champion auto-bid is slotted by overall rank (down
+to seed 12), and the rest fill at-large by `rankScore`. Falls back to top-12 with <4 champions (tiny/custom
+world) so `postlab` stays meaningful.
+
+### App layer + watch-then-commit
+`mkPostGame` gains a `'champ'` kind (tagged so `applyResult` skips the conference tally, like bowl/playoff).
+The controlled team's title game is **watchable** — `openGameViewer`/`buildGameLog`/`findAnyGame` extended
+to search `S.champWeek`; `finishGame` branches to `advanceChampWeek` (sims every unplayed title game
+deterministically — the watched score is the committed score), then `finishConfChampionships` crowns
+champions (`team.confTitles`), pays `CONF_TITLE_PAYOFF` (a small persistent prestige bump via the `_pp`
+accumulator + a one-time budget revenue credit), runs `computeAwards`, and seeds the playoff with the
+champion ids. UI: a Home **Championship-Week card**, a Program **Trophy Case** (national + conference
+titles), and the existing advance button walks Play title game → Set the playoff field → Postseason.
+
+### Save shape & validation
+Save **v17** (`S.champWeek`, per-team `confTitles`); `migrateState` v16→v17 backfills `champWeek:null`
++ `confTitles=[]`. New lab `test/champlab.js` → **`npm run champlab`** (19 checks: pairings pick the
+right two per conference / division winners; the auto-bid seeding gives the byes to the best champions,
+all five champion bids make the field incl. a low-ranked one, the rest fill by rank, determinism +
+fallback). `qa` drives the full hand-off (regular season → Championship Week → watch a title game → 12
+seeds with champion byes → postseason). **Eleven gates** now (adds `champlab`). **Deliberately out of
+scope:** no conference *divisions* re-org (we read the existing `div` field), no selection-committee
+politics beyond `rankScore`, no separate championship-week revenue model beyond the flat payoff.
 
 ---
 
@@ -957,7 +1016,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **16**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **17**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -973,7 +1032,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   per-team `factory` absent reads as no reputation); v13→v14 backfills `S.postseason=null` (Phase 12 —
   created when the regular season ends, like the schedule; per-team `postseasonBoost`/`lastPostseason`/
   `titles`/`_pp` absent read as no-effect); v12→v13 backfills per-team `legends=[]` (Phase 11 Ring of Honor;
-  `p.career`/`p.peakOv` absent read as zero/none, honors already persist). Each step re-derives
+  `p.career`/`p.peakOv` absent read as zero/none, honors already persist); v16→v17 backfills
+  `S.champWeek=null` (Phase 15 — Championship Week is created after the regular season, like the postseason)
+  + per-team `confTitles=[]` (conference-title years). Each step re-derives
   ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
@@ -993,7 +1054,8 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   coach: { first, last, homeState, archetype, history },
   teamId,                 // id of the controlled team
   year,                   // calendar-year counter, init 2026, ++ each rollover (Phase 5)
-  week, phase,            // Preseason → 1..15/"Regular Season" → "Postseason" (bowls+playoff) → "Offseason" → (rollover) → Preseason
+  week, phase,            // Preseason → 1..15/"Regular Season" → "Conference Championships" (Phase 15) → "Postseason" (bowls+playoff) → "Offseason" → (rollover) → Preseason
+  champWeek,              // { year, games:[Game kind:'champ'], done, meDone } | null — Championship Week, created after the regular season, nulled into the postseason (Phase 15)
   postseason,             // { year, round, playoff:{seeds[12], rounds:[[Game]], champion}, bowls:[Game], meDone } | null (Phase 12)
   draft,                  // { year, picks:[{pick,round,grade,pid,name,pos,teamId,abbr,color}] } | null — last NFL draft class (Phase 13)
   lastPlayedWeek,         // last week resolved (for the Scores tab)
@@ -1034,6 +1096,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   legends: [ Legend ],                 // Ring of Honor (Phase 11); enshrined at rollover, capped at 12
   factory: { [posCode]: rep },         // NFL "factory" reputation by position (Phase 13); built from draft picks, decays yearly
   titles: [year],                      // national-championship years (Phase 12)
+  confTitles: [year],                  // conference-championship years (Phase 15)
   postseasonBoost, lastPostseason, _pp // postseason recruiting/revenue/prestige payoff carriers (Phase 12)
 }
 //   Legend: { id, name, pos, st, from, to, peakOv, honors:[{year,award}], career:{…}, stature, tier, app }
@@ -1139,8 +1202,8 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
-### Phases 6–14 landed — what used to be stubbed now works
-Phases 1–14 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
+### Phases 6–15 landed — what used to be stubbed now works
+Phases 1–15 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
 loop** + **facility upgrades** (Phase 6), **side-specific development** + **in-game coach effects** +
 **coach-responsive scouting fog** (Phase 7), **AI geography** + **season awards/All-America/Coach of
 the Year/Week** + **non-conference series** (Phase 8), the **columnar save codec** (Phase 9), **fogged
@@ -1148,13 +1211,15 @@ player traits** (Phase 10), **program legacy** — Ring of Honor, career accumul
 recruiting, legacy aura, legend-coaches (Phase 11), the **postseason** — a 12-team playoff + bowls,
 watchable, feeding prestige/recruiting/revenue (Phase 12), the **NFL draft + position factories** —
 graduates get drafted, repeated high picks build a positional reputation that pulls recruits (and repels
-rebels) (Phase 13), and the **recruiting calendar** — verbal commits all fall, then the Early Signing
-Period + National Signing Day close the class in the offseason (Phase 14). The full career loop — recruit
-(verbal) → season → awards → **postseason** → **Early Signing → National Signing Day** → rollover
-(graduate/enshrine/**draft**/develop/enroll) → finances settle → carousel → facilities/series — closes
-across multiple years, and your stars leave a permanent mark on the program both on its Ring of Honor and
-on its pro-pipeline reputation. **Ten green gates:** `npm run` + `simlab` / `reclab` / `rolllab` /
-`econlab` / `awardlab` / `traitlab` / `legacylab` / `postlab` / `draftlab` / `qa`.
+rebels) (Phase 13), the **recruiting calendar** — verbal commits all fall, then the Early Signing
+Period + National Signing Day close the class in the offseason (Phase 14), and **conference
+championships** — a Championship Week of title games that feed the playoff with real CFP auto-bids +
+byes (Phase 15). The full career loop — recruit (verbal) → season → **conf championships** → awards →
+**postseason** → **Early Signing → National Signing Day** → rollover (graduate/enshrine/**draft**/develop/
+enroll) → finances settle → carousel → facilities/series — closes across multiple years, and your stars
+leave a permanent mark on the program both on its Ring of Honor and on its pro-pipeline reputation.
+**Eleven green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
+`traitlab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during

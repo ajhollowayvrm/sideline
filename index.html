@@ -662,7 +662,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:16,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:17,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -809,6 +809,11 @@ function migrateState(state){
     if(state.recruiting&&!state.recruiting.stage)   // derive a stage for an in-progress class
       state.recruiting.stage=state.recruiting.signed?'closed':'open';
     state.version=16;
+  }
+  if((state.version||1)<17){           // Phase 15: conference championships + CFP auto-bid seeding.
+    if(!('champWeek' in state))state.champWeek=null;   // Championship Week is created after the regular season, like the postseason.
+    state.world.teams.forEach(t=>{if(!Array.isArray(t.confTitles))t.confTitles=[];});
+    state.version=17;
   }
   return state;
 }
@@ -1617,8 +1622,25 @@ const BOWL_NAMES=['Sun Bowl','Gator Bowl','Liberty Bowl','Holiday Bowl','Citrus 
   'Cheez-It Bowl','Birmingham Bowl','Frisco Bowl','Cure Bowl','Guaranteed Rate Bowl','Fenway Bowl'];
 const MAX_BOWLS=18;   // marquee slate — the long tail of minor bowls is not modeled
 
-// The 12 playoff seeds = the top 12 teams (caller passes ids already sorted best→worst by rank score).
-function seedPlayoff(rankedIds){return rankedIds.slice(0,12);}
+// The 12 playoff seeds. Real CFP format (Phase 15): the 5 highest-ranked CONFERENCE CHAMPIONS get
+// automatic bids, and the FOUR highest-ranked champions take the top-4 seeds (the first-round byes);
+// the 5th champion is guaranteed a spot, slotted by its overall ranking (down to seed 12). The
+// remaining places fill at-large by rank. `rankedIds` are all team ids best→worst; `champIds` are the
+// conference champions, best→worst. With <4 champions (a tiny/custom world) it falls back to top-12.
+function seedPlayoff(rankedIds,champIds){
+  champIds=champIds||[];
+  if(champIds.length<4)return rankedIds.slice(0,12);
+  const rank={};rankedIds.forEach((id,i)=>rank[id]=i);
+  const champ=champIds.filter(id=>id in rank).sort((a,b)=>rank[a]-rank[b]);
+  if(champ.length<4)return rankedIds.slice(0,12);
+  const byes=champ.slice(0,4), used=new Set(byes);   // seeds 1-4 (byes) = the 4 best champions
+  const rest=[];
+  if(champ[4]){rest.push(champ[4]);used.add(champ[4]);}              // the guaranteed 5th auto-bid
+  for(const id of rankedIds){if(!used.has(id))rest.push(id);}        // then the at-large field
+  rest.sort((a,b)=>rank[a]-rank[b]);                                 // non-bye seeds order by overall rank
+  if(champ[4]){const i=rest.indexOf(champ[4]);if(i>=8){rest.splice(i,1);rest.splice(7,0,champ[4]);}}  // guarantee the 5th champ a slot (seed 12 if low-ranked)
+  return byes.concat(rest).slice(0,12);
+}
 
 // Matchups for a playoff round, as [homeId, awayId] pairs (higher seed hosts). `winners` are the
 // previous round's winners in bracket order (round 0 needs none). Top-4 seeds bye into the quarters.
@@ -1650,6 +1672,34 @@ const POSTSEASON_PAYOFF={
   none:        {prestige:0,  recruitBoost:0,    revenue:0,   label:''}};
 function postseasonPayoff(finish){return POSTSEASON_PAYOFF[finish]||POSTSEASON_PAYOFF.none;}
 // === POSTSEASON ENGINE (Phase 12) END ===
+
+// === CHAMPIONSHIP ENGINE (Phase 15) START ===
+// Pure, deterministic conference-championship model: which two teams meet in each conference's title
+// game (played in Championship Week, between the regular season and the playoff). Depends only on a
+// caller-supplied `scoreOf(team)` ordering (no DOM, no S, no rng — title games are decided by simEngine
+// in the app layer), so test/champlab.js validates it offline. Most conferences have no divisions →
+// the top two by score meet; a divisioned conference (e.g. Sun Belt East/West) pits its division
+// winners. The higher-scoring team hosts. Independents have no title game.
+const CONF_TITLE_PAYOFF={prestige:0.8,revenue:12e6};   // a title game's persistent + one-time reward
+function confChampGames(teams,scoreOf){
+  const byConf={};
+  teams.forEach(t=>{(byConf[t.conf]=byConf[t.conf]||[]).push(t);});
+  const out=[];
+  Object.keys(byConf).sort().forEach(conf=>{
+    if(conf==='Independent')return;                    // independents play no conference title game
+    const arr=byConf[conf];
+    const divs=[...new Set(arr.map(t=>t.div||''))].filter(d=>d!=='');
+    let a,b;
+    if(divs.length>=2){                                // division winners meet (best two division champs)
+      const winners=divs.map(d=>[...arr].filter(t=>(t.div||'')===d).sort((x,y)=>scoreOf(y)-scoreOf(x))[0])
+        .filter(Boolean).sort((x,y)=>scoreOf(y)-scoreOf(x));
+      a=winners[0];b=winners[1];
+    }else{const s=[...arr].sort((x,y)=>scoreOf(y)-scoreOf(x));a=s[0];b=s[1];}
+    if(a&&b)out.push({conf,home:a.id,away:b.id});      // higher score hosts
+  });
+  return out;
+}
+// === CHAMPIONSHIP ENGINE (Phase 15) END ===
 
 // === DRAFT ENGINE (Phase 13) START ===
 // Pure, deterministic NFL-draft model: graduating players are drafted league-wide, and a program that
@@ -1811,10 +1861,60 @@ function stampHonors(aw){
 // task are set later, at endPostseason.
 function finishRegularSeason(){
   // Recruiting does NOT sign here anymore (Phase 14): verbal commitments stand; the Early Signing
-  // Period + National Signing Day happen in the offseason, after the bowls/playoff.
-  const aw=computeAwards(S.world.teams,S.year||2026); // awards run on the regular season, before bowls
+  // Period + National Signing Day happen in the offseason, after the bowls/playoff. Awards + the
+  // playoff field are decided AFTER Championship Week now (Phase 15) so title games count.
+  startConfChampionships();
+}
+
+/* ============================================================
+   CONFERENCE CHAMPIONSHIPS — Championship Week (Phase 15)
+   The pure engine (confChampGames) lives in the CHAMPIONSHIP ENGINE block above; this layer owns
+   S.champWeek + the watch-then-commit title games, then crowns champions, runs the season awards
+   (now incl. title-game stats), and seeds the playoff with conference-champion auto-bids.
+   ============================================================ */
+function startConfChampionships(){
+  const me=S.teamId;
+  const games=confChampGames(S.world.teams,rankScore).map((m,i)=>mkPostGame('champ',0,i,m.home,m.away,m.conf+' Championship'));
+  if(!games.length){finishConfChampionships();return;}   // custom world with no title games → straight through
+  S.champWeek={year:S.year||2026,games,done:false,meDone:!games.some(g=>g.home===me||g.away===me)};
+  S.phase='Conference Championships';
+  setChampTask();
+  autosave();
+}
+// The controlled team's unplayed title game (null if it didn't reach one).
+function myChampGame(){const me=S.teamId;return S.champWeek?S.champWeek.games.find(g=>!g.played&&(g.home===me||g.away===me)):null;}
+// Resolve Championship Week (sim every unplayed title game — deterministic, so a watched score is the
+// committed score), then crown champions + hand off to awards/playoff.
+function advanceChampWeek(){
+  S.champWeek.games.forEach(g=>{if(!g.played){const box=simGame(g);applyResult(g,box);}});
+  recomputeRanks(S.world);
+  S.champWeek.done=true;
+  finishConfChampionships();
+}
+function finishConfChampionships(){
+  const cw=S.champWeek, champWinners=[];
+  if(cw){
+    cw.games.forEach(g=>{const w=winnerOfGame(g),t=teamById(w);
+      t.confTitles=t.confTitles||[];t.confTitles.push(cw.year);
+      t._pp=(t._pp||0)+CONF_TITLE_PAYOFF.prestige;                    // accrue fractional prestige (Phase 12 pattern)
+      if(t._pp>=1){const inc=Math.floor(t._pp);t.prestige=clamp((t.prestige||50)+inc,20,99);t._pp-=inc;}
+      t.budget=Math.round((t.budget||0)+CONF_TITLE_PAYOFF.revenue);   // a one-time title-game payout
+      champWinners.push(w);});
+  }
+  // Awards now reflect the title games too (decided post-Championship-Week, pre-bowls — like real life).
+  const aw=computeAwards(S.world.teams,S.year||2026);
   S.awards=S.awards||[];S.awards.push(aw);stampHonors(aw);
-  startPostseason();
+  const champIds=[...champWinners].sort((a,b)=>rankScore(teamById(b))-rankScore(teamById(a)));
+  S.champWeek=null;
+  startPostseason(champIds);
+}
+function setChampTask(){
+  const mg=myChampGame();
+  if(mg){const me=S.teamId,opp=teamById(mg.home===me?mg.away:mg.home);
+    S.task={type:'Championship',label:mg.name,note:'Conference title game! '+(mg.home===me?'vs ':'@ ')+opp.name+' — watch it play out.'};
+  }else{
+    S.task={type:'Championship',label:'Championship Week',note:'You didn’t reach a conference title game. The title games play out, then the 12-team playoff field is set.'};
+  }
 }
 
 /* ============================================================
@@ -1827,13 +1927,13 @@ function mkPostGame(kind,round,i,home,away,name){
   return {id:'po'+(S.year||2026).toString(36)+kind[0]+round+'g'+i,kind,round,home,away,
     played:false,hs:0,as:0,name:name||PLAYOFF_ROUNDS[round]};
 }
-function startPostseason(){
+function startPostseason(champIds){
   const me=S.teamId;
   const ranked=[...S.world.teams].sort((a,b)=>rankScore(b)-rankScore(a));
   if(ranked.length<12){              // tiny custom world — no bracket, straight to the offseason
     S.postseason=null;enterOffseason();return;
   }
-  const seeds=seedPlayoff(ranked.map(t=>t.id)), inPlayoff=new Set(seeds);
+  const seeds=seedPlayoff(ranked.map(t=>t.id),champIds||[]), inPlayoff=new Set(seeds);
   let eligible=ranked.filter(t=>!inPlayoff.has(t.id)&&t.rec&&t.rec.w>=6).map(t=>t.id);
   // guarantee the controlled team a bowl if it's eligible but ranked below the marquee slate
   const mi=eligible.indexOf(me);
@@ -2062,7 +2162,7 @@ function rolloverSeason(){
   S.world.teams.forEach(t=>{t.payroll=(t.staff||[]).reduce((s,x)=>s+(x.salary||0),0);});
   S.year=(S.year||2026)+1;
   S.world.teams.forEach(t=>{t.rec=emptyRec();t.ratings=teamRatings(t.roster,t.staff);});
-  S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;S.postseason=null;
+  S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;S.postseason=null;S.champWeek=null;
   S.week=0;S.phase='Preseason';
   S.seriesOffers=genSeriesOffers(S.seed,S.year,me);   // a fresh wave of scheduling offers each offseason
   recomputeRanks(S.world);
@@ -2363,6 +2463,7 @@ let gameTimer=null;
 function findAnyGame(id){
   if(S.schedule){const g=S.schedule.games.find(x=>x.id===id);if(g)return g;}
   if(S.postseason){const g=S.postseason.playoff.rounds.flat().concat(S.postseason.bowls).find(x=>x.id===id);if(g)return g;}
+  if(S.champWeek){const g=S.champWeek.games.find(x=>x.id===id);if(g)return g;}
   return null;
 }
 function buildGameLog(gameId){
@@ -2371,7 +2472,7 @@ function buildGameLog(gameId){
   const res=simEngine(home,away,(hashStr(g.id)^(S.seed>>>0))>>>0,{log:true});
   return {gameId,home:g.home,away:g.away,log:res.log,hs:res.hs,as:res.as,idx:0,fast:false,done:false};
 }
-function openGameViewer(g){ UI.game=Object.assign(buildGameLog(g.id)||{},{replay:false,post:!!g.kind}); UI.view='game'; render(); scheduleGameTick(); }
+function openGameViewer(g){ UI.game=Object.assign(buildGameLog(g.id)||{},{replay:false,post:!!g.kind,champ:g.kind==='champ'}); UI.view='game'; render(); scheduleGameTick(); }
 function openGameReplay(gameId){ const G=buildGameLog(gameId); if(!G)return; G.replay=true; UI.game=G; UI.view='game'; render(); scheduleGameTick(); }
 function curGameScore(G){const e=G.idx>0?G.log[G.idx-1]:null;return e?{hs:e.hs,as:e.as,q:e.q}:{hs:0,as:0,q:1};}
 function qLabel(q){return (''+q).startsWith('OT')?q:'Q'+q;}
@@ -2399,10 +2500,10 @@ function gameDone(){ if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} if(U
 function skipGame(){ const G=UI.game; if(!G)return; if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} G.idx=G.log.length; G.done=true; render(); }
 function finishGame(){
   if(gameTimer){clearTimeout(gameTimer);gameTimer=null;}
-  const G=UI.game; if(!G)return; const replay=G.replay, gid=G.gameId, post=G.post; UI.game=null;
+  const G=UI.game; if(!G)return; const replay=G.replay, gid=G.gameId, post=G.post, champ=G.champ; UI.game=null;
   if(replay){ UI.view='season'; render(); return; }
   UI.view='home';
-  if(post)advancePostseason(); else advanceWeek();   // commit the watched game (re-sims deterministically)
+  if(champ)advanceChampWeek(); else if(post)advancePostseason(); else advanceWeek();   // commit the watched game (re-sims deterministically)
   const g=findAnyGame(gid); render();
   if(g){const gv=gameView(g,controlled().id);toast((gv.cls==='good'?'Won ':'Lost ')+gv.res.slice(2)+(gv.home?' vs ':' @ ')+gv.opp.abbr);}
 }
@@ -2467,7 +2568,8 @@ function renderHome(app){
     hc.append(more);v.append(hc);
   }
   // next task / season control
-  const inSeason=S.phase==='Regular Season', over=S.phase==='Offseason', inPost=S.phase==='Postseason';
+  const inSeason=S.phase==='Regular Season', over=S.phase==='Offseason', inPost=S.phase==='Postseason',
+    inChamp=S.phase==='Conference Championships';
   v.append(el('h2','sec','On the Clock'));
   const task=el('div','card');
   const wkLabel=inSeason?'Week '+S.week:(S.year||2026)+' \u00b7 '+S.phase;
@@ -2475,9 +2577,11 @@ function renderHome(app){
     <div class="cond" style="font-size:22px;font-weight:800;margin-top:10px">${S.task.label}</div>
     <div class="muted" style="font-size:13px;margin-top:4px">${S.task.note}</div>`;
   const myPg=inPost?myPostseasonGame():null;
+  const myCg=inChamp?myChampGame():null;
   const signing=over&&S.recruiting&&S.recruiting.stage==='national';   // Early Signing done, NSD pending
   const advLabel=over?(signing?'Hold National Signing Day \u2192':'Roll over to '+((S.year||2026)+1)+' \u2192')
     :inSeason?'Play Week '+S.week+' \u2192'
+    :inChamp?(myCg?'Play the '+myCg.name+' \u2192':'Set the playoff field \u2192')
     :inPost?(myPg?(myPg.kind==='bowl'?'Play the '+myPg.name+' \u2192':'Play '+PLAYOFF_ROUNDS[S.postseason.round]+' \u2192')
       :S.postseason.meDone?'Sim postseason \u2192 offseason':'Advance '+PLAYOFF_ROUNDS[S.postseason.round]+' \u2192')
     :'Kick off the season \u2192';
@@ -2492,6 +2596,11 @@ function renderHome(app){
       if(g&&!g.played)openGameViewer(g);            // watch your game, then commit the week
       else{advanceWeek();render();toast('Bye week \u2014 advanced');}  // bye: just advance
     }
+    else if(inChamp){
+      const g=myChampGame();
+      if(g)openGameViewer(g);                        // watch your conference title game, then set the field
+      else{advanceChampWeek();render();toast('Conference champions crowned');}
+    }
     else if(inPost){
       const g=myPostseasonGame();
       if(g)openGameViewer(g);                        // watch your bowl/playoff game, then commit the round
@@ -2505,6 +2614,7 @@ function renderHome(app){
     }
   };
   task.append(adv);v.append(task);
+  if(inChamp)champHomeCard(v);
   if(inPost)postseasonHomeCard(v);
   // end-of-season awards ceremony (Offseason, before rollover): the year's national honors
   if(over&&S.awards&&S.awards.length){
@@ -2619,9 +2729,22 @@ function renderProgram(app){
   const r=el('div','ranks');
   r.append(rankPill(t.ratings.ovr,'Overall'),rankPill(t.ratings.off,'Offense'),rankPill(t.ratings.def,'Defense'));
   v.append(r);
+  trophyCase(v,t);
   ringOfHonor(v,t);
   proPipeline(v,t);
   app.append(v);
+}
+// Phase 15: the program's trophy case — national championships (Phase 12) + conference titles earned
+// in Championship Week. Empty until the program wins some hardware in a played season.
+function trophyCase(v,t){
+  const natl=t.titles||[], conf=t.confTitles||[];
+  if(!natl.length&&!conf.length)return;
+  v.append(el('h2','sec','Trophy Case'));
+  const c=el('div','card');c.dataset.tid='trophy-case';
+  const natlRow=natl.length?`<div class="row spread" style="margin:4px 0"><span class="meta dim">🏆 National Titles</span><span class="nm">${natl.length} <span class="dim" style="font-weight:400">(${natl.join(', ')})</span></span></div>`:'';
+  const confRow=conf.length?`<div class="row spread" style="margin:4px 0"><span class="meta dim">${t.conf} Titles</span><span class="nm">${conf.length} <span class="dim" style="font-weight:400">(${conf.join(', ')})</span></span></div>`:'';
+  c.innerHTML=natlRow+confRow;
+  v.append(c);
 }
 // Phase 13: the program's NFL pipeline — positional "factory" reputations (built from draft picks) +
 // a link to the league draft board. Empty until your graduates start getting drafted.
@@ -2756,6 +2879,18 @@ function renderSeason(app){
 }
 // Phase 12: a compact postseason card on Home — the controlled team's bowl/playoff results so far + a
 // link to the full bracket.
+// Phase 15: Championship Week card — the conference title games + (once played) their results.
+function champHomeCard(v){
+  const cw=S.champWeek;if(!cw)return;
+  v.append(el('h2','sec','Championship Week'));
+  const c=el('div','card');c.dataset.tid='champ-card';
+  let rows='';
+  cw.games.forEach(g=>{const home=teamById(g.home),away=teamById(g.away);
+    const score=g.played?`<span class="cond ${g.hs>g.as?'good':'bad'}" style="font-weight:800">${g.hs>g.as?home.abbr:away.abbr} ${Math.max(g.hs,g.as)}–${Math.min(g.hs,g.as)}</span>`:'<span class="meta dim">—</span>';
+    rows+=`<div class="row spread" style="margin:5px 0"><span class="meta">${g.name}: ${home.abbr} vs ${away.abbr}</span>${score}</div>`;});
+  c.innerHTML=`<div class="meta dim" style="margin-bottom:4px">${cw.year} conference title games</div>${rows}`;
+  v.append(c);
+}
 function postseasonHomeCard(v){
   const ps=S.postseason,me=S.teamId;
   v.append(el('h2','sec','Postseason'));
