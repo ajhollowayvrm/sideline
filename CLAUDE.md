@@ -39,9 +39,9 @@ plain static files so Pages still serves it with zero config.
   yet (AJ's call). See "Phase 3 sim design" below.
 - **Phase 4 — Deep recruiting.** Scouting, visits, pitches, promises, commitments.
   *Do a short design note on the recruiting loop before building.*
-- **Phase 3.5 — Watchable game + weekly honors.** A play-by-play viewer for the controlled
-  team's matchup, and **Player/Coach of the Week** (cheap — the per-game box already exists).
-  See "Planned: awards & honors" below.
+- **Phase 3.5 — Watchable game + weekly honors.** Watch-then-commit play-by-play viewer for
+  the controlled team's game (with Skip), a **greatest-games replay** list, and **Player of the
+  Week** at national + per-conference scopes. See "Phase 3.5 design" below.
 - **Phase 4 — Deep recruiting.** Scouting, visits, pitches, promises, commitments.
   *Do a short design note on the recruiting loop before building.*
 - **Phase 5 — Offseason & program.** Coaching carousel (hire/fire), player development,
@@ -50,28 +50,59 @@ plain static files so Pages still serves it with zero config.
 
 ---
 
-## Planned: awards & honors (weekly + season)
+## Phase 3.5 design — watchable game + weekly honors
 
-Now that the sim produces per-game boxes and per-player season totals (`p.gs`), awards are the
-natural consumer. Split into two tiers by cadence:
+Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
 
-- **Player / Coach of the Week** (in-season, weekly → Phase 3.5). Pick standout performances
-  from the week just resolved, weighted by position (passing/rushing/receiving yds+TDs,
-  defensive splash plays; coach by upset margin vs the OVR gap). The per-game box is already
-  computed in `advanceWeek`; the only new data is "remember the week's honorees". Surface on
-  Home + a Season tab. **Low cost, no cross-season storage** if we only keep the current season's
-  weekly list.
-- **Season awards** (end of season → Phase 5). National POY (Heisman-like), All-Conference /
-  All-American teams, conference POY, Freshman of the Year, positional bests, Coach of the Year.
-  Driven by season `p.gs` totals (normalized by games) + team success. Belongs with the
-  offseason because it needs the **season-end ceremony flow** and an **award history that
-  persists across seasons**.
+### Watchable game (watch-then-commit + greatest-games replay)
 
-**Save-shape implication (do it with the offseason, not piecemeal):** cross-season honors want a
-durable home — e.g. a per-player `p.honors: [{year, award}]` and/or a top-level `S.awards` log.
-That's a `version` bump + `migrateState` step, so land it alongside season rollover rather than
-adding a half-version now. Weekly POTW for the *current* season can ship in 3.5 without a
-shape change (recompute from the schedule, or stash a transient `S.weeklyHonors`).
+**Engine change (small, shared by both):** add an optional play log to `simEngine` —
+`simEngine(home, away, seed, {log:true})`. When requested it pushes structured events
+(drive start + field position, each play's call/result/yards, scores, final) into `res.log`
+**without consuming rng**, so the score and box are byte-identical whether logging is on or
+off. The UI generates the full log instantly, then *animates* stepping through it (no real-time
+sim). Determinism means a replay always matches the committed result.
+
+- **Watch-then-commit (advancing your week):** when the controlled team has a game,
+  "Play Week →" opens a live game view that plays the log out (drive/score ticker), then on
+  finish commits the result and resolves the rest of the league instantly (as today). Must have
+  a **Skip → result** button so weeks you don't want to watch stay one tap. Bye weeks skip the
+  viewer entirely.
+- **Greatest games (replay):** a curated list of standout games you can re-watch any time.
+  Selection is computed from the schedule (every game persists `id/home/away/hs/as`, and the
+  engine is deterministic from `id`+seed, so *any* game is replayable). Tag-worthy: biggest
+  upset (winner OVR ≪ loser OVR), highest combined score, decided in OT / by ≤3, and the
+  controlled team's signature wins. Store lean refs (`{gameId, tag}`), not logs. Surface as a
+  "Greatest Games" list (Season area).
+
+### Weekly honors — Player of the Week (national + per-conference)
+
+After each week resolves, pick **Offensive & Defensive Player of the Week** at two scopes:
+**national** (best in FBS) and **one per conference**. Score a single-game box with a
+position-aware function (offense: passYds·0.04 + passTD·4 + rushYds·0.1 + rushTD·6 +
+recYds·0.1 + recTD·6 − pInt·2; defense: tkl·1 + sk·4 + dInt·6 — tune in the sim lab). The
+per-game boxes already exist in `advanceWeek`; compute honors there (before the box is
+discarded) and store the winners.
+
+**Save shape:** add `S.weeklyHonors` — `[ { week, national:{off,def}, byConf:{ [conf]:{off,def} } } ]`,
+where each honoree is a lean snapshot `{ pid, teamId, line }` (snapshot the stat line so it
+survives later edits/rollover). New persisted field → **bump save to version 5**, `migrateState`
+v4→v5 backfills `S.weeklyHonors = []`. Surface on Home (this week's national POW card) and a new
+Season **"Honors"** tab (national + per-conference, by week).
+
+**Validation:** extend `npm run simlab` to assert the POW scorer picks sane positions
+(offensive POW is a skill player, defensive POW is a defender) and that honors are deterministic;
+extend `npm run qa` for the watch flow (skip commits the right result), greatest-games replay
+(replayed score == committed score), honors rendering, and v5 migration.
+
+## Planned: season awards (end of season → Phase 5)
+
+National POY (Heisman-like), All-Conference / All-American teams, conference POY, Freshman of
+the Year, positional bests, Coach of the Year. Driven by season `p.gs` totals (normalized by
+games) + team success. Belongs with the offseason because it needs the **season-end ceremony
+flow** and **award history that persists across seasons** — a per-player `p.honors:[{year,award}]`
+and/or top-level `S.awards` log (another `version` bump). Land it with the season rollover, not
+piecemeal. (Coach of the Week, deferred from 3.5, can ride along here too.)
 
 ## Planned: non-conference series scheduling (Phase 5)
 
