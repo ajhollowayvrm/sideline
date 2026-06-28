@@ -212,6 +212,17 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Conference alignment + team colors are best-read as of early 2026 and may have minor
   errors; they're editable via import or the built-in `TEAMS` array.
 
+### Testing hooks (for headless/browser-driven tests)
+- **Deterministic world:** `?seed=N` makes New Game use seed `N` (reproducible roster for
+  screenshots/assertions). `?reset=1` clears all save slots on load.
+- **Stable selectors:** dynamic rows carry `data-id` (player id / coach `role` / team id);
+  nav buttons `data-tid="nav-<view>"`, team tabs `data-tid="tab-<roster|coaches>"`;
+  `#app` carries `data-screen` (= `UI.view`) and `data-tab`; sheets `data-tid="sheet"`.
+- **State access:** it's a classic script, so `S`, `UI`, and `controlled()` are global —
+  read them directly from `page.evaluate(() => ...)` instead of scraping the DOM.
+- Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
+  uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
+
 ### Stubbed in Phase 1 (intentionally inert)
 - Home "Handle it →" button (season flow → Phase 2).
 - Coach hire/fire (→ Phase 5); only salary editing works now.
