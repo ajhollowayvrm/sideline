@@ -38,9 +38,40 @@ plain static files so Pages still serves it with zero config.
 - **Phase 4 — Deep recruiting.** Scouting, visits, pitches, promises, commitments.
   *Do a short design note on the recruiting loop before building.*
 - **Phase 5 — Offseason & program.** Coaching carousel (hire/fire), player development,
-  finances depth, facility upgrades.
+  finances depth, facility upgrades, and **non-conference series scheduling** (see design
+  note below).
 
 ---
+
+## Planned: non-conference series scheduling (Phase 5)
+
+Players (and AI schools) book the **non-conference** part of the schedule by agreeing to
+series with other programs. Either side can initiate — an AI school offers you, or you offer
+one. Conference games stay auto-assigned; only non-conf openings are player-fillable.
+
+**Why Phase 5:** a series is inherently multi-year (a home-and-home is two games across two
+seasons), so it depends on **season rollover**, which doesn't exist until the offseason
+system lands. Deferring it keeps the data model honest instead of faking single-season
+"series." Decided 2026-06-27.
+
+Series types to support:
+- **Home-and-home** — two games, alternating hosts, across two seasons.
+- **2-for-1** — bigger school hosts twice, smaller once (three games / three seasons).
+- **Neutral-site / kickoff** — one-off at a neutral venue (e.g. a season-opening showcase).
+- **Guarantee / buy game** — pay a smaller school a payout to visit for one game; ties into
+  the finances system (the guarantee is real money out of `budget`).
+
+**Data model (sketch):** a top-level `S.series = [ Series ]`, where a `Series` is a multi-year
+agreement: `{ id, type, a: teamId, b: teamId, legs: [ { year, home, away, neutralSite? } ],
+guarantee? }`. AI willingness to accept keys off prestige proximity, scheduling philosophy,
+and (for buy games) the guarantee offered.
+
+**Contract change this forces on `genSchedule`** (today it auto-fills the *whole* slate):
+generation must become two-phase — (1) seed the matchup graph with **locked** edges
+(this year's series legs + conference games), then (2) auto-fill each team up to ~12 games
+and edge-color locked + filled games into weeks together. Phase 3 work should avoid
+assuming the schedule is fully engine-generated. (`startSeason` will pull each series' leg
+whose `year` matches the season being generated.)
 
 ## Feature spec (source requirements)
 
