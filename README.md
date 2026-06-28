@@ -14,3 +14,18 @@ It's a single self-contained file: `index.html`. Open it in a browser, or run a
 static server (`python3 -m http.server`) and hit it from your phone on the same network.
 
 See [`CLAUDE.md`](CLAUDE.md) for the full project brief, architecture, and roadmap.
+
+## Test
+
+A headless-browser QA gate drives the real game on a mobile viewport and asserts
+behavior across every screen (wizard, roster, coaches, league, save/load, migration):
+
+```sh
+npm install
+npx playwright install chromium   # one-time
+npm run qa
+```
+
+It starts its own static server, exits non-zero on any failure, and writes
+screenshots to `test/shots/`. See the test hooks (`?seed=N`, `data-id`, `data-tid`)
+documented in `CLAUDE.md`.
