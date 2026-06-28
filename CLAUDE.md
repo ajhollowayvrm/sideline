@@ -46,16 +46,38 @@ plain static files so Pages still serves it with zero config.
   **commit** to whoever leads. Coach **archetype/history** effects finally come online here.
   Class **rankings + a letter grade** are the payoff. Signees bank in `S.recruiting` until the
   Phase 5 rollover turns them into freshmen (save v6). See "Phase 4 recruiting design" below.
-- **Phase 5 — Offseason & program.** 🚧 IN PROGRESS. **Season rollover** ✅ DONE — the keystone:
-  an Offseason→next-Preseason transition that graduates seniors, ages + **develops** (ov→pot)
+- **Phase 5 — Season rollover & basic development.** ✅ DONE. The keystone: an
+  Offseason→next-Preseason transition that graduates seniors, ages + **develops** (ov→pot, basic)
   every roster, enrolls each team's recruiting signees as **true freshmen** (blue-chips enter
   raw with the recruit's pot as ceiling; promises carried), backfills positions with generated
   2–3★ depth so rosters hold at ~84, wipes last season's stats, increments a **calendar-year
   counter** (`S.year`), and resets `schedule`/`weeklyHonors`/`recruiting` (re-created at the next
   kickoff). Broken playing-time promises risk a transfer out (save v7). See "Phase 5 rollover
-  design" below. **Still to come:** deeper player development (coach Genius wiring), coaching
-  carousel (hire/fire), finances depth, facility upgrades, **non-conference series scheduling**,
-  and **season awards** (national POY, all-conference/All-American, etc.) — see the notes below.
+  design" below. *(Originally scoped as the whole offseason; the rest of that work was split out
+  into Phases 6–9 below once rollover landed.)*
+- **Phase 6 — Program building (staff & money).** The GM layer. **Coaching carousel** (hire/fire
+  coordinators + position coaches, AI poaching, openings to fill), **finances depth**, and
+  **facility upgrades** (spend `budget` to raise the 1–10 `fac` levels). Cohesive because hiring
+  and upgrades both spend money and both feed recruiting/development. Today only *salary editing*
+  works. See "Phase 6 plan" below.
+- **Phase 7 — Development & coach identity depth.** Make growth + identity mechanically rich:
+  the **deeper player development** model (side-specific **Off/Def Genius** wiring, Analyst/coach
+  signals feeding growth, surfacing growth in the roster UI beyond read-only grades), remaining
+  **archetype/history in-game effects**, and **roster scouting fog** that responds to coaching
+  rather than being a fixed age/class function. Builds on Phase 5's basic `developPlayer`.
+- **Phase 8 — Schedule, geography & awards.** Season structure + end-of-season payoff:
+  **non-conference series scheduling** (multi-year; forces a two-phase `genSchedule`), **AI
+  geography** (a home state per `TEAMS` entry so regional recruiting is real for AI, not just the
+  player), and **season awards** (national POY/Heisman, All-Conference/All-American, conf POY,
+  Freshman of the Year, Coach of the Year, plus the **Coach of the Week** deferred from 3.5) with
+  cross-season award history. See "Planned: season awards" + "Planned: non-conference series".
+- **Phase 9 — Tech debt & scale.** Do once per-season history accrues: the **seed + diff save
+  optimization** (saves still store the full ~2 MB world vs the ~5 MB cap) and an optional
+  **module/build split** (today everything is global in one `index.html`).
+- **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
+  (only the controlled team's game is watchable/replayable, so advancing a week stays fast); and
+  the recruit board stays **top-300 only** (the long 2–3★ tail is approximated, never individually
+  modeled). These are design choices, not a backlog.
 
 ---
 
@@ -234,64 +256,80 @@ exceeding it, signees→freshmen, no stat carryover, promise carry, determinism,
 stable ±6 OVR over 5 seasons**) + `npm run qa` (drives a full Offseason→rollover→next-kickoff:
 year++, class enrolled, fields reset, v7, recap card) — all green.
 
-## Phase 5 kickoff — suggested plan (read this first)
+## Phases 6–9 — plan (post-rollover backlog, read this first)
 
-The big phase: the **offseason & program**. The keystone is **season rollover** — nothing else
-works until a season can end and a new one begin. Build it first, then the systems that depend
-on it. Suggested order:
+Phase 5 shipped season rollover + basic development, so a career now spans multiple years. The
+remaining offseason/program work (originally one giant Phase 5) is split into cohesive phases by
+dependency + theme. Suggested order is 6 → 7 → 8 → 9, but 6 and 7 are largely independent.
 
-1. **Season rollover (the enabler).** ✅ DONE — see "Phase 5 rollover design" below. Shipped as
-   `rolloverSeason()` (app) over a pure, fenced `ROLLOVER ENGINE` block, validated by
-   `npm run rolllab` (18 checks) before UI. Graduates seniors, develops + ages rosters, enrolls
-   signees as freshmen, backfills to ~84, wipes `p.gs`, `S.year++`, resets season fields. (Note:
-   the actual implementation **does not re-taper** returning players — the depth taper is a
-   one-time generation artifact, so a developed backup can climb the chart; this differs from the
-   "re-taper depth" sketch above and is the intended behavior.)
-2. **Player development.** 🟡 PARTIAL. A basic ov→pot growth (`developPlayer`, youth-weighted,
-   facility/coach-rate modulated) shipped *with* rollover because a sane multi-season sim needs
-   it (validated: league OVR stable ±6 over 5 seasons). **Still to come:** the deeper version —
-   side-specific **Offensive/Defensive Genius** dev wiring, **Analyst/coach** signals feeding
-   growth, and surfacing development in the UI beyond the read-only `devStage`/`scoutedCeiling`.
-3. **Coaching carousel.** Hire/fire coordinators + position coaches (today only salary editing
-   works). AI poaches good coordinators; openings to fill; ties to `payroll`/`budget`.
-4. **Finances depth + facility upgrades.** Spend `budget` to raise the 1–10 `fac` levels; tie
-   NIL/facilities into recruiting fit and development rate.
-5. **Non-conference series scheduling** — see "Planned: non-conference series scheduling" below.
-   Multi-year, so it needs rollover; **forces `genSchedule` two-phase** (locked legs first).
-6. **Season awards** — see "Planned: season awards" below. Needs a season-end ceremony + award
-   history persisting across seasons.
+### Phase 6 — Program building (staff & money)
+The GM layer; do first because money/staff feed everything downstream.
+- **Coaching carousel.** Hire/fire coordinators + position coaches (today only salary editing
+  works). AI poaches good coordinators; openings to fill; ties to `payroll`/`budget`. Staff
+  ratings already drive `staffBoosts`→`teamRatings`, so a hire is felt immediately.
+- **Finances depth.** Make `revenue`/`budget`/`payroll`/`facilityDebt` a real loop (income from
+  success, spend on staff + facilities, debt service) rather than static display fields.
+- **Facility upgrades.** Spend `budget` to raise the 1–10 `fac` levels; tie NIL/facilities into
+  recruiting fit (`recruitFit`) and development rate (`devRate`, already facility-keyed).
 
-**Save versioning:** expect multiple new fields (year counter; per-player `p.honors:[{year,award}]`;
-`S.awards`; `S.series`). Bump `version` + extend `migrateState` for each. As per-season history
-accrues, the **seed + diff save optimization** (noted in "Conventions & gotchas") finally earns
-its keep — a full-world save is already ~2 MB.
+### Phase 7 — Development & coach identity depth
+Make Phase 5's basic `developPlayer` and Phase 4's `coachMods` mechanically rich.
+- **Deeper development:** side-specific **Off/Def Genius** dev wiring (per-side rate), **Analyst**
+  + coach-rating signals feeding growth, and surfacing growth in the roster UI (not just the
+  read-only `devStage`/`scoutedCeiling` grades).
+- **Remaining archetype/history in-game effects** (the non-recruiting, non-dev half of coach
+  identity).
+- **Coach-responsive roster scouting fog** — today a fixed age/class function; make it sharpen
+  with scouting/coaching like the Phase 4 recruit fog does.
 
-**Gates:** add rollover/award/series checks to `reclab` (or a new lab) + `qa`; keep all three green.
+### Phase 8 — Schedule, geography & awards
+Season structure + end-of-season payoff.
+- **Non-conference series scheduling** — see "Planned: non-conference series scheduling" below.
+  Multi-year (now possible post-rollover); **forces `genSchedule` two-phase** (locked legs first).
+- **AI geography** — add a **home state** to each `TEAMS` entry so `recruitFit` can weight
+  proximity for AI, not just the player (who feels it via `coach.homeState` + High School Legend).
+  Small lift, big realism payoff; unblocks regional recruiting.
+- **Season awards** — see "Planned: season awards" below. National POY/Heisman, All-Conference/
+  All-American, conf POY, Freshman of the Year, Coach of the Year, + **Coach of the Week**
+  (deferred from 3.5). Needs a season-end ceremony + cross-season award history.
 
-**Nice-to-have that unlocks AI geography:** add a **home state** to each entry in the `TEAMS`
-array. Phase 4 abstracts AI recruiting geography (teams have no state; only the player feels it
-via `coach.homeState` + High School Legend). A team state makes regional recruiting real for AI
-and lets `recruitFit` weight proximity — small lift, big realism payoff.
+### Phase 9 — Tech debt & scale
+Do once per-season history makes saves heavy.
+- **Seed + diff save optimization** (noted in "Conventions & gotchas") — a full-world save is
+  already ~2 MB vs the ~5 MB cap; per-season history (awards/series) pushes it.
+- Optional **module/build split** — today everything is global in one `index.html`; keep any
+  build output as plain static files so Pages still serves it with zero config.
 
-## Planned: season awards (end of season → Phase 5)
+**Save versioning across these:** expect new fields (per-player `p.honors:[{year,award}]`;
+`S.awards`; `S.series`; finances/facility state). Bump `version` + extend `migrateState` per
+change. **Gates:** add per-phase checks to a lab (`reclab`/`rolllab` or a new one) + `qa`; keep
+all four (`simlab`/`reclab`/`rolllab`/`qa`) green each phase.
+
+**Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary* games
+(only the controlled team's game is watchable/replayable, so a week stays fast); recruit board
+stays **top-300 only** (the 2–3★ tail is approximated by a prestige baseline + generated filler
+freshmen, never individually modeled).
+
+## Planned: season awards (end of season → Phase 8)
 
 National POY (Heisman-like), All-Conference / All-American teams, conference POY, Freshman of
 the Year, positional bests, Coach of the Year. Driven by season `p.gs` totals (normalized by
-games) + team success. Belongs with the offseason because it needs the **season-end ceremony
-flow** and **award history that persists across seasons** — a per-player `p.honors:[{year,award}]`
-and/or top-level `S.awards` log (another `version` bump). Land it with the season rollover, not
-piecemeal. (Coach of the Week, deferred from 3.5, can ride along here too.)
+games) + team success. Needs a **season-end ceremony flow** and **award history that persists
+across seasons** — a per-player `p.honors:[{year,award}]` and/or top-level `S.awards` log (another
+`version` bump). Fire it at season end, just before/with the rollover. (Coach of the Week,
+deferred from 3.5, rides along here.)
 
-## Planned: non-conference series scheduling (Phase 5)
+## Planned: non-conference series scheduling (Phase 8)
 
 Players (and AI schools) book the **non-conference** part of the schedule by agreeing to
 series with other programs. Either side can initiate — an AI school offers you, or you offer
 one. Conference games stay auto-assigned; only non-conf openings are player-fillable.
 
-**Why Phase 5:** a series is inherently multi-year (a home-and-home is two games across two
-seasons), so it depends on **season rollover**, which doesn't exist until the offseason
-system lands. Deferring it keeps the data model honest instead of faking single-season
-"series." Decided 2026-06-27.
+**Why it waited (now Phase 8):** a series is inherently multi-year (a home-and-home is two games
+across two seasons), so it depends on **season rollover** — which now exists (Phase 5), unblocking
+it. Deferring kept the data model honest instead of faking single-season "series." It also pairs
+naturally with the **buy-game payout** (real money out of `budget`), so it benefits from the
+Phase 6 finances loop landing first. Decided 2026-06-27; re-slotted to Phase 8 on 2026-06-28.
 
 Series types to support:
 - **Home-and-home** — two games, alternating hosts, across two seasons.
@@ -334,11 +372,12 @@ whose `year` matches the season being generated.)
 - **Roster:** manage starters & depth, mark a position as needing recruits, promote/demote
   team captains, glance info (name, age, stats this year). Each player shows a **Ceiling**
   (scouted potential tier — Depth…Superstar…Generational) and a **Development** stage
-  (Raw/Developing/Polished/Maxed). Both are read-only reads; actual growth is Phase 5.
+  (Raw/Developing/Polished/Maxed). Both are read-only reads; basic ov→pot growth landed in
+  Phase 5 (offseason rollover), and surfacing growth in this UI is Phase 7.
 - **Coaches:** two sections. **Coordinators** (OC/DC/STC) are fixed slots — one per side,
   always filled. **Additional Coaches** are position coaches; each carries a small OVR
   *boost* to its position group that is applied live to `ratings` (see Team object).
-  Salary editing works; hire/fire still deferred to Phase 5.
+  Salary editing works; hire/fire (the coaching carousel) is deferred to Phase 6.
 
 ---
 
@@ -360,7 +399,8 @@ carry a starting prestige, a recruiting-network profile, and modifiers:
 | Analyst | Sharper scouting + in-game reads; weaker recruiting relationships. |
 
 > Phase 1 stores the choices but does **not** yet apply mechanical effects. Wire these in
-> alongside the systems they touch (recruiting in Phase 4, dev in Phase 5, etc.).
+> alongside the systems they touch (recruiting in Phase 4, basic dev in Phase 5, deeper dev +
+> remaining in-game effects in Phase 7, staff/carousel in Phase 6).
 
 ---
 
@@ -532,16 +572,17 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Offseason now **rolls over**: after week 15 the phase becomes "Offseason" (season-complete card
   + signed class/grade), then the Home card's "Roll over to <year> →" runs `rolloverSeason()` →
   next Preseason (see "Phase 5 rollover design"). What's *still* a dead end past rollover: the
-  **coaching carousel** (hire/fire), **finances/facility upgrades**, **non-conf series**, and
-  **season awards** — the remaining Phase 5 systems.
-- Coach hire/fire (→ Phase 5); only salary editing works now.
+  **coaching carousel** + **finances/facility upgrades** (Phase 6), **non-conf series** + **season
+  awards** + **AI geography** (Phase 8) — see "Phases 6–9 — plan".
+- Coach hire/fire (→ Phase 6); only salary editing works now.
 - History/archetype effects are **applied in recruiting** (`coachMods`, Phase 4) and lightly in
   **development** (Off/Def Genius nudges `devRate`, Phase 5 rollover); deeper side-specific dev +
-  in-game effects still wire in with the rest of Phase 5.
+  the remaining in-game effects wire in at **Phase 7**.
 - Player development is now **live** (basic): `developPlayer` grows ov→pot each offseason rollover.
   The read-only grades (`devStage`/`scoutedCeiling`) still surface it in the roster UI; richer
-  dev (coach Genius depth, UI growth surfacing) is the remaining Phase 5 work. Roster scouting fog
-  is a fixed function of age/class (recruit fog, by contrast, sharpens with the Phase 4 Scout action).
+  dev (coach Genius depth, UI growth surfacing) is **Phase 7**. Roster scouting fog is a fixed
+  function of age/class (recruit fog, by contrast, sharpens with the Phase 4 Scout action) — also
+  Phase 7.
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during
   the season, then the **rollover converts them to freshman `Player`s** (`recruitToFreshman`).
 - Non-controlled games are resolved instantly by `simEngine`; only the controlled team's game
