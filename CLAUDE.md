@@ -110,6 +110,15 @@ plain static files so Pages still serves it with zero config.
   pattern), and sharpen with scouting confidence (recruits) or time-in-program + coaching room
   (roster). Pure fenced `TRAIT ENGINE`, a node lab (`traitlab`) before any UI, save **v12**. See
   "Phase 10 design — player personality" below.
+- **Phase 11 — Program legacy & legends.** 🔵 PLANNED. Notable players who graduate become permanent
+  **program legends** (`team.legends`, league-wide), and history starts to *matter*: a new recruiting
+  action **bring an alum back for a visit** lands harder the more that player accomplished; a deep
+  **Ring of Honor** gives a standing recruiting **aura**; and a retired great can re-enter the
+  **coaching carousel** for their alma mater. Stature blends **honors** (the persisting `p.honors`) +
+  **career stat milestones** (new accumulated `p.career`) + **peak OVR**. **No seeding** — history is
+  earned from played seasons (the feature ramps up as your stars graduate). Pure fenced `LEGACY
+  ENGINE`, a node lab (`legacylab`) before any UI, save **v13**. See "Phase 11 design — program
+  legacy & legends" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast); and
   the recruit board stays **top-300 only** (the long 2–3★ tail is approximated, never individually
@@ -213,6 +222,121 @@ property, coach edges are a controlled-team property.
 No relationships/morale web, no locker-room chemistry graph, no off-field events, no coach–player
 *conflict* simulation. Two traits, two mechanical hooks, read through fog. If it isn't touching
 development or in-game variance, it's flavor text and we don't store it.
+
+---
+
+## Phase 11 design — program legacy & legends
+
+Decided 2026-06-28 with AJ. The payoff of the multi-season loop: players who graduate don't vanish —
+the notable ones become permanent **program legends**, and a program's accumulated history starts to
+*matter* mechanically. AJ's scoping calls: **league-wide** (every program builds a Ring of Honor, AI
+included), **no seeding** (history is earned only from played seasons — the feature deliberately ramps
+up as your own stars graduate; a fresh dynasty has an empty Ring of Honor and that's the point), **all
+three breadth options** (alumni-visit action + passive aura + legends-return-as-coaches), and **full
+stature** (honors + career stat milestones + peak OVR). Follows house discipline: a pure fenced engine
+validated by a node lab before any UI, a save-version bump + `migrateState` step, all gates green.
+
+### What already exists (build on it, don't reinvent)
+- **Graduation already produces the raw material:** `rolloverRoster` builds a `graduated` list each
+  year (pushes the player copy *before* `delete p.gs`, so a grad still carries last season's box) and
+  `rolloverSeason` already has it as `summary.graduated`. Today it's only counted, then dropped.
+- **`p.honors:[{year,award}]` already measures accomplishment** and **persists across rollover** —
+  stamped by `stampHonors(aw)` at `endSeason` (Heisman / National Def POY / Freshman of the Year /
+  All-American nationally; All-Conference + conf-POY for the **controlled team's conference only**).
+- **The recruiting action rail** (`offerRecruit`/`scoutRecruit`/`pitchRecruit`/`visitRecruit`/
+  `promiseRecruit` + `RECRUIT_COSTS` + `myMods()`) is where the alumni-visit action slots in.
+- **`recruitFit(team,rec)`** is the natural home for the passive aura term (it already sums prestige +
+  facilities + home-state). **`genCoachMarket`/`advanceCoachCarousel`** is where legend-coaches enter.
+- **Coach identity:** **Former Player** history should finally mean *you own the alumni network*
+  (amplifies alumni visits); **High School Legend** boosts home-state alumni pull.
+
+### (A) Career stat accumulation — the foundation (build first)
+Because there's no seeding, stature's "career milestones" component only has data if we **start
+accumulating now**. Add two lean, persisted per-player fields:
+- `p.career` — cumulative totals of just the milestone-relevant box keys (`gp, pYds,pTD, rYds,rTD,
+  reYds,reTD, tkl,sk,dInt`), summed from `p.gs` **inside `rolloverRoster`, right before `delete p.gs`**,
+  for **every** player on **every** team (so AI legends have real numbers). Survives rollover.
+- `p.peakOv` — max OVR the player ever reached, updated each rollover after development.
+Both absent-read as zero/none (no backfill). This is a change to the fenced ROLLOVER engine, so
+`rolllab` keeps it honest (career sums across seasons; season `gs` still never carries forward).
+
+### (B) Stature — the pure score (LEGACY ENGINE)
+`legendStature(snap)` (pure, fenced `// === LEGACY ENGINE (Phase 11) START/END ===`, depends only on
+data + `clamp`): a 0..~100 score blending three components, each saturating so no single one runs away:
+- **Honors weight** — `honorWeight(award)` ladder: Heisman 100, National Def POY 80, All-American 55,
+  conf POY 45, All-Conference 25, Freshman of the Year 20 (sum across `p.honors`, then soft-capped).
+- **Career milestones** — threshold bonuses on `p.career` (e.g. 10k career pass yds, 3k rush, 30+ sacks,
+  300+ tackles) so a compiler with no trophies can still be a beloved great.
+- **Peak OVR** — a modest term off `p.peakOv` (a 99-rated star reads as a legend even in a down era).
+Returns `{score, tier}` where tier is a label ladder (e.g. *Cult Hero → Program Great → All-Time Great
+→ Immortal*). `isLegendWorthy(snap)` = has ≥1 real honor **or** stature ≥ a bar (keeps the ledger
+notable, not every senior).
+
+### (C) Enshrinement at rollover (league-wide, capped)
+`enshrineLegends(team, graduated)` (app layer, in `rolloverSeason`'s team loop): for each graduate that
+`isLegendWorthy`, push a **lean snapshot** into `team.legends`:
+`{ id, name, pos, st, from, to, peakOv, honors:[...], career:{…}, stature, tier }` (no Player object,
+no per-play data). Then keep only the **top ~12 by stature** (all-time best survive; storage bounded —
+134 teams × 12 ≈ a few hundred lean snapshots even after decades). `to` = the year graduated, `from`
+≈ `to − classYears`. Runs for **every** team. The controlled team's new inductees surface in the
+offseason recap ("Class of YEAR enshrined: NAME").
+- **Wire `stampHonors` to stamp ALL conferences' All-Conference + conf-POY** (not just the controlled
+  one), so AI legends carry real résumés league-wide — small change, honors stay sparse-stored.
+
+### (D) Alumni-visit recruiting action
+`alumniVisit(rec, legend)` (app, alongside `visitRecruit`): interest boost = `base × stature01 ×
+relevance × coachMod`, where **relevance** = position match (`legend.pos===rec.pos` full, same side
+partial) + **home-state tie** (`legend.st===rec.st`), **coachMod** amplifies for **Former Player**
+(network) and **High School Legend** on home-state alumni. Legends are a **limited resource**: each
+carries `app` appearances remaining for the season (e.g. 2), reset at kickoff; deploying spends one +
+`RECRUIT_COSTS.alumni` points. One alumni visit per recruit (no stacking). The picker only offers
+legends with appearances left, sorted by relevance to that recruit.
+
+### (E) Passive program aura
+`legacyAura(team)` (pure): a small standing value from the **depth+quality** of `team.legends` (sum of
+top legends' `stature`, saturating). Folded into `recruitFit` as a `+aura` term (clamped small so it
+complements prestige, never replaces it) — a storied program attracts talent on name alone. Optionally
+surfaced as a "Legacy" stat on the Program page.
+
+### (F) Legends return as coaches
+In `genCoachMarket`/`advanceCoachCarousel`: occasionally a team's own retired great re-enters the
+market as a candidate **for their alma mater**, flagged `{ fromLegend:true, legendOf:teamId }`, with a
+coach `rating` influenced by stature (a great player is a *plausible* — not guaranteed-good — coach).
+Keep it modest and deterministic by `(seed, year)`. Hiring an alum is flavor the UI can highlight.
+
+### (G) UI — Ring of Honor + the action + aura surfacing
+- **Ring of Honor** list on the Program/Team page: tier, era (`from–to`), position, honors line,
+  stature. Sorted by stature; empty-state explains history accrues as players graduate.
+- **Recruit sheet:** an **Alumni visit** button → a picker of available legends showing each one's
+  relevance to this recruit + appearances left.
+- **Offseason recap / Home:** new-inductee card. Carousel: badge a legend-coach candidate as "Alum".
+
+### Save shape & validation
+- New persisted: `team.legends:[Legend]`, per-player `p.career` + `p.peakOv`, per-legend live `app`
+  counter (reset at kickoff). Bump save to **version 13**; `migrateState` v12→v13 backfills
+  `team.legends=[]` (career/peakOv absent read as zero/none → no backfill; honors already persist).
+- **Pure engine fenced** `// === LEGACY ENGINE (Phase 11) START/END ===` (depends only on data arrays +
+  `clamp`/`hashStr`): `honorWeight`, `legendStature`, `isLegendWorthy`, `legacyAura`, `alumniBoost`
+  (the pure relevance×stature math the app action calls). No DOM, no `S`.
+- New lab `test/legacylab.js` → **`npm run legacylab`**: stature monotonic in honors/career/peak and
+  bounded; `isLegendWorthy` gates correctly; enshrinement caps at 12 and keeps the best; career sums
+  accumulate across seasons (and `gs` still never carries forward — cross-check vs `rolllab`); aura
+  scales with ring depth + stays bounded; `alumniBoost` scales with stature×relevance and respects the
+  appearance limit; determinism by seed.
+- `npm run qa`: across a rollover, career totals accrue + a notable graduate enshrines (Ring of Honor
+  shows it); the alumni-visit action raises interest and decrements appearances; aura nudges
+  `recruitFit`; a legend can surface in the carousel; v13 migration + columnar round-trip.
+- **Eight gates:** `simlab` + `reclab` + `rolllab` + `econlab` + `awardlab` + `traitlab` +
+  **`legacylab`** + `qa`.
+
+### Build order (each useful on its own, lab before UI)
+**A** career accumulation (+ `stampHonors` all-conf) → **B/C** stature + enshrinement (+ `legacylab`) →
+**E** aura + **G** Ring of Honor display → **D** alumni-visit action + picker → **F** legend-coaches.
+
+### Deliberately out of scope
+No jersey-number tracking, no per-legend dialogue/storylines, no Hall-of-Fame voting beyond the
+stature score, no booster/donor sim. Legends are lean snapshots that drive three mechanics
+(visit / aura / coach) and a display — nothing that re-simulates a retired player.
 
 ---
 
