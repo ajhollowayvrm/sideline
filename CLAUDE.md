@@ -185,6 +185,44 @@ idles**, and determinism by seed. `npm run qa` drives the recruiting UI end-to-e
 pitch → advance → interest grows → a commit lands; Class tab grade; v6 migration + persistence).
 Three gates now: `npm run simlab` + `npm run reclab` + `npm run qa` — all green each phase.
 
+## Phase 5 kickoff — suggested plan (read this first)
+
+The big phase: the **offseason & program**. The keystone is **season rollover** — nothing else
+works until a season can end and a new one begin. Build it first, then the systems that depend
+on it. Suggested order:
+
+1. **Season rollover (the enabler).** A `startOffseason → newSeason` transition that:
+   - converts **recruiting signees** (`S.recruiting.pool.filter(committedTo===id)`) into freshman
+     `Player`s on each team's roster (use `genPlayer`-shaped output; carry `promise`),
+   - **honors/breaks promises** (e.g. a playing-time promise not kept → morale/transfer risk),
+   - graduates seniors / re-tapers depth, increments a **year counter**, resets `rec`/`schedule`/
+     `weeklyHonors`/`recruiting` to null (re-created at the next kickoff, exactly like today),
+   - re-derives ratings + ranks. Validate in a node lab **before** UI (no stat double-count;
+     roster sizes stay ~84; save size stays under the ~5 MB cap — see the seed+diff note below).
+2. **Player development.** Real `ov → pot` growth over an offseason (today Ceiling/Development are
+   read-only grades). This is where **Offensive/Defensive Genius** dev effects wire in, and where
+   the **Analyst/coach** signals could feed growth. `devStage`/`scoutedCeiling` already exist.
+3. **Coaching carousel.** Hire/fire coordinators + position coaches (today only salary editing
+   works). AI poaches good coordinators; openings to fill; ties to `payroll`/`budget`.
+4. **Finances depth + facility upgrades.** Spend `budget` to raise the 1–10 `fac` levels; tie
+   NIL/facilities into recruiting fit and development rate.
+5. **Non-conference series scheduling** — see "Planned: non-conference series scheduling" below.
+   Multi-year, so it needs rollover; **forces `genSchedule` two-phase** (locked legs first).
+6. **Season awards** — see "Planned: season awards" below. Needs a season-end ceremony + award
+   history persisting across seasons.
+
+**Save versioning:** expect multiple new fields (year counter; per-player `p.honors:[{year,award}]`;
+`S.awards`; `S.series`). Bump `version` + extend `migrateState` for each. As per-season history
+accrues, the **seed + diff save optimization** (noted in "Conventions & gotchas") finally earns
+its keep — a full-world save is already ~2 MB.
+
+**Gates:** add rollover/award/series checks to `reclab` (or a new lab) + `qa`; keep all three green.
+
+**Nice-to-have that unlocks AI geography:** add a **home state** to each entry in the `TEAMS`
+array. Phase 4 abstracts AI recruiting geography (teams have no state; only the player feels it
+via `coach.homeState` + High School Legend). A team state makes regional recruiting real for AI
+and lets `recruitFit` weight proximity — small lift, big realism payoff.
+
 ## Planned: season awards (end of season → Phase 5)
 
 National POY (Heisman-like), All-Conference / All-American teams, conference POY, Freshman of
