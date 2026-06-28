@@ -170,6 +170,41 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('AI geography: in-state program lands more in-state recruits', withGeo > without, `geo ${withGeo} vs none ${without}`);
 })();
 
+/* 8) decommits (Phase 16): a VERBAL commit can flip to a rival who pulls clearly ahead; signed
+   commits never flip, and a finalize pass never flips (firm verbals are locked at signing). */
+(function () {
+  // N recruits all verbally committed to A; B (a better fit) is given a big interest lead.
+  function scenario(opts) {
+    const A = { id: 'A', prestige: 60 }, B = { id: 'B', prestige: 85 };
+    const pool = [];
+    for (let i = 0; i < 200; i++) pool.push({
+      id: 'x' + i, pos: 'WR', st: 'TX', stars: 4,
+      iv: { A: opts.aIv, B: opts.bIv }, committedTo: 'A', signed: !!opts.signed
+    });
+    advanceRecruiting(pool, [A, B], opts.week || 5, 15, opts.seed == null ? 5 : opts.seed, !!opts.finalize);
+    return pool;
+  }
+  // B far ahead → a real share of verbals flip to B
+  const flipped = scenario({ aIv: 40, bIv: 96 });
+  const toB = flipped.filter(r => r.committedTo === 'B');
+  check('Decommit: a verbal flips to a rival that pulls clearly ahead', toB.length > 0, `${toB.length}/200 flipped to B`);
+  check('Decommit: flips are tagged (_flipped from→to) for the UI', toB.every(r => r._flipped && r._flipped.from === 'A' && r._flipped.to === 'B'));
+  check('Decommit: not everyone flips (it is probabilistic, not automatic)', toB.length < 200, `${toB.length} flipped`);
+  // B only barely ahead (gap below DECOMMIT_GAP after growth) → no flips
+  const steady = scenario({ aIv: 72, bIv: 55 });
+  check('Decommit: a small rival gap does NOT flip a verbal', steady.every(r => r.committedTo === 'A' && !r._flipped));
+  // signed commits are locked — never flip even with a huge rival lead
+  const signed = scenario({ aIv: 40, bIv: 96, signed: true });
+  check('Decommit: a SIGNED commit never flips', signed.every(r => r.committedTo === 'A' && !r._flipped));
+  // a finalize (Signing Day) pass locks verbals — no flips, and they sign with their school
+  const fin = scenario({ aIv: 40, bIv: 96, finalize: true });
+  check('Decommit: a finalize pass never flips (verbals lock + sign)', fin.every(r => r.committedTo === 'A' && r.signed && !r._flipped));
+  // determinism: same seed → same flips
+  const d1 = scenario({ aIv: 40, bIv: 96, seed: 11 }).filter(r => r.committedTo === 'B').map(r => r.id).join(',');
+  const d2 = scenario({ aIv: 40, bIv: 96, seed: 11 }).filter(r => r.committedTo === 'B').map(r => r.id).join(',');
+  check('Decommit: flips are deterministic by seed', d1 === d2 && d1.length > 0);
+})();
+
 const passed = results.filter(r => r.pass).length;
 const summary = runCycle(2026);
 const signedPct = (100 * summary.pool.filter(r => r.signed).length / summary.pool.length).toFixed(0);

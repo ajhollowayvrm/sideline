@@ -180,6 +180,17 @@ plain static files so Pages still serves it with zero config.
   (down to seed 12), and the rest fill at-large by `rankScore` (falls back to top-12 with <4 champions).
   Save **v17** (`S.champWeek`, per-team `confTitles`); new gate `npm run champlab` (19 checks); a Home
   Championship-Week card + a Program **Trophy Case**. See "Phase 15 design — conference championships" below.
+- **Phase 16 — Decommits (verbal flips).** ✅ DONE. A **verbal** commitment (`committedTo` set, `signed`
+  false) can now **flip** to a rival before Signing Day. In `advanceRecruiting` (RECRUIT ENGINE): passive
+  interest now also grows for verbal commits (rivals keep pushing), then a **flip pass** (in-season only —
+  never on a `finalize`/Signing-Day pass) decommits a verbal to the strongest rival that has pulled ahead
+  by ≥ `REC.DECOMMIT_GAP`, with a probability that scales with the gap. **Signed players never flip.** The
+  player can lose their own verbals (toast ⚠) and **flip** others' (toast 🔁): `offerRecruit` no longer
+  blocks a committed-but-unsigned prospect (only signed), the prospects board lists flippable verbals, and
+  the recruit sheet shows a "just a verbal — flip him" prompt. Flips are tagged with a transient
+  `rec._flipped={from,to}` for the toasts. Save **v18** (behaviour-only, no-op migration); `reclab` grew to
+  26 (flip happens / signed-locked / finalize-locked / determinism), `qa` to 199. See "Phase 16 design —
+  decommits" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast); and
   the recruit board stays **top-300 only** (the long 2–3★ tail is approximated, never individually
@@ -591,6 +602,43 @@ fallback). `qa` drives the full hand-off (regular season → Championship Week �
 seeds with champion byes → postseason). **Eleven gates** now (adds `champlab`). **Deliberately out of
 scope:** no conference *divisions* re-org (we read the existing `div` field), no selection-committee
 politics beyond `rankScore`, no separate championship-week revenue model beyond the flat payoff.
+
+---
+
+## Phase 16 design — decommits (verbal flips)
+
+Decided 2026-06-28 with AJ (Phases 15–18 batch). Recruiting was static once a prospect committed; now a
+**verbal** pledge is genuinely contestable until it signs — a rival can flip it, and so can you. House
+discipline: the change is contained to the pure RECRUIT ENGINE + validated by `reclab` before any UI.
+
+### Engine (`advanceRecruiting`, RECRUIT ENGINE)
+Two changes, both seeded by the existing `(seed, week)` rng so a cycle stays reproducible:
+- **Passive interest now grows for verbal commits too** (was: uncommitted only). Signed prospects are
+  frozen. So rival programs keep pushing on a kid who's only verballed.
+- **A flip pass** (added between growth and the new-commitment pass) runs **in-season only** — never on a
+  `finalize` pass, because firm verbals lock at the Early Signing Period. For each verbal (unsigned) commit,
+  it finds the strongest *other* suitor (respecting the class cap) and, if that rival leads the committed
+  school by ≥ `REC.DECOMMIT_GAP` (18), flips with a probability that scales with the gap (`clamp((lead−gap)
+  /40, .04, .5)`). A flip retags `committedTo`, fixes the per-team class counts, and stamps a transient
+  `rec._flipped={from,to}`. **Signed players never flip** (that's the transfer portal, Phase 18). Returned
+  in the week's commit list so the app can react.
+
+### App layer
+`offerRecruit` no longer blocks a committed-but-**unsigned** prospect (only a *signed* one) — you can open
+a verbal elsewhere on your board and out-recruit for him. The prospects board lists all unsigned prospects
+(verbals elsewhere included, shown with a "→ ABBR" badge), and the recruit sheet shows a "just a verbal —
+flip him before Signing Day" prompt + enables the action rail on a flippable verbal (`canAct` =
+unsigned-and-not-mine). `resolveRecruitingWeek` toasts the swings: 🎉 new verbals to you, 🔁 flips you stole,
+⚠ verbals you lost.
+
+### Save & validation
+Save **v18** (behaviour-only; `migrateState` v17→v18 is a no-op — `rec._flipped` is recomputed weekly).
+`reclab` grew to 26 (a verbal flips when a rival pulls ahead; a small gap does NOT flip; a signed commit
+never flips; a finalize pass never flips; determinism) and confirms the cycle **still converges to 100%
+signed**. `qa` (199) drives the integrated engine (flip happens / signed-locked / finalize-locked) + the
+relaxed offer. **No new gate** (reclab covers it). **Deliberately out of scope:** no flips of *signed*
+players, no negative-recruiting "decommit" action that directly drops a rival's commit (you flip by
+out-recruiting), no decommit of your *own* signed class.
 
 ---
 
@@ -1016,7 +1064,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **17**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **18**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -1034,7 +1082,8 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   `titles`/`_pp` absent read as no-effect); v12→v13 backfills per-team `legends=[]` (Phase 11 Ring of Honor;
   `p.career`/`p.peakOv` absent read as zero/none, honors already persist); v16→v17 backfills
   `S.champWeek=null` (Phase 15 — Championship Week is created after the regular season, like the postseason)
-  + per-team `confTitles=[]` (conference-title years). Each step re-derives
+  + per-team `confTitles=[]` (conference-title years); v17→v18 is a structural no-op (Phase 16 decommits —
+  a transient `rec._flipped` is recomputed each week, nothing to backfill). Each step re-derives
   ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
@@ -1068,9 +1117,11 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 }
 
 // Recruit: { id, fn, ln, pos, st, stars, ov, pot, spd,str,awr, mot,comp, rebel, scout, prefs:[primary,secondary],
-//   iv:{ [teamId]: interest }, committedTo: teamId|null, signed, offered, visited, promise, alumni? }
+//   iv:{ [teamId]: interest }, committedTo: teamId|null, signed, offered, visited, promise, alumni?, _flipped? }
 //   alumni = id of the legend who already made an alumni visit (Phase 11; one per recruit, no stacking).
 //   rebel = wants to be THE guy; repelled by a program that's a factory at his position (Phase 13).
+//   committedTo set + signed=false = a VERBAL (flippable until Signing Day); _flipped={from,to} is a
+//   transient per-week tag set when a verbal decommits to a rival (Phase 16; recomputed each week).
 //   ov/pot are fogged in the UI by `recScouted(rec)` (band shrinks with `scout`). `iv` keys are
 //   the prospect's suitors. A team's class = pool.filter(r=>r.committedTo===id).
 
@@ -1202,8 +1253,8 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
-### Phases 6–15 landed — what used to be stubbed now works
-Phases 1–15 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
+### Phases 6–16 landed — what used to be stubbed now works
+Phases 1–16 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
 loop** + **facility upgrades** (Phase 6), **side-specific development** + **in-game coach effects** +
 **coach-responsive scouting fog** (Phase 7), **AI geography** + **season awards/All-America/Coach of
 the Year/Week** + **non-conference series** (Phase 8), the **columnar save codec** (Phase 9), **fogged
@@ -1214,7 +1265,8 @@ graduates get drafted, repeated high picks build a positional reputation that pu
 rebels) (Phase 13), the **recruiting calendar** — verbal commits all fall, then the Early Signing
 Period + National Signing Day close the class in the offseason (Phase 14), and **conference
 championships** — a Championship Week of title games that feed the playoff with real CFP auto-bids +
-byes (Phase 15). The full career loop — recruit (verbal) → season → **conf championships** → awards →
+byes (Phase 15), and **decommits** — a verbal pledge can flip to a surging rival before Signing Day
+(Phase 16). The full career loop — recruit (verbal, flippable) → season → **conf championships** → awards →
 **postseason** → **Early Signing → National Signing Day** → rollover (graduate/enshrine/**draft**/develop/
 enroll) → finances settle → carousel → facilities/series — closes across multiple years, and your stars
 leave a permanent mark on the program both on its Ring of Honor and on its pro-pipeline reputation.

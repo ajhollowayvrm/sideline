@@ -662,7 +662,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:17,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:18,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -814,6 +814,9 @@ function migrateState(state){
     if(!('champWeek' in state))state.champWeek=null;   // Championship Week is created after the regular season, like the postseason.
     state.world.teams.forEach(t=>{if(!Array.isArray(t.confTitles))t.confTitles=[];});
     state.version=17;
+  }
+  if((state.version||1)<18){           // Phase 16: decommits (verbal flips). Behaviour-only — a transient
+    state.version=18;                  // rec._flipped is recomputed each week, so there is nothing to backfill.
   }
   return state;
 }
@@ -1077,7 +1080,7 @@ const PITCH_ANGLES=[
   ['home','Stay Home','Play close to family and friends.'],
   ['academics','Academics','A degree that sets up life after ball.']];
 // Tuning — tweaked in test/reclab.js.
-const REC={POOL:300,COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:12,SLOTS:16};
+const REC={POOL:300,COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:12,SLOTS:16,DECOMMIT_GAP:18};
 
 // Coach archetype/history effects — Phase 4 is the first system to apply them. Returns a bag of
 // multipliers/bonuses used by the weekly economy + the player's recruiting actions.
@@ -1167,27 +1170,51 @@ function genRecruits(seed,teams){
   }
   return pool;
 }
-// Advance one recruiting week: grow every suitor's interest, then resolve commitments. Seeded per
-// (seed, week) so a cycle reproduces. During the season a commitment is a VERBAL (`committedTo` set,
-// `signed` stays false); only the `finalize` pass (National Signing Day, in the offseason) forces the
-// remaining undecided to pick their leader AND turns every verbal into a binding signature. Respects a
-// per-team class cap. Mutates `pool`; returns the new commits.
+// Advance one recruiting week: grow every suitor's interest, resolve DECOMMITS (verbal flips), then
+// resolve new commitments. Seeded per (seed, week) so a cycle reproduces. During the season a commitment
+// is a VERBAL (`committedTo` set, `signed` stays false); only the `finalize` pass (National Signing Day,
+// in the offseason) forces the remaining undecided to pick their leader AND turns every verbal into a
+// binding signature. Respects a per-team class cap. Mutates `pool`; returns the week's new commits (incl.
+// flips, each tagged with a transient `rec._flipped={from,to}` so the app can toast).
 function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar){
   const byId={};teams.forEach(t=>byId[t.id]=t);
   const r=rng((seed^hashStr('rec'+week))>>>0);
   const bar=signBar==null?35:signBar;   // interest a leader needs to lock a signature on a finalize pass
   const gap=gapBar==null?0:gapBar;      // lead margin over #2 required to sign (Early Period wants a firm lead)
-  const counts={};pool.forEach(p=>{if(p.committedTo)counts[p.committedTo]=(counts[p.committedTo]||0)+1;});
+  const counts={};pool.forEach(p=>{if(p.committedTo)counts[p.committedTo]=(counts[p.committedTo]||0)+1;
+    if(p._flipped)delete p._flipped;});
   const full=id=>(counts[id]||0)>=REC.CLASS_CAP;
-  // 1) passive interest growth for all suitors of uncommitted prospects
+  // 1) passive interest growth — for uncommitted prospects AND verbal (unsigned) commits, so rival
+  //    programs keep pushing on a verbal pledge. Signed prospects are locked (no more movement).
   pool.forEach(rec=>{
-    if(rec.committedTo)return;
+    if(rec.signed)return;
     for(const tid in rec.iv){const t=byId[tid];if(!t)continue;
       const fit=recruitFit(t,rec);
       rec.iv[tid]=clamp(rec.iv[tid]+(1.0+fit*3.2)*(0.6+r()*0.9),0,100);}
   });
-  // 2) commitments — verbal during the season; binding only on the finalize (Signing Day) pass
-  const readiness=clamp((week-2)/(weeks-3),0,1), last=!!finalize, out=[];
+  const out=[];
+  // 2) decommits — a VERBAL commitment can FLIP to a rival who has pulled clearly ahead. In-season only:
+  //    firm verbals lock at the Early Signing Period, so a finalize pass never flips. Signed never flip.
+  if(!finalize){
+    pool.forEach(rec=>{
+      if(!rec.committedTo||rec.signed)return;
+      const cur=rec.iv[rec.committedTo]||0;
+      let best=null,bestV=-1;
+      for(const tid in rec.iv){if(tid===rec.committedTo)continue;const t=byId[tid];if(!t||full(tid))continue;
+        if(rec.iv[tid]>bestV){bestV=rec.iv[tid];best=tid;}}
+      if(best&&(bestV-cur)>=REC.DECOMMIT_GAP){
+        const prob=clamp((bestV-cur-REC.DECOMMIT_GAP)/40,0.04,0.5);   // the further ahead, the likelier the flip
+        if(r()<prob){
+          counts[rec.committedTo]=(counts[rec.committedTo]||1)-1;
+          rec._flipped={from:rec.committedTo,to:best};
+          rec.committedTo=best;counts[best]=(counts[best]||0)+1;
+          out.push(rec);
+        }
+      }
+    });
+  }
+  // 3) commitments — verbal during the season; binding only on the finalize (Signing Day) pass
+  const readiness=clamp((week-2)/(weeks-3),0,1), last=!!finalize;
   pool.forEach(rec=>{
     if(rec.committedTo)return;
     let entries=Object.entries(rec.iv).filter(([tid])=>byId[tid]&&!full(tid)).sort((a,b)=>b[1]-a[1]);
@@ -2355,8 +2382,15 @@ function resolveRecruitingWeek(week){
   if(!S.recruiting||S.recruiting.signed)return;
   // in-season: verbal commitments only (finalize=false) — binding signatures wait for the offseason
   const out=advanceRecruiting(S.recruiting.pool,S.world.teams,week,S.schedule.weeks,S.seed,false);
-  const mine=out.filter(r=>r.committedTo===S.teamId);
-  if(mine.length)setTimeout(()=>toast(mine.length+' recruit'+(mine.length===1?'':'s')+' verbally committed to you! 🎉'),300);
+  const me=S.teamId;
+  // Phase 16: a verbal you held can flip away; you can flip one from a rival. Toast the swings.
+  const lost=out.filter(r=>r._flipped&&r._flipped.from===me);
+  const flippedToMe=out.filter(r=>r._flipped&&r._flipped.to===me);
+  const fresh=out.filter(r=>!r._flipped&&r.committedTo===me);   // brand-new verbals to me (not flips)
+  let d=300;
+  if(fresh.length)setTimeout(()=>toast(fresh.length+' recruit'+(fresh.length===1?'':'s')+' verbally committed to you! 🎉'),d),d+=400;
+  if(flippedToMe.length)setTimeout(()=>toast('Flipped '+flippedToMe.length+' commit'+(flippedToMe.length===1?'':'s')+' to you! 🔁'),d),d+=400;
+  if(lost.length)setTimeout(()=>toast('⚠️ '+lost.length+' verbal'+(lost.length===1?'':'s')+' decommitted from you'),d);
 }
 /* ---- lookups ---- */
 function recById(id){return S.recruiting?S.recruiting.pool.find(r=>r.id===id):null;}
@@ -2376,7 +2410,8 @@ function spend(cost){if(S.recruiting.points<cost){toast('Not enough recruiting p
 /* ---- actions ---- */
 function offerRecruit(rec){
   if(onBoard(rec))return;
-  if(rec.committedTo){toast('Already committed elsewhere');return;}
+  if(rec.signed){toast('Already signed — can’t recruit him');return;}   // signed = locked (Phase 16)
+  if(rec.committedTo&&rec.committedTo!==S.teamId)toast('Committed elsewhere — recruit him to flip it');   // verbal: you can still chase
   if(S.recruiting.board.length>=boardSlots()){toast('Board full — drop a target first');return;}
   const m=myMods(),me=controlled();
   const eff={prestige:clamp(me.prestige+m.prestige,20,99),needs:me.needs,fac:me.fac,homeState:me.homeState};
@@ -3312,7 +3347,7 @@ function recruitProspects(v){
   const cnt=el('div','hint center');
   function draw(){
     list.innerHTML='';
-    let arr=R.pool.filter(r=>!r.committedTo||r.committedTo===S.teamId);
+    let arr=R.pool.filter(r=>!r.signed||r.committedTo===S.teamId);   // Phase 16: verbals elsewhere stay listed (flippable until they sign)
     const q=search.value.toLowerCase().trim();
     if(q)arr=arr.filter(r=>(r.fn+' '+r.ln+' '+r.pos+' '+r.st).toLowerCase().includes(q));
     if(posSel.value)arr=arr.filter(r=>r.pos===posSel.value);
@@ -3344,7 +3379,9 @@ function recruitClass(v,rank,grade){
 }
 function recruitSheet(rec){
   const body=el('div'), R=S.recruiting, sc=recScouted(rec), mi=myInterest(rec), rank=myRank(rec), suit=suitorList(rec);
-  const onB=onBoard(rec), committed=rec.committedTo, canAct=!committed&&!R.signed;
+  // Phase 16: a VERBAL commit elsewhere is now flippable — you can recruit him until he signs.
+  const onB=onBoard(rec), committed=rec.committedTo, canFlip=committed&&committed!==S.teamId&&!rec.signed;
+  const canAct=!R.signed&&!rec.signed&&committed!==S.teamId;
   body.innerHTML=`<div class="row spread" style="margin-bottom:8px">
       <span class="tag accent">${'★'.repeat(rec.stars)} ${rec.stars}-STAR</span>
       <span class="meta">${posName(rec.pos)} · ${rec.st}</span></div>
@@ -3362,7 +3399,8 @@ function recruitSheet(rec){
   const ib=el('div');ib.style.marginTop='12px';
   if(committed){
     const ct=teamById(committed),mine=committed===S.teamId,verb=rec.signed?'Signed with':'Verbally committed to';
-    ib.innerHTML=`<div class="card" style="text-align:center"><div class="cond ${mine?'good':'bad'}" style="font-size:18px;font-weight:800">${mine?(rec.signed?'Signed with YOU ✓':'Verbally committed to YOU ✓'):verb+' '+ct.name}</div></div>`;
+    ib.innerHTML=`<div class="card" style="text-align:center"><div class="cond ${mine?'good':'bad'}" style="font-size:18px;font-weight:800">${mine?(rec.signed?'Signed with YOU ✓':'Verbally committed to YOU ✓'):verb+' '+ct.name}</div>`+
+      (canFlip?`<div class="meta dim" style="margin-top:6px">Just a verbal — out-recruit ${ct.abbr} to flip him before Signing Day.</div>`:'')+`</div>`;
   }else{
     ib.innerHTML=`<div class="row spread" style="margin:2px 0 4px"><span class="meta">Your interest ${onB?'· #'+rank+' of '+suit.length:'(not offered)'}</span><span class="cond" style="font-weight:700">${mi}%</span></div>
       <div class="bar"><i style="width:${mi}%"></i></div>

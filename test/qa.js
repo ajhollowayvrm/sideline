@@ -439,7 +439,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 17 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 18 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -456,7 +456,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v17)', mig.v === 17, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v18)', mig.v === 18, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -549,6 +549,30 @@ function startServer() {
   check('Recruiting cycle: an aggressively recruited target commits to you', cycle.tgtMine);
   check('Recruiting cycle: the controlled team builds a class', cycle.mine > 0, cycle.mine + ' commits');
   check('Recruiting cycle: class rank is valid (1–134)', cycle.rank >= 1 && cycle.rank <= 134, '#' + cycle.rank);
+  // ---------- PHASE 16: decommits (verbal flips) ----------
+  const flip = await page.evaluate(() => {
+    const A = '_fa', B = '_fb', teams = [{ id: A, prestige: 60 }, { id: B, prestige: 85 }];
+    const mk = signed => { const p = []; for (let i = 0; i < 150; i++) p.push({ id: 'fx' + i, pos: 'WR', st: 'TX', stars: 4, iv: { [A]: 40, [B]: 96 }, committedTo: A, signed }); return p; };
+    const verbal = mk(false); advanceRecruiting(verbal, teams, 5, 15, 7, false);
+    const flipped = verbal.filter(r => r.committedTo === B);
+    const lockSigned = mk(true); advanceRecruiting(lockSigned, teams, 5, 15, 7, false);
+    const lockFinal = mk(false); advanceRecruiting(lockFinal, teams, 5, 15, 7, true);
+    // the relaxed offer: you can open a board target who is verbally committed elsewhere
+    const me = S.teamId, R = S.recruiting;
+    const tgt = R.pool.find(r => r.committedTo && r.committedTo !== me && !r.signed && !R.board.includes(r.id));
+    let offerOpens = null;
+    if (tgt && R.board.length < (typeof boardSlots === 'function' ? boardSlots() : 99)) { offerRecruit(tgt); offerOpens = R.board.includes(tgt.id); }
+    return {
+      flips: flipped.length, tagged: flipped.every(r => r._flipped && r._flipped.from === A && r._flipped.to === B),
+      signedLocked: lockSigned.every(r => r.committedTo === A && !r._flipped),
+      finalLocked: lockFinal.every(r => r.committedTo === A && r.signed && !r._flipped),
+      offerOpens
+    };
+  });
+  check('Phase 16: a verbal commit can be flipped by a surging rival', flip.flips > 0 && flip.tagged, flip.flips + ' flipped');
+  check('Phase 16: a SIGNED commit cannot be flipped', flip.signedLocked);
+  check('Phase 16: a finalize (Signing Day) pass locks verbals (no flips)', flip.finalLocked);
+  check('Phase 16: you can recruit a prospect verbally committed elsewhere (to flip him)', flip.offerOpens === null || flip.offerOpens === true);
   // Phase 10: a recruit's temperament is fogged until you scout them past the threshold
   const recFog = await page.evaluate(() => {
     const rec = S.recruiting.pool[0];
@@ -745,7 +769,7 @@ function startServer() {
   check('Rollover: advances to the next calendar year', roPost.year === roPre.year + 1, `${roPre.year} → ${roPost.year}`);
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
-  check('Rollover: save version bumped to 17', roPost.version === 17, 'v' + roPost.version);
+  check('Rollover: save version bumped to 18', roPost.version === 18, 'v' + roPost.version);
   check('Phase 8: player honors survive the rollover', roPost.honoredAfter > 0, roPost.honoredAfter + ' still honored');
   check('Phase 8: series + awards history persist across the rollover', roPost.seriesKept > 0 && roPost.awardsKept > 0, `series ${roPost.seriesKept}, awards ${roPost.awardsKept}`);
   check('Phase 11: career totals accrue across the rollover', roPost.careerPlayers > 50, roPost.careerPlayers + ' players carry a career');
