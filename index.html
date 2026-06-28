@@ -415,6 +415,15 @@ function writeSlot(n,state){
 }
 function deleteSlot(n){localStorage.removeItem(slotKey(n));}
 
+/* ---------- test hooks: deterministic seed / slot reset via URL ----------
+   ?seed=N  → New Game uses seed N (reproducible world for screenshots/assertions)
+   ?reset=1 → clear all save slots on load (clean state)
+   Rows carry data-id (player id / coach role / team id); nav+tabs carry data-tid;
+   #app carries data-screen / data-tab. S, UI, controlled() are global for evaluate(). */
+const _QS=new URLSearchParams(location.search);
+const TEST_SEED=_QS.has('seed')?((parseInt(_QS.get('seed'),10)||0)>>>0):null;
+if(_QS.get('reset')==='1')SLOTS.forEach(n=>deleteSlot(n));
+
 /* ---------- live game state ---------- */
 let S=null;            // current state
 let UI={view:'menu',tab:'roster',newgame:null};
@@ -432,6 +441,7 @@ function applyAccent(team){
    ============================================================ */
 function render(){
   const app=$('#app');app.innerHTML='';
+  app.dataset.screen=UI.view; app.dataset.tab=UI.tab||'';   // test hooks
   if(UI.view==='menu')         return renderMenu(app);
   if(UI.view==='load')         return renderLoad(app);
   if(UI.view==='newgame')      return renderNewGame(app);
@@ -497,7 +507,7 @@ function renderLoad(app){
    NEW GAME WIZARD
    ============================================================ */
 function freshNewGame(){return {step:0,coach:{first:'',last:'',homeState:'TX',archetype:'Recruiter',history:'Former Player'},
-  seed:(Date.now()^(Math.random()*1e9))>>>0,world:null,teamId:null};}
+  seed:(TEST_SEED!=null?TEST_SEED:((Date.now()^(Math.random()*1e9))>>>0)),world:null,teamId:null};}
 
 function renderNewGame(app){
   applyAccent(null);
@@ -732,7 +742,7 @@ function renderTeam(app){
   v.append(scoreboard(t));
   const tabs=el('div','tabs');tabs.style.marginTop='14px';
   ['roster','coaches'].forEach(k=>{
-    const b=el('button',UI.tab===k?'on':'',k==='roster'?'Roster':'Coaches');
+    const b=el('button',UI.tab===k?'on':'',k==='roster'?'Roster':'Coaches');b.dataset.tid='tab-'+k;
     b.onclick=()=>{UI.tab=k;render();};tabs.append(b);
   });
   v.append(tabs);
@@ -776,7 +786,7 @@ function scoutedCeiling(p){
 function devStage(p){const gap=p.pot-p.ov;return gap<=2?'Maxed':gap<=7?'Polished':gap<=13?'Developing':'Raw';}
 function ceilingChip(p){const sc=scoutedCeiling(p);return `<span class="tag ${sc.hot?'accent':''}" style="font-size:10px">${sc.text}</span>`;}
 function playerRow(p,isStarter,t){
-  const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';
+  const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=p.id;
   row.innerHTML=`<div class="ovr ${p.ov>=85?'elite':''}">${p.ov}</div>
     <div style="flex:1">
       <div class="nm">${p.fn} ${p.ln} ${p.cap?'<span class="cap">© CAPTAIN</span>':''}</div>
@@ -847,7 +857,7 @@ function boostBadge(c){
   return `<span class="tag accent" style="font-size:10px">+${c.boost} ${c.scope}</span>`;
 }
 function coachRow(c,t){
-  const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';
+  const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=c.role;
   row.innerHTML=`<div class="ovr ${c.rating>=80?'elite':''}">${c.rating}</div>
     <div style="flex:1"><div class="nm">${c.name}</div>
     <div class="meta">${c.title} · ${c.years}yr deal</div></div>
@@ -924,7 +934,7 @@ function buildTeamList(teams,onTap,mode){
       s==='conf'?(a.conf.localeCompare(b.conf)||b.ratings.ovr-a.ratings.ovr):
       s==='prestige'?b.prestige-a.prestige:b.ratings.ovr-a.ratings.ovr);
     arr.slice(0,200).forEach(t=>{
-      const row=el('button','team-pick');row.style.width='100%';row.style.textAlign='left';
+      const row=el('button','team-pick');row.style.width='100%';row.style.textAlign='left';row.dataset.id=t.id;
       row.innerHTML=`<span class="dot" style="background:${t.color}"></span>
         <div style="flex:1"><div class="nm">${t.name} <span class="dim" style="font-weight:400">${t.nick}</span></div>
         <div class="meta">${t.conf}${t.div?' · '+t.div:''} · #${t.natRank} nat'l · Prestige ${t.prestige}</div></div>
@@ -978,7 +988,7 @@ function renderNav(app){
     ['browse','League','M4 6h16M4 12h16M4 18h16'],
     ['menu','Menu','M4 6h16M4 12h16M4 18h16']];
   items.forEach(([v,l,d])=>{
-    const b=el('button',(UI.view===v||(v==='menu'&&false))?'on':'');
+    const b=el('button',(UI.view===v||(v==='menu'&&false))?'on':'');b.dataset.tid='nav-'+v;
     b.innerHTML=`<svg viewBox="0 0 24 24"><path d="${d}" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${l}</span>`;
     b.onclick=()=>{
       if(v==='menu')return menuSheet();
@@ -1028,7 +1038,7 @@ function timeAgo(ts){const s=(Date.now()-ts)/1000;if(s<60)return'just now';if(s<
 
 /* sheets */
 function openSheet(title,bodyNode){
-  const bg=el('div','sheet-bg');const sh=el('div','sheet');
+  const bg=el('div','sheet-bg');const sh=el('div','sheet');bg.dataset.tid='sheet-bg';sh.dataset.tid='sheet';
   sh.append(el('div','grab'),el('h3',null,title),bodyNode);
   bg.append(sh);bg.onclick=e=>{if(e.target===bg)closeSheet();};
   $('#sheet').innerHTML='';$('#sheet').append(bg);
