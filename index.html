@@ -465,6 +465,7 @@ function render(){
   if(UI.view==='game') return renderGame(app);   // full-screen, no bottom nav (commit to exit)
   if(UI.view==='home') renderHome(app);
   if(UI.view==='team') renderTeam(app);
+  if(UI.view==='recruit') renderRecruiting(app);
   if(UI.view==='season') renderSeason(app);
   if(UI.view==='browse') renderBrowse(app,false);
   if(UI.view==='program') renderProgram(app);
@@ -583,8 +584,9 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:5,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:6,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
+     recruiting:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // choose a save slot
   chooseSlotSheet();
@@ -683,6 +685,10 @@ function migrateState(state){
     if(!Array.isArray(state.weeklyHonors))state.weeklyHonors=[];
     state.version=5;
   }
+  if((state.version||1)<6){            // Phase 4: recruiting. Created at kickoff (like the
+    if(!('recruiting' in state))state.recruiting=null;   // schedule), so a null backfill is enough.
+    state.version=6;
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -761,6 +767,7 @@ function startSeason(){
   S.world.teams.forEach(t=>t.rec=emptyRec());
   S.weeklyHonors=[];
   S.phase='Regular Season';S.week=1;S.lastPlayedWeek=0;
+  initRecruiting();
   recomputeRanks(S.world);
   setWeeklyTask();
   autosave();
@@ -902,6 +909,125 @@ function simEngine(home,away,seed,opts){
 }
 // === SIM ENGINE (Phase 3) END ===
 
+// === RECRUIT ENGINE (Phase 4) START ===
+// Pure, deterministic recruiting model. Depends only on rng/ri/clamp/pick/hashStr and the data
+// arrays FN/LN/STATES/POS (no DOM, no S, no globals beyond those), so test/reclab.js can extract
+// + validate this block offline. The "team" shape it reads is just { id, prestige, needs? }.
+//
+// A prospect (recruit) carries `iv` = interest keyed by suitor team id (a handful of suitors).
+// Each week every suitor's interest grows by a fit-based increment; a prospect commits to its
+// leading suitor once interest clears a threshold with a margin, gated by a readiness ramp +
+// star "patience". The player team is just another suitor for *passive* growth — actions are the
+// lever on top (applied outside this block). Landing = a prospect commits to you.
+
+const PREFS=['playingTime','nil','winning','development','home','academics'];
+// Pitch angles map 1:1 to prefs. [key, label, blurb]
+const PITCH_ANGLES=[
+  ['playingTime','Playing Time','Early reps — a path to start.'],
+  ['nil','NIL Money','Top collective, real brand deals.'],
+  ['winning','Win Now','Compete for titles immediately.'],
+  ['development','Development','We send talent to the next level.'],
+  ['home','Stay Home','Play close to family and friends.'],
+  ['academics','Academics','A degree that sets up life after ball.']];
+// Tuning — tweaked in test/reclab.js.
+const REC={POOL:300,COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:12,SLOTS:16};
+
+// Coach archetype/history effects — Phase 4 is the first system to apply them. Returns a bag of
+// multipliers/bonuses used by the weekly economy + the player's recruiting actions.
+function coachMods(coach){
+  const m={points:0,slots:0,scout:1,pitch:1,visit:1,prestige:0,homeBonus:1,nil:1,devPitch:1,
+    homeState:(coach&&coach.homeState)||null};
+  const A=coach&&coach.archetype, H=coach&&coach.history;
+  if(A==='Recruiter'){m.points+=6;m.slots+=6;m.pitch*=1.25;m.visit*=1.15;}
+  else if(A==='Motivator'){m.visit*=1.25;m.pitch*=1.1;}
+  else if(A==='Manager'){m.points+=2;m.nil*=1.35;}
+  else if(A==='Offensive Genius'||A==='Defensive Genius'){m.devPitch*=1.3;}
+  if(H==='Former Player'){m.visit*=1.2;m.pitch*=1.1;}
+  else if(H==='NFL Transplant'){m.prestige+=10;m.slots-=3;}
+  else if(H==='High School Legend'){m.homeBonus*=1.8;}
+  else if(H==='Analyst'){m.scout*=1.6;m.pitch*=0.92;}
+  else if(H==='Lifer'){m.points+=2;}
+  else if(H==='Coordinator'){m.pitch*=1.05;}
+  return m;
+}
+// How well a team fits a prospect (0..~1.1): prestige proximity to the recruit's tier, with a
+// floor for programs above the tier (they can always take down-tier talent), plus a needs nudge.
+function recruitFit(team,rec){
+  const target=rec.stars===5?88:rec.stars===4?72:56;
+  let prox=clamp(1-Math.abs(team.prestige-target)/50,0,1);
+  if(team.prestige>=target)prox=Math.max(prox,0.72+Math.min(team.prestige-target,22)/110);
+  const need=(team.needs&&team.needs[rec.pos])?0.12:0;
+  return clamp(prox+need,0,1.1);
+}
+// Class-ranking value of a landed prospect, and a team's total class score (landed value + a
+// prestige baseline standing in for the ~20 unmodeled 2–3★ depth signees every program lands).
+function recruitValue(rec){return rec.stars*rec.stars*2+Math.max(0,rec.ov-70);}
+function classScore(team,pool){
+  let s=team.prestige*0.8;
+  for(const r of pool)if(r.committedTo===team.id)s+=recruitValue(r);
+  return Math.round(s);
+}
+// Build the contested national board (~300 blue-chips), deterministic from the world seed.
+function genRecruits(seed,teams){
+  const r=rng((seed^0x2ec54172)>>>0);
+  const posPool=[];POS.forEach(([c,,n])=>{for(let i=0;i<n;i++)posPool.push(c);});
+  const pool=[];
+  for(let i=0;i<REC.POOL;i++){
+    const stars=i<8?5:i<78?4:3;
+    const ovBase=stars===5?92:stars===4?85:77;
+    const ov=clamp(ovBase+ri(r,-4,5),60,99);
+    const pot=clamp(ov+ri(r,3,13),ov,99);
+    const pos=pick(r,posPool), st=pick(r,STATES);
+    const p1=pick(r,PREFS); let p2=pick(r,PREFS),guard=0; while(p2===p1&&guard++<6)p2=pick(r,PREFS);
+    const target=stars===5?88:stars===4?72:56;
+    const nSuit=stars===5?ri(r,4,6):stars===4?ri(r,3,5):ri(r,2,4);
+    const ranked=teams.map(t=>({t,s:(1-Math.abs(t.prestige-target)/50)+r()*0.6}))
+      .sort((a,b)=>b.s-a.s).slice(0,nSuit);
+    const iv={};
+    ranked.forEach((e,k)=>{const fit=recruitFit(e.t,{stars,pos});
+      iv[e.t.id]=clamp(Math.round(20+fit*26+ri(r,-4,6)-k*2),8,70);});
+    pool.push({id:'r'+i.toString(36)+(seed>>>0).toString(36).slice(-2),
+      fn:pick(r,FN),ln:pick(r,LN),pos,st,stars,ov,pot,
+      spd:clamp(ov+ri(r,-10,12),40,99),str:clamp(ov+ri(r,-10,12),40,99),awr:clamp(ov+ri(r,-12,10),40,99),
+      scout:0,prefs:[p1,p2],iv,committedTo:null,signed:false,offered:false,visited:false,promise:null});
+  }
+  return pool;
+}
+// Advance one recruiting week: grow every suitor's interest, then resolve commitments. Seeded
+// per (seed, week) so a cycle reproduces. `week>=weeks` is Signing Day — force the remainder to
+// sign with their leader. Respects a per-team class cap. Mutates `pool`; returns the new commits.
+function advanceRecruiting(pool,teams,week,weeks,seed){
+  const byId={};teams.forEach(t=>byId[t.id]=t);
+  const r=rng((seed^hashStr('rec'+week))>>>0);
+  const counts={};pool.forEach(p=>{if(p.committedTo)counts[p.committedTo]=(counts[p.committedTo]||0)+1;});
+  const full=id=>(counts[id]||0)>=REC.CLASS_CAP;
+  // 1) passive interest growth for all suitors of uncommitted prospects
+  pool.forEach(rec=>{
+    if(rec.committedTo)return;
+    for(const tid in rec.iv){const t=byId[tid];if(!t)continue;
+      const fit=recruitFit(t,rec);
+      rec.iv[tid]=clamp(rec.iv[tid]+(1.0+fit*3.2)*(0.6+r()*0.9),0,100);}
+  });
+  // 2) commitments
+  const readiness=clamp((week-2)/(weeks-3),0,1), last=week>=weeks, out=[];
+  pool.forEach(rec=>{
+    if(rec.committedTo)return;
+    let entries=Object.entries(rec.iv).filter(([tid])=>byId[tid]&&!full(tid)).sort((a,b)=>b[1]-a[1]);
+    if(!entries.length)return;
+    const [leadId,lead]=entries[0], second=entries[1]?entries[1][1]:0;
+    const commit=()=>{rec.committedTo=leadId;rec.signed=true;counts[leadId]=(counts[leadId]||0)+1;out.push(rec);};
+    if(last){if(lead>=35)commit();return;}
+    const patience=rec.stars===5?0.55:rec.stars===4?0.35:0.18;
+    if(readiness<patience)return;
+    if(lead>=REC.COMMIT_THRESH&&(lead-second)>=REC.LEAD_GAP){
+      const prob=readiness*clamp((lead-REC.COMMIT_THRESH)/28,0.05,1);
+      if(r()<prob)commit();
+    }
+  });
+  return out;
+}
+// === RECRUIT ENGINE (Phase 4) END ===
+
 // Resolve a game with the drive/play engine. Seeded per game id so outcomes are reproducible
 // regardless of advance order. Sets g.hs/g.as/g.played and RETURNS the per-game box (player
 // id → stat deltas) for stat folding. Pure w.r.t. players/teams — re-simming a clone is safe.
@@ -932,9 +1058,11 @@ function advanceWeek(){
   const wk=S.week;
   const boxes=S.schedule.games.filter(g=>g.week===wk&&!g.played).map(g=>{const box=simGame(g);applyResult(g,box);return {g,box};});
   computeWeeklyHonors(wk,boxes);
+  resolveRecruitingWeek(wk);              // AI recruits + commitments for the week just finished
   S.lastPlayedWeek=wk;S.week++;
   recomputeRanks(S.world);
-  if(S.week>S.schedule.weeks)endSeason();else setWeeklyTask();
+  if(S.week>S.schedule.weeks)endSeason();
+  else{setWeeklyTask();grantRecruitPoints();}
   autosave();
 }
 // Player of the Week from the week's per-game boxes — Offensive & Defensive, at national scope
@@ -972,9 +1100,90 @@ function setWeeklyTask(){
 function endSeason(){
   const t=controlled();
   S.phase='Offseason';
+  if(S.recruiting)S.recruiting.signed=true;          // Signing Day: the class is locked
+  const cls=myClass(), cr=myClassRank();
   S.task={type:'Offseason',label:'Season Complete',
-    note:'Final record '+t.rec.w+'–'+t.rec.l+' ('+t.rec.cw+'–'+t.rec.cl+' '+t.conf+'). Offseason, hiring, and player development arrive in a later phase.'};
+    note:'Final record '+t.rec.w+'–'+t.rec.l+' ('+t.rec.cw+'–'+t.rec.cl+' '+t.conf+'). Signed '+
+      cls.length+' tracked recruit'+(cls.length===1?'':'s')+' — class ranked #'+cr+' nationally. '+
+      'Offseason rollover, hiring, and player development arrive in a later phase.'};
 }
+
+/* ============================================================
+   RECRUITING — weekly economy + player actions (Phase 4)
+   The pure engine (genRecruits/advanceRecruiting/coachMods/…) lives in the RECRUIT ENGINE
+   block above; this layer owns S.recruiting, the points economy, and the five player actions.
+   ============================================================ */
+const RECRUIT_COSTS={scout:2,pitch:3,visit:5,promise:4};   // offer is free (uses a board slot)
+function myMods(){return coachMods(S.coach);}
+function weeklyPoints(){const t=controlled(),m=myMods();
+  return Math.max(4,Math.round(REC.BASE_POINTS+m.points+t.prestige/20));}
+function boardSlots(){return Math.max(6,REC.SLOTS+myMods().slots);}
+function initRecruiting(){
+  S.recruiting={cycle:1,points:weeklyPoints(),pool:genRecruits(S.seed,S.world.teams),board:[],signed:false};
+}
+function grantRecruitPoints(){if(S.recruiting&&!S.recruiting.signed)S.recruiting.points=weeklyPoints();}
+function resolveRecruitingWeek(week){
+  if(!S.recruiting||S.recruiting.signed)return;
+  const out=advanceRecruiting(S.recruiting.pool,S.world.teams,week,S.schedule.weeks,S.seed);
+  const mine=out.filter(r=>r.committedTo===S.teamId);
+  if(mine.length)setTimeout(()=>toast(mine.length+' recruit'+(mine.length===1?'':'s')+' committed to you! 🎉'),300);
+}
+/* ---- lookups ---- */
+function recById(id){return S.recruiting?S.recruiting.pool.find(r=>r.id===id):null;}
+function onBoard(rec){return S.recruiting&&S.recruiting.board.includes(rec.id);}
+function myInterest(rec){return Math.round(rec.iv[S.teamId]||0);}
+function suitorList(rec){return Object.entries(rec.iv).map(([id,v])=>({id,v,team:teamById(id)}))
+  .filter(s=>s.team).sort((a,b)=>b.v-a.v);}
+function leaderOf(rec){const s=suitorList(rec);return s.length?s[0]:null;}
+function myRank(rec){if(rec.iv[S.teamId]==null)return null;const s=suitorList(rec);return s.findIndex(x=>x.id===S.teamId)+1;}
+function myClass(){return S.recruiting?S.recruiting.pool.filter(r=>r.committedTo===S.teamId):[];}
+function myClassRank(){const me=controlled();const pool=S.recruiting.pool;
+  const score=t=>classScore(t,pool);const my=score(me);
+  return S.world.teams.filter(t=>score(t)>my).length+1;}
+/* ---- spend helper ---- */
+function spend(cost){if(S.recruiting.points<cost){toast('Not enough recruiting points');return false;}
+  S.recruiting.points-=cost;return true;}
+/* ---- actions ---- */
+function offerRecruit(rec){
+  if(onBoard(rec))return;
+  if(rec.committedTo){toast('Already committed elsewhere');return;}
+  if(S.recruiting.board.length>=boardSlots()){toast('Board full — drop a target first');return;}
+  const m=myMods(),me=controlled();
+  const eff={prestige:clamp(me.prestige+m.prestige,20,99),needs:me.needs};
+  let fit=recruitFit(eff,rec);
+  if(m.homeState&&rec.st===m.homeState)fit*=m.homeBonus;
+  const start=clamp(Math.round(16+fit*24),8,72);
+  rec.iv[S.teamId]=Math.max(rec.iv[S.teamId]||0,start);
+  rec.offered=true;S.recruiting.board.push(rec.id);
+  autosave();
+}
+function dropRecruit(rec){
+  S.recruiting.board=S.recruiting.board.filter(id=>id!==rec.id);
+  delete rec.iv[S.teamId];autosave();
+}
+function scoutRecruit(rec){if(!spend(RECRUIT_COSTS.scout))return false;
+  rec.scout=clamp(rec.scout+Math.round(30*myMods().scout),0,100);autosave();return true;}
+function pitchRecruit(rec,angle){if(!spend(RECRUIT_COSTS.pitch))return false;
+  const m=myMods();
+  let mult=rec.prefs[0]===angle?1.6:rec.prefs[1]===angle?1.2:0.7;
+  if(angle==='nil')mult*=m.nil; if(angle==='development')mult*=m.devPitch;
+  let gain=8*mult*m.pitch;
+  if(m.homeState&&rec.st===m.homeState)gain*=m.homeBonus;
+  bumpInterest(rec,gain);autosave();return true;}
+function visitRecruit(rec){if(rec.visited){toast('Already visited');return false;}
+  if(!spend(RECRUIT_COSTS.visit))return false;
+  const m=myMods();let gain=18*m.visit;
+  if(isGameDayVisit())gain*=1.5;
+  if(m.homeState&&rec.st===m.homeState)gain*=m.homeBonus;
+  bumpInterest(rec,gain);rec.visited=true;autosave();return true;}
+function promiseRecruit(rec,type){if(rec.promise){toast('Already made a promise');return false;}
+  if(!spend(RECRUIT_COSTS.promise))return false;
+  const m=myMods();let gain=22*m.visit;
+  if(m.homeState&&rec.st===m.homeState)gain*=m.homeBonus;
+  bumpInterest(rec,gain);rec.promise={type};autosave();return true;}
+function bumpInterest(rec,gain){rec.iv[S.teamId]=clamp((rec.iv[S.teamId]||0)+gain,0,100);}
+// A "game-day visit" lands more: the controlled team has a home game this week.
+function isGameDayVisit(){const g=teamGame(S.teamId,S.week);return !!(g&&g.home===S.teamId&&!g.played);}
 // Result of a game from one team's perspective, formatted for the UI.
 function gameView(g,teamId){
   const home=g.home===teamId,opp=teamById(home?g.away:g.home);
@@ -1123,6 +1332,19 @@ function renderHome(app){
   task.append(adv);v.append(task);
   if(inSeason||over){const sb=el('button','btn line','Season \u00b7 schedule & standings');sb.style.marginTop='10px';
     sb.onclick=()=>{UI.view='season';render();};v.append(sb);}
+  // recruiting snapshot (once the board is open)
+  if(S.recruiting){
+    const R=S.recruiting, rk=myClassRank(), gr=classGrade(rk), nc=myClass().length;
+    v.append(el('h2','sec','Recruiting'));
+    const rc=el('div','card');
+    rc.innerHTML=`<div class="row spread">
+      <div><div class="cond" style="font-size:22px;font-weight:800">${R.signed?'Class signed':R.points+' points'}</div>
+        <div class="muted" style="font-size:13px;margin-top:2px">${nc} commit${nc===1?'':'s'} \u00b7 class #${rk}</div></div>
+      <span class="tag accent" style="font-size:14px">${gr}</span></div>`;
+    const rb=el('button','btn line',R.signed?'View signed class':'Work the board \u2192');rb.style.marginTop='10px';rb.dataset.tid='home-recruit';
+    rb.onclick=()=>{UI.view='recruit';render();};
+    rc.append(rb);v.append(rc);
+  }
   // rankings
   v.append(el('h2','sec','Standing'));
   const ranks=el('div','ranks');
@@ -1344,6 +1566,176 @@ function seasonHonors(v,t){
 }
 
 /* ============================================================
+   RECRUITING VIEW (Board · Prospects · Class)  — Phase 4
+   ============================================================ */
+function prefLabel(k){const a=PITCH_ANGLES.find(x=>x[0]===k);return a?a[1]:k;}
+function renderRecruiting(app){
+  const t=controlled();
+  const v=el('div','view');
+  v.append(scoreboard(t));
+  if(!S.recruiting){
+    v.append(el('div','empty','Recruiting opens at kickoff.\nKick off the season from Home to open the prospect board.'));
+    app.append(v);return;
+  }
+  const R=S.recruiting, cls=myClass(), rank=myClassRank(), grade=classGrade(rank);
+  const sum=el('div','card');
+  sum.innerHTML=`<div class="row spread">
+      <div><div class="meta dim">${R.signed?'Signing Day':'Recruiting points'}</div>
+        <div class="cond" style="font-size:28px;font-weight:800">${R.signed?'CLOSED':R.points+' pts'}</div></div>
+      <div style="text-align:right"><div class="meta dim">Class rank</div>
+        <div class="cond" style="font-size:28px;font-weight:800">#${rank} <span class="tag accent" style="font-size:13px;vertical-align:3px">${grade}</span></div></div></div>
+    <div class="row spread" style="margin-top:8px">
+      <span class="meta">Board ${R.board.length}/${boardSlots()}</span>
+      <span class="meta">Commits ${cls.length}</span>
+      <span class="meta dim">${R.signed?'class locked':'refills each week'}</span></div>`;
+  v.append(sum);
+  const st=UI.recruitTab||'board';
+  const tabs=el('div','tabs');tabs.style.marginTop='12px';
+  [['board','Board'],['prospects','Prospects'],['class','Class']].forEach(([k,l])=>{
+    const b=el('button',st===k?'on':'',l);b.dataset.tid='rtab-'+k;
+    b.onclick=()=>{UI.recruitTab=k;render();};tabs.append(b);});
+  v.append(tabs);
+  if(st==='board')recruitBoard(v);
+  else if(st==='prospects')recruitProspects(v);
+  else recruitClass(v,rank,grade);
+  v.style.paddingBottom='10px';
+  app.append(v);
+}
+function recruitStarChip(rec){return `<div class="pos" style="width:auto;color:var(--accent);font-size:12.5px;letter-spacing:-1px">${'★'.repeat(rec.stars)}</div>`;}
+function recruitRow(rec){
+  const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=rec.id;
+  const sc=recScouted(rec), mi=myInterest(rec), rank=myRank(rec), nS=suitorList(rec).length, committed=rec.committedTo, mine=committed===S.teamId;
+  let status;
+  if(committed)status=`<span class="tag ${mine?'good':'bad'}" style="font-size:10px">${mine?'TO YOU ✓':'→ '+teamById(committed).abbr}</span>`;
+  else status=`<div class="cond ${rank===1?'good':''}" style="font-size:14px;font-weight:700">${rank?'#'+rank+'/'+nS:'—'}</div>`;
+  row.innerHTML=`${recruitStarChip(rec)}
+    <div style="flex:1;min-width:0">
+      <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rec.fn} ${rec.ln} <span class="dim" style="font-weight:400">${rec.pos} · ${rec.st}</span></div>
+      <div class="meta">${sc.text}${committed?'':' · interest '+mi+'%'}</div>
+      ${committed?'':'<div class="bar" style="margin-top:5px"><i style="width:'+mi+'%"></i></div>'}</div>
+    <div style="text-align:right;flex:none;margin-left:8px">${status}</div>`;
+  row.onclick=()=>recruitSheet(rec);
+  return row;
+}
+function recruitBoard(v){
+  const R=S.recruiting;
+  if(!R.board.length){v.append(el('div','empty','No targets yet.\nOpen the Prospects tab and offer a scholarship to start a board.'));return;}
+  const recs=R.board.map(recById).filter(Boolean)
+    .sort((a,b)=>(b.committedTo===S.teamId)-(a.committedTo===S.teamId)||myInterest(b)-myInterest(a));
+  recs.forEach(rec=>v.append(recruitRow(rec)));
+}
+function recruitProspects(v){
+  const R=S.recruiting, t=controlled();
+  const wrap=el('div');
+  const search=el('input','search');search.placeholder='Search prospects…';search.dataset.tid='rec-search';
+  const fbar=el('div','row');fbar.style.cssText='gap:8px;margin-bottom:10px';
+  const posSel=el('select');posSel.dataset.tid='rec-pos';
+  [['','All pos'],...POS.map(([c])=>[c,c])].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l+((val&&t.needs&&t.needs[val])?' ●':'');o.selected=false;posSel.append(o);});
+  const starSel=el('select');[['','All ★'],['5','5★'],['4','4★ +'],['3','3★ +']].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;starSel.append(o);});
+  fbar.append(posSel,starSel);
+  const list=el('div');list.dataset.tid='rec-list';
+  const cnt=el('div','hint center');
+  function draw(){
+    list.innerHTML='';
+    let arr=R.pool.filter(r=>!r.committedTo||r.committedTo===S.teamId);
+    const q=search.value.toLowerCase().trim();
+    if(q)arr=arr.filter(r=>(r.fn+' '+r.ln+' '+r.pos+' '+r.st).toLowerCase().includes(q));
+    if(posSel.value)arr=arr.filter(r=>r.pos===posSel.value);
+    if(starSel.value)arr=arr.filter(r=>r.stars>=+starSel.value);
+    arr.sort((a,b)=>b.stars-a.stars||myInterest(b)-myInterest(a)||a.ln.localeCompare(b.ln));
+    arr.slice(0,120).forEach(r=>list.append(recruitRow(r)));
+    if(!arr.length)list.append(el('div','empty','No prospects match.'));
+    cnt.textContent=arr.length+' prospects';
+  }
+  search.oninput=draw;posSel.onchange=draw;starSel.onchange=draw;
+  wrap.append(search,fbar,list,cnt);v.append(wrap);draw();
+}
+function recruitClass(v,rank,grade){
+  const cls=myClass();
+  const head=el('div','card');
+  head.innerHTML=`<div class="row spread">
+      <div><div class="meta dim">National class rank</div><div class="cond" style="font-size:30px;font-weight:800">#${rank}</div></div>
+      <div class="ovr elite" style="width:auto;padding:8px 14px;font-size:26px">${grade}</div></div>`;
+  v.append(head);
+  if(!cls.length){v.append(el('div','empty','No commits yet.\nWork your board to land recruits before Signing Day.'));}
+  else POS.forEach(([code])=>{
+    const g=cls.filter(r=>r.pos===code);if(!g.length)return;
+    v.append(el('h2','sec',posName(code)+' ('+g.length+')'));
+    g.sort((a,b)=>b.stars-a.stars).forEach(r=>v.append(recruitRow(r)));
+  });
+  v.append(el('div','hint center','Plus ~'+Math.max(0,22-cls.length)+' projected 2–3★ depth signees (not individually tracked).\nSignees become freshmen at the offseason rollover (Phase 5).'));
+}
+function recruitSheet(rec){
+  const body=el('div'), R=S.recruiting, sc=recScouted(rec), mi=myInterest(rec), rank=myRank(rec), suit=suitorList(rec);
+  const onB=onBoard(rec), committed=rec.committedTo, canAct=!committed&&!R.signed;
+  body.innerHTML=`<div class="row spread" style="margin-bottom:8px">
+      <span class="tag accent">${'★'.repeat(rec.stars)} ${rec.stars}-STAR</span>
+      <span class="meta">${posName(rec.pos)} · ${rec.st}</span></div>
+    <div class="kv"><span class="k">Ceiling</span><span>${sc.text}</span></div>
+    <div class="kv"><span class="k">Scouting</span><span>${rec.scout}%${sc.revealed?'':' · scout to sharpen'}</span></div>
+    <div class="kv"><span class="k">Speed / Strength / Awareness</span><span>${rec.spd} · ${rec.str} · ${rec.awr}</span></div>
+    <div class="kv"><span class="k">Priorities</span><span>${sc.revealed?rec.prefs.map(prefLabel).join(', '):'— scout 50% to reveal —'}</span></div>`;
+  const ib=el('div');ib.style.marginTop='12px';
+  if(committed){
+    const ct=teamById(committed),mine=committed===S.teamId;
+    ib.innerHTML=`<div class="card" style="text-align:center"><div class="cond ${mine?'good':'bad'}" style="font-size:18px;font-weight:800">${mine?'Committed to YOU ✓':'Committed to '+ct.name}</div></div>`;
+  }else{
+    ib.innerHTML=`<div class="row spread" style="margin:2px 0 4px"><span class="meta">Your interest ${onB?'· #'+rank+' of '+suit.length:'(not offered)'}</span><span class="cond" style="font-weight:700">${mi}%</span></div>
+      <div class="bar"><i style="width:${mi}%"></i></div>
+      <div class="meta dim" style="margin:10px 0 4px">Top suitors</div>`;
+    const sl=el('div');
+    suit.slice(0,4).forEach(s=>{const me=s.id===S.teamId;
+      sl.append(el('div','row spread',`<span class="row" style="gap:7px"><span class="dot" style="background:${s.team.color}"></span><span class="${me?'cap':''}" style="font-size:13px">${s.team.abbr}${me?' (YOU)':''}</span></span><span class="meta">${Math.round(s.v)}%</span>`));});
+    if(!suit.length)sl.append(el('div','meta dim','No suitors yet — be the first to offer.'));
+    ib.append(sl);
+  }
+  body.append(ib);
+  if(canAct){
+    body.append(el('hr','div'));
+    if(!onB){
+      const off=el('button','btn','Offer scholarship');off.dataset.tid='rec-offer';
+      off.onclick=()=>{offerRecruit(rec);closeSheet();render();recruitSheet(rec);toast('Offer extended');};
+      body.append(off);
+      body.append(el('div','hint center','Offering opens this recruit on your board (uses 1 of '+boardSlots()+' slots).'));
+    }else{
+      const g1=el('div','btn-row');
+      const scout=el('button','btn sm ghost','Scout · '+RECRUIT_COSTS.scout);scout.dataset.tid='rec-scout';
+      scout.onclick=()=>{if(scoutRecruit(rec)){closeSheet();render();recruitSheet(rec);toast('Scouting sharpened');}};
+      const pitch=el('button','btn sm ghost','Pitch · '+RECRUIT_COSTS.pitch);pitch.dataset.tid='rec-pitch';
+      pitch.onclick=()=>pitchSheet(rec);
+      g1.append(scout,pitch);
+      const g2=el('div','btn-row');
+      const visit=el('button','btn sm ghost',rec.visited?'Visited ✓':'Visit · '+RECRUIT_COSTS.visit+(isGameDayVisit()?' (game day!)':''));visit.dataset.tid='rec-visit';visit.disabled=!!rec.visited;
+      visit.onclick=()=>{if(visitRecruit(rec)){closeSheet();render();recruitSheet(rec);toast('Official visit hosted');}};
+      const prom=el('button','btn sm ghost',rec.promise?'Promised ✓':'Promise · '+RECRUIT_COSTS.promise);prom.dataset.tid='rec-promise';prom.disabled=!!rec.promise;
+      prom.onclick=()=>{if(promiseRecruit(rec,'playingTime')){closeSheet();render();recruitSheet(rec);toast('Promise made — honor it in the offseason');}};
+      g2.append(visit,prom);
+      body.append(g1,g2);
+      const drop=el('button','btn sm line','Drop from board');drop.style.marginTop='9px';drop.dataset.tid='rec-drop';
+      drop.onclick=()=>{dropRecruit(rec);closeSheet();render();toast('Dropped from board');};
+      body.append(drop,el('div','hint center',R.points+' recruiting points left this week'));
+    }
+  }else if(R.signed&&!committed){
+    body.append(el('div','hint center','Signing Day has passed — this prospect went unsigned.'));
+  }
+  openSheet(rec.fn+' '+rec.ln,body);
+}
+function pitchSheet(rec){
+  const body=el('div'),sc=recScouted(rec);
+  body.append(el('div','hint','Pick your angle — matching the recruit’s priorities lands harder.'));
+  const choice=el('div','choice');choice.style.marginTop='10px';
+  PITCH_ANGLES.forEach(([key,label,blurb])=>{
+    const match=sc.revealed&&(rec.prefs[0]===key||rec.prefs[1]===key);
+    const b=el('button','opt'+(match?' on':''));b.dataset.tid='pitch-'+key;
+    b.innerHTML=`<div class="t">${label} ${match?'<span class="cap">FITS</span>':''}</div><div class="d">${blurb}</div>`;
+    b.onclick=()=>{if(pitchRecruit(rec,key)){closeSheet();render();recruitSheet(rec);toast('Pitched: '+label);}};
+    choice.append(b);
+  });
+  body.append(choice);
+  openSheet('Pitch — '+rec.ln,body);
+}
+
+/* ============================================================
    TEAM PAGE (Roster + Coaches tabs)
    ============================================================ */
 function renderTeam(app){
@@ -1395,6 +1787,18 @@ function scoutedCeiling(p){
 // Development stage from growth remaining (ov→pot gap). Qualitative; exact gap not shown.
 function devStage(p){const gap=p.pot-p.ov;return gap<=2?'Maxed':gap<=7?'Polished':gap<=13?'Developing':'Raw';}
 function ceilingChip(p){const sc=scoutedCeiling(p);return `<span class="tag ${sc.hot?'accent':''}" style="font-size:10px">${sc.text}</span>`;}
+// Recruit ceiling fog: like scoutedCeiling, but the band is driven by YOUR scouting confidence
+// (rec.scout 0→100) instead of age/class. Prefs unlock once you've scouted past halfway.
+function recScouted(rec){
+  const spread=Math.round(clamp(9-rec.scout*0.09,0,9));
+  const noise=spread?(hashStr(rec.id)%(2*spread+1))-spread:0;
+  const est=clamp(rec.pot+noise,40,99);
+  const li=ceilingIndex(clamp(est-spread,40,99)),hi=ceilingIndex(clamp(est+spread,40,99));
+  const text=li===hi?CEILINGS[hi][1]+(spread?' ?':''):CEILINGS[li][1]+'–'+CEILINGS[hi][1]+' ?';
+  return {text,hot:hi<=2,spread,revealed:rec.scout>=50};
+}
+// Letter grade for a recruiting class from its national rank (1..134).
+function classGrade(rank){return rank<=4?'A+':rank<=12?'A':rank<=25?'A-':rank<=40?'B+':rank<=60?'B':rank<=85?'C+':rank<=110?'C':'D';}
 // Season box for a player, grouped by what they actually did (only nonzero categories show).
 // Returns {gp, lines:[[label,value]]} or null if the player has logged nothing yet.
 function statLines(p){
@@ -1611,11 +2015,12 @@ function openTeamEditor(t){
    bottom nav
    ============================================================ */
 function renderNav(app){
-  if(!['home','team','season','browse','program'].includes(UI.view))return;
+  if(!['home','team','recruit','season','browse','program'].includes(UI.view))return;
   const nav=el('div','nav');
   const items=[
     ['home','Home','M3 11l9-8 9 8M5 10v10h14V10'],
     ['team','Team','M16 7a4 4 0 11-8 0 4 4 0 018 0zM4 21v-1a6 6 0 0112 0v1'],
+    ['recruit','Recruit','M13 7a3 3 0 11-6 0 3 3 0 016 0zM4 20v-1a6 6 0 0112 0v1M18 9v6M15 12h6'],
     ['season','Season','M4 6h16v14H4zM4 10h16M8 3v4M16 3v4'],
     ['browse','League','M4 6h16M4 12h16M4 18h16'],
     ['menu','Menu','M4 6h16M4 12h16M4 18h16']];

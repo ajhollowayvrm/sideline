@@ -4,7 +4,7 @@ A mobile-first, single-page head-coach career sim. Pure static HTML/CSS/JS, depl
 via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 
 > This file is the project brief + working memory. It reflects the state at the end of
-> **Phase 2**. Update the "Status" lines as phases land.
+> **Phase 4**. Update the "Status" lines as phases land.
 
 ---
 
@@ -37,13 +37,15 @@ plain static files so Pages still serves it with zero config.
   replaces the final-score-only model, producing the same `{hs, as}` the season layer expects
   **plus** a per-game box score that folds into per-player season stats. No coaching decisions
   yet (AJ's call). See "Phase 3 sim design" below.
-- **Phase 4 — Deep recruiting.** Scouting, visits, pitches, promises, commitments.
-  *Do a short design note on the recruiting loop before building.*
 - **Phase 3.5 — Watchable game + weekly honors.** ✅ DONE. Watch-then-commit play-by-play
   viewer for the controlled team's game (Skip + Fast), a **greatest-games replay** list, and
   **Player of the Week** at national + per-conference scopes (save v5). See "Phase 3.5 design".
-- **Phase 4 — Deep recruiting.** Scouting, visits, pitches, promises, commitments.
-  *Do a short design note on the recruiting loop before building.*
+- **Phase 4 — Deep recruiting.** ✅ DONE. An in-season recruiting cycle: a fogged national
+  prospect board, a weekly **recruiting-points** economy, and five actions — **offer, scout,
+  pitch (angle), visit, promise** — against AI schools that recruit the same prospects and
+  **commit** to whoever leads. Coach **archetype/history** effects finally come online here.
+  Class **rankings + a letter grade** are the payoff. Signees bank in `S.recruiting` until the
+  Phase 5 rollover turns them into freshmen (save v6). See "Phase 4 recruiting design" below.
 - **Phase 5 — Offseason & program.** Coaching carousel (hire/fire), player development,
   finances depth, facility upgrades, **non-conference series scheduling**, and **season awards**
   (national POY, all-conference/All-American, etc.) — see the design notes below.
@@ -95,6 +97,93 @@ doesn't perturb the result) and that the POW scorer picks sane positions. `npm r
 (78 checks) drives the watch flow (skip → commit gives the watched score), greatest-games
 replay (replayed score == recorded score, week unchanged), honors on Home + the Season Honors
 tab, v5 migration, and honors surviving reload.
+
+## Phase 4 recruiting design — the in-season recruiting loop
+
+Decided 2026-06-27 with AJ. Recruiting runs **concurrently with the regular season** (weeks
+1–15), so it reuses the existing weekly cadence (`advanceWeek`) instead of needing new
+plumbing. It is the first system to actually **apply coach archetype/history** effects.
+
+### Why in-season, and where the class goes
+Real recruiting culminates on Signing Day in the offseason and the class joins the roster the
+*next* year — but **season rollover doesn't exist yet** (it's Phase 5, same blocker as
+non-conf series). So Phase 4 is a complete, self-contained *cycle within one season*: you work
+a prospect board across the 15 weeks, **Signing Day** fires when the season ends, and the
+signed class banks in `S.recruiting.pool` (each signee's `committedTo` = your team id). When
+the Phase 5 rollover lands, signees convert to freshman `Player`s (and promises are honored or
+broken). Until then the payoff is a **class ranking + grade** — honest, like the series
+deferral. No faked single-season roster injection.
+
+### The prospect pool (lean, top-heavy)
+`genRecruits(seed, teams)` builds **~300 contested blue-chip prospects** (≈ a top-300 board),
+deterministic from the world seed. We deliberately do *not* model all ~3000 national recruits:
+storing them would bloat the save, and only the contested ones create gameplay. Each prospect
+is lean: `{ id, fn, ln, pos, st (home state), stars, ov, pot, spd,str,awr, scout, prefs, iv,
+committedTo, signed, offered, visited, promise }`. `iv` is interest **keyed by suitor team id**
+(only a handful of suitors per prospect — 5★ draw ~6 blue-bloods, 3★ draw ~3 incl. mid-majors),
+so it stays small. Star mix ≈ a handful of 5★, ~70 4★, the rest 3★.
+
+A team's class is `pool.filter(r => r.committedTo === id)`. **Class score** = Σ landed-prospect
+value **+ a prestige baseline** (the ~20 two-/three-star signees every program lands that we
+don't simulate). The baseline keeps rankings realistic (blue-bloods who whiff on a few
+blue-chips still rank well; small schools aren't all tied at zero) without storing the long
+tail. The Class view shows your named blue-chip commits + a "+N projected 2–3★ depth" line.
+
+### Fog (scouting), reusing the Phase 3 pattern
+A prospect's true `ov/pot` is hidden behind the same fuzzy-ceiling read as players, but the
+uncertainty is driven by **your `rec.scout` confidence** (0→100) instead of age/class. Spending
+a **Scout** action sharpens the band; **prefs** (what the recruit values) start hidden and are
+revealed once scouted past a threshold. `recScouted(rec)` returns the banded tier; the
+**Analyst** history shrinks the band faster / scouts cheaper.
+
+### Weekly economy + the five actions
+You get a **weekly points** allotment (`weeklyPoints()` — base + coach mods + prestige), spent
+on board prospects. Use-it-or-mostly-lose-it each week to force engagement. Actions:
+- **Offer** (free, once) — enter the race: adds you as a suitor with a fit-based starting
+  interest (low if you're a poor fit chasing a 5★). Gated by **board slots**.
+- **Scout** — +scouting confidence (shrinks the ceiling fog, reveals prefs).
+- **Pitch (angle)** — pick an angle (Playing Time / NIL / Winning / Development / Home /
+  Academics); interest gain scales with how well the angle matches the recruit's top pref ×
+  coach mods. The core skill action.
+- **Visit** — big interest boost; **game-day visits** (a home game that week) boost more. Once.
+- **Promise** (e.g. immediate playing time) — largest boost, but records an **obligation** on
+  the signee for Phase 5 to honor/break. Once.
+
+### AI competition + commitment (`advanceRecruiting`)
+Each `advanceWeek`, after the games resolve: every suitor's interest in each uncommitted
+prospect grows by a **fit-based weekly increment + jitter** (the player team is treated like any
+suitor for *passive* growth — your actions are the lever on top). Then commitments resolve: a
+prospect commits to its **leading suitor** when `lead ≥ COMMIT_THRESH`, the lead margin over
+2nd `≥ LEAD_GAP`, and a **readiness ramp** roll passes (readiness rises over the season; higher
+stars are more patient and commit later). On the **final week** every still-uncommitted
+prospect signs with its current leader (or stays unsigned if no real suitor). Seeded per
+`(seed, week)` so a cycle is reproducible. Landing = a prospect commits to *you*.
+
+### Coach identity, finally wired (`coachMods(coach)`)
+Returns multipliers/bonuses used throughout: **Recruiter** (headline) → more points, more board
+slots, stronger interest per action; **Motivator** + **Former Player** → visits/pitches convert
+harder (player respect); **Manager** → NIL pitch weight + slight points; **NFL Transplant** →
+higher effective recruiting prestige but fewer board slots (thin network); **High School
+Legend** → strong **home-state** interest bonus (recruits whose `st` == `coach.homeState`);
+**Analyst** → sharper/cheaper scouting, slightly weaker relationship growth. (Offensive/
+Defensive Genius lean Phase-5 development; minor here.) AI teams have no coach identity — their
+fit is prestige-tier match + per-pair seeded pull (team home states don't exist yet, so AI
+geography is abstracted; the player feels geography through `coach.homeState`).
+
+### Save shape
+New top-level `S.recruiting = { cycle, points, pool, board:[recruitId], signed:bool }`. Bumps
+the save to **version 6**; `migrateState` v5→v6 backfills `S.recruiting = null` (recruiting is
+created at kickoff via `initRecruiting`, exactly like the schedule), so old in-progress seasons
+keep working and recruiting simply begins next kickoff.
+
+### Validation
+The pure engine is fenced (`// === RECRUIT ENGINE (Phase 4) START/END ===`) and extracted by
+`test/reclab.js` → **`npm run reclab`** (offline cycle lab): asserts a cycle **converges**
+(nearly all prospects sign by Signing Day), **better programs sign better classes**, the star
+distribution is top-heavy, **a player who actively pushes a target lands more than one who
+idles**, and determinism by seed. `npm run qa` drives the recruiting UI end-to-end (offer →
+pitch → advance → interest grows → a commit lands; Class tab grade; v6 migration + persistence).
+Three gates now: `npm run simlab` + `npm run reclab` + `npm run qa` — all green each phase.
 
 ## Planned: season awards (end of season → Phase 5)
 
@@ -198,9 +287,11 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **3**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
-  Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`). Each step re-derives
-  ratings/ranks. **Bump `version` + extend `migrateState` on any save-shape change.**
+  (currently **6**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
+  no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
+  `recruiting:null` (created at kickoff). Each step re-derives ratings/ranks where needed.
+  **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
   `SEASON_WEEKS` (15). `simGame` is seeded per game id (`rng(hashStr(id)^seed)`) so a result
@@ -221,8 +312,15 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   lastPlayedWeek,         // last week resolved (for the Scores tab)
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
+  weeklyHonors: [ ... ],         // Player-of-the-Week log (Phase 3.5)
+  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed } | null,  // null until kickoff (Phase 4)
   world: { teams: [ Team, ... ] }
 }
+
+// Recruit: { id, fn, ln, pos, st, stars, ov, pot, spd,str,awr, scout, prefs:[primary,secondary],
+//   iv:{ [teamId]: interest }, committedTo: teamId|null, signed, offered, visited, promise }
+//   ov/pot are fogged in the UI by `recScouted(rec)` (band shrinks with `scout`). `iv` keys are
+//   the prospect's suitors. A team's class = pool.filter(r=>r.committedTo===id).
 
 // Game: { id, week, home: teamId, away: teamId, played, hs, as }   // hs/as = home/away score
 ```
@@ -341,12 +439,17 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 
 ### Still stubbed (intentionally inert)
 - Offseason is a dead end for now: after week 15 the phase becomes "Offseason" with a
-  season-complete card; rollover/recruiting/development land in Phases 4–5.
+  season-complete card (now incl. the signed recruiting class + grade). **Season rollover**
+  — turning signees into freshmen, honoring/breaking promises, player development, the
+  coaching carousel — lands in Phase 5.
 - Coach hire/fire (→ Phase 5); only salary editing works now.
-- History/archetype mechanical effects (wire in with their systems).
-- Player development is **read-only grades** only (Ceiling/Development); actual ov→pot
-  growth over seasons is Phase 5. Scouting fog is currently a fixed function of age/class;
-  real scouting that sharpens it is Phase 4.
+- History/archetype effects are **applied in recruiting** (`coachMods`, Phase 4); their
+  development/in-game effects (Off/Def Genius, etc.) still wire in with Phase 5.
+- Player development is **read-only grades** only (Ceiling/Development); actual ov→pot growth
+  over seasons is Phase 5. Roster scouting fog is a fixed function of age/class (recruit fog,
+  by contrast, sharpens with the Phase 4 Scout action).
+- Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) and do
+  not join the roster until the Phase 5 rollover converts them to freshman `Player`s.
 - Non-controlled games are resolved instantly by `simEngine`; only the controlled team's game
   is watchable (watch-then-commit) or replayable (greatest games). There's no live viewer for
   arbitrary other games — by design, so advancing a week stays fast.
