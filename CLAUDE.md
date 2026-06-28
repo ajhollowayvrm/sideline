@@ -101,10 +101,104 @@ plain static files so Pages still serves it with zero config.
   `genWorld`'s exact code → silent corruption across deploys — too fragile for real player saves; the
   columnar codec gets most of the win safely) and the optional **module/build split** (splitting the
   working single-file app risks Pages' zero-config serving for no functional gain).
+- **Phase 10 — Player personality (fogged traits).** 🔵 PLANNED. Give each player **two fogged
+  temperament traits** — **Motor** (work ethic → biases development) and **Composure** (clutch vs.
+  streaky → biases in-game variance) — that **mesh with coach identity**. Both are stored sparsely
+  (like `p.gs`/`p.dev`), read through a **scouting fog band** (the `scoutedCeiling`/`recScouted`
+  pattern), and sharpen with scouting confidence (recruits) or time-in-program + coaching room
+  (roster). Pure fenced `TRAIT ENGINE`, a node lab (`traitlab`) before any UI, save **v12**. See
+  "Phase 10 design — player personality" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast); and
   the recruit board stays **top-300 only** (the long 2–3★ tail is approximated, never individually
   modeled). These are design choices, not a backlog.
+
+---
+
+## Phase 10 design — player personality (fogged traits)
+
+Decided 2026-06-28 with AJ. The goal: make an individual player feel like a *person* the coach
+reads and develops, **without** fighting college football's "factory" reality (a player is on the
+roster ~3–4 years, then gone). Design constraint that drives every decision below: **personality
+must pay off at moments that already exist** in the loop, and must be **cheap** (every per-player
+field multiplies by ~11k players league-wide). So: two traits, two payoffs, stored sparsely,
+revealed through fog.
+
+### The two traits (and only two, to start)
+Each `Player` optionally carries:
+- **`mot`** (Motor / work ethic) — drives **development**. A high-motor 3★ can out-develop a
+  coasting 4★ (the best story college football tells).
+- **`comp`** (Composure) — drives **in-game variance**. High = consistent + clutch; low = streaky
+  (boom-bust), wobbles late in close games.
+
+Stored as small integers (~0–100, default-absent = "average, unscouted"), serialized **only when
+present** — same sparse-extra treatment the columnar codec (`encRoster`) already gives `gs`/`dev`/
+`honors`. A roster with no traits scouted yet costs ~zero extra bytes. Generated deterministically
+from the world seed in `genRoster` (a third trait is intentionally left out — keep the factory lean;
+revisit only if two prove too thin).
+
+### Fog — reuse the ceiling pattern exactly (do NOT invent a new fog)
+Traits are **never shown raw**; they render as a banded read, mirroring `scoutedCeiling(p)` /
+`recScouted(rec)`. The band's width (uncertainty) shrinks with information:
+- **Recruits:** sharpened by `rec.scout` confidence — exactly like `recScouted`. This gives Scout
+  actions a *second* reason to exist: you're scouting **temperament**, not just `ov/pot`. (Reveal
+  the trait band past a `rec.scout` threshold, like prefs unlock at 50.)
+- **Roster players:** sharpened by **time in your program** + the coaching room, reusing
+  `scoutSharpen()` (Analyst history + a strong coordinator room already tighten fog there). A
+  freshly transferred-in player reads foggy; a kid you've coached for two years reads sharp. So
+  `Motor: ???` → `Motor: High` is a payoff for retention + coaching, not a free reveal.
+- Pure read helpers: `traitBand(value, spread)` → `{text, tier, uncertain}` (shared by both
+  player + recruit paths), plus `traitChip(p)` for the roster card (one chip per trait, accent when
+  elite + confidently read).
+
+### Hook 1 — Development (`devRateFor`)
+Fold a `motorMult(p)` (~0.85–1.15) into the per-player rate `devRateFor(team,p)` already computes
+(and already passes into `rolloverRoster` via the `rateFor` callback). **Meshing with coach:** the
+controlled coach's **Motivator / Former-Player** signals *amplify* a high-motor player (the player-
+respect angle already coded into recruiting `coachMods` and the Phase 7 dev edges) — so coach
+identity finally touches development *through personality*, not just scheme. Net effect surfaces for
+free in the existing `growthChip` (▲+N) and `p.dev`.
+
+### Hook 2 — In-game variance (keep `simEngine` pure!)
+`simEngine` stays **pure + deterministic** — load-bearing for the QA determinism gate. Composure is
+read from the **immutable roster** (exactly as ratings already are inside `gamePools`), so logging
+parity and re-sim determinism hold. Two layers, ship the first, then the second:
+1. **Streaky/consistent (baseline, every-play):** `comp` modulates the **variance** of that
+   player's yard draws + breakaway long-tail. A low-comp WR draws more 40-yard catches *and* more
+   duds; a high-comp RB clusters near his mean. Same expected value, different spread → does not
+   skew the validated team-scoring distribution (assert this in `simlab`).
+2. **Clutch (situational spice):** when the engine is already in a **late + close** state (4th
+   quarter, one-score margin — clock + score it already tracks), high-`comp` players get a small
+   efficiency nudge up, low-`comp` a nudge down. Nearly free because the state already exists.
+
+These edges live **inside** the pure engine (trait is an input like rating), unlike the Phase 7
+`coachGameEdges` which are applied *outside* — that's fine and intentional: personality is a roster
+property, coach edges are a controlled-team property.
+
+### Save shape & validation
+- New optional per-player `p.mot` / `p.comp`. Bump save to **version 12**; `migrateState` v11→v12 is
+  a **structural no-op** (absence reads as "average, unscouted" — like the v3→v4 `p.gs` and v8→v9
+  `p.dev` steps). Old saves get traits the next time `genRoster`-style generation runs? No — existing
+  rosters won't regenerate, so v11→v12 should **backfill traits deterministically per player**
+  (`hashStr(p.id)`-seeded) so a loaded legacy roster has temperament too. (One real backfill, unlike
+  the no-op precedents — call it out in the migration comment.)
+- **Pure engine fenced** `// === TRAIT ENGINE (Phase 10) START/END ===` (depends only on
+  `rng/ri/clamp/hashStr` + `clamp`): `genTraits(seedish)`, `motorMult(p)`, `compVariance(p)` /
+  `compClutch(p, situation)`, `traitBand(value, spread)`. No DOM, no `S`.
+- New lab `test/traitlab.js` → **`npm run traitlab`** (extract the block like the others): motor
+  monotonically shifts offseason dev (high-motor cohort gains more ov→pot than low, ceiling never
+  exceeded); composure widens per-player stat variance **without** moving team-scoring mean/spread
+  outside `simlab`'s validated envelope; clutch only fires in late+close; trait bands shrink as
+  confidence rises; determinism by seed.
+- `npm run qa`: trait chips render fogged on the roster card and sharpen with coaching; a recruit's
+  trait band reveals past the scout threshold; v12 migration backfills + persists round-trips
+  through the columnar codec.
+- **Seven gates:** `simlab` + `reclab` + `rolllab` + `econlab` + `awardlab` + **`traitlab`** + `qa`.
+
+### Deliberately out of scope (so it stays a factory, not The Sims)
+No relationships/morale web, no locker-room chemistry graph, no off-field events, no coach–player
+*conflict* simulation. Two traits, two mechanical hooks, read through fog. If it isn't touching
+development or in-game variance, it's flavor text and we don't store it.
 
 ---
 
