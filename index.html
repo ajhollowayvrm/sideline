@@ -449,7 +449,7 @@ function genWorld(seed){
     const budget=Math.round(revenue*0.18 + ri(r,-3,4)*1e6);
     return {id:abbr.toLowerCase().replace(/[^a-z0-9]/g,''),name,nick,abbr,conf,div,color,
       homeState:TEAM_STATE[abbr]||pick(r,STATES),
-      prestige,roster,ratings,fac,revenue,budget,staff,payroll,
+      prestige,roster,ratings,fac,revenue,budget,staff,payroll,legends:[],
       facilityDebt:Math.round(ri(r,0,prestige>70?40:12)*1e6)};
   });
   // rankings
@@ -662,7 +662,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:12,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:13,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -725,7 +725,7 @@ function mergeRosters(ng,data){
          homeState:td.homeState||TEAM_STATE[(td.abbr||'').toUpperCase()]||'TX',
          prestige:td.prestige||60,roster,ratings:teamRatings(roster,staff),
          fac:Object.assign({stadium:5,strength:5,training:5,academics:5,nil:5},td.facilities||{}),
-         revenue:30e6,budget:6e6,staff,payroll:0,facilityDebt:0};
+         revenue:30e6,budget:6e6,staff,payroll:0,facilityDebt:0,legends:[]};
       t.payroll=t.staff.reduce((s,x)=>s+x.salary,0);
       ng.world.teams.push(t);
     }
@@ -792,6 +792,10 @@ function migrateState(state){
   }
   if((state.version||1)<12){           // Phase 10: per-player traits (p.mot/p.comp). Structural
     state.version=12;                  // no-op — absence reads as average (TRAIT_DEF) until set.
+  }
+  if((state.version||1)<13){           // Phase 11: program legacy. Backfill an empty Ring of Honor
+    state.world.teams.forEach(t=>{if(!Array.isArray(t.legends))t.legends=[];});  // (career/peakOv
+    state.version=13;                  // absent → zero/none; honors already persist; aura reads 0).
   }
   return state;
 }
@@ -889,6 +893,7 @@ function startSeason(){
   S.world.teams.forEach(t=>t.rec=emptyRec());
   S.weeklyHonors=[];
   S.phase='Regular Season';S.week=1;S.lastPlayedWeek=0;
+  S.world.teams.forEach(t=>(t.legends||[]).forEach(l=>l.app=LEGEND_APPS));   // refresh alumni appearances
   initRecruiting();
   recomputeRanks(S.world);
   setWeeklyTask();
@@ -1091,6 +1096,9 @@ function recruitFit(team,rec){
   // AI geography (Phase 8): an in-state program is a stronger fit. Guarded so home-state-less
   // teams (the recruit lab) are unaffected. The player also feels this via coach.homeState.
   if(team.homeState&&rec.st&&team.homeState===rec.st)fac+=0.10;
+  // Program legacy (Phase 11): a storied Ring of Honor draws talent on name alone. Small + clamped
+  // so it complements prestige, never replaces it. Guarded so legend-less teams (recruit lab) unaffected.
+  if(team.legends&&team.legends.length)fac+=legacyAura(team);
   return clamp(prox+need+fac,0,1.2);
 }
 // Class-ranking value of a landed prospect, and a team's total class score (landed value + a
@@ -1178,6 +1186,12 @@ function advanceRecruiting(pool,teams,week,weeks,seed){
 
 // Class ladder: each step advances one year; SR / RS-SR graduate (→ null = off the roster).
 const NEXT_CLASS={"FR":"SO","RS-FR":"RS-SO","SO":"JR","RS-SO":"RS-JR","JR":"SR","RS-JR":"RS-SR","SR":null,"RS-SR":null};
+// Phase 11: the milestone-relevant box keys we accumulate into p.career (so a graduate can be
+// measured by a whole career, not one season). Summed from p.gs at each rollover before gs is wiped.
+const CAREER_KEYS=["gp","pYds","pTD","rYds","rTD","reYds","reTD","tkl","sk","dInt"];
+// Fold one season's box (gs) into a running career total. Pure; returns the new career object.
+function addCareer(career,gs){const c=Object.assign({},career||{});
+  for(const k of CAREER_KEYS)if(gs[k])c[k]=(c[k]||0)+gs[k];return c;}
 // How fast a class develops toward its ceiling — youth grows fastest, upperclassmen plateau.
 const DEV_YOUTH={"FR":1,"RS-FR":1,"SO":0.85,"RS-SO":0.85,"JR":0.6,"RS-JR":0.6,"SR":0.35,"RS-SR":0.35};
 // Grow one player's ov toward pot over an offseason. `rate` (~0.8–1.2) folds in facilities/coach.
@@ -1232,11 +1246,16 @@ function rolloverRoster(roster,signees,prestige,r,opts){
   const graduated=[],cont=[];
   roster.forEach(src=>{
     const p=Object.assign({},src);
+    // Phase 11: accumulate career milestone totals + peak OVR for EVERY player (incl. graduates),
+    // from last season's box, BEFORE it's wiped — so legends carry real lifetime résumés.
+    if(p.gs)p.career=addCareer(p.career,p.gs);
+    p.peakOv=Math.max(p.peakOv||0,p.ov||0);
     const nx=(p.yr in NEXT_CLASS)?NEXT_CLASS[p.yr]:p.yr;
-    if(nx===null){graduated.push(p);return;}
+    if(nx===null){graduated.push(p);return;}        // graduate keeps p.gs as its final-season box
     p.yr=nx;p.age=(p.age||18)+1;
     if('gs' in p)delete p.gs;                       // fresh slate — no season-stat carryover
     p.dev=developPlayer(p,r,rateOf(p));             // record this offseason's OVR gain (UI surfaces it)
+    p.peakOv=Math.max(p.peakOv,p.ov);               // peak reflects post-development OVR too
     cont.push(p);
   });
   const freshmen=(signees||[]).map(s=>recruitToFreshman(s,r));
@@ -1318,6 +1337,30 @@ function genCoachMarket(seed,year,world){
       tier:role.tier,scope,groups,boost:coachBoost(role.tier,rating)});
   }
   out.sort((a,b)=>b.rating-a.rating);
+  // Phase 11: fold in any legend-coach candidates (retired greats returning to their alma mater).
+  const legs=legendCoachCandidates(world,year,r);
+  if(legs.length){legs.forEach(c=>out.push(c));out.sort((a,b)=>b.rating-a.rating);}
+  return out;
+}
+// Phase 11: occasionally a program's retired great re-enters the market as a candidate FOR their alma
+// mater (flagged fromLegend/legendOf for the UI). Coordinator candidate matching the side they played;
+// rating is influenced by stature (a great player is a plausible — not sure-thing — coach). Guarded so
+// legend-less worlds (the econ lab) consume no rng and stay byte-identical. Deterministic by (seed,year).
+function legendCoachCandidates(world,year,r){
+  const out=[];
+  ((world&&world.teams)||[]).forEach(t=>{
+    const ring=(t.legends||[]).filter(l=>(l.stature||0)>=40);   // only real greats consider coaching
+    if(!ring.length||r()>0.12)return;
+    const l=ring.slice().sort((a,b)=>(b.stature||0)-(a.stature||0))[0];
+    const side=(POS.find(p=>p[0]===l.pos)||['','off'])[1];
+    const role=COORD_ROLES.find(c=>c[2]===side)||COORD_ROLES[0];
+    const rating=clamp(Math.round(50+(l.stature||0)*0.32+ri(r,-12,12)),45,92);
+    out.push({id:'leg'+year.toString(36)+(l.id||t.id),role:role[0],title:role[1],
+      name:l.name,rating,salary:Math.max(120000,Math.round(rating*8500+150000)),years:ri(r,2,4),
+      tier:'coord',scope:{off:'OFF',def:'DEF',st:'ST'}[role[2]],
+      groups:POS.filter(p=>p[1]===role[2]).map(p=>p[0]),boost:coachBoost('coord',rating),
+      fromLegend:true,legendOf:t.id});
+  });
   return out;
 }
 // Buyout to fire a coach early (≈ half the remaining contract). Hire fee = a small signing bonus.
@@ -1426,6 +1469,79 @@ function computeAwards(teams,year){
 }
 // === AWARDS ENGINE (Phase 8) END ===
 
+// === LEGACY ENGINE (Phase 11) START ===
+// Pure, deterministic program-legacy model: how big a graduate's legend is, the standing recruiting
+// aura a deep Ring of Honor confers, and the interest math behind an alumni visit. Depends only on
+// data arrays (POS) + clamp — no rng, no DOM, no S — so test/legacylab.js can extract + validate it
+// offline. The "snapshot" it scores is { honors:[{year,award}], career:{…totals}, peakOv } — the lean
+// shape stored in team.legends, built from a graduating Player by the app layer (enshrineLegends).
+//
+// Stature blends three saturating components so no single axis runs away: trophies (honorWeight),
+// career stat milestones (a compiler with no trophies can still be a great), and peak OVR (a 99 in a
+// down era still reads as a legend). History is EARNED — there is no seeding; a fresh dynasty's ring
+// is empty and fills as your stars graduate.
+
+// Points per honor (matched against the labels stampHonors writes). National hardware ranks highest.
+function honorWeight(award){
+  if(!award)return 0;
+  if(award.indexOf('Heisman')>=0)return 100;            // National POY
+  if(award.indexOf('National Defensive POY')>=0)return 80;
+  if(award==='All-American')return 55;
+  if(award.indexOf('Freshman of the Year')>=0)return 20;
+  if(award.indexOf('POY')>=0)return 45;                 // conference Offensive/Defensive POY
+  if(award.indexOf('All-')===0)return 25;               // first-team All-Conference
+  return 10;
+}
+// Raw career-milestone score from accumulated box totals — rewards compilers (no trophies needed).
+function careerScore(career){const c=career||{};
+  return (c.pYds||0)*0.004+(c.pTD||0)*1.2+(c.rYds||0)*0.012+(c.rTD||0)*1.5
+    +(c.reYds||0)*0.012+(c.reTD||0)*1.5+(c.tkl||0)*0.12+(c.sk||0)*1.5+(c.dInt||0)*2.5;}
+const LEGEND_TIERS=[[75,'Immortal'],[55,'All-Time Great'],[35,'Program Great'],[0,'Cult Hero']];
+function legendTier(score){for(const [bar,name] of LEGEND_TIERS)if(score>=bar)return name;return 'Cult Hero';}
+// 0..100 stature score for a lean legend snapshot. Each component saturates toward its own ceiling.
+function legendStature(snap){
+  snap=snap||{};
+  const honorSum=(snap.honors||[]).reduce((s,h)=>s+honorWeight(h.award||h),0);
+  const honorComp=55*(honorSum/(honorSum+90));                 // trophies, soft-capped ~55
+  const cs=careerScore(snap.career);
+  const careerComp=30*(cs/(cs+30));                            // milestones, soft-capped ~30
+  const peakComp=clamp(((snap.peakOv||0)-70)/29,0,1)*25;       // peak OVR, 70..99 → 0..25
+  const score=Math.round(clamp(honorComp+careerComp+peakComp,0,100));
+  return {score,tier:legendTier(score)};
+}
+// Worthy of the Ring of Honor: at least one real honor, OR a stature past a bar (keeps it notable).
+function isLegendWorthy(snap){
+  if(snap&&snap.honors&&snap.honors.length)return true;
+  return legendStature(snap).score>=32;
+}
+// Merge new inductees into a ring and keep only the top `cap` by stature (all-time best survive).
+function enshrineInto(legends,snaps,cap){
+  const out=(legends||[]).concat(snaps||[]);
+  out.sort((a,b)=>(b.stature||0)-(a.stature||0));
+  return out.slice(0,cap||12);
+}
+// Standing recruiting aura from the depth+quality of a program's ring (small, complements prestige).
+function legacyAura(team){
+  const ls=(team&&team.legends)||[];
+  if(!ls.length)return 0;
+  const sum=ls.slice().sort((a,b)=>(b.stature||0)-(a.stature||0)).slice(0,6)
+    .reduce((s,l)=>s+(l.stature||0),0);
+  return clamp(sum/600,0,0.12);                               // ≤ +0.12 recruitFit, never replaces prestige
+}
+function legSide(code){const p=POS.find(x=>x[0]===code);return p?p[1]:'off';}
+// How relevant a legend is to a given recruit: position match + same-side partial + home-state tie.
+function alumniRelevance(legend,rec){
+  let rel=legend.pos===rec.pos?1:(legSide(legend.pos)===legSide(rec.pos)?0.6:0.35);
+  if(legend.st&&rec.st&&legend.st===rec.st)rel+=0.3;
+  return clamp(rel,0,1.4);
+}
+// Interest boost from deploying a legend on a recruit: stature × relevance × coach amplifier (pure).
+function alumniBoost(legend,rec,coachMod){
+  const st01=clamp((legend.stature||0)/100,0,1);
+  return 20*(0.4+st01)*alumniRelevance(legend,rec)*(coachMod||1);
+}
+// === LEGACY ENGINE (Phase 11) END ===
+
 // In-game coach identity (Phase 7): a small, side-specific rating edge the controlled team plays
 // with — Motivator effort + Former Player respect + Coordinator game-planning lift both sides;
 // Offensive/Defensive Genius sharpen their own side. AI teams get none (z). Applied OUTSIDE the
@@ -1531,9 +1647,10 @@ function stampHonors(aw){
   give(aw.poyDef,'National Defensive POY');
   give(aw.freshman,'Freshman of the Year');
   (aw.allAmerican||[]).forEach(a=>give(a,'All-American'));
-  const me=controlled();
-  ((aw.allConference||{})[me.conf]||[]).forEach(a=>give(a,'All-'+me.conf));   // first-team All-Conference
-  Object.entries(aw.byConf||{}).forEach(([cf,v])=>{if(cf!==me.conf)return;   // stamp the player's conf POYs
+  // Phase 11: stamp EVERY conference's first team + POYs (not just the controlled one), so AI
+  // legends carry real résumés league-wide. Honors stay sparse-stored (only on actual winners).
+  Object.entries(aw.allConference||{}).forEach(([cf,team])=>{(team||[]).forEach(a=>give(a,'All-'+cf));});
+  Object.entries(aw.byConf||{}).forEach(([cf,v])=>{
     give(v.off,cf+' Offensive POY');give(v.def,cf+' Defensive POY');});
 }
 function endSeason(){
@@ -1597,6 +1714,24 @@ function resolvePromises(teamId,r){
   });
   return departed;
 }
+// Per-season alumni appearances a legend can make (reset at kickoff). Limited resource.
+const LEGEND_APPS=2;
+// Build a lean Ring-of-Honor snapshot from a graduating Player (no Player object / per-play data).
+function legendSnap(p,toYear){
+  const classYears=(p.yr||'').indexOf('RS')>=0?5:4;       // RS seniors spent ~5 yrs on campus
+  const honors=(p.honors||[]).slice();
+  const stat=legendStature({honors,career:p.career||{},peakOv:p.peakOv||p.ov||0});
+  return {id:p.id,name:p.fn+' '+p.ln,pos:p.pos,st:p.st,
+    from:toYear-classYears,to:toYear,peakOv:p.peakOv||p.ov||0,
+    honors,career:p.career||{},stature:stat.score,tier:stat.tier,app:0};
+}
+// Enshrine a team's worthy graduates into its Ring of Honor (top 12 all-time by stature survive).
+// Returns the freshly inducted snapshots so the controlled team can surface them in the recap.
+function enshrineLegends(team,graduated,toYear){
+  const worthy=(graduated||[]).map(p=>legendSnap(p,toYear)).filter(isLegendWorthy);
+  if(worthy.length)team.legends=enshrineInto(team.legends||[],worthy,12);
+  return worthy;
+}
 // Season rollover (Offseason → next Preseason). Graduates seniors, develops + ages every roster,
 // turns each team's recruiting signees into freshmen, honors/breaks the controlled team's promises,
 // then resets the season fields so the next kickoff rebuilds the schedule + a fresh recruiting cycle.
@@ -1608,11 +1743,13 @@ function rolloverSeason(){
   // (A) Finances settle once a year for EVERY team (uses last season's record, before it resets).
   const yr=S.year||2026;
   S.world.teams.forEach(t=>resolveFinances(t,yr,S.seed,t.id===me?mgrFinanceMult():1));  // Manager runs a tighter books
-  let summary=null;
+  let summary=null,myInducted=[];
   S.world.teams.forEach(t=>{
     const res=rolloverRoster(t.roster,signeesBy[t.id]||[],t.prestige,r,{rateFor:p=>devRateFor(t,p)});
     t.roster=res.roster;
-    if(t.id===me)summary=res;
+    // Phase 11: enshrine this team's worthy graduates into its Ring of Honor (league-wide).
+    const inducted=enshrineLegends(t,res.graduated,yr);
+    if(t.id===me){summary=res;myInducted=inducted;}
   });
   // (C) Coaching carousel: AI churn + possible poach of a player coordinator, then market refresh.
   ensureCoachMarket();
@@ -1634,7 +1771,8 @@ function rolloverSeason(){
     graduated:summary?summary.graduated.length:0,
     tracked:summary?summary.trackedCount:0,
     freshmen:nf,departed,
-    finances:controlled().lastFinances||null,poached:poachedMine};
+    finances:controlled().lastFinances||null,poached:poachedMine,
+    inducted:myInducted.map(l=>({name:l.name,pos:l.pos,tier:l.tier,stature:l.stature}))};
   autosave();
 }
 
@@ -1796,7 +1934,7 @@ function declineSeriesOffer(offerId){S.seriesOffers=(S.seriesOffers||[]).filter(
    The pure engine (genRecruits/advanceRecruiting/coachMods/…) lives in the RECRUIT ENGINE
    block above; this layer owns S.recruiting, the points economy, and the five player actions.
    ============================================================ */
-const RECRUIT_COSTS={scout:2,pitch:3,visit:5,promise:4};   // offer is free (uses a board slot)
+const RECRUIT_COSTS={scout:2,pitch:3,visit:5,promise:4,alumni:4};   // offer is free (uses a board slot)
 function myMods(){return coachMods(S.coach);}
 function weeklyPoints(){const t=controlled(),m=myMods();
   return Math.max(4,Math.round(REC.BASE_POINTS+m.points+t.prestige/20));}
@@ -1865,6 +2003,25 @@ function promiseRecruit(rec,type){if(rec.promise){toast('Already made a promise'
   if(m.homeState&&rec.st===m.homeState)gain*=m.homeBonus;
   bumpInterest(rec,gain);rec.promise={type};autosave();return true;}
 function bumpInterest(rec,gain){rec.iv[S.teamId]=clamp((rec.iv[S.teamId]||0)+gain,0,100);}
+/* ---- alumni visit (Phase 11): deploy a program legend to recruit a prospect ---- */
+// Coach amplifier: Former Player owns the alumni network; High School Legend pulls home-state alumni.
+function alumniCoachMod(legend){const c=S.coach||{};let m=1;
+  if(c.history==='Former Player')m*=1.4;
+  if(c.history==='High School Legend'&&legend.st&&legend.st===c.homeState)m*=1.5;
+  return m;}
+function myLegends(){return controlled().legends||[];}
+// Legends with appearances left, most relevant to this recruit first (the picker's source list).
+function availableLegends(rec){
+  return myLegends().filter(l=>(l.app||0)>0)
+    .map(l=>({l,rel:alumniRelevance(l,rec)})).sort((a,b)=>b.rel-a.rel).map(x=>x.l);}
+function alumniVisit(rec,legend){
+  if(rec.alumni){toast('An alum already hosted this recruit');return false;}
+  if(!legend||(legend.app||0)<=0){toast('No appearances left for that alum');return false;}
+  if(!spend(RECRUIT_COSTS.alumni))return false;
+  bumpInterest(rec,alumniBoost(legend,rec,alumniCoachMod(legend)));
+  legend.app=(legend.app||0)-1;            // spend one appearance
+  rec.alumni=legend.id;                    // one alumni visit per recruit (no stacking)
+  autosave();return true;}
 // A "game-day visit" lands more: the controlled team has a home game this week.
 function isGameDayVisit(){const g=teamGame(S.teamId,S.week);return !!(g&&g.home===S.teamId&&!g.played);}
 // Result of a game from one team's perspective, formatted for the UI.
@@ -2037,10 +2194,12 @@ function renderHome(app){
     const dep=o.departed&&o.departed.length?`<div class="muted" style="font-size:12px;margin-top:6px">Transfers out (broken promises): ${o.departed.map(d=>d.name+' ('+d.pos+')').join(', ')}</div>`:'';
     const poa=o.poached&&o.poached.length?`<div class="muted bad" style="font-size:12px;margin-top:6px">Coordinators poached: ${o.poached.map(p=>p.name+' ('+p.role+')').join(', ')}</div>`:'';
     const fin=o.finances?`<div class="row spread" style="margin-top:4px"><span>Finances net</span><span class="cond ${o.finances.net<0?'bad':'good'}" style="font-weight:800">${money(o.finances.net)}</span></div>`:'';
+    // Phase 11: new Ring of Honor inductees from the class that just graduated
+    const ind=o.inducted&&o.inducted.length?`<div class="muted" style="font-size:12px;margin-top:6px">⭐ Enshrined: ${o.inducted.map(i=>i.name+' ('+i.tier+')').join(', ')}</div>`:'';
     rc.innerHTML=`<div class="meta dim" style="margin-bottom:6px">Offseason recap</div>
       <div class="row spread"><span>Seniors graduated</span><span class="cond" style="font-weight:800">${o.graduated}</span></div>
       <div class="row spread"><span>Recruits enrolled</span><span class="cond" style="font-weight:800">${o.tracked}</span></div>
-      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${fin}${dep}${poa}`;
+      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${fin}${dep}${poa}${ind}`;
     v.append(rc);
   }
   if(inSeason||over){const sb=el('button','btn line','Season \u00b7 schedule & standings');sb.style.marginTop='10px';
@@ -2120,7 +2279,63 @@ function renderProgram(app){
   const r=el('div','ranks');
   r.append(rankPill(t.ratings.ovr,'Overall'),rankPill(t.ratings.off,'Offense'),rankPill(t.ratings.def,'Defense'));
   v.append(r);
+  ringOfHonor(v,t);
   app.append(v);
+}
+// Phase 11: the program's Ring of Honor — permanent legends earned from played seasons (league-wide,
+// AI included). Sorted by stature; empty-state explains history accrues as your stars graduate.
+function ringOfHonor(v,t){
+  const legs=(t.legends||[]).slice().sort((a,b)=>(b.stature||0)-(a.stature||0));
+  const aura=legacyAura(t);
+  const head=el('div','row spread');head.style.margin='22px 2px 8px';
+  head.innerHTML=`<h2 class="sec" style="margin:0">Ring of Honor</h2>`+
+    (legs.length?`<span class="meta dim">Legacy aura +${Math.round(aura*1000)/10}%</span>`:'');
+  v.append(head);
+  if(!legs.length){
+    v.append(el('div','empty','No legends yet.\nNotable players who graduate are enshrined here forever — your history accrues as your stars finish their careers.'));
+    return;
+  }
+  legs.forEach(l=>v.append(legendRow(l)));
+}
+function legendRow(l){
+  const d=el('div','lrow');d.dataset.id='legend-'+l.id;
+  const hon=(l.honors||[]).length?(l.honors.length+' honor'+(l.honors.length===1?'':'s')):'—';
+  d.innerHTML=`<div class="row spread" style="gap:8px">
+      <div style="min-width:0">
+        <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.name}
+          <span class="dim" style="font-weight:400">${l.pos} · ${l.st||''}</span></div>
+        <div class="meta dim">${l.from}–${l.to} · peak ${l.peakOv} OVR · ${hon}</div></div>
+      <div style="text-align:right;flex:none">
+        <div class="tag accent" style="font-size:10px">${l.tier}</div>
+        <div class="cond" style="font-weight:800;font-size:18px">${l.stature}</div></div></div>`;
+  d.onclick=()=>legendSheet(l);
+  return d;
+}
+// A legend's full résumé: era, peak, stature tier, and every honor earned across their career.
+function legendSheet(l){
+  const body=el('div');
+  body.innerHTML=`<div class="row spread" style="margin-bottom:8px">
+      <span class="tag accent">${l.tier}</span><span class="meta">${l.pos} · ${l.st||''}</span></div>
+    <div class="kv"><span class="k">Era</span><span>${l.from}–${l.to}</span></div>
+    <div class="kv"><span class="k">Peak OVR</span><span>${l.peakOv}</span></div>
+    <div class="kv"><span class="k">Stature</span><span>${l.stature} / 100</span></div>`;
+  const c=l.career||{},lines=[];
+  if(c.pYds)lines.push(`${c.pYds.toLocaleString()} career pass yds${c.pTD?', '+c.pTD+' TD':''}`);
+  if(c.rYds)lines.push(`${c.rYds.toLocaleString()} career rush yds${c.rTD?', '+c.rTD+' TD':''}`);
+  if(c.reYds)lines.push(`${c.reYds.toLocaleString()} career rec yds${c.reTD?', '+c.reTD+' TD':''}`);
+  if(c.tkl)lines.push(`${c.tkl} career tackles`);
+  if(c.sk)lines.push(`${c.sk} career sacks`);
+  if(c.dInt)lines.push(`${c.dInt} career INTs`);
+  if(lines.length)body.append(el('div','card',`<div class="meta dim" style="margin-bottom:6px">Career</div>${lines.map(x=>'<div class="meta">'+x+'</div>').join('')}`));
+  const hon=(l.honors||[]);
+  if(hon.length){
+    body.append(el('h2','sec','Honors'));
+    const wrap=el('div');
+    hon.slice().sort((a,b)=>(b.year||0)-(a.year||0)).forEach(h=>
+      wrap.append(el('div','row spread',`<span class="meta">${h.award}</span><span class="meta dim">${h.year}</span>`)));
+    body.append(wrap);
+  }
+  openSheet(l.name,body);
 }
 // A facility row with its level bar + an Upgrade (cost) button (cash, or finance on credit).
 function facUpgradeRow(t,label,key,manage){
@@ -2590,6 +2805,14 @@ function recruitSheet(rec){
       prom.onclick=()=>{if(promiseRecruit(rec,'playingTime')){closeSheet();render();recruitSheet(rec);toast('Promise made — honor it in the offseason');}};
       g2.append(visit,prom);
       body.append(g1,g2);
+      // Phase 11: alumni visit — deploy a program legend (limited appearances) to recruit this prospect.
+      const avail=availableLegends(rec);
+      if(rec.alumni||avail.length){
+        const al=el('button','btn sm ghost',rec.alumni?'Alum hosted ✓':'Alumni visit · '+RECRUIT_COSTS.alumni);
+        al.dataset.tid='rec-alumni';al.disabled=!!rec.alumni||!avail.length;al.style.marginTop='9px';
+        al.onclick=()=>alumniSheet(rec);
+        body.append(al);
+      }
       const drop=el('button','btn sm line','Drop from board');drop.style.marginTop='9px';drop.dataset.tid='rec-drop';
       drop.onclick=()=>{dropRecruit(rec);closeSheet();render();toast('Dropped from board');};
       body.append(drop,el('div','hint center',R.points+' recruiting points left this week'));
@@ -2612,6 +2835,25 @@ function pitchSheet(rec){
   });
   body.append(choice);
   openSheet('Pitch — '+rec.ln,body);
+}
+// Phase 11: pick a program legend to send on an alumni visit. Sorted by relevance to this recruit;
+// each shows tier, position, home-state tie, and appearances left. Most relevant alum on top.
+function alumniSheet(rec){
+  const body=el('div'),avail=availableLegends(rec);
+  body.append(el('div','hint','Send a program legend to recruit '+rec.fn+' '+rec.ln+'. A relevant alum — same position or home state — lands hardest.'));
+  const choice=el('div','choice');choice.style.marginTop='10px';
+  avail.forEach(l=>{
+    const posMatch=l.pos===rec.pos, stTie=l.st&&l.st===rec.st;
+    const tag=posMatch?'<span class="cap">POSITION</span>':(legSide(l.pos)===legSide(rec.pos)?'<span class="cap">SAME SIDE</span>':'');
+    const b=el('button','opt'+(posMatch||stTie?' on':''));b.dataset.tid='alum-'+l.id;
+    b.innerHTML=`<div class="t">${l.name} <span class="dim" style="font-weight:400">${l.pos} · ${l.tier?'':''}</span> ${tag} ${stTie?'<span class="cap">'+l.st+'</span>':''}</div>
+      <div class="d">${l.tier} · ${l.from}–${l.to} · ${l.app} visit${l.app===1?'':'s'} left</div>`;
+    b.onclick=()=>{if(alumniVisit(rec,l)){closeSheet();render();recruitSheet(rec);toast(l.name+' hosted '+rec.ln+' on campus');}};
+    choice.append(b);
+  });
+  if(!avail.length)body.append(el('div','empty','No legends with appearances left.'));
+  body.append(choice);
+  openSheet('Alumni visit — '+rec.ln,body);
 }
 
 /* ============================================================
@@ -2914,9 +3156,10 @@ function carouselSheet(t,slotRole){
     if(!cands.length){listWrap.append(el('div','empty','No matching free agents right now.'));return;}
     cands.slice(0,40).forEach(c=>{
       const fee=hireCost(c);
+      const alum=c.fromLegend&&c.legendOf===t.id;   // Phase 11: a returning program legend
       const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=c.id;
       row.innerHTML=`<div class="ovr ${c.rating>=80?'elite':''}">${c.rating}</div>
-        <div style="flex:1"><div class="nm">${c.name}</div>
+        <div style="flex:1"><div class="nm">${c.name} ${alum?'<span class="cap">ALUM</span>':''}</div>
         <div class="meta">${c.title} · ${money(c.salary)}/yr · +${c.boost} boost</div></div>
         <div class="tag accent" style="flex:none">Hire ${money(fee)}</div>`;
       row.onclick=()=>{

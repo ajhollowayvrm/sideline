@@ -439,7 +439,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 12 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 13 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -455,8 +455,8 @@ function startServer() {
   await page.waitForTimeout(150);
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
-  const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState }));
-  check('Migration: v1 save upgrades to current version (v12)', mig.v === 12, 'version=' + mig.v);
+  const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends }));
+  check('Migration: v1 save upgrades to current version (v13)', mig.v === 13, 'version=' + mig.v);
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
   check('Migration: staff backfilled (tier/boost)', mig.tier != null && mig.boost != null, JSON.stringify({ tier: mig.tier, boost: mig.boost }));
   check('Migration: season fields backfilled (records, null schedule)', mig.rec && mig.rec.w === 0 && mig.rec.l === 0 && mig.sched === null, JSON.stringify(mig.rec));
@@ -466,6 +466,7 @@ function startServer() {
   check('Migration: lastFinances backfilled (null until settled, v7→v8)', mig.lastFinances === null, JSON.stringify(mig.lastFinances));
   check('Migration: awards/series backfilled + homeState (v9→v10)', Array.isArray(mig.awards) && Array.isArray(mig.series) && !!mig.homeState, JSON.stringify({ aw: mig.awards.length, sr: mig.series.length, st: mig.homeState }));
   check('Migration: seriesOffers backfilled (null until offseason, v10→v11)', mig.seriesOffers === null, JSON.stringify(mig.seriesOffers));
+  check('Migration: Ring of Honor backfilled (empty array, v12→v13)', Array.isArray(mig.legends) && mig.legends.length === 0, JSON.stringify(mig.legends));
 
   // ---------- DELETE with confirm ----------
   await page.goto(BASE, { waitUntil: 'networkidle' }); // clean reload (no ?reset)
@@ -616,15 +617,21 @@ function startServer() {
       marketSize: S.coachMarket ? S.coachMarket.length : 0,
       myDev: t.roster.filter(p => p.dev > 0).length, devNeverPastPot: t.roster.every(p => p.ov <= p.pot),
       honoredAfter: S.world.teams.reduce((n, x) => n + x.roster.filter(p => p.honors && p.honors.length).length, 0),
-      seriesKept: (S.series || []).length, awardsKept: (S.awards || []).length
+      seriesKept: (S.series || []).length, awardsKept: (S.awards || []).length,
+      careerPlayers: S.world.teams.reduce((n, x) => n + x.roster.filter(p => p.career).length, 0),
+      ringTotal: S.world.teams.reduce((n, x) => n + (x.legends ? x.legends.length : 0), 0),
+      ringValid: S.world.teams.every(x => !x.legends || x.legends.length <= 12)
     };
   });
   check('Rollover: advances to the next calendar year', roPost.year === roPre.year + 1, `${roPre.year} → ${roPost.year}`);
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
-  check('Rollover: save version bumped to 12', roPost.version === 12, 'v' + roPost.version);
+  check('Rollover: save version bumped to 13', roPost.version === 13, 'v' + roPost.version);
   check('Phase 8: player honors survive the rollover', roPost.honoredAfter > 0, roPost.honoredAfter + ' still honored');
   check('Phase 8: series + awards history persist across the rollover', roPost.seriesKept > 0 && roPost.awardsKept > 0, `series ${roPost.seriesKept}, awards ${roPost.awardsKept}`);
+  check('Phase 11: career totals accrue across the rollover', roPost.careerPlayers > 50, roPost.careerPlayers + ' players carry a career');
+  check('Phase 11: notable graduates enshrined into Rings of Honor (league-wide)', roPost.ringTotal > 0, roPost.ringTotal + ' legends league-wide');
+  check('Phase 11: no Ring of Honor exceeds the 12-legend cap', roPost.ringValid);
   check('Rollover: signed class enrolled as freshmen', roPost.myFresh === roPre.myClass && roPost.myFresh > 0, `${roPost.myFresh} enrolled (class ${roPre.myClass})`);
   check('Rollover: roster holds at ~84 league-wide', roPost.sizesOk && roPost.myRosterN >= 78 && roPost.myRosterN <= 96, 'mine ' + roPost.myRosterN);
   check('Rollover: last season stats wiped (no p.gs carryover)', roPost.statPlayers === 0, roPost.statPlayers + ' players still carry stats');
@@ -705,6 +712,39 @@ function startServer() {
     seriesGames: S.schedule ? S.schedule.games.filter(g => g.series).length : 0,
     mySeriesGame: S.schedule ? S.schedule.games.some(g => g.series && (g.home === S.teamId || g.away === S.teamId)) : false }));
   check('Rollover: next season kicks off cleanly (schedule + fresh recruiting cycle)', next.phase === 'Regular Season' && next.week === 1 && next.sched && next.pool > 0, `pool ${next.pool}`);
+
+  // ---------- PHASE 11: alumni visit + legacy aura (integrated) ----------
+  // Inject a high-stature legend onto the controlled team (with appearances refreshed at kickoff),
+  // then drive the alumni-visit action on a board prospect and confirm interest rises + an
+  // appearance is spent, and that a deep ring nudges recruitFit upward.
+  const leg = await page.evaluate(() => {
+    const t = controlled();
+    // craft a legend perfectly relevant to a real uncommitted prospect, with appearances available
+    const rec = S.recruiting.pool.find(r => !r.committedTo);
+    t.legends = [{ id: 'qaLeg', name: 'QA Legend', pos: rec.pos, st: rec.st, peakOv: 95, from: S.year - 5, to: S.year - 1, honors: [{ year: S.year - 1, award: 'Heisman (National POY)' }], career: { rYds: 6000, rTD: 60 }, stature: 95, tier: 'Immortal', app: LEGEND_APPS }];
+    offerRecruit(rec);                                    // put them on the board so we can work them
+    S.recruiting.points = 50;                             // ensure points to spend
+    const before = Math.round(rec.iv[S.teamId] || 0), appBefore = t.legends[0].app;
+    const avail = availableLegends(rec).length;
+    const ok = alumniVisit(rec, t.legends[0]);
+    const after = Math.round(rec.iv[S.teamId] || 0);
+    // aura: recruitFit on an unsaturated scenario (mid prestige vs a 4★) — with vs without the ring
+    const probe = { stars: 4, pos: 'WR', st: 'XX', prefs: [] };
+    const withRing = Object.assign({}, t, { prestige: 55, homeState: '', legends: t.legends });
+    const noRing = Object.assign({}, t, { prestige: 55, homeState: '', legends: [] });
+    const fitWith = recruitFit(withRing, probe), fitWithout = recruitFit(noRing, probe);
+    return { ok, before, after, appBefore, appAfter: t.legends[0].app, avail, recAlumni: rec.alumni, aura: legacyAura(t), fitWith, fitWithout };
+  });
+  check('Phase 11: an alumni visit is available when a relevant legend has appearances', leg.avail >= 1, leg.avail + ' available');
+  check('Phase 11: alumni visit raises recruit interest', leg.ok && leg.after > leg.before, `${leg.before}→${leg.after}`);
+  check('Phase 11: alumni visit spends one appearance', leg.appAfter === leg.appBefore - 1, `${leg.appBefore}→${leg.appAfter}`);
+  check('Phase 11: alumni visit is recorded on the recruit (no stacking)', leg.recAlumni === 'qaLeg');
+  check('Phase 11: a deep Ring of Honor nudges recruitFit (legacy aura)', leg.fitWith > leg.fitWithout, `${leg.fitWith.toFixed(3)} vs ${leg.fitWithout.toFixed(3)}`);
+  // Ring of Honor renders on the Program page
+  await page.evaluate(() => { UI.view = 'program'; render(); });
+  await page.waitForTimeout(120);
+  const ringUI = await page.evaluate(() => { const el = document.querySelector('[data-id="legend-qaLeg"]'); return { shown: !!el, text: el ? el.innerText : '' }; });
+  check('Phase 11: Ring of Honor lists legends on the Program page', ringUI.shown && /QA Legend/.test(ringUI.text), ringUI.text.replace(/\n/g, ' ').slice(0, 60));
   check('Phase 8: booked series appears in the next schedule (locked leg)', next.seriesGames > 0 && next.mySeriesGame, `${next.seriesGames} series games`);
 
   // ---------- PHASE 9: storage codec (columnar rosters, deploy-safe round-trip) ----------

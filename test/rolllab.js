@@ -196,6 +196,38 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('rateFor records growth on the player (p.dev)', ret.some(p => p.dev > 0) && ret.filter(p => sideOf(p.pos) === 'def').every(p => !p.dev));
 })();
 
+/* 9) career accumulation (Phase 11): p.career sums milestone keys across seasons; gs still wiped */
+(function () {
+  const r = rng(2030);
+  let roster = genRoster(r, 75);
+  const tracked = roster.find(p => p.yr === 'SO');   // a returner we can follow across two seasons
+  const id = tracked.id;
+  // season 1 box, then roll
+  roster.forEach(p => { p.gs = { gp: 12, pYds: 0, rYds: 800, rTD: 9, tkl: 0 }; });
+  roster = rolloverRoster(roster, [], 75, r, { rate: 1 }).roster;
+  const after1 = roster.find(p => p.id === id);
+  check('Career accrues after one season (rYds summed from gs)', after1 && after1.career && after1.career.rYds === 800, after1 ? JSON.stringify(after1.career) : 'gone');
+  check('Continuing player has no gs after rollover (still wiped)', after1 && !after1.gs);
+  check('peakOv recorded and ≥ current ov', after1 && after1.peakOv >= after1.ov);
+  // season 2 box, then roll again — career must add, not replace
+  roster.forEach(p => { p.gs = { gp: 13, rYds: 1000, rTD: 11 }; });
+  roster = rolloverRoster(roster, [], 75, r, { rate: 1 }).roster;
+  const after2 = roster.find(p => p.id === id);
+  check('Career accumulates across seasons (rYds 800+1000=1800)', after2 && after2.career.rYds === 1800, after2 ? after2.career.rYds + '' : 'gone');
+  check('Career TD totals accumulate (9+11=20)', after2 && after2.career.rTD === 20, after2 ? after2.career.rTD + '' : 'gone');
+})();
+
+/* 10) graduates carry a full career incl. their final season */
+(function () {
+  const r = rng(2031);
+  const roster = genRoster(r, 80);
+  roster.forEach(p => { p.gs = { gp: 12, reYds: 1200, reTD: 10 }; p.career = { reYds: 3000, reTD: 25 }; });
+  const res = rolloverRoster(roster, [], 80, r, { rate: 1 });
+  const grad = res.graduated[0];
+  check('Graduate career includes final season (reYds 3000+1200)', grad && grad.career.reYds === 4200, grad ? grad.career.reYds + '' : 'none');
+  check('Graduate still carries its final-season box (gs) for snapshots', grad && grad.gs && grad.gs.reYds === 1200);
+})();
+
 const passed = results.filter(r => r.pass).length;
 console.log(`\n===== ${passed}/${results.length} rollover-lab checks passed =====`);
 process.exit(results.every(r => r.pass) ? 0 : 1);

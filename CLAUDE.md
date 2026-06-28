@@ -110,15 +110,23 @@ plain static files so Pages still serves it with zero config.
   pattern), and sharpen with scouting confidence (recruits) or time-in-program + coaching room
   (roster). Pure fenced `TRAIT ENGINE`, a node lab (`traitlab`) before any UI, save **v12**. See
   "Phase 10 design — player personality" below.
-- **Phase 11 — Program legacy & legends.** 🔵 PLANNED. Notable players who graduate become permanent
-  **program legends** (`team.legends`, league-wide), and history starts to *matter*: a new recruiting
-  action **bring an alum back for a visit** lands harder the more that player accomplished; a deep
-  **Ring of Honor** gives a standing recruiting **aura**; and a retired great can re-enter the
-  **coaching carousel** for their alma mater. Stature blends **honors** (the persisting `p.honors`) +
-  **career stat milestones** (new accumulated `p.career`) + **peak OVR**. **No seeding** — history is
-  earned from played seasons (the feature ramps up as your stars graduate). Pure fenced `LEGACY
-  ENGINE`, a node lab (`legacylab`) before any UI, save **v13**. See "Phase 11 design — program
-  legacy & legends" below.
+- **Phase 11 — Program legacy & legends.** ✅ DONE. Notable players who graduate become permanent
+  **program legends** (`team.legends`, league-wide), and history now *matters* mechanically. Graduates
+  accumulate **career stat milestones** (`p.career`) + **peak OVR** (`p.peakOv`) at each rollover (in the
+  fenced ROLLOVER engine, summed from `p.gs` right before it's wiped); the pure fenced **`LEGACY ENGINE`**
+  scores **stature** (`legendStature`: honors ladder + career milestones + peak, each saturating →
+  *Cult Hero → Program Great → All-Time Great → Immortal*) and `enshrineLegends` banks the **top 12 by
+  stature** per program into `team.legends` at rollover (every team — `stampHonors` now stamps **all**
+  conferences so AI legends carry real résumés). The three payoffs: a deep ring confers a small standing
+  **`legacyAura`** folded into `recruitFit`; a new recruiting action **alumni visit** (`alumniVisit` +
+  `RECRUIT_COSTS.alumni`, each legend carries `app` appearances reset at kickoff) where a relevant alum
+  (`alumniBoost` = stature × position/home-state relevance × Former-Player/HS-Legend coach amp) lands a
+  big interest boost; and **legend-coaches** (`legendCoachCandidates`) occasionally re-enter the carousel
+  for their alma mater (flagged `fromLegend`/`legendOf`, rating off stature). **No seeding** — history is
+  earned from played seasons. UI: a **Ring of Honor** on the Program page, the alumni picker on the
+  recruit sheet, an enshrinement line in the offseason recap, an "Alum" carousel badge. Save **v13**
+  (`team.legends`, `p.career`, `p.peakOv`, `rec.alumni`); `npm run legacylab` (27 checks). See "Phase 11
+  design — program legacy & legends" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast); and
   the recruit board stays **top-300 only** (the long 2–3★ tail is approximated, never individually
@@ -757,7 +765,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **12**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **13**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -767,7 +775,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   `S.series=[]` + per-team `homeState` (from `TEAM_STATE`), with `p.honors` optional (Phase 8
   geography/awards/series); v10→v11 backfills `S.seriesOffers=null` (AI-initiated series offers,
   created when managing); v11→v12 is a structural no-op (per-player traits `p.mot`/`p.comp`, Phase 10
-  — absence reads as average). Each step re-derives ratings/ranks where needed.
+  — absence reads as average); v12→v13 backfills per-team `legends=[]` (Phase 11 Ring of Honor;
+  `p.career`/`p.peakOv` absent read as zero/none, honors already persist). Each step re-derives
+  ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -796,8 +806,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   world: { teams: [ Team, ... ] }
 }
 
-// Recruit: { id, fn, ln, pos, st, stars, ov, pot, spd,str,awr, scout, prefs:[primary,secondary],
-//   iv:{ [teamId]: interest }, committedTo: teamId|null, signed, offered, visited, promise }
+// Recruit: { id, fn, ln, pos, st, stars, ov, pot, spd,str,awr, mot,comp, scout, prefs:[primary,secondary],
+//   iv:{ [teamId]: interest }, committedTo: teamId|null, signed, offered, visited, promise, alumni? }
+//   alumni = id of the legend who already made an alumni visit (Phase 11; one per recruit, no stacking).
 //   ov/pot are fogged in the UI by `recScouted(rec)` (band shrinks with `scout`). `iv` keys are
 //   the prospect's suitors. A team's class = pool.filter(r=>r.committedTo===id).
 
@@ -819,17 +830,25 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   //   scope: display label ("OFF"/"DEF"/"ST" for coords, role code for position coaches)
   natRank, confRank, divRank,
   rec: { w, l, cw, cl, pf, pa, streak },  // season record (overall + conference); set at kickoff
-  needs: { [posCode]: true }           // positions flagged for recruiting
+  needs: { [posCode]: true },          // positions flagged for recruiting
+  legends: [ Legend ]                  // Ring of Honor (Phase 11); enshrined at rollover, capped at 12
 }
+//   Legend: { id, name, pos, st, from, to, peakOv, honors:[{year,award}], career:{…}, stature, tier, app }
+//     a lean snapshot of a graduated great (no Player object); app = alumni-visit appearances left
+//     this season (reset to LEGEND_APPS at kickoff). Sorted by stature; see the LEGACY ENGINE block.
 ```
 
 ### Player object (kept lean for storage)
 ```
-{ id, fn, ln, pos, yr, age, st, stars, ov, pot, cap, spd, str, awr, so }
+{ id, fn, ln, pos, yr, age, st, stars, ov, pot, cap, spd, str, awr, so,
+  mot?, comp?, gs?, dev?, honors?, career?, peakOv? }   // trailing fields are sparse (absent = default)
 //   so = depth order within position (0 = starter); cap = captain
 //   pot = TRUE ceiling (0..99). The UI never shows it raw — `scoutedCeiling(p)` renders a
 //   fuzzy tier/band whose uncertainty shrinks with scouting confidence (age/experience now;
 //   real scouting in Phase 4). `devStage(p)` buckets the ov→pot gap (Raw…Maxed).
+//   mot/comp = fogged temperament traits (Phase 10); gs = season box; dev = last offseason OVR gain.
+//   career = cumulative milestone totals + peakOv = max OVR ever (Phase 11; summed/updated at rollover
+//   right before gs is wiped, for EVERY player on EVERY team — they feed legendStature on graduation).
 ```
 
 Positions: `QB RB WR TE OT OG C  DE DT LB CB S  K P`.
@@ -917,15 +936,17 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
-### Phases 6–9 landed — what used to be stubbed now works
-Phases 1–9 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
+### Phases 6–11 landed — what used to be stubbed now works
+Phases 1–11 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
 loop** + **facility upgrades** (Phase 6), **side-specific development** + **in-game coach effects** +
 **coach-responsive scouting fog** (Phase 7), **AI geography** + **season awards/All-America/Coach of
-the Year/Week** + **non-conference series** (Phase 8), and the **columnar save codec** (Phase 9). The
-full career loop — recruit → season → awards → rollover (graduate/develop/enroll) → finances settle →
-carousel → facilities/series — closes across multiple years. Phase 10 (player personality) is adding
-fogged temperament traits on top — engine landed, UI pending. **Seven green gates:** `npm run` +
-`simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` / `traitlab` / `qa`.
+the Year/Week** + **non-conference series** (Phase 8), the **columnar save codec** (Phase 9), **fogged
+player traits** (Phase 10), and **program legacy** — Ring of Honor, career accumulation, alumni-visit
+recruiting, legacy aura, legend-coaches (Phase 11). The full career loop — recruit → season → awards →
+rollover (graduate/enshrine/develop/enroll) → finances settle → carousel → facilities/series — closes
+across multiple years, and your graduating stars now leave a permanent mark on the program. **Eight
+green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` / `traitlab` /
+`legacylab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during

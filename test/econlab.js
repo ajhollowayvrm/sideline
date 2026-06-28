@@ -194,6 +194,26 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('Debt trends down across seasons', w.teams.every(t => t.facilityDebt < 80e6));
 })();
 
+/* 8) legend coaches (Phase 11): a program's retired great can surface as a candidate for their alma
+   mater, flagged fromLegend/legendOf; legend-less worlds stay byte-identical (no rng consumed). */
+(function () {
+  const plain = genWorld(2026);
+  const ringed = genWorld(2026);
+  // give one team a deep ring of high-stature greats so the (probabilistic) return reliably fires
+  ringed.teams[0].legends = Array.from({ length: 5 }, (_, i) => ({ id: 'L' + i, name: 'Great ' + i, pos: 'QB', st: 'TX', stature: 90 }));
+  // legend-less world: candidate scan must consume no rng → market is identical with/without the scan
+  check('Legend-less world keeps an unchanged market', JSON.stringify(genCoachMarket(2026, 2026, plain)) === JSON.stringify(genCoachMarket(2026, 2026, { teams: [] })));
+  // across several years, a flagged legend candidate should appear for the ringed team at least once
+  let found = null;
+  for (let y = 0; y < 12 && !found; y++) {
+    const m = genCoachMarket(2026 + y, 2026 + y, ringed);
+    found = m.find(c => c.fromLegend && c.legendOf === ringed.teams[0].id);
+  }
+  check('A retired great can return as a coach for their alma mater', !!found, found ? `${found.name} rating ${found.rating}` : 'never appeared');
+  check('Legend coach is a coordinator with a sane rating', found && found.tier === 'coord' && found.rating >= 45 && found.rating <= 92);
+  check('Legend candidates are deterministic by (seed, year)', JSON.stringify(genCoachMarket(2030, 2030, ringed)) === JSON.stringify(genCoachMarket(2030, 2030, ringed)));
+})();
+
 const passed = results.filter(r => r.pass).length;
 console.log(`\n===== ${passed}/${results.length} econ-lab checks passed =====`);
 process.exit(results.every(r => r.pass) ? 0 : 1);
