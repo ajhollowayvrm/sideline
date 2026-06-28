@@ -46,9 +46,16 @@ plain static files so Pages still serves it with zero config.
   **commit** to whoever leads. Coach **archetype/history** effects finally come online here.
   Class **rankings + a letter grade** are the payoff. Signees bank in `S.recruiting` until the
   Phase 5 rollover turns them into freshmen (save v6). See "Phase 4 recruiting design" below.
-- **Phase 5 — Offseason & program.** Coaching carousel (hire/fire), player development,
-  finances depth, facility upgrades, **non-conference series scheduling**, and **season awards**
-  (national POY, all-conference/All-American, etc.) — see the design notes below.
+- **Phase 5 — Offseason & program.** 🚧 IN PROGRESS. **Season rollover** ✅ DONE — the keystone:
+  an Offseason→next-Preseason transition that graduates seniors, ages + **develops** (ov→pot)
+  every roster, enrolls each team's recruiting signees as **true freshmen** (blue-chips enter
+  raw with the recruit's pot as ceiling; promises carried), backfills positions with generated
+  2–3★ depth so rosters hold at ~84, wipes last season's stats, increments a **calendar-year
+  counter** (`S.year`), and resets `schedule`/`weeklyHonors`/`recruiting` (re-created at the next
+  kickoff). Broken playing-time promises risk a transfer out (save v7). See "Phase 5 rollover
+  design" below. **Still to come:** deeper player development (coach Genius wiring), coaching
+  carousel (hire/fire), finances depth, facility upgrades, **non-conference series scheduling**,
+  and **season awards** (national POY, all-conference/All-American, etc.) — see the notes below.
 
 ---
 
@@ -185,23 +192,66 @@ idles**, and determinism by seed. `npm run qa` drives the recruiting UI end-to-e
 pitch → advance → interest grows → a commit lands; Class tab grade; v6 migration + persistence).
 Three gates now: `npm run simlab` + `npm run reclab` + `npm run qa` — all green each phase.
 
+## Phase 5 rollover design — season rollover (the enabler) ✅ DONE
+
+The keystone of Phase 5. Lets a season end and a new one begin so every other offseason system
+has somewhere to live. Two layers, mirroring the recruiting split:
+
+### Pure engine (fenced `// === ROLLOVER ENGINE (Phase 5) START/END ===`)
+Depends only on `rng/ri/clamp/pick` + the data arrays (`FN/LN/STATES/POS/CLASSES`) — no DOM, no
+`S` — so `test/rolllab.js` extracts + validates it offline (like `reclab`).
+- `NEXT_CLASS` — the class ladder (FR→SO… SR/RS-SR→`null` = graduate). `DEV_YOUTH` — per-class
+  development weighting (freshmen grow fastest, seniors plateau).
+- `developPlayer(p,r,rate)` — grows `ov` toward `pot` over an offseason; `pot` is a true ceiling
+  and never moves. `rate` (~0.8–1.2) folds in facilities + coach. Nudges `spd/str/awr`, re-tiers
+  `stars`, returns the OVR gained.
+- `genFreshman(r,prestige,pos)` — a generated 2–3★ depth freshman (the unmodeled signees every
+  program lands); used to **backfill** positions thinned by graduation.
+- `recruitToFreshman(rec,r)` — converts a signed recruit to a true freshman: blue-chips enter
+  **raw** (ov discounted by pedigree) with the recruit's `pot` as ceiling, so development carries
+  them up over a career. Carries `promise` (+ `fromRecruit:true` tag).
+- `rolloverRoster(roster,signees,prestige,r,opts)` — the per-team transform: graduate seniors,
+  age + develop the returning roster (**clears `p.gs`** so stats never carry over), enroll signee
+  freshmen, backfill each position to its `POS` target with `genFreshman`, re-`so` by ov, reset
+  captains. Returns `{roster, graduated, freshmen, trackedCount}`. **Does not re-taper returning
+  ratings** — the generation depth-taper is a one-time artifact, so a developed backup can climb.
+
+### App layer (`rolloverSeason()`)
+Triggered from the Offseason Home card ("Roll over to <year> →"). Builds the per-team signee map
+from `S.recruiting.pool`, resolves the controlled team's **promises** *before* rollover wipes
+`p.gs` (`resolvePromises`: a broken playing-time promise risks a transfer out; kept/other promises
+clear), rolls every team's roster, `S.year++`, resets `rec`/`schedule`/`weeklyHonors`/`recruiting`
+to season defaults, re-derives ratings + ranks, lands in **Preseason** (so the existing kickoff
+flow rebuilds the schedule + a fresh recruiting cycle), and stores `S.offseasonReport` for the
+Home **offseason recap** card. `devRate(team)` sets each team's growth from facilities
+(strength+training); the controlled coach's Off/Def Genius adds a small edge.
+
+### Save shape & validation
+Adds `S.year` (calendar-year counter, init 2026) → save **version 7**; `migrateState` v6→v7
+backfills `year=2026`. Four gates now: `npm run simlab` + `npm run reclab` + **`npm run rolllab`**
+(18 checks: roster holds ~84, classes progress + seniors graduate, dev moves ov→pot without
+exceeding it, signees→freshmen, no stat carryover, promise carry, determinism, **league strength
+stable ±6 OVR over 5 seasons**) + `npm run qa` (drives a full Offseason→rollover→next-kickoff:
+year++, class enrolled, fields reset, v7, recap card) — all green.
+
 ## Phase 5 kickoff — suggested plan (read this first)
 
 The big phase: the **offseason & program**. The keystone is **season rollover** — nothing else
 works until a season can end and a new one begin. Build it first, then the systems that depend
 on it. Suggested order:
 
-1. **Season rollover (the enabler).** A `startOffseason → newSeason` transition that:
-   - converts **recruiting signees** (`S.recruiting.pool.filter(committedTo===id)`) into freshman
-     `Player`s on each team's roster (use `genPlayer`-shaped output; carry `promise`),
-   - **honors/breaks promises** (e.g. a playing-time promise not kept → morale/transfer risk),
-   - graduates seniors / re-tapers depth, increments a **year counter**, resets `rec`/`schedule`/
-     `weeklyHonors`/`recruiting` to null (re-created at the next kickoff, exactly like today),
-   - re-derives ratings + ranks. Validate in a node lab **before** UI (no stat double-count;
-     roster sizes stay ~84; save size stays under the ~5 MB cap — see the seed+diff note below).
-2. **Player development.** Real `ov → pot` growth over an offseason (today Ceiling/Development are
-   read-only grades). This is where **Offensive/Defensive Genius** dev effects wire in, and where
-   the **Analyst/coach** signals could feed growth. `devStage`/`scoutedCeiling` already exist.
+1. **Season rollover (the enabler).** ✅ DONE — see "Phase 5 rollover design" below. Shipped as
+   `rolloverSeason()` (app) over a pure, fenced `ROLLOVER ENGINE` block, validated by
+   `npm run rolllab` (18 checks) before UI. Graduates seniors, develops + ages rosters, enrolls
+   signees as freshmen, backfills to ~84, wipes `p.gs`, `S.year++`, resets season fields. (Note:
+   the actual implementation **does not re-taper** returning players — the depth taper is a
+   one-time generation artifact, so a developed backup can climb the chart; this differs from the
+   "re-taper depth" sketch above and is the intended behavior.)
+2. **Player development.** 🟡 PARTIAL. A basic ov→pot growth (`developPlayer`, youth-weighted,
+   facility/coach-rate modulated) shipped *with* rollover because a sane multi-season sim needs
+   it (validated: league OVR stable ±6 over 5 seasons). **Still to come:** the deeper version —
+   side-specific **Offensive/Defensive Genius** dev wiring, **Analyst/coach** signals feeding
+   growth, and surfacing development in the UI beyond the read-only `devStage`/`scoutedCeiling`.
 3. **Coaching carousel.** Hire/fire coordinators + position coaches (today only salary editing
    works). AI poaches good coordinators; openings to fill; ties to `payroll`/`budget`.
 4. **Finances depth + facility upgrades.** Spend `budget` to raise the 1–10 `fac` levels; tie
@@ -325,10 +375,11 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **6**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **7**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
-  `recruiting:null` (created at kickoff). Each step re-derives ratings/ranks where needed.
+  `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
+  (Phase 5 rollover). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -346,12 +397,14 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   version, seed, createdAt, lastSaved,
   coach: { first, last, homeState, archetype, history },
   teamId,                 // id of the controlled team
-  week, phase,            // 0/"Preseason" → 1..15/"Regular Season" → "Offseason"
+  year,                   // calendar-year counter, init 2026, ++ each rollover (Phase 5)
+  week, phase,            // 0/"Preseason" → 1..15/"Regular Season" → "Offseason" → (rollover) → Preseason
   lastPlayedWeek,         // last week resolved (for the Scores tab)
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
   weeklyHonors: [ ... ],         // Player-of-the-Week log (Phase 3.5)
   recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed } | null,  // null until kickoff (Phase 4)
+  offseasonReport: { year, graduated, tracked, freshmen, departed } | undefined,  // last rollover recap (Phase 5)
   world: { teams: [ Team, ... ] }
 }
 
@@ -476,18 +529,21 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
 ### Still stubbed (intentionally inert)
-- Offseason is a dead end for now: after week 15 the phase becomes "Offseason" with a
-  season-complete card (now incl. the signed recruiting class + grade). **Season rollover**
-  — turning signees into freshmen, honoring/breaking promises, player development, the
-  coaching carousel — lands in Phase 5.
+- Offseason now **rolls over**: after week 15 the phase becomes "Offseason" (season-complete card
+  + signed class/grade), then the Home card's "Roll over to <year> →" runs `rolloverSeason()` →
+  next Preseason (see "Phase 5 rollover design"). What's *still* a dead end past rollover: the
+  **coaching carousel** (hire/fire), **finances/facility upgrades**, **non-conf series**, and
+  **season awards** — the remaining Phase 5 systems.
 - Coach hire/fire (→ Phase 5); only salary editing works now.
-- History/archetype effects are **applied in recruiting** (`coachMods`, Phase 4); their
-  development/in-game effects (Off/Def Genius, etc.) still wire in with Phase 5.
-- Player development is **read-only grades** only (Ceiling/Development); actual ov→pot growth
-  over seasons is Phase 5. Roster scouting fog is a fixed function of age/class (recruit fog,
-  by contrast, sharpens with the Phase 4 Scout action).
-- Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) and do
-  not join the roster until the Phase 5 rollover converts them to freshman `Player`s.
+- History/archetype effects are **applied in recruiting** (`coachMods`, Phase 4) and lightly in
+  **development** (Off/Def Genius nudges `devRate`, Phase 5 rollover); deeper side-specific dev +
+  in-game effects still wire in with the rest of Phase 5.
+- Player development is now **live** (basic): `developPlayer` grows ov→pot each offseason rollover.
+  The read-only grades (`devStage`/`scoutedCeiling`) still surface it in the roster UI; richer
+  dev (coach Genius depth, UI growth surfacing) is the remaining Phase 5 work. Roster scouting fog
+  is a fixed function of age/class (recruit fog, by contrast, sharpens with the Phase 4 Scout action).
+- Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during
+  the season, then the **rollover converts them to freshman `Player`s** (`recruitToFreshman`).
 - Non-controlled games are resolved instantly by `simEngine`; only the controlled team's game
   is watchable (watch-then-commit) or replayable (greatest games). There's no live viewer for
   arbitrary other games — by design, so advancing a week stays fast.

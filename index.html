@@ -584,8 +584,8 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:6,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
-     week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
+  S={version:7,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+     year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // choose a save slot
@@ -688,6 +688,10 @@ function migrateState(state){
   if((state.version||1)<6){            // Phase 4: recruiting. Created at kickoff (like the
     if(!('recruiting' in state))state.recruiting=null;   // schedule), so a null backfill is enough.
     state.version=6;
+  }
+  if((state.version||1)<7){            // Phase 5: season rollover adds a calendar-year counter.
+    if(state.year==null)state.year=2026;
+    state.version=7;
   }
   return state;
 }
@@ -1028,6 +1032,87 @@ function advanceRecruiting(pool,teams,week,weeks,seed){
 }
 // === RECRUIT ENGINE (Phase 4) END ===
 
+// === ROLLOVER ENGINE (Phase 5) START ===
+// Pure, deterministic season-rollover model. Depends only on rng/ri/clamp/pick + the data arrays
+// FN/LN/STATES/POS/CLASSES (no DOM, no S, no globals beyond those), so test/rolllab.js can extract
+// + validate it offline. It graduates seniors, ages + DEVELOPS (ov→pot) the returning roster,
+// converts recruiting signees into true-freshman Players, and backfills each position with
+// generated 2–3★ depth so a roster holds at ~84. It never re-tapers returning players' ratings
+// (the depth taper is a one-time generation artifact), so a developed backup can climb the chart.
+
+// Class ladder: each step advances one year; SR / RS-SR graduate (→ null = off the roster).
+const NEXT_CLASS={"FR":"SO","RS-FR":"RS-SO","SO":"JR","RS-SO":"RS-JR","JR":"SR","RS-JR":"RS-SR","SR":null,"RS-SR":null};
+// How fast a class develops toward its ceiling — youth grows fastest, upperclassmen plateau.
+const DEV_YOUTH={"FR":1,"RS-FR":1,"SO":0.85,"RS-SO":0.85,"JR":0.6,"RS-JR":0.6,"SR":0.35,"RS-SR":0.35};
+// Grow one player's ov toward pot over an offseason. `rate` (~0.8–1.2) folds in facilities/coach.
+// Mutates p (ov, attrs, stars); returns the OVR gained. Pot is a true ceiling and never moves.
+function developPlayer(p,r,rate){
+  const gap=(p.pot||p.ov)-p.ov;
+  if(gap<=0)return 0;
+  const youth=DEV_YOUTH[p.yr]!=null?DEV_YOUTH[p.yr]:0.5;
+  const portion=clamp((0.16+0.20*youth)*(rate||1),0,0.8);
+  const delta=clamp(Math.round(gap*portion+r()*1.4),0,gap);
+  if(!delta)return 0;
+  p.ov=clamp(p.ov+delta,40,99);
+  const ab=Math.round(delta*0.6);
+  p.spd=clamp(p.spd+ab,40,99);p.str=clamp(p.str+ab,40,99);p.awr=clamp(p.awr+ab,40,99);
+  p.stars=p.ov>=90?5:p.ov>=82?4:p.ov>=72?3:p.ov>=62?2:1;
+  return delta;
+}
+// Generated 2–3★ depth freshman — the unmodeled signees every program lands. Low floor, real
+// ceiling so a few develop. Used to backfill positions thinned by graduation back toward target.
+function genFreshman(r,prestige,posCode){
+  const ov=clamp(Math.round(prestige*0.40+ri(r,-8,7)+20),44,80);
+  const pot=clamp(ov+ri(r,5,20),ov,95);
+  return {id:'p'+Math.floor(r()*1e9).toString(36),fn:pick(r,FN),ln:pick(r,LN),pos:posCode,
+    yr:'FR',age:18+ri(r,0,1),st:pick(r,STATES),stars:ov>=82?4:ov>=72?3:ov>=62?2:1,
+    ov,pot,cap:false,spd:clamp(ov+ri(r,-12,12),40,99),str:clamp(ov+ri(r,-12,12),40,99),
+    awr:clamp(ov+ri(r,-14,10),40,99),so:0};
+}
+// Convert a signed recruit into a true-freshman Player. Blue-chips enter "raw" (ov discounted by
+// pedigree) with the recruit's pot as their ceiling, so development carries them up over a career —
+// elite recruits can contribute early, most sit and grow. Carries `promise` for Phase 5 honoring.
+function recruitToFreshman(rec,r){
+  const disc=rec.stars===5?6:rec.stars===4?10:rec.stars===3?14:16;
+  const ov=clamp(rec.ov-disc+ri(r,-2,2),44,96);
+  const pot=clamp(Math.max(rec.pot||rec.ov,rec.ov),ov,99);
+  return {id:'p'+Math.floor(r()*1e9).toString(36),fn:rec.fn,ln:rec.ln,pos:rec.pos,
+    yr:'FR',age:18,st:rec.st,stars:rec.stars,ov,pot,cap:false,
+    spd:clamp(rec.spd||ov,40,99),str:clamp(rec.str||ov,40,99),awr:clamp(rec.awr||ov,40,99),
+    so:0,promise:rec.promise||null,fromRecruit:true};
+}
+// Roll one team's roster into the next season. `signees` = the prospects that committed to this
+// team. Returns the rebuilt roster + a summary (graduated/developed/freshmen). Mutates nothing it
+// is given (works on copies); clears p.gs so last season's stats never carry into the new season.
+function rolloverRoster(roster,signees,prestige,r,opts){
+  opts=opts||{};const rate=opts.rate||1;
+  const graduated=[],cont=[];
+  roster.forEach(src=>{
+    const p=Object.assign({},src);
+    const nx=(p.yr in NEXT_CLASS)?NEXT_CLASS[p.yr]:p.yr;
+    if(nx===null){graduated.push(p);return;}
+    p.yr=nx;p.age=(p.age||18)+1;
+    if('gs' in p)delete p.gs;                       // fresh slate — no season-stat carryover
+    developPlayer(p,r,rate);
+    cont.push(p);
+  });
+  const freshmen=(signees||[]).map(s=>recruitToFreshman(s,r));
+  const out=cont.concat(freshmen);
+  // backfill each position toward its target depth with generated 2–3★ freshmen
+  POS.forEach(([code,,n])=>{
+    let have=out.filter(p=>p.pos===code).length;
+    while(have<n){out.push(genFreshman(r,prestige,code));have++;}
+  });
+  // depth order: best-by-ov per position gets so=0 (no rating taper — returning ratings stand)
+  const byPos={};out.forEach(p=>{(byPos[p.pos]=byPos[p.pos]||[]).push(p);});
+  Object.values(byPos).forEach(arr=>{arr.sort((a,b)=>b.ov-a.ov);arr.forEach((p,i)=>p.so=i);});
+  out.forEach(p=>p.cap=false);
+  const field=out.filter(p=>p.pos!=='K'&&p.pos!=='P').sort((a,b)=>b.ov-a.ov);
+  if(field[0])field[0].cap=true; if(field[1])field[1].cap=true;
+  return {roster:out,graduated,freshmen,trackedCount:freshmen.length};
+}
+// === ROLLOVER ENGINE (Phase 5) END ===
+
 // Resolve a game with the drive/play engine. Seeded per game id so outcomes are reproducible
 // regardless of advance order. Sets g.hs/g.as/g.played and RETURNS the per-game box (player
 // id → stat deltas) for stat folding. Pure w.r.t. players/teams — re-simming a clone is safe.
@@ -1105,7 +1190,60 @@ function endSeason(){
   S.task={type:'Offseason',label:'Season Complete',
     note:'Final record '+t.rec.w+'–'+t.rec.l+' ('+t.rec.cw+'–'+t.rec.cl+' '+t.conf+'). Signed '+
       cls.length+' tracked recruit'+(cls.length===1?'':'s')+' — class ranked #'+cr+' nationally. '+
-      'Offseason rollover, hiring, and player development arrive in a later phase.'};
+      'Roll over to the next season when you’re ready — your class joins the roster.'};
+}
+// Development rate for a team's offseason: facilities (strength + training) set the base; the
+// controlled team's coach genius adds a small edge. AI teams develop off facilities alone.
+function devRate(team){
+  const f=((team.fac&&team.fac.strength)||5)+((team.fac&&team.fac.training)||5);
+  let rate=0.85+(f/2)*0.03;
+  if(team.id===S.teamId&&(S.coach.archetype==='Offensive Genius'||S.coach.archetype==='Defensive Genius'))rate*=1.12;
+  return rate;
+}
+// Honor / break the controlled team's recruiting promises now that the season they were made for
+// has been played. A kept (or non-playing-time) promise clears; a broken playing-time promise
+// risks a transfer out. Runs on the PRE-rollover roster (p.gs from last season still present).
+function resolvePromises(teamId,r){
+  const t=teamById(teamId),departed=[];
+  t.roster=t.roster.filter(p=>{
+    if(!p.promise)return true;
+    if(p.promise.type==='playingTime'){
+      const played=(p.so!=null&&p.so<=1)||(p.gs&&p.gs.gp);
+      if(!played&&r()<0.45){departed.push({name:p.fn+' '+p.ln,pos:p.pos});return false;}
+    }
+    p.promise=null;                       // obligation cleared (honored / kept on roster)
+    return true;
+  });
+  return departed;
+}
+// Season rollover (Offseason → next Preseason). Graduates seniors, develops + ages every roster,
+// turns each team's recruiting signees into freshmen, honors/breaks the controlled team's promises,
+// then resets the season fields so the next kickoff rebuilds the schedule + a fresh recruiting cycle.
+function rolloverSeason(){
+  const pool=(S.recruiting&&S.recruiting.pool)||[];
+  const signeesBy={};pool.forEach(rc=>{if(rc.committedTo)(signeesBy[rc.committedTo]=signeesBy[rc.committedTo]||[]).push(rc);});
+  const me=S.teamId, r=rng((S.seed^hashStr('rollover'+(S.year||2026)))>>>0);
+  const departed=resolvePromises(me,r);            // before rollover wipes last season's p.gs
+  let summary=null;
+  S.world.teams.forEach(t=>{
+    const res=rolloverRoster(t.roster,signeesBy[t.id]||[],t.prestige,r,{rate:devRate(t)});
+    t.roster=res.roster;
+    if(t.id===me)summary=res;
+  });
+  S.year=(S.year||2026)+1;
+  S.world.teams.forEach(t=>{t.rec=emptyRec();t.ratings=teamRatings(t.roster,t.staff);});
+  S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;
+  S.week=0;S.phase='Preseason';
+  recomputeRanks(S.world);
+  const nf=summary?summary.freshmen.length:0;
+  S.task={type:'Media Day',label:S.year+' Media Day',
+    note:'New year on campus. The returning core developed and '+nf+' freshman'+(nf===1?'':'men')+
+      ' arrived. Kick off the season when you’re ready.'};
+  S.offseasonReport={year:S.year,
+    graduated:summary?summary.graduated.length:0,
+    tracked:summary?summary.trackedCount:0,
+    freshmen:nf,departed};
+  autosave();
 }
 
 /* ============================================================
@@ -1314,15 +1452,15 @@ function renderHome(app){
   const inSeason=S.phase==='Regular Season', over=S.phase==='Offseason';
   v.append(el('h2','sec','On the Clock'));
   const task=el('div','card');
-  const wkLabel=over?'\u2014':(inSeason?'Week '+S.week:S.phase);
+  const wkLabel=inSeason?'Week '+S.week:(S.year||2026)+' \u00b7 '+S.phase;
   task.innerHTML=`<div class="row spread"><span class="tag accent">${S.phase}</span><span class="meta">${wkLabel}</span></div>
     <div class="cond" style="font-size:22px;font-weight:800;margin-top:10px">${S.task.label}</div>
     <div class="muted" style="font-size:13px;margin-top:4px">${S.task.note}</div>`;
-  const advLabel=over?'Season complete':inSeason?'Play Week '+S.week+' \u2192':'Kick off the season \u2192';
-  const adv=el('button','btn','');adv.textContent=advLabel;adv.style.marginTop='12px';
-  if(over)adv.disabled=true;
-  else adv.onclick=()=>{
-    if(inSeason){
+  const advLabel=over?'Roll over to '+((S.year||2026)+1)+' \u2192':inSeason?'Play Week '+S.week+' \u2192':'Kick off the season \u2192';
+  const adv=el('button','btn','');adv.textContent=advLabel;adv.style.marginTop='12px';adv.dataset.tid='adv-clock';
+  adv.onclick=()=>{
+    if(over){rolloverSeason();render();toast('Welcome to '+S.year+' \u2014 class enrolled, roster reloaded');}
+    else if(inSeason){
       const g=teamGame(controlled().id,S.week);
       if(g&&!g.played)openGameViewer(g);            // watch your game, then commit the week
       else{advanceWeek();render();toast('Bye week \u2014 advanced');}  // bye: just advance
@@ -1330,6 +1468,17 @@ function renderHome(app){
     else{startSeason();render();toast('Season underway \u2014 schedule set');}
   };
   task.append(adv);v.append(task);
+  // offseason recap: surfaced the season AFTER a rollover (graduates out, freshmen in)
+  if(S.phase==='Preseason'&&S.offseasonReport&&S.offseasonReport.year===S.year){
+    const o=S.offseasonReport;
+    const rc=el('div','card');rc.dataset.tid='offseason-report';
+    const dep=o.departed&&o.departed.length?`<div class="muted" style="font-size:12px;margin-top:6px">Transfers out (broken promises): ${o.departed.map(d=>d.name+' ('+d.pos+')').join(', ')}</div>`:'';
+    rc.innerHTML=`<div class="meta dim" style="margin-bottom:6px">Offseason recap</div>
+      <div class="row spread"><span>Seniors graduated</span><span class="cond" style="font-weight:800">${o.graduated}</span></div>
+      <div class="row spread"><span>Recruits enrolled</span><span class="cond" style="font-weight:800">${o.tracked}</span></div>
+      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${dep}`;
+    v.append(rc);
+  }
   if(inSeason||over){const sb=el('button','btn line','Season \u00b7 schedule & standings');sb.style.marginTop='10px';
     sb.onclick=()=>{UI.view='season';render();};v.append(sb);}
   // recruiting snapshot (once the board is open)

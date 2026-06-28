@@ -6,7 +6,8 @@
   "scripts": {
     "qa": "node test/qa.js",
     "simlab": "node test/simlab.js",
-    "reclab": "node test/reclab.js"
+    "reclab": "node test/reclab.js",
+    "rolllab": "node test/rolllab.js"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

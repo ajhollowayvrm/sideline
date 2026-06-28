@@ -423,7 +423,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors (v6) survive reload', seasonPersist.version === 6 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors (v7) survive reload', seasonPersist.version === 7 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -439,8 +439,9 @@ function startServer() {
   await page.waitForTimeout(150);
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
-  const mig = await page.evaluate(() => ({ v: S.version, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting }));
-  check('Migration: v1 save upgrades to current version (v6)', mig.v === 6, 'version=' + mig.v);
+  const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting }));
+  check('Migration: v1 save upgrades to current version (v7)', mig.v === 7, 'version=' + mig.v);
+  check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
   check('Migration: staff backfilled (tier/boost)', mig.tier != null && mig.boost != null, JSON.stringify({ tier: mig.tier, boost: mig.boost }));
   check('Migration: season fields backfilled (records, null schedule)', mig.rec && mig.rec.w === 0 && mig.rec.l === 0 && mig.sched === null, JSON.stringify(mig.rec));
   check('Migration: weekly honors backfilled (empty array)', Array.isArray(mig.honors) && mig.honors.length === 0, JSON.stringify(mig.honors));
@@ -500,6 +501,51 @@ function startServer() {
   check('Recruiting cycle: Class tab shows the signed class + grade', /class rank/i.test(classTxt) && /projected/i.test(classTxt));
   check('Recruiting cycle: Signing Day reflected in summary (CLOSED)', /CLOSED/.test(classTxt) || /Signing Day/i.test(classTxt));
   await shot(page, '25-recruiting-class.png');
+
+  // ---------- PHASE 5: season rollover (Offseason → next Preseason) ----------
+  // The recruiting cycle above left us in the Offseason with a signed class. Roll the season over
+  // from the Home "On the Clock" card and assert the class enrolled, seniors graduated, the season
+  // fields reset, and the next kickoff rebuilds a fresh schedule + recruiting cycle.
+  const roPre = await page.evaluate(() => {
+    const me = S.teamId, t = S.world.teams.find(x => x.id === me);
+    return {
+      year: S.year, phase: S.phase, myClass: S.recruiting.pool.filter(r => r.committedTo === me).length,
+      mySeniors: t.roster.filter(p => p.yr === 'SR' || p.yr === 'RS-SR').length,
+      myRosterN: t.roster.length, statPlayers: S.world.teams.reduce((n, x) => n + x.roster.filter(p => p.gs).length, 0),
+      sizes: S.world.teams.map(x => x.roster.length)
+    };
+  });
+  await page.locator('[data-tid="nav-home"]').click();
+  await page.waitForTimeout(120);
+  await page.locator('[data-tid="adv-clock"]').click();   // "Roll over to <year> →"
+  await page.waitForTimeout(180);
+  const roPost = await page.evaluate(() => {
+    const me = S.teamId, t = S.world.teams.find(x => x.id === me);
+    return {
+      year: S.year, phase: S.phase, version: S.version, sched: S.schedule, recruiting: S.recruiting,
+      honors: S.weeklyHonors.length, week: S.week,
+      myFresh: t.roster.filter(p => p.fromRecruit).length, myFR: t.roster.filter(p => p.yr === 'FR').length,
+      myRosterN: t.roster.length, sizesOk: S.world.teams.every(x => x.roster.length >= 78 && x.roster.length <= 96),
+      statPlayers: S.world.teams.reduce((n, x) => n + x.roster.filter(p => p.gs).length, 0),
+      report: S.offseasonReport, noOldSR: t.roster.every(p => p.fromRecruit || p.yr !== undefined)
+    };
+  });
+  check('Rollover: advances to the next calendar year', roPost.year === roPre.year + 1, `${roPre.year} → ${roPost.year}`);
+  check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
+  check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
+  check('Rollover: save version bumped to 7', roPost.version === 7, 'v' + roPost.version);
+  check('Rollover: signed class enrolled as freshmen', roPost.myFresh === roPre.myClass && roPost.myFresh > 0, `${roPost.myFresh} enrolled (class ${roPre.myClass})`);
+  check('Rollover: roster holds at ~84 league-wide', roPost.sizesOk && roPost.myRosterN >= 78 && roPost.myRosterN <= 96, 'mine ' + roPost.myRosterN);
+  check('Rollover: last season stats wiped (no p.gs carryover)', roPost.statPlayers === 0, roPost.statPlayers + ' players still carry stats');
+  check('Rollover: offseason recap recorded', roPost.report && roPost.report.year === roPost.year && roPost.report.graduated === roPre.mySeniors, `grads ${roPost.report && roPost.report.graduated} vs ${roPre.mySeniors}`);
+  // recap card + year visible on Home; then kick the new season off
+  const recapTxt = await page.evaluate(() => document.querySelector('.view').innerText);
+  check('Rollover: Home shows the offseason recap card', /offseason recap/i.test(recapTxt) && /freshmen on roster/i.test(recapTxt));
+  await shot(page, '26-offseason-rollover.png');
+  await page.locator('[data-tid="adv-clock"]').click();   // "Kick off the season →"
+  await page.waitForTimeout(180);
+  const next = await page.evaluate(() => ({ phase: S.phase, week: S.week, sched: !!S.schedule, pool: S.recruiting ? S.recruiting.pool.length : 0 }));
+  check('Rollover: next season kicks off cleanly (schedule + fresh recruiting cycle)', next.phase === 'Regular Season' && next.week === 1 && next.sched && next.pool > 0, `pool ${next.pool}`);
 
   check('No uncaught JS / console errors', jsErrors.length === 0, jsErrors.slice(0, 3).join(' | '));
   await ctx.close();
