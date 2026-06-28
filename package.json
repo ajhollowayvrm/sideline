@@ -11,7 +11,8 @@
     "econlab": "node test/econlab.js",
     "awardlab": "node test/awardlab.js",
     "traitlab": "node test/traitlab.js",
-    "legacylab": "node test/legacylab.js"
+    "legacylab": "node test/legacylab.js",
+    "postlab": "node test/postlab.js"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

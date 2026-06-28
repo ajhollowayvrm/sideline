@@ -439,7 +439,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 13 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 14 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -455,8 +455,9 @@ function startServer() {
   await page.waitForTimeout(150);
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
-  const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends }));
-  check('Migration: v1 save upgrades to current version (v13)', mig.v === 13, 'version=' + mig.v);
+  const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing' }));
+  check('Migration: v1 save upgrades to current version (v14)', mig.v === 14, 'version=' + mig.v);
+  check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
   check('Migration: staff backfilled (tier/boost)', mig.tier != null && mig.boost != null, JSON.stringify({ tier: mig.tier, boost: mig.boost }));
   check('Migration: season fields backfilled (records, null schedule)', mig.rec && mig.rec.w === 0 && mig.rec.l === 0 && mig.sched === null, JSON.stringify(mig.rec));
@@ -508,9 +509,11 @@ function startServer() {
     }
     const committed = S.recruiting.pool.filter(r => r.committedTo).length;
     const mine = S.recruiting.pool.filter(r => r.committedTo === me).length;
-    return { signed: S.recruiting.signed, phase: S.phase, committed, mine, tgtMine: tgt.committedTo === me, rank: myClassRank() };
+    return { signed: S.recruiting.signed, phase: S.phase, committed, mine, tgtMine: tgt.committedTo === me, rank: myClassRank(),
+      postStarted: S.phase === 'Postseason' && !!S.postseason, seeds: S.postseason ? S.postseason.playoff.seeds.length : 0, bowls: S.postseason ? S.postseason.bowls.length : 0 };
   });
-  check('Recruiting cycle: Signing Day closes the class', cycle.signed && cycle.phase === 'Offseason');
+  check('Recruiting cycle: Signing Day closes the class', cycle.signed && cycle.phase === 'Postseason');
+  check('Phase 12: regular season hands off to the postseason (12 seeds + bowls)', cycle.postStarted && cycle.seeds === 12 && cycle.bowls > 0, `seeds ${cycle.seeds}, bowls ${cycle.bowls}`);
   check('Recruiting cycle: nearly all prospects commit league-wide', cycle.committed > 270, cycle.committed + ' commits');
   check('Recruiting cycle: an aggressively recruited target commits to you', cycle.tgtMine);
   check('Recruiting cycle: the controlled team signs a class', cycle.mine > 0, cycle.mine + ' signees');
@@ -531,6 +534,42 @@ function startServer() {
   check('Recruiting cycle: Class tab shows the signed class + grade', /class rank/i.test(classTxt) && /projected/i.test(classTxt));
   check('Recruiting cycle: Signing Day reflected in summary (CLOSED)', /CLOSED/.test(classTxt) || /Signing Day/i.test(classTxt));
   await shot(page, '25-recruiting-class.png');
+
+  // ---------- PHASE 12: postseason (watch-then-commit playoff + bowls) ----------
+  // From the Postseason phase, the Home advance button opens the controlled team's bowl/playoff game
+  // in the viewer (skip → commit) or sims the round; loop until the bracket resolves to the Offseason.
+  const psUI = await page.evaluate(() => {
+    const card = (UI.view = 'home', render(), !!document.querySelector('[data-tid="postseason-card"]'));
+    UI.view = 'season'; UI.seasonTab = 'bracket'; render();
+    const txt = document.querySelector('.view').innerText;
+    return { card, bracket: /First Round/i.test(txt) && /Bowls/i.test(txt) };
+  });
+  check('Phase 12: postseason Home card + bracket view render', psUI.card && psUI.bracket);
+  let watchedPost = false;
+  for (let i = 0; i < 24; i++) {
+    if (await page.evaluate(() => S.phase) !== 'Postseason') break;
+    await page.locator('[data-tid="nav-home"]').click();
+    await page.waitForTimeout(70);
+    await page.locator('[data-tid="adv-clock"]').click();
+    await page.waitForTimeout(110);
+    if (await page.evaluate(() => UI.view === 'game')) {        // the controlled team's game opened
+      watchedPost = true;
+      await page.locator('[data-tid="game-skip"]').click(); await page.waitForTimeout(70);
+      await page.locator('[data-tid="game-continue"]').click(); await page.waitForTimeout(110);
+    }
+  }
+  const post = await page.evaluate(() => {
+    const aw = S.awards[S.awards.length - 1], champ = aw && aw.champion;
+    const ct = champ ? S.world.teams.find(t => t.id === champ.teamId) : null;
+    return { phase: S.phase, hasChamp: !!champ, champAbbr: champ ? champ.abbr : null,
+      champTitled: !!(ct && ct.titles && ct.titles.length), psStillThere: !!S.postseason,
+      boosted: S.world.teams.filter(t => t.postseasonBoost > 0).length };
+  });
+  check('Phase 12: postseason resolves to a champion + reaches the Offseason', post.phase === 'Offseason' && post.hasChamp, `champ ${post.champAbbr}, phase ${post.phase}`);
+  check('Phase 12: champion records a permanent title (team.titles)', post.champTitled);
+  check('Phase 12: postseason finishers carry a recruiting boost for next year', post.boosted > 10, post.boosted + ' teams boosted');
+  void watchedPost;
+  await shot(page, '25b-postseason-bracket.png');
 
   // ---------- PHASE 8: geography + season awards + non-conference series ----------
   // The season just ended (Offseason), so awards have been computed + stamped. Verify the ceremony,
@@ -633,7 +672,7 @@ function startServer() {
   check('Rollover: advances to the next calendar year', roPost.year === roPre.year + 1, `${roPre.year} → ${roPost.year}`);
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
-  check('Rollover: save version bumped to 13', roPost.version === 13, 'v' + roPost.version);
+  check('Rollover: save version bumped to 14', roPost.version === 14, 'v' + roPost.version);
   check('Phase 8: player honors survive the rollover', roPost.honoredAfter > 0, roPost.honoredAfter + ' still honored');
   check('Phase 8: series + awards history persist across the rollover', roPost.seriesKept > 0 && roPost.awardsKept > 0, `series ${roPost.seriesKept}, awards ${roPost.awardsKept}`);
   check('Phase 11: career totals accrue across the rollover', roPost.careerPlayers > 50, roPost.careerPlayers + ' players carry a career');

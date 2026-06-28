@@ -662,9 +662,9 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:13,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:14,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
-     recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,
+     recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // choose a save slot
   chooseSlotSheet();
@@ -796,6 +796,10 @@ function migrateState(state){
   if((state.version||1)<13){           // Phase 11: program legacy. Backfill an empty Ring of Honor
     state.world.teams.forEach(t=>{if(!Array.isArray(t.legends))t.legends=[];});  // (career/peakOv
     state.version=13;                  // absent → zero/none; honors already persist; aura reads 0).
+  }
+  if((state.version||1)<14){           // Phase 12: postseason (bowls + 12-team playoff). Created at
+    if(!('postseason' in state))state.postseason=null;   // the end of the regular season, like the schedule.
+    state.version=14;                  // postseasonBoost/lastPostseason/titles absent → no effect yet.
   }
   return state;
 }
@@ -1099,6 +1103,8 @@ function recruitFit(team,rec){
   // Program legacy (Phase 11): a storied Ring of Honor draws talent on name alone. Small + clamped
   // so it complements prestige, never replaces it. Guarded so legend-less teams (recruit lab) unaffected.
   if(team.legends&&team.legends.length)fac+=legacyAura(team);
+  // Postseason momentum (Phase 12): a deep playoff run / bowl win lifts next year's recruiting.
+  if(team.postseasonBoost)fac+=team.postseasonBoost;
   return clamp(prox+need+fac,0,1.2);
 }
 // Class-ranking value of a landed prospect, and a team's total class score (landed value + a
@@ -1301,8 +1307,9 @@ function resolveFinances(team,year,seed,mult){
   const perfBonus=(rec.w||0)*1.1e6
     + (winPct>0.5?(winPct-0.5)*18e6:0)                 // winning seasons pay (bowls/playoff)
     + (team.natRank&&team.natRank<=25?(26-team.natRank)*0.5e6:0);
+  const psRev=(team.lastPostseason&&team.lastPostseason.revenue)||0;   // playoff/bowl payout (Phase 12)
   const jit=(rng((seed^hashStr('fin'+year+(team.id||'')))>>>0)()-0.5)*4e6;
-  const revenue=Math.round((confBase + prestige*450000 + stadiumTerm + perfBonus + jit)*(mult||1));
+  const revenue=Math.round((confBase + prestige*450000 + stadiumTerm + perfBonus + psRev + jit)*(mult||1));
   const debt=team.facilityDebt||0;
   const interest=debt*0.08, principal=Math.min(debt, debt*0.18);
   const debtService=interest+principal;
@@ -1576,6 +1583,54 @@ function alumniBoost(legend,rec,coachMod){
 }
 // === LEGACY ENGINE (Phase 11) END ===
 
+// === POSTSEASON ENGINE (Phase 12) START ===
+// Pure, deterministic postseason model: a 12-team College Football Playoff bracket + a slate of named
+// bowls for the other bowl-eligible teams, plus the prestige/recruiting/revenue payoff a finish confers.
+// Depends only on rng/clamp/hashStr + data arrays (no DOM, no S, no simEngine — the actual game scores
+// come from simEngine in the app layer), so test/postlab.js validates it offline. The app layer
+// (startPostseason / advancePostseason / endPostseason) owns S.postseason + the watch-then-commit flow.
+
+const PLAYOFF_ROUNDS=['First Round','Quarterfinals','Semifinals','National Championship'];
+// Cosmetic named-bowl pool (the matchups are seeded by ranking; the names are just flavor).
+const BOWL_NAMES=['Sun Bowl','Gator Bowl','Liberty Bowl','Holiday Bowl','Citrus Bowl','Music City Bowl',
+  'Las Vegas Bowl','Texas Bowl','Pinstripe Bowl','Duke’s Mayo Bowl','Alamo Bowl','ReliaQuest Bowl',
+  'Cheez-It Bowl','Birmingham Bowl','Frisco Bowl','Cure Bowl','Guaranteed Rate Bowl','Fenway Bowl'];
+const MAX_BOWLS=18;   // marquee slate — the long tail of minor bowls is not modeled
+
+// The 12 playoff seeds = the top 12 teams (caller passes ids already sorted best→worst by rank score).
+function seedPlayoff(rankedIds){return rankedIds.slice(0,12);}
+
+// Matchups for a playoff round, as [homeId, awayId] pairs (higher seed hosts). `winners` are the
+// previous round's winners in bracket order (round 0 needs none). Top-4 seeds bye into the quarters.
+function playoffRoundMatchups(round,seeds,winners){
+  if(round===0)return [[seeds[4],seeds[11]],[seeds[5],seeds[10]],[seeds[6],seeds[9]],[seeds[7],seeds[8]]];
+  if(round===1)return [[seeds[0],winners[3]],[seeds[1],winners[2]],[seeds[2],winners[1]],[seeds[3],winners[0]]];
+  if(round===2)return [[winners[0],winners[3]],[winners[1],winners[2]]];
+  if(round===3)return [[winners[0],winners[1]]];
+  return [];
+}
+// Pair bowl-eligible non-playoff teams into named bowls: adjacent by rank (1v2, 3v4, …) so similar-tier
+// teams meet, capped to the marquee slate. `eligibleRanked` = ids best→worst. Deterministic by seed.
+function genBowls(eligibleRanked,seed){
+  const list=eligibleRanked.slice(0,MAX_BOWLS*2), out=[];
+  for(let i=0;i+1<list.length;i+=2)
+    out.push({home:list[i],away:list[i+1],name:BOWL_NAMES[(i/2)%BOWL_NAMES.length]});
+  return out;
+}
+// A team's postseason finish → its payoff. prestige = a small persistent bump; recruitBoost = a
+// recruitFit term consumed by NEXT season's cycle; revenue = a one-time payout to the budget.
+const POSTSEASON_PAYOFF={
+  champion:    {prestige:2.5,recruitBoost:0.12, revenue:32e6,label:'National Champion'},
+  runnerup:    {prestige:1.6,recruitBoost:0.09, revenue:24e6,label:'CFP Runner-Up'},
+  semifinal:   {prestige:1.1,recruitBoost:0.07, revenue:17e6,label:'CFP Semifinalist'},
+  quarterfinal:{prestige:0.7,recruitBoost:0.05, revenue:11e6,label:'CFP Quarterfinalist'},
+  firstround:  {prestige:0.4,recruitBoost:0.035,revenue:7e6, label:'CFP First Round'},
+  bowlwin:     {prestige:0.3,recruitBoost:0.025,revenue:3.5e6,label:'Bowl Win'},
+  bowlloss:    {prestige:0.1,recruitBoost:0.012,revenue:2.5e6,label:'Bowl Game'},
+  none:        {prestige:0,  recruitBoost:0,    revenue:0,   label:''}};
+function postseasonPayoff(finish){return POSTSEASON_PAYOFF[finish]||POSTSEASON_PAYOFF.none;}
+// === POSTSEASON ENGINE (Phase 12) END ===
+
 // In-game coach identity (Phase 7): a small, side-specific rating edge the controlled team plays
 // with — Motivator effort + Former Player respect + Coordinator game-planning lift both sides;
 // Offensive/Defensive Genius sharpen their own side. AI teams get none (z). Applied OUTSIDE the
@@ -1619,7 +1674,7 @@ function applyResult(g,box){
   W.rec.w++;L.rec.l++;
   W.rec.streak=W.rec.streak>=0?W.rec.streak+1:1;
   L.rec.streak=L.rec.streak<=0?L.rec.streak-1:-1;
-  if(home.conf===away.conf){W.rec.cw++;L.rec.cl++;}
+  if(!g.kind&&home.conf===away.conf){W.rec.cw++;L.rec.cl++;}   // postseason games aren't conference games
   applyStats(g,box);
 }
 function advanceWeek(){
@@ -1629,7 +1684,7 @@ function advanceWeek(){
   resolveRecruitingWeek(wk);              // AI recruits + commitments for the week just finished
   S.lastPlayedWeek=wk;S.week++;
   recomputeRanks(S.world);
-  if(S.week>S.schedule.weeks)endSeason();
+  if(S.week>S.schedule.weeks)finishRegularSeason();   // → postseason (bowls + playoff), then offseason
   else{setWeeklyTask();grantRecruitPoints();}
   autosave();
 }
@@ -1689,19 +1744,121 @@ function stampHonors(aw){
   Object.entries(aw.byConf||{}).forEach(([cf,v])=>{
     give(v.off,cf+' Offensive POY');give(v.def,cf+' Defensive POY');});
 }
-function endSeason(){
-  const t=controlled();
-  S.phase='Offseason';
+// Regular season is over (after the final week): lock Signing Day + decide the season awards (the
+// Heisman & co. are crowned PRE-bowls), then kick off the postseason. The champion + the offseason
+// task are set later, at endPostseason.
+function finishRegularSeason(){
   if(S.recruiting)S.recruiting.signed=true;          // Signing Day: the class is locked
-  // Season awards (Phase 8): compute from season stats before the rollover wipes p.gs.
-  const aw=computeAwards(S.world.teams,S.year||2026);
+  const aw=computeAwards(S.world.teams,S.year||2026); // awards run on the regular season, before bowls
   S.awards=S.awards||[];S.awards.push(aw);stampHonors(aw);
-  const cls=myClass(), cr=myClassRank();
-  const heis=aw.heisman?` ${aw.heisman.name} (${aw.heisman.abbr}) won the Heisman.`:'';
-  S.task={type:'Offseason',label:'Season Complete',
-    note:'Final record '+t.rec.w+'–'+t.rec.l+' ('+t.rec.cw+'–'+t.rec.cl+' '+t.conf+'). Signed '+
-      cls.length+' tracked recruit'+(cls.length===1?'':'s')+' — class ranked #'+cr+' nationally.'+heis+
-      ' Roll over to the next season when you’re ready — your class joins the roster.'};
+  startPostseason();
+}
+
+/* ============================================================
+   POSTSEASON — 12-team playoff + bowls (Phase 12)
+   The pure engine (seedPlayoff/playoffRoundMatchups/genBowls/postseasonPayoff) lives in the
+   POSTSEASON ENGINE block above; this layer owns S.postseason + the watch-then-commit round flow.
+   ============================================================ */
+// One postseason game (parallel to a schedule Game, tagged with `kind` so applyResult/lookup branch).
+function mkPostGame(kind,round,i,home,away,name){
+  return {id:'po'+(S.year||2026).toString(36)+kind[0]+round+'g'+i,kind,round,home,away,
+    played:false,hs:0,as:0,name:name||PLAYOFF_ROUNDS[round]};
+}
+function startPostseason(){
+  const me=S.teamId;
+  const ranked=[...S.world.teams].sort((a,b)=>rankScore(b)-rankScore(a));
+  if(ranked.length<12){              // tiny custom world — no bracket, straight to the offseason
+    S.postseason=null;endOfSeasonTask(null);S.phase='Offseason';autosave();return;
+  }
+  const seeds=seedPlayoff(ranked.map(t=>t.id)), inPlayoff=new Set(seeds);
+  let eligible=ranked.filter(t=>!inPlayoff.has(t.id)&&t.rec&&t.rec.w>=6).map(t=>t.id);
+  // guarantee the controlled team a bowl if it's eligible but ranked below the marquee slate
+  const mi=eligible.indexOf(me);
+  if(mi>=MAX_BOWLS*2){eligible.splice(mi,1);eligible.splice(MAX_BOWLS*2-1,0,me);}
+  const bowls=genBowls(eligible,(S.seed^(S.year||2026))>>>0).map((b,i)=>mkPostGame('bowl',0,i,b.home,b.away,b.name));
+  const round0=playoffRoundMatchups(0,seeds,[]).map((pr,i)=>mkPostGame('playoff',0,i,pr[0],pr[1]));
+  const inBowl=bowls.some(g=>g.home===me||g.away===me);
+  S.postseason={year:S.year||2026,round:0,playoff:{seeds,rounds:[round0],champion:null},bowls,
+    meDone:!inPlayoff.has(me)&&!inBowl};   // a team not in the field is "done" from the start
+  S.phase='Postseason';
+  setPostseasonTask();
+  autosave();
+}
+// Games to resolve this round: the playoff round's games, plus (round 0) every bowl.
+function postseasonRoundGames(round){
+  const ps=S.postseason,pg=(ps.playoff.rounds[round]||[]);
+  return round===0?pg.concat(ps.bowls):pg;
+}
+function winnerOfGame(g){return g.hs>g.as?g.home:g.away;}
+// The controlled team's unplayed game in the current round (null if bye / eliminated / not in the field).
+function myPostseasonGame(){const me=S.teamId;
+  return postseasonRoundGames(S.postseason.round).find(g=>!g.played&&(g.home===me||g.away===me));}
+// Resolve the current round (sim every unplayed game), advance the bracket, or finish the postseason.
+function advancePostseason(){
+  const ps=S.postseason,round=ps.round,me=S.teamId;
+  const myGame=postseasonRoundGames(round).find(g=>g.home===me||g.away===me);
+  postseasonRoundGames(round).forEach(g=>{if(!g.played){const box=simGame(g);applyResult(g,box);}});
+  recomputeRanks(S.world);
+  if(myGame){const iWon=winnerOfGame(myGame)===me;        // did the controlled team just bow out / advance?
+    if(!iWon||myGame.kind==='bowl'||round===3)ps.meDone=true;}
+  if(round<3){
+    const winners=ps.playoff.rounds[round].map(winnerOfGame);
+    ps.playoff.rounds[round+1]=playoffRoundMatchups(round+1,ps.playoff.seeds,winners)
+      .map((pr,i)=>mkPostGame('playoff',round+1,i,pr[0],pr[1]));
+    ps.round=round+1;setPostseasonTask();autosave();
+  }else{
+    ps.playoff.champion=winnerOfGame(ps.playoff.rounds[3][0]);
+    endPostseason();
+  }
+}
+// Resolve the rest of the postseason in one shot (used once the controlled team is out of it).
+function simRestOfPostseason(){let guard=0;while(S.phase==='Postseason'&&guard++<12)advancePostseason();}
+// Crown the champion, settle each team's finish into prestige / recruiting momentum / a revenue payout.
+function endPostseason(){
+  const ps=S.postseason,champ=ps.playoff.champion;
+  const finish={};
+  ps.playoff.seeds.forEach(id=>finish[id]='firstround');
+  const lostLabel=['firstround','quarterfinal','semifinal','runnerup'];
+  ps.playoff.rounds.forEach((games,round)=>games.forEach(g=>{finish[winnerOfGame(g)===g.home?g.away:g.home]=lostLabel[round];}));
+  if(champ)finish[champ]='champion';
+  ps.bowls.forEach(g=>{const w=winnerOfGame(g);finish[w]='bowlwin';finish[w===g.home?g.away:g.home]='bowlloss';});
+  S.world.teams.forEach(t=>{
+    const pay=postseasonPayoff(finish[t.id]||'none');
+    t._pp=(t._pp||0)+pay.prestige;                         // accrue fractional prestige; bump on whole points
+    if(t._pp>=1){const inc=Math.floor(t._pp);t.prestige=clamp((t.prestige||50)+inc,20,99);t._pp-=inc;}
+    t.postseasonBoost=pay.recruitBoost;                    // consumed by NEXT season's recruitFit
+    t.lastPostseason={finish:finish[t.id]||'none',label:pay.label,revenue:pay.revenue};  // revenue settles at rollover
+  });
+  const aw=S.awards[S.awards.length-1];
+  if(aw&&champ){const ct=teamById(champ);aw.champion={teamId:ct.id,name:ct.name,abbr:ct.abbr,color:ct.color,rec:ct.rec.w+'–'+ct.rec.l};
+    ct.titles=ct.titles||[];ct.titles.push(ps.year);}
+  ps.done=true;
+  S.phase='Offseason';
+  endOfSeasonTask(champ);
+  autosave();
+}
+function setPostseasonTask(){
+  const ps=S.postseason,me=S.teamId,mg=myPostseasonGame();
+  const label=PLAYOFF_ROUNDS[ps.round];
+  if(mg){const opp=teamById(mg.home===me?mg.away:mg.home);
+    S.task={type:'Postseason',label:(mg.kind==='bowl'?mg.name:label),
+      note:(mg.kind==='bowl'?'Bowl bid! ':'CFP '+label+'! ')+(mg.home===me?'vs ':'@ ')+opp.name+' — watch it play out.'};
+  }else if(ps.meDone){
+    S.task={type:'Postseason',label:'Postseason',note:'Your season is complete. Play out the bracket, then roll into the offseason.'};
+  }else{
+    S.task={type:'Postseason',label:label+' (bye)',note:'You’ve advanced. Other '+label.toLowerCase()+' games play out before your next game.'};
+  }
+}
+// The end-of-season "Season Complete" card (set after the postseason resolves).
+function endOfSeasonTask(champ){
+  const t=controlled(),cls=myClass(),cr=myClassRank();
+  const won=champ===t.id;
+  const ps=S.postseason, label=ps&&ps.lastLabel; void label;
+  const fin=t.lastPostseason&&t.lastPostseason.label?' '+t.lastPostseason.label+'.':'';
+  const natty=champ?(' '+teamById(champ).name+' won the national title.'):'';
+  S.task={type:'Offseason',label:won?'NATIONAL CHAMPIONS 🏆':'Season Complete',
+    note:'Final record '+t.rec.w+'–'+t.rec.l+'.'+fin+natty+' Signed '+cls.length+' tracked recruit'+
+      (cls.length===1?'':'s')+' — class #'+cr+' nationally. Roll over when you’re ready.'};
 }
 // Facilities base development rate for a team's offseason (strength + training). Side/coach
 // specifics layer on in devRateFor. AI teams develop off facilities + their staff alone.
@@ -1775,6 +1932,7 @@ function rolloverSeason(){
   const pool=(S.recruiting&&S.recruiting.pool)||[];
   const signeesBy={};pool.forEach(rc=>{if(rc.committedTo)(signeesBy[rc.committedTo]=signeesBy[rc.committedTo]||[]).push(rc);});
   const me=S.teamId, r=rng((S.seed^hashStr('rollover'+(S.year||2026)))>>>0);
+  const myPost=controlled().lastPostseason||null;  // this year's bowl/playoff finish (for the recap)
   const departed=resolvePromises(me,r);            // before rollover wipes last season's p.gs
   // (A) Finances settle once a year for EVERY team (uses last season's record, before it resets).
   const yr=S.year||2026;
@@ -1793,7 +1951,7 @@ function rolloverSeason(){
   S.world.teams.forEach(t=>{t.payroll=(t.staff||[]).reduce((s,x)=>s+(x.salary||0),0);});
   S.year=(S.year||2026)+1;
   S.world.teams.forEach(t=>{t.rec=emptyRec();t.ratings=teamRatings(t.roster,t.staff);});
-  S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;
+  S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;S.postseason=null;
   S.week=0;S.phase='Preseason';
   S.seriesOffers=genSeriesOffers(S.seed,S.year,me);   // a fresh wave of scheduling offers each offseason
   recomputeRanks(S.world);
@@ -1808,6 +1966,7 @@ function rolloverSeason(){
     tracked:summary?summary.trackedCount:0,
     freshmen:nf,departed,
     finances:controlled().lastFinances||null,poached:poachedMine,
+    postseason:(myPost&&myPost.label)||null,
     inducted:myInducted.map(l=>({name:l.name,pos:l.pos,tier:l.tier,stature:l.stature}))};
   autosave();
 }
@@ -2086,13 +2245,19 @@ function honorRowHTML(label,h){
    score always equals the committed/recorded score.
    ============================================================ */
 let gameTimer=null;
+// Find a game by id in the regular-season schedule OR the postseason (bracket + bowls).
+function findAnyGame(id){
+  if(S.schedule){const g=S.schedule.games.find(x=>x.id===id);if(g)return g;}
+  if(S.postseason){const g=S.postseason.playoff.rounds.flat().concat(S.postseason.bowls).find(x=>x.id===id);if(g)return g;}
+  return null;
+}
 function buildGameLog(gameId){
-  const g=S.schedule.games.find(x=>x.id===gameId); if(!g)return null;
+  const g=findAnyGame(gameId); if(!g)return null;
   const {home,away}=simSides(g);
   const res=simEngine(home,away,(hashStr(g.id)^(S.seed>>>0))>>>0,{log:true});
   return {gameId,home:g.home,away:g.away,log:res.log,hs:res.hs,as:res.as,idx:0,fast:false,done:false};
 }
-function openGameViewer(g){ UI.game=Object.assign(buildGameLog(g.id)||{},{replay:false}); UI.view='game'; render(); scheduleGameTick(); }
+function openGameViewer(g){ UI.game=Object.assign(buildGameLog(g.id)||{},{replay:false,post:!!g.kind}); UI.view='game'; render(); scheduleGameTick(); }
 function openGameReplay(gameId){ const G=buildGameLog(gameId); if(!G)return; G.replay=true; UI.game=G; UI.view='game'; render(); scheduleGameTick(); }
 function curGameScore(G){const e=G.idx>0?G.log[G.idx-1]:null;return e?{hs:e.hs,as:e.as,q:e.q}:{hs:0,as:0,q:1};}
 function qLabel(q){return (''+q).startsWith('OT')?q:'Q'+q;}
@@ -2120,10 +2285,11 @@ function gameDone(){ if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} if(U
 function skipGame(){ const G=UI.game; if(!G)return; if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} G.idx=G.log.length; G.done=true; render(); }
 function finishGame(){
   if(gameTimer){clearTimeout(gameTimer);gameTimer=null;}
-  const G=UI.game; if(!G)return; const replay=G.replay, gid=G.gameId; UI.game=null;
+  const G=UI.game; if(!G)return; const replay=G.replay, gid=G.gameId, post=G.post; UI.game=null;
   if(replay){ UI.view='season'; render(); return; }
-  UI.view='home'; advanceWeek();
-  const g=S.schedule.games.find(x=>x.id===gid); render();
+  UI.view='home';
+  if(post)advancePostseason(); else advanceWeek();   // commit the watched game (re-sims deterministically)
+  const g=findAnyGame(gid); render();
   if(g){const gv=gameView(g,controlled().id);toast((gv.cls==='good'?'Won ':'Lost ')+gv.res.slice(2)+(gv.home?' vs ':' @ ')+gv.opp.abbr);}
 }
 function renderGame(app){
@@ -2187,14 +2353,19 @@ function renderHome(app){
     hc.append(more);v.append(hc);
   }
   // next task / season control
-  const inSeason=S.phase==='Regular Season', over=S.phase==='Offseason';
+  const inSeason=S.phase==='Regular Season', over=S.phase==='Offseason', inPost=S.phase==='Postseason';
   v.append(el('h2','sec','On the Clock'));
   const task=el('div','card');
   const wkLabel=inSeason?'Week '+S.week:(S.year||2026)+' \u00b7 '+S.phase;
   task.innerHTML=`<div class="row spread"><span class="tag accent">${S.phase}</span><span class="meta">${wkLabel}</span></div>
     <div class="cond" style="font-size:22px;font-weight:800;margin-top:10px">${S.task.label}</div>
     <div class="muted" style="font-size:13px;margin-top:4px">${S.task.note}</div>`;
-  const advLabel=over?'Roll over to '+((S.year||2026)+1)+' \u2192':inSeason?'Play Week '+S.week+' \u2192':'Kick off the season \u2192';
+  const myPg=inPost?myPostseasonGame():null;
+  const advLabel=over?'Roll over to '+((S.year||2026)+1)+' \u2192'
+    :inSeason?'Play Week '+S.week+' \u2192'
+    :inPost?(myPg?(myPg.kind==='bowl'?'Play the '+myPg.name+' \u2192':'Play '+PLAYOFF_ROUNDS[S.postseason.round]+' \u2192')
+      :S.postseason.meDone?'Sim postseason \u2192 offseason':'Advance '+PLAYOFF_ROUNDS[S.postseason.round]+' \u2192')
+    :'Kick off the season \u2192';
   const adv=el('button','btn','');adv.textContent=advLabel;adv.style.marginTop='12px';adv.dataset.tid='adv-clock';
   adv.onclick=()=>{
     if(over){rolloverSeason();render();toast('Welcome to '+S.year+' \u2014 class enrolled, roster reloaded');}
@@ -2203,6 +2374,12 @@ function renderHome(app){
       if(g&&!g.played)openGameViewer(g);            // watch your game, then commit the week
       else{advanceWeek();render();toast('Bye week \u2014 advanced');}  // bye: just advance
     }
+    else if(inPost){
+      const g=myPostseasonGame();
+      if(g)openGameViewer(g);                        // watch your bowl/playoff game, then commit the round
+      else if(S.postseason.meDone){simRestOfPostseason();render();toast('Postseason complete');}
+      else{advancePostseason();render();toast('Round advanced');}   // bye round, still alive
+    }
     else{
       const vac=vacantCoordSlots(controlled());
       if(vac.length){UI.view='team';UI.tab='coaches';render();toast('Fill your '+vac.length+' coordinator vacancy first');return;}
@@ -2210,14 +2387,16 @@ function renderHome(app){
     }
   };
   task.append(adv);v.append(task);
+  if(inPost)postseasonHomeCard(v);
   // end-of-season awards ceremony (Offseason, before rollover): the year's national honors
   if(over&&S.awards&&S.awards.length){
     const A=S.awards[S.awards.length-1];
-    if(A&&(A.heisman||A.coy)){
+    if(A&&(A.heisman||A.coy||A.champion)){
       v.append(el('h2','sec',A.year+' Awards'));
       const ac=el('div','card');ac.dataset.tid='awards-card';
+      const champ=A.champion?`<div class="row spread" style="margin:6px 0"><span class="meta dim">🏆 National Champion</span><span class="nm" style="color:${A.champion.color}">${A.champion.name} <span class="dim">${A.champion.rec}</span></span></div>`:'';
       const coy=A.coy?`<div class="row spread" style="margin:6px 0"><span class="meta dim">Coach of the Year</span><span class="nm">${A.coy.name} <span class="dim">${A.coy.rec}</span></span></div>`:'';
-      ac.innerHTML=awardRow('Heisman',A.heisman)+awardRow('Bednarik',A.poyDef)+awardRow('Freshman',A.freshman)+coy;
+      ac.innerHTML=champ+awardRow('Heisman',A.heisman)+awardRow('Bednarik',A.poyDef)+awardRow('Freshman',A.freshman)+coy;
       const more=el('button','btn line','Full awards, trophies & All-America');more.style.marginTop='10px';
       more.onclick=()=>{UI.view='season';UI.seasonTab='awards';render();};
       ac.append(more);v.append(ac);
@@ -2230,12 +2409,14 @@ function renderHome(app){
     const dep=o.departed&&o.departed.length?`<div class="muted" style="font-size:12px;margin-top:6px">Transfers out (broken promises): ${o.departed.map(d=>d.name+' ('+d.pos+')').join(', ')}</div>`:'';
     const poa=o.poached&&o.poached.length?`<div class="muted bad" style="font-size:12px;margin-top:6px">Coordinators poached: ${o.poached.map(p=>p.name+' ('+p.role+')').join(', ')}</div>`:'';
     const fin=o.finances?`<div class="row spread" style="margin-top:4px"><span>Finances net</span><span class="cond ${o.finances.net<0?'bad':'good'}" style="font-weight:800">${money(o.finances.net)}</span></div>`:'';
+    // Phase 12: how the controlled team's postseason ended
+    const pst=o.postseason?`<div class="row spread" style="margin-top:4px"><span>Postseason</span><span class="cond accent" style="font-weight:800">${o.postseason}</span></div>`:'';
     // Phase 11: new Ring of Honor inductees from the class that just graduated
     const ind=o.inducted&&o.inducted.length?`<div class="muted" style="font-size:12px;margin-top:6px">⭐ Enshrined: ${o.inducted.map(i=>i.name+' ('+i.tier+')').join(', ')}</div>`:'';
     rc.innerHTML=`<div class="meta dim" style="margin-bottom:6px">Offseason recap</div>
       <div class="row spread"><span>Seniors graduated</span><span class="cond" style="font-weight:800">${o.graduated}</span></div>
       <div class="row spread"><span>Recruits enrolled</span><span class="cond" style="font-weight:800">${o.tracked}</span></div>
-      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${fin}${dep}${poa}${ind}`;
+      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${pst}${fin}${dep}${poa}${ind}`;
     v.append(rc);
   }
   if(inSeason||over){const sb=el('button','btn line','Season \u00b7 schedule & standings');sb.style.marginTop='10px';
@@ -2405,9 +2586,12 @@ function renderSeason(app){
     seriesCard(v,t);
     app.append(v);return;
   }
-  const st=UI.seasonTab||'schedule';
+  let st=UI.seasonTab||'schedule';
+  const tabList=[['schedule','Schedule'],['standings','Standings'],['top25','Top 25'],['scores','Scores'],['honors','Honors'],['awards','Awards']];
+  if(S.postseason)tabList.push(['bracket','Bracket']);   // playoff bracket while a postseason exists
+  if(st==='bracket'&&!S.postseason)st='schedule';
   const tabs=el('div','tabs');tabs.style.marginTop='14px';
-  [['schedule','Schedule'],['standings','Standings'],['top25','Top 25'],['scores','Scores'],['honors','Honors'],['awards','Awards']].forEach(([k,l])=>{
+  tabList.forEach(([k,l])=>{
     const b=el('button',st===k?'on':'',l);b.dataset.tid='stab-'+k;
     b.onclick=()=>{UI.seasonTab=k;render();};tabs.append(b);
   });
@@ -2417,9 +2601,49 @@ function renderSeason(app){
   else if(st==='top25')seasonTop25(v,t);
   else if(st==='honors')seasonHonors(v,t);
   else if(st==='awards')seasonAwards(v,t);
+  else if(st==='bracket')seasonBracket(v,t);
   else seasonScores(v,t);
   v.style.paddingBottom='10px';
   app.append(v);
+}
+// Phase 12: a compact postseason card on Home — the controlled team's bowl/playoff results so far + a
+// link to the full bracket.
+function postseasonHomeCard(v){
+  const ps=S.postseason,me=S.teamId;
+  v.append(el('h2','sec','Postseason'));
+  const c=el('div','card');c.dataset.tid='postseason-card';
+  const myGames=ps.playoff.rounds.flat().concat(ps.bowls).filter(g=>(g.home===me||g.away===me)&&g.played);
+  let rows='';
+  myGames.forEach(g=>{const gv=gameView(g,me),lbl=g.kind==='bowl'?g.name:('CFP '+(g.name||''));
+    rows+=`<div class="row spread" style="margin:5px 0"><span class="meta">${lbl} ${gv.home?'vs ':'@ '}${gv.opp.abbr}</span><span class="cond ${gv.cls}" style="font-weight:800">${gv.res}</span></div>`;});
+  c.innerHTML=`<div class="meta dim" style="margin-bottom:4px">${ps.year} College Football Playoff</div>${rows||'<div class="meta dim">Your postseason games appear here as they’re played.</div>'}`;
+  const more=el('button','btn line','View the full bracket →');more.style.marginTop='10px';
+  more.onclick=()=>{UI.view='season';UI.seasonTab='bracket';render();};
+  c.append(more);v.append(c);
+}
+// Phase 12: the playoff bracket + bowl slate (Season → Bracket). Played games are replayable.
+function seasonBracket(v,t){
+  const ps=S.postseason;
+  if(!ps){v.append(el('div','empty','No postseason in progress.'));return;}
+  if(ps.playoff.champion){const ct=teamById(ps.playoff.champion);
+    v.append(el('div','card',`<div style="text-align:center"><div class="meta dim">${ps.year} National Champion</div>
+      <div class="cond" style="font-size:24px;font-weight:800;color:${ct.color}">🏆 ${ct.name} ${ct.nick}</div></div>`));}
+  PLAYOFF_ROUNDS.forEach((label,r)=>{const games=ps.playoff.rounds[r];if(!games)return;
+    v.append(el('h2','sec',label));games.forEach(g=>v.append(bracketGameRow(g,t)));});
+  if(ps.bowls.length){v.append(el('h2','sec','Bowls'));ps.bowls.forEach(g=>v.append(bracketGameRow(g,t)));}
+}
+function bracketGameRow(g,t){
+  const home=teamById(g.home),away=teamById(g.away),me=t.id;
+  const hw=g.played&&g.hs>g.as,aw=g.played&&g.as>g.hs;
+  const seedOf=id=>{const s=S.postseason.playoff.seeds.indexOf(id);return s>=0?'<span class="dim" style="font-weight:400">#'+(s+1)+'</span> ':'';};
+  const row=el('div','lrow');row.dataset.id=g.id;
+  if(g.home===me||g.away===me)row.style.boxShadow='inset 0 0 0 1px var(--accent)';
+  row.innerHTML=`<div style="flex:1">
+      <div class="row spread"><span style="font-weight:${hw?800:500}">${seedOf(g.home)}${home.abbr}</span><span class="cond">${g.played?g.hs:''}</span></div>
+      <div class="row spread"><span style="font-weight:${aw?800:500}">${seedOf(g.away)}${away.abbr}</span><span class="cond">${g.played?g.as:''}</span></div>
+      ${g.kind==='bowl'?'<div class="meta dim" style="margin-top:3px">'+g.name+'</div>':''}</div>`;
+  if(g.played){row.style.cursor='pointer';row.onclick=()=>openGameReplay(g.id);}
+  return row;
 }
 function seasonSchedule(v,t){
   v.append(el('div','card',`<div class="kv"><span class="k">Overall</span><span class="cond" style="font-size:17px">${t.rec.w}–${t.rec.l}</span></div>
@@ -2667,6 +2891,9 @@ function seasonAwards(v,t){
     bar.append(el('span','meta dim','Season'),sel);v.append(bar);
   }
   const A=aw.find(a=>a.year===year)||aw[aw.length-1];
+  if(A.champion){v.append(el('div','card',`<div style="text-align:center"><div class="meta dim">${A.year} National Champion</div>
+    <div class="cond" style="font-size:22px;font-weight:800;color:${A.champion.color}">🏆 ${A.champion.name}</div>
+    <div class="meta dim">${A.champion.rec}</div></div>`));}
   v.append(el('h2','sec',A.year+' National'));
   const nat=el('div','card');
   const coy=A.coy?`<div class="row spread" style="margin:6px 0;gap:8px">

@@ -130,6 +130,21 @@ plain static files so Pages still serves it with zero config.
   sheet, an enshrinement line in the offseason recap, an "Alum" carousel badge. Save **v13**
   (`team.legends`, `p.career`, `p.peakOv`, `rec.alumni`); `npm run legacylab` (31 checks) + `awardlab`
   grew to 25 (trophies). See "Phase 11 design — program legacy & legends" below.
+- **Phase 12 — Postseason (bowls & playoff).** ✅ DONE. A postseason now sits between the regular season
+  and the offseason. After week 15, `finishRegularSeason` crowns the season awards (the Heisman & co. are
+  decided **pre-bowls**) + locks Signing Day, then `startPostseason` builds a **12-team College Football
+  Playoff** (top-4 seeds bye into the quarters) + a slate of named **bowls** for the other ≥6-win teams
+  (`S.postseason`). The controlled team's bowl/playoff games are **watchable** (the same watch-then-commit
+  viewer as the regular season — `advancePostseason` re-sims deterministically, so the watched score is the
+  committed score); other games auto-resolve, and once you're out, one tap sims the rest. `endPostseason`
+  crowns the champion and settles each team's finish into **three recruiting payoffs**: a small persistent
+  **prestige** bump (fractional accumulator), a **`postseasonBoost`** folded into next year's `recruitFit`,
+  and a one-time **revenue** payout read by `resolveFinances`. Pure fenced `POSTSEASON ENGINE` (seedPlayoff
+  / playoffRoundMatchups / genBowls / postseasonPayoff) + `npm run postlab` (20 checks). UI: a **Bracket**
+  Season tab (replayable games), a Home postseason card, champion banners + a `🏆 National Champion` row on
+  the awards cards, `team.titles`, and a postseason line in the offseason recap. The Defensive POY had been
+  surfaced as the Bednarik in Phase 11. Save **v14** (`S.postseason`, per-team `postseasonBoost`/
+  `lastPostseason`/`titles`/`_pp`). See "Phase 12 design — postseason" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast); and
   the recruit board stays **top-300 only** (the long 2–3★ tail is approximated, never individually
@@ -351,6 +366,56 @@ Keep it modest and deterministic by `(seed, year)`. Hiring an alum is flavor the
 No jersey-number tracking, no per-legend dialogue/storylines, no Hall-of-Fame voting beyond the
 stature score, no booster/donor sim. Legends are lean snapshots that drive three mechanics
 (visit / aura / coach) and a display — nothing that re-simulates a retired player.
+
+---
+
+## Phase 12 design — postseason (bowls & playoff)
+
+Decided 2026-06-28 with AJ. A postseason now sits between the regular season and the offseason, and a
+deep run / a bowl bid **generates recruiting** (AJ's framing). Same house discipline: a pure fenced
+engine validated by a node lab before UI, a save bump, all gates green.
+
+### Flow & timing
+`advanceWeek` past the final week now calls **`finishRegularSeason`** (was `endSeason`): it crowns the
+season **awards from regular-season stats** (the Heisman & co. are decided **pre-bowls**, like real life)
++ locks **Signing Day**, then **`startPostseason`**. The postseason runs round-by-round; **`endPostseason`**
+crowns the champion + settles payoffs, sets `phase='Offseason'`, and the existing Offseason→rollover flow
+takes over. `S.postseason` is created here and nulled at rollover (like the schedule).
+
+### The bracket + bowls (pure `POSTSEASON ENGINE`)
+Fenced `// === POSTSEASON ENGINE (Phase 12) START/END ===`, depends only on `rng/clamp/hashStr` + data
+(no `S`, no `simEngine` — scores come from `simEngine` in the app layer), so `test/postlab.js` validates
+it offline: `seedPlayoff` (top 12 by `rankScore`), `playoffRoundMatchups(round,seeds,winners)` (a 12-team
+CFP — seeds 5–12 in the first round, **top-4 bye** into the quarters; 4→4→2→1 games), `genBowls`
+(adjacent-by-rank pairing of ≥6-win non-playoff teams, capped to an 18-bowl marquee slate),
+`postseasonPayoff(finish)` (the prestige/recruit/revenue ladder). The app builds `S.postseason` game
+objects (`mkPostGame`, tagged `kind:'playoff'|'bowl'` so `applyResult` skips the conference tally and the
+lookup branches), sims them with the existing `simGame`/`simEngine`, and feeds winners into the next round.
+
+### Watch-then-commit (reuses the regular-season viewer)
+The controlled team's bowl/playoff games are **watchable**: the Home advance button opens the same game
+viewer (`buildGameLog`/`findAnyGame` now search the postseason too; `finishGame` branches to
+`advancePostseason`). `advancePostseason` re-sims every unplayed game in the round (deterministic — the
+watched score **is** the committed score), advances the bracket, and on the final → `endPostseason`. Bye
+rounds advance directly; once the controlled team is out (`meDone`), one tap (`simRestOfPostseason`) sims
+the rest. Other teams' games always auto-resolve, so the postseason stays fast.
+
+### The three recruiting payoffs (the point of the feature)
+`endPostseason` tallies each team's deepest finish and applies `postseasonPayoff`: a small **persistent
+prestige** bump (a fractional `_pp` accumulator avoids rounding loss), a **`postseasonBoost`** folded into
+**next** season's `recruitFit` (the boost is earned after Signing Day, so it pays the *following* class),
+and a one-time **revenue** payout read by `resolveFinances` (`team.lastPostseason.revenue`). Champion takes
+a permanent **`team.titles`** entry + an `aw.champion` snapshot. Postseason game stats fold into `p.gs`, so
+bowl heroics count toward the Phase 11 career/legacy accumulation.
+
+### UI & save
+A **Bracket** Season tab (rounds + bowls, played games replayable), a Home postseason card, champion
+banners + a `🏆 National Champion` row on the awards cards, a postseason line in the offseason recap. Save
+**v14** (`S.postseason`; per-team `postseasonBoost`/`lastPostseason`/`titles`/`_pp`); `migrateState`
+v13→v14 backfills `postseason:null`. New gate `npm run postlab` (20 checks); `qa` drives the full
+hand-off → watch/resolve → champion → recruiting boost. **Deliberately out of scope:** no conference
+championship games (the playoff seeds straight off the final poll), no bowl-tie-in/selection-committee
+politics, no separate transfer portal — the postseason is bracket + bowls + payoffs, nothing more.
 
 ---
 
@@ -771,7 +836,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **13**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **14**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -781,7 +846,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   `S.series=[]` + per-team `homeState` (from `TEAM_STATE`), with `p.honors` optional (Phase 8
   geography/awards/series); v10→v11 backfills `S.seriesOffers=null` (AI-initiated series offers,
   created when managing); v11→v12 is a structural no-op (per-player traits `p.mot`/`p.comp`, Phase 10
-  — absence reads as average); v12→v13 backfills per-team `legends=[]` (Phase 11 Ring of Honor;
+  — absence reads as average); v13→v14 backfills `S.postseason=null` (Phase 12 — created when the
+  regular season ends, like the schedule; per-team `postseasonBoost`/`lastPostseason`/`titles`/`_pp`
+  absent read as no-effect); v12→v13 backfills per-team `legends=[]` (Phase 11 Ring of Honor;
   `p.career`/`p.peakOv` absent read as zero/none, honors already persist). Each step re-derives
   ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
@@ -802,7 +869,8 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   coach: { first, last, homeState, archetype, history },
   teamId,                 // id of the controlled team
   year,                   // calendar-year counter, init 2026, ++ each rollover (Phase 5)
-  week, phase,            // 0/"Preseason" → 1..15/"Regular Season" → "Offseason" → (rollover) → Preseason
+  week, phase,            // Preseason → 1..15/"Regular Season" → "Postseason" (bowls+playoff) → "Offseason" → (rollover) → Preseason
+  postseason,             // { year, round, playoff:{seeds[12], rounds:[[Game]], champion}, bowls:[Game], meDone } | null (Phase 12)
   lastPlayedWeek,         // last week resolved (for the Scores tab)
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
@@ -942,17 +1010,18 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
-### Phases 6–11 landed — what used to be stubbed now works
-Phases 1–11 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
+### Phases 6–12 landed — what used to be stubbed now works
+Phases 1–12 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
 loop** + **facility upgrades** (Phase 6), **side-specific development** + **in-game coach effects** +
 **coach-responsive scouting fog** (Phase 7), **AI geography** + **season awards/All-America/Coach of
 the Year/Week** + **non-conference series** (Phase 8), the **columnar save codec** (Phase 9), **fogged
-player traits** (Phase 10), and **program legacy** — Ring of Honor, career accumulation, alumni-visit
-recruiting, legacy aura, legend-coaches (Phase 11). The full career loop — recruit → season → awards →
-rollover (graduate/enshrine/develop/enroll) → finances settle → carousel → facilities/series — closes
-across multiple years, and your graduating stars now leave a permanent mark on the program. **Eight
-green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` / `traitlab` /
-`legacylab` / `qa`.
+player traits** (Phase 10), **program legacy** — Ring of Honor, career accumulation, alumni-visit
+recruiting, legacy aura, legend-coaches (Phase 11), and the **postseason** — a 12-team playoff + bowls,
+watchable, feeding prestige/recruiting/revenue (Phase 12). The full career loop — recruit → season →
+awards → **postseason (bowls/playoff)** → rollover (graduate/enshrine/develop/enroll) → finances settle
+→ carousel → facilities/series — closes across multiple years, and your graduating stars leave a
+permanent mark on the program. **Nine green gates:** `npm run` + `simlab` / `reclab` / `rolllab` /
+`econlab` / `awardlab` / `traitlab` / `legacylab` / `postlab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during
