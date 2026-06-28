@@ -4,7 +4,7 @@ A mobile-first, single-page head-coach career sim. Pure static HTML/CSS/JS, depl
 via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 
 > This file is the project brief + working memory. It reflects the state at the end of
-> **Phase 4**. Update the "Status" lines as phases land.
+> **Phase 9** — all roadmap phases (1–9) are DONE. Update the "Status" lines as phases land.
 
 ---
 
@@ -86,9 +86,16 @@ plain static files so Pages still serves it with zero config.
   fixed edges, byte-identical when none; home-and-home / neutral / buy games proposed via a sheet,
   AI accepts on prestige fit/guarantee). Save **v10** (`S.awards`, `S.series`, `team.homeState`,
   optional `p.honors`). See "Planned: season awards" + "Planned: non-conference series".
-- **Phase 9 — Tech debt & scale.** Do once per-season history accrues: the **seed + diff save
-  optimization** (saves still store the full ~2 MB world vs the ~5 MB cap) and an optional
-  **module/build split** (today everything is global in one `index.html`).
+- **Phase 9 — Tech debt & scale.** ✅ DONE (save optimization). A **storage codec** shrinks saves
+  ~40% (a fresh/played save ~2.3 MB → ~1.4 MB, well under the ~5 MB cap). Rosters — 98% of the
+  bytes — serialize **columnar** (`encRoster`/`decRoster`: the 15 core player fields become a flat
+  tuple instead of repeating field names 11k times; sparse extras like `gs`/`dev`/`honors` ride in a
+  side object). `encodeState`/`decodeState` wrap `writeSlot`/load; pure serialization with **no seed/
+  `genWorld` dependency**, so it's deploy-safe and correct-by-construction (qa round-trips all 11k
+  players exactly). *Deliberately NOT done:* the **seed + diff** variant (couples save validity to
+  `genWorld`'s exact code → silent corruption across deploys — too fragile for real player saves; the
+  columnar codec gets most of the win safely) and the optional **module/build split** (splitting the
+  working single-file app risks Pages' zero-config serving for no functional gain).
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast); and
   the recruit board stays **top-300 only** (the long 2–3★ tail is approximated, never individually
@@ -648,10 +655,11 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 ## Conventions & gotchas
 
 - **No build step yet.** Everything is global in one `<script>`. If splitting into modules,
-  preserve the deterministic seed → `genWorld` contract; saves store the full world today.
-  With scholarship-sized rosters a full-world save is **~2 MB** (vs the ~5 MB/origin
-  `localStorage` cap), so the seed + diff optimization gets more attractive as seasons
-  accumulate — worth doing before saves carry per-season history.
+  preserve the deterministic seed → `genWorld` contract. Saves store the full world, but rosters
+  (98% of the bytes) now serialize **columnar** via the Phase 9 storage codec (`encodeState`/
+  `decodeState` around `writeSlot`/load), cutting a ~2.3 MB save to ~1.4 MB (vs the ~5 MB/origin
+  `localStorage` cap). The codec is pure serialization (no seed dependency), so it's deploy-safe;
+  the seed+diff variant was deliberately skipped (couples saves to `genWorld`'s exact code).
 - After any roster/ratings/staff edit, call `teamRatings(roster, staff)` then
   `recomputeRanks(S.world)` (staff boosts feed into the rating, so pass the team's staff).
 - `autosave()` writes to the slot matching `S.createdAt`; explicit "Save game" is in the
@@ -670,26 +678,25 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
-### Still stubbed (intentionally inert)
-- Offseason now **rolls over**: after week 15 the phase becomes "Offseason" (season-complete card
-  + signed class/grade), then the Home card's "Roll over to <year> →" runs `rolloverSeason()` →
-  next Preseason (see "Phase 5 rollover design"). What's *still* a dead end past rollover: the
-  **coaching carousel** + **finances/facility upgrades** (Phase 6), **non-conf series** + **season
-  awards** + **AI geography** (Phase 8) — see "Phases 6–9 — plan".
-- Coach hire/fire (→ Phase 6); only salary editing works now.
-- History/archetype effects are **applied in recruiting** (`coachMods`, Phase 4) and lightly in
-  **development** (Off/Def Genius nudges `devRate`, Phase 5 rollover); deeper side-specific dev +
-  the remaining in-game effects wire in at **Phase 7**.
-- Player development is now **live** (basic): `developPlayer` grows ov→pot each offseason rollover.
-  The read-only grades (`devStage`/`scoutedCeiling`) still surface it in the roster UI; richer
-  dev (coach Genius depth, UI growth surfacing) is **Phase 7**. Roster scouting fog is a fixed
-  function of age/class (recruit fog, by contrast, sharpens with the Phase 4 Scout action) — also
-  Phase 7.
+### Phases 6–9 landed — what used to be stubbed now works
+Phases 1–9 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
+loop** + **facility upgrades** (Phase 6), **side-specific development** + **in-game coach effects** +
+**coach-responsive scouting fog** (Phase 7), **AI geography** + **season awards/All-America/Coach of
+the Year/Week** + **non-conference series** (Phase 8), and the **columnar save codec** (Phase 9). The
+full career loop — recruit → season → awards → rollover (graduate/develop/enroll) → finances settle →
+carousel → facilities/series — closes across multiple years. **Six green gates:** `npm run` +
+`simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` / `qa`.
+
+### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during
   the season, then the **rollover converts them to freshman `Player`s** (`recruitToFreshman`).
 - Non-controlled games are resolved instantly by `simEngine`; only the controlled team's game
   is watchable (watch-then-commit) or replayable (greatest games). There's no live viewer for
   arbitrary other games — by design, so advancing a week stays fast.
+- The recruit board stays **top-300 only** (the 2–3★ tail is approximated by a prestige baseline +
+  generated filler freshmen at rollover, never individually modeled).
+- The **module/build split** and the **seed+diff** save variant were deliberately skipped (see
+  Phase 9) — the columnar codec gets most of the size win deploy-safely.
 
 ---
 

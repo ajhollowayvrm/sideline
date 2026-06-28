@@ -657,6 +657,22 @@ function startServer() {
   check('Rollover: next season kicks off cleanly (schedule + fresh recruiting cycle)', next.phase === 'Regular Season' && next.week === 1 && next.sched && next.pool > 0, `pool ${next.pool}`);
   check('Phase 8: booked series appears in the next schedule (locked leg)', next.seriesGames > 0 && next.mySeriesGame, `${next.seriesGames} series games`);
 
+  // ---------- PHASE 9: storage codec (columnar rosters, deploy-safe round-trip) ----------
+  const codec = await page.evaluate(() => {
+    const eq = (a, b) => { const ka = Object.keys(a), kb = Object.keys(b); if (ka.length !== kb.length) return false; return ka.every(k => JSON.stringify(a[k]) === JSON.stringify(b[k])); };
+    const full = JSON.stringify(S).length;
+    const enc = encodeState(S); const encLen = JSON.stringify(enc).length;
+    const dec = decodeState(JSON.parse(JSON.stringify(enc)));   // simulate a storage round-trip
+    let ok = true, np = 0;
+    S.world.teams.forEach((t, i) => { const d = dec.world.teams[i]; if (!d || t.roster.length !== d.roster.length) { ok = false; return; } t.roster.forEach((p, j) => { np++; if (!eq(p, d.roster[j])) ok = false; }); });
+    const topOk = dec.seed === S.seed && dec.year === S.year && dec.teamId === S.teamId && dec.version === S.version && dec.awards.length === S.awards.length;
+    return { full, encLen, ok, np, topOk, encMarker: !!enc._sv, decClean: dec._sv === undefined };
+  });
+  check('Phase 9: columnar codec round-trips every roster exactly', codec.ok && codec.np > 10000, codec.np + ' players checked');
+  check('Phase 9: codec preserves top-level state (seed/year/awards/…)', codec.topOk);
+  check('Phase 9: encoded save is meaningfully smaller', codec.encLen < codec.full * 0.78, `${(codec.full / 1024 | 0)}KB → ${(codec.encLen / 1024 | 0)}KB`);
+  check('Phase 9: encode tags the blob, decode strips the tag', codec.encMarker && codec.decClean);
+
   check('No uncaught JS / console errors', jsErrors.length === 0, jsErrors.slice(0, 3).join(' | '));
   await ctx.close();
 
