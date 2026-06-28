@@ -120,6 +120,21 @@ function startServer() {
   check('Roster: ceiling chips render', chipInfo.ceil > 10, `${chipInfo.ceil} chips`);
   check('Roster: fuzzy bands present', chipInfo.bands > 0, `${chipInfo.bands} banded`);
   check('Roster: development stages render', chipInfo.devs > 10, `${chipInfo.devs} stages`);
+  // Phase 10: fogged temperament chips (Motor = work ethic, Poise = composure)
+  const traitUI = await page.evaluate(() => {
+    const tags = [...document.querySelectorAll('.lrow .tag')].map(t => t.textContent.trim());
+    const motor = tags.filter(t => t.startsWith('Motor:')).length, poise = tags.filter(t => t.startsWith('Poise:')).length;
+    // model: a player you don't know reads '???'; one you know well reads a band; raw value hidden
+    const id = controlled().roster[0].id;
+    const unknown = traitRead('mot', id, 90, 10).revealed === false && traitRead('mot', id, 90, 10).text === '???';
+    const known = traitRead('mot', id, 90, 95).revealed === true && traitRead('mot', id, 90, 95).text !== '???';
+    // fog tightens with tenure: a senior reads more confidently than a freshman
+    const fr = rosterTraitConf({ yr: 'FR', id: 'x' }), sr = rosterTraitConf({ yr: 'SR', id: 'y' });
+    return { motor, poise, unknown, known, tenureMono: sr > fr };
+  });
+  check('Phase 10: roster shows Motor + Poise trait chips', traitUI.motor > 10 && traitUI.poise > 10, `${traitUI.motor} motor / ${traitUI.poise} poise`);
+  check('Phase 10: traits are fogged — unknown reads ???, known reveals a band', traitUI.unknown && traitUI.known);
+  check('Phase 10: trait fog tightens with tenure (SR > FR confidence)', traitUI.tenureMono);
   check('Roster: no horizontal overflow', await overflow(page));
   await shot(page, '07-roster.png');
 
@@ -142,6 +157,7 @@ function startServer() {
   await page.waitForTimeout(120);
   const sheetTxt = await page.locator('[data-tid="sheet"]').innerText();
   check('Player sheet shows Ceiling + Development', /Ceiling/.test(sheetTxt) && /Development/.test(sheetTxt));
+  check('Player sheet shows Work ethic + Composure (Phase 10)', /Work ethic/.test(sheetTxt) && /Composure/.test(sheetTxt));
   check('Player sheet hides raw "Potential" number', !/Potential/.test(sheetTxt));
   await shot(page, '08-player-sheet.png');
 
@@ -498,6 +514,14 @@ function startServer() {
   check('Recruiting cycle: an aggressively recruited target commits to you', cycle.tgtMine);
   check('Recruiting cycle: the controlled team signs a class', cycle.mine > 0, cycle.mine + ' signees');
   check('Recruiting cycle: class rank is valid (1–134)', cycle.rank >= 1 && cycle.rank <= 134, '#' + cycle.rank);
+  // Phase 10: a recruit's temperament is fogged until you scout them past the threshold
+  const recFog = await page.evaluate(() => {
+    const rec = S.recruiting.pool[0];
+    const cold = traitRead('comp', rec.id, compVal(rec), 0);     // unscouted → hidden
+    const warm = traitRead('comp', rec.id, compVal(rec), 80);    // scouted → revealed band
+    return { hidden: cold.revealed === false && cold.text === '???', shown: warm.revealed === true && warm.text !== '???' };
+  });
+  check('Phase 10: recruit traits hidden until scouted, then revealed', recFog.hidden && recFog.shown);
   await page.locator('[data-tid="nav-recruit"]').click();
   await page.waitForTimeout(150);
   await page.locator('[data-tid="rtab-class"]').click();

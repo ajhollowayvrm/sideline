@@ -101,9 +101,9 @@ plain static files so Pages still serves it with zero config.
   `genWorld`'s exact code → silent corruption across deploys — too fragile for real player saves; the
   columnar codec gets most of the win safely) and the optional **module/build split** (splitting the
   working single-file app risks Pages' zero-config serving for no functional gain).
-- **Phase 10 — Player personality (fogged traits).** 🟡 IN PROGRESS — pure engine + dev/sim wiring +
-  `traitlab` (16 checks) + save **v12** all landed and green; the **UI fog chips** are the only piece
-  left. Give each player **two fogged
+- **Phase 10 — Player personality (fogged traits).** ✅ DONE. Pure engine + dev/sim wiring +
+  `traitlab` (16 checks) + save **v12** + the **UI fog chips** (roster row + player sheet + recruit
+  sheet, sharpening with tenure/scouting) all landed; seven gates green (`qa` 154). Each player has **two fogged
   temperament traits** — **Motor** (work ethic → biases development) and **Composure** (clutch vs.
   streaky → biases in-game variance) — that **mesh with coach identity**. Both are stored sparsely
   (like `p.gs`/`p.dev`), read through a **scouting fog band** (the `scoutedCeiling`/`recScouted`
@@ -202,10 +202,11 @@ property, coach edges are a controlled-team property.
   a high-motor cohort out-develops low-motor without exceeding the ceiling; `compReshape` preserves
   the mean at every composure, identity at 50, widens spread as composure drops (boom/bust: more
   explosive AND more stuffed plays); clutch small/signed/bounded.
-- **DONE:** pure engine + all non-UI wiring (generation, dev, sim) + `traitlab` + the v12 bump, all
-  seven gates green. **REMAINING (UI, next):** fogged trait chips on the roster card (`traitBand` +
-  `traitChip`, sharpening with `scoutSharpen`/time-in-program) and a recruit-board trait band that
-  reveals past the scout threshold — then drive both in `qa`.
+- **UI (DONE):** fog reads `TRAIT_TIERS` / `traitTier` / `traitRead(kind,id,value,conf)` (band tightens
+  with confidence, `'???'` below ~34) + `rosterTraitConf(p)` (class-tenure proxy × `scoutSharpen`) +
+  `traitChips(p)`. Wired into the roster row (Motor/Poise chips), the player sheet (Work ethic /
+  Composure rows), and the recruit sheet (driven by `rec.scout`). `qa` (154) drives all three: chips
+  render, `'???'`→band reveal, tenure tightens the band, recruit traits gate on scouting.
 - **Seven gates:** `simlab` + `reclab` + `rolllab` + `econlab` + `awardlab` + **`traitlab`** + `qa`.
 
 ### Deliberately out of scope (so it stays a factory, not The Sims)
