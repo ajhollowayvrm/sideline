@@ -62,7 +62,7 @@ function runCycle(seed, opts = {}) {
   const WEEKS = 15;
   for (let w = 1; w <= WEEKS; w++) {
     if (opts.preWeek) opts.preWeek(pool, teams, w);   // scripted player effort
-    advanceRecruiting(pool, teams, w, WEEKS, seed);
+    advanceRecruiting(pool, teams, w, WEEKS, seed, w === WEEKS);
   }
   return { teams, pool };
 }
@@ -124,7 +124,7 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
     const WEEKS = 15;
     for (let w = 1; w <= WEEKS; w++) {
       if (push) targets.forEach(r => { if (!r.committedTo) r.iv[me.id] = clamp((r.iv[me.id] || 0) + 13, 0, 100); });
-      advanceRecruiting(pool, teams, w, WEEKS, 7);
+      advanceRecruiting(pool, teams, w, WEEKS, 7, w === WEEKS);
     }
     return targets.filter(r => r.committedTo === me.id).length;
   }
@@ -163,7 +163,7 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
     const teams = genWorld(seed);
     const me = teams[40]; me.prestige = 72; if (geo) me.homeState = 'TX';
     const pool = genRecruits(seed, teams);
-    for (let w = 1; w <= 15; w++) advanceRecruiting(pool, teams, w, 15, seed);
+    for (let w = 1; w <= 15; w++) advanceRecruiting(pool, teams, w, 15, seed, w === 15);
     return pool.filter(r => r.committedTo === me.id && r.st === 'TX').length;
   }
   const withGeo = txLanded(true), without = txLanded(false);

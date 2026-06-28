@@ -662,7 +662,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:15,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:16,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -804,6 +804,11 @@ function migrateState(state){
   if((state.version||1)<15){           // Phase 13: NFL draft + position factories. Draft class is created
     if(!('draft' in state))state.draft=null;   // at the first rollover; team.factory builds from picks (absent → none).
     state.version=15;
+  }
+  if((state.version||1)<16){           // Phase 14: recruiting calendar (signing moved to the offseason).
+    if(state.recruiting&&!state.recruiting.stage)   // derive a stage for an in-progress class
+      state.recruiting.stage=state.recruiting.signed?'closed':'open';
+    state.version=16;
   }
   return state;
 }
@@ -1157,12 +1162,16 @@ function genRecruits(seed,teams){
   }
   return pool;
 }
-// Advance one recruiting week: grow every suitor's interest, then resolve commitments. Seeded
-// per (seed, week) so a cycle reproduces. `week>=weeks` is Signing Day — force the remainder to
-// sign with their leader. Respects a per-team class cap. Mutates `pool`; returns the new commits.
-function advanceRecruiting(pool,teams,week,weeks,seed){
+// Advance one recruiting week: grow every suitor's interest, then resolve commitments. Seeded per
+// (seed, week) so a cycle reproduces. During the season a commitment is a VERBAL (`committedTo` set,
+// `signed` stays false); only the `finalize` pass (National Signing Day, in the offseason) forces the
+// remaining undecided to pick their leader AND turns every verbal into a binding signature. Respects a
+// per-team class cap. Mutates `pool`; returns the new commits.
+function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar){
   const byId={};teams.forEach(t=>byId[t.id]=t);
   const r=rng((seed^hashStr('rec'+week))>>>0);
+  const bar=signBar==null?35:signBar;   // interest a leader needs to lock a signature on a finalize pass
+  const gap=gapBar==null?0:gapBar;      // lead margin over #2 required to sign (Early Period wants a firm lead)
   const counts={};pool.forEach(p=>{if(p.committedTo)counts[p.committedTo]=(counts[p.committedTo]||0)+1;});
   const full=id=>(counts[id]||0)>=REC.CLASS_CAP;
   // 1) passive interest growth for all suitors of uncommitted prospects
@@ -1172,15 +1181,15 @@ function advanceRecruiting(pool,teams,week,weeks,seed){
       const fit=recruitFit(t,rec);
       rec.iv[tid]=clamp(rec.iv[tid]+(1.0+fit*3.2)*(0.6+r()*0.9),0,100);}
   });
-  // 2) commitments
-  const readiness=clamp((week-2)/(weeks-3),0,1), last=week>=weeks, out=[];
+  // 2) commitments — verbal during the season; binding only on the finalize (Signing Day) pass
+  const readiness=clamp((week-2)/(weeks-3),0,1), last=!!finalize, out=[];
   pool.forEach(rec=>{
     if(rec.committedTo)return;
     let entries=Object.entries(rec.iv).filter(([tid])=>byId[tid]&&!full(tid)).sort((a,b)=>b[1]-a[1]);
     if(!entries.length)return;
     const [leadId,lead]=entries[0], second=entries[1]?entries[1][1]:0;
-    const commit=()=>{rec.committedTo=leadId;rec.signed=true;counts[leadId]=(counts[leadId]||0)+1;out.push(rec);};
-    if(last){if(lead>=35)commit();return;}
+    const commit=()=>{rec.committedTo=leadId;if(last)rec.signed=true;counts[leadId]=(counts[leadId]||0)+1;out.push(rec);};
+    if(last){if(lead>=bar&&(lead-second)>=gap)commit();return;}   // toss-ups (small gap) wait for the next pass
     const patience=rec.stars===5?0.55:rec.stars===4?0.35:0.18;
     if(readiness<patience)return;
     if(lead>=REC.COMMIT_THRESH&&(lead-second)>=REC.LEAD_GAP){
@@ -1188,6 +1197,7 @@ function advanceRecruiting(pool,teams,week,weeks,seed){
       if(r()<prob)commit();
     }
   });
+  if(last)pool.forEach(rec=>{if(rec.committedTo)rec.signed=true;});   // every verbal becomes a signature
   return out;
 }
 // === RECRUIT ENGINE (Phase 4) END ===
@@ -1800,7 +1810,8 @@ function stampHonors(aw){
 // Heisman & co. are crowned PRE-bowls), then kick off the postseason. The champion + the offseason
 // task are set later, at endPostseason.
 function finishRegularSeason(){
-  if(S.recruiting)S.recruiting.signed=true;          // Signing Day: the class is locked
+  // Recruiting does NOT sign here anymore (Phase 14): verbal commitments stand; the Early Signing
+  // Period + National Signing Day happen in the offseason, after the bowls/playoff.
   const aw=computeAwards(S.world.teams,S.year||2026); // awards run on the regular season, before bowls
   S.awards=S.awards||[];S.awards.push(aw);stampHonors(aw);
   startPostseason();
@@ -1820,7 +1831,7 @@ function startPostseason(){
   const me=S.teamId;
   const ranked=[...S.world.teams].sort((a,b)=>rankScore(b)-rankScore(a));
   if(ranked.length<12){              // tiny custom world — no bracket, straight to the offseason
-    S.postseason=null;endOfSeasonTask(null);S.phase='Offseason';autosave();return;
+    S.postseason=null;enterOffseason();return;
   }
   const seeds=seedPlayoff(ranked.map(t=>t.id)), inPlayoff=new Set(seeds);
   let eligible=ranked.filter(t=>!inPlayoff.has(t.id)&&t.rec&&t.rec.w>=6).map(t=>t.id);
@@ -1885,9 +1896,7 @@ function endPostseason(){
   if(aw&&champ){const ct=teamById(champ);aw.champion={teamId:ct.id,name:ct.name,abbr:ct.abbr,color:ct.color,rec:ct.rec.w+'–'+ct.rec.l};
     ct.titles=ct.titles||[];ct.titles.push(ps.year);}
   ps.done=true;
-  S.phase='Offseason';
-  endOfSeasonTask(champ);
-  autosave();
+  enterOffseason();
 }
 function setPostseasonTask(){
   const ps=S.postseason,me=S.teamId,mg=myPostseasonGame();
@@ -1901,15 +1910,49 @@ function setPostseasonTask(){
     S.task={type:'Postseason',label:label+' (bye)',note:'You’ve advanced. Other '+label.toLowerCase()+' games play out before your next game.'};
   }
 }
-// The end-of-season "Season Complete" card (set after the postseason resolves).
-function endOfSeasonTask(champ){
+// Enter the offseason (after the postseason): hold the Early Signing Period, then await National
+// Signing Day. The recruiting CALENDAR (Phase 14): verbals were taken all fall, the bulk sign early,
+// and a final push window precedes Signing Day — all in the offseason, like real college football.
+function enterOffseason(){
+  S.phase='Offseason';
+  if(S.recruiting&&S.recruiting.stage!=='closed'){earlySigningPeriod();setSigningTask();}
+  else endOfSeasonTask();          // no open recruiting class (e.g. a custom world) → straight to roll-over
+  autosave();
+}
+// Early Signing Period: every recruit already committed (a verbal) puts pen to paper now. The rest stay
+// open for one last push before National Signing Day. Grants a final offseason recruiting-points budget.
+function earlySigningPeriod(){
+  const R=S.recruiting; if(!R||R.stage!=='open')return;
+  // The recruits who already KNOW where they're going — the verbal commitments — make it official now.
+  // The still-undecided (the close two-way races) hold off for National Signing Day's drama.
+  let n=0; R.pool.forEach(rec=>{if(rec.committedTo&&!rec.signed){rec.signed=true;n++;}});
+  R.stage='national'; R.earlySigned=n;
+  R.points=Math.round(weeklyPoints()*1.5);   // a final-push budget for the signing-day window
+}
+// National Signing Day: the undecided make their final call (sign with their leader, or go unsigned),
+// every verbal becomes binding, and the class CLOSES. After this only the rollover remains.
+function nationalSigningDay(){
+  const R=S.recruiting; if(!R||R.stage==='closed')return;
+  advanceRecruiting(R.pool,S.world.teams,99,99,S.seed,true,30);   // mop-up: any real leader now signs
+  R.stage='closed'; R.signed=true;
+  endOfSeasonTask();
+}
+// The offseason "make your push, then sign" card (Early Signing done, National Signing Day pending).
+function setSigningTask(){
+  const es=(S.recruiting&&S.recruiting.earlySigned)||0;
+  S.task={type:'Offseason',label:'National Signing Day',
+    note:es+' recruit'+(es===1?'':'s')+' inked in the Early Signing Period. Work the board for the holdouts, '+
+      'then hold National Signing Day to close your class.'};
+}
+// The end-of-season "Season Complete" card (set once the class is signed, before the rollover).
+function endOfSeasonTask(){
   const t=controlled(),cls=myClass(),cr=myClassRank();
-  const won=champ===t.id;
-  const ps=S.postseason, label=ps&&ps.lastLabel; void label;
+  const champ=((S.awards&&S.awards[S.awards.length-1])||{}).champion;
+  const won=champ&&champ.teamId===t.id;
   const fin=t.lastPostseason&&t.lastPostseason.label?' '+t.lastPostseason.label+'.':'';
-  const natty=champ?(' '+teamById(champ).name+' won the national title.'):'';
+  const natty=champ?(' '+champ.name+' won the national title.'):'';
   S.task={type:'Offseason',label:won?'NATIONAL CHAMPIONS 🏆':'Season Complete',
-    note:'Final record '+t.rec.w+'–'+t.rec.l+'.'+fin+natty+' Signed '+cls.length+' tracked recruit'+
+    note:'Final record '+t.rec.w+'–'+t.rec.l+'.'+fin+natty+' Signed '+cls.length+' recruit'+
       (cls.length===1?'':'s')+' — class #'+cr+' nationally. Roll over when you’re ready.'};
 }
 // Facilities base development rate for a team's offseason (strength + training). Side/coach
@@ -2204,14 +2247,16 @@ function weeklyPoints(){const t=controlled(),m=myMods();
   return Math.max(4,Math.round(REC.BASE_POINTS+m.points+t.prestige/20));}
 function boardSlots(){return Math.max(6,REC.SLOTS+myMods().slots);}
 function initRecruiting(){
-  S.recruiting={cycle:1,points:weeklyPoints(),pool:genRecruits(S.seed,S.world.teams),board:[],signed:false};
+  // stage: 'open' (in-season, taking verbals) → 'national' (offseason, ESP done, NSD pending) → 'closed'
+  S.recruiting={cycle:1,points:weeklyPoints(),pool:genRecruits(S.seed,S.world.teams),board:[],signed:false,stage:'open'};
 }
 function grantRecruitPoints(){if(S.recruiting&&!S.recruiting.signed)S.recruiting.points=weeklyPoints();}
 function resolveRecruitingWeek(week){
   if(!S.recruiting||S.recruiting.signed)return;
-  const out=advanceRecruiting(S.recruiting.pool,S.world.teams,week,S.schedule.weeks,S.seed);
+  // in-season: verbal commitments only (finalize=false) — binding signatures wait for the offseason
+  const out=advanceRecruiting(S.recruiting.pool,S.world.teams,week,S.schedule.weeks,S.seed,false);
   const mine=out.filter(r=>r.committedTo===S.teamId);
-  if(mine.length)setTimeout(()=>toast(mine.length+' recruit'+(mine.length===1?'':'s')+' committed to you! 🎉'),300);
+  if(mine.length)setTimeout(()=>toast(mine.length+' recruit'+(mine.length===1?'':'s')+' verbally committed to you! 🎉'),300);
 }
 /* ---- lookups ---- */
 function recById(id){return S.recruiting?S.recruiting.pool.find(r=>r.id===id):null;}
@@ -2430,14 +2475,18 @@ function renderHome(app){
     <div class="cond" style="font-size:22px;font-weight:800;margin-top:10px">${S.task.label}</div>
     <div class="muted" style="font-size:13px;margin-top:4px">${S.task.note}</div>`;
   const myPg=inPost?myPostseasonGame():null;
-  const advLabel=over?'Roll over to '+((S.year||2026)+1)+' \u2192'
+  const signing=over&&S.recruiting&&S.recruiting.stage==='national';   // Early Signing done, NSD pending
+  const advLabel=over?(signing?'Hold National Signing Day \u2192':'Roll over to '+((S.year||2026)+1)+' \u2192')
     :inSeason?'Play Week '+S.week+' \u2192'
     :inPost?(myPg?(myPg.kind==='bowl'?'Play the '+myPg.name+' \u2192':'Play '+PLAYOFF_ROUNDS[S.postseason.round]+' \u2192')
       :S.postseason.meDone?'Sim postseason \u2192 offseason':'Advance '+PLAYOFF_ROUNDS[S.postseason.round]+' \u2192')
     :'Kick off the season \u2192';
   const adv=el('button','btn','');adv.textContent=advLabel;adv.style.marginTop='12px';adv.dataset.tid='adv-clock';
   adv.onclick=()=>{
-    if(over){rolloverSeason();render();toast('Welcome to '+S.year+' \u2014 class enrolled, roster reloaded');}
+    if(over){
+      if(S.recruiting&&S.recruiting.stage==='national'){nationalSigningDay();render();toast('National Signing Day \u2014 class closed');}
+      else{rolloverSeason();render();toast('Welcome to '+S.year+' \u2014 class enrolled, roster reloaded');}
+    }
     else if(inSeason){
       const g=teamGame(controlled().id,S.week);
       if(g&&!g.played)openGameViewer(g);            // watch your game, then commit the week
@@ -2495,14 +2544,16 @@ function renderHome(app){
     sb.onclick=()=>{UI.view='season';render();};v.append(sb);}
   // recruiting snapshot (once the board is open)
   if(S.recruiting){
-    const R=S.recruiting, rk=myClassRank(), gr=classGrade(rk), nc=myClass().length;
+    const R=S.recruiting, rk=myClassRank(), gr=classGrade(rk), nc=myClass().length, stage=R.stage||(R.signed?'closed':'open');
     v.append(el('h2','sec','Recruiting'));
     const rc=el('div','card');
+    const head=stage==='closed'?'Class signed':stage==='national'?'Signing Day pending':R.points+' points';
+    const subKind=stage==='open'?'verbal':'commit';
     rc.innerHTML=`<div class="row spread">
-      <div><div class="cond" style="font-size:22px;font-weight:800">${R.signed?'Class signed':R.points+' points'}</div>
-        <div class="muted" style="font-size:13px;margin-top:2px">${nc} commit${nc===1?'':'s'} \u00b7 class #${rk}</div></div>
+      <div><div class="cond" style="font-size:22px;font-weight:800">${head}</div>
+        <div class="muted" style="font-size:13px;margin-top:2px">${nc} ${subKind}${nc===1?'':'s'} \u00b7 class #${rk}</div></div>
       <span class="tag accent" style="font-size:14px">${gr}</span></div>`;
-    const rb=el('button','btn line',R.signed?'View signed class':'Work the board \u2192');rb.style.marginTop='10px';rb.dataset.tid='home-recruit';
+    const rb=el('button','btn line',stage==='closed'?'View signed class':stage==='national'?'Final push \u2192':'Work the board \u2192');rb.style.marginTop='10px';rb.dataset.tid='home-recruit';
     rb.onclick=()=>{UI.view='recruit';render();};
     rc.append(rb);v.append(rc);
   }
@@ -3060,17 +3111,24 @@ function renderRecruiting(app){
     app.append(v);return;
   }
   const R=S.recruiting, cls=myClass(), rank=myClassRank(), grade=classGrade(rank);
+  // Phase 14 calendar: open (in-season verbals) → national (offseason final push) → closed.
+  const stage=R.stage||(R.signed?'closed':'open');
+  const stageLabel={open:'refills each week',national:'final push · Signing Day pending',closed:'class locked'}[stage];
+  const ptsLabel=stage==='closed'?'Signing Day':stage==='national'?'Final push':'Recruiting points';
+  const ptsVal=stage==='closed'?'CLOSED':R.points+' pts';
+  const signedN=cls.filter(r=>r.signed).length;
   const sum=el('div','card');
   sum.innerHTML=`<div class="row spread">
-      <div><div class="meta dim">${R.signed?'Signing Day':'Recruiting points'}</div>
-        <div class="cond" style="font-size:28px;font-weight:800">${R.signed?'CLOSED':R.points+' pts'}</div></div>
+      <div><div class="meta dim">${ptsLabel}</div>
+        <div class="cond" style="font-size:28px;font-weight:800">${ptsVal}</div></div>
       <div style="text-align:right"><div class="meta dim">Class rank</div>
         <div class="cond" style="font-size:28px;font-weight:800">#${rank} <span class="tag accent" style="font-size:13px;vertical-align:3px">${grade}</span></div></div></div>
     <div class="row spread" style="margin-top:8px">
       <span class="meta">Board ${R.board.length}/${boardSlots()}</span>
-      <span class="meta">Commits ${cls.length}</span>
-      <span class="meta dim">${R.signed?'class locked':'refills each week'}</span></div>`;
+      <span class="meta">${stage==='open'?'Verbals':'Signed'} ${stage==='open'?cls.length:signedN}${stage!=='open'&&cls.length>signedN?'/'+cls.length:''}</span>
+      <span class="meta dim">${stageLabel}</span></div>`;
   v.append(sum);
+  if(stage==='national')v.append(el('div','hint center','Early Signing Period done — '+signedN+' signed. Push the holdouts, then hold National Signing Day from Home.'));
   const st=UI.recruitTab||'board';
   const tabs=el('div','tabs');tabs.style.marginTop='12px';
   [['board','Board'],['prospects','Prospects'],['class','Class']].forEach(([k,l])=>{
@@ -3139,7 +3197,9 @@ function recruitClass(v,rank,grade){
       <div><div class="meta dim">National class rank</div><div class="cond" style="font-size:30px;font-weight:800">#${rank}</div></div>
       <div class="ovr elite" style="width:auto;padding:8px 14px;font-size:26px">${grade}</div></div>`;
   v.append(head);
-  if(!cls.length){v.append(el('div','empty','No commits yet.\nWork your board to land recruits before Signing Day.'));}
+  const stage=(S.recruiting&&S.recruiting.stage)||'open', signedN=cls.filter(r=>r.signed).length;
+  if(stage!=='open'&&cls.length)v.append(el('div','hint center',signedN+' of '+cls.length+' '+(stage==='closed'?'signed (class locked)':'signed in the Early Period — the rest sign on National Signing Day')));
+  if(!cls.length){v.append(el('div','empty','No commits yet.\nWork your board to land verbal commitments — they sign in the offseason.'));}
   else POS.forEach(([code])=>{
     const g=cls.filter(r=>r.pos===code);if(!g.length)return;
     v.append(el('h2','sec',posName(code)+' ('+g.length+')'));
@@ -3166,8 +3226,8 @@ function recruitSheet(rec){
     body.append(el('div','hint',(sc.revealed&&rec.rebel)?`⚠ Your ${pn} reputation may turn this recruit off — he wants his own spotlight.`:`✓ Your ${pn} pipeline pulls position recruits like this one.`));}
   const ib=el('div');ib.style.marginTop='12px';
   if(committed){
-    const ct=teamById(committed),mine=committed===S.teamId;
-    ib.innerHTML=`<div class="card" style="text-align:center"><div class="cond ${mine?'good':'bad'}" style="font-size:18px;font-weight:800">${mine?'Committed to YOU ✓':'Committed to '+ct.name}</div></div>`;
+    const ct=teamById(committed),mine=committed===S.teamId,verb=rec.signed?'Signed with':'Verbally committed to';
+    ib.innerHTML=`<div class="card" style="text-align:center"><div class="cond ${mine?'good':'bad'}" style="font-size:18px;font-weight:800">${mine?(rec.signed?'Signed with YOU ✓':'Verbally committed to YOU ✓'):verb+' '+ct.name}</div></div>`;
   }else{
     ib.innerHTML=`<div class="row spread" style="margin:2px 0 4px"><span class="meta">Your interest ${onB?'· #'+rank+' of '+suit.length:'(not offered)'}</span><span class="cond" style="font-weight:700">${mi}%</span></div>
       <div class="bar"><i style="width:${mi}%"></i></div>

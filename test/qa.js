@@ -439,7 +439,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 15 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 16 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -456,7 +456,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v15)', mig.v === 15, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v16)', mig.v === 16, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -509,15 +509,16 @@ function startServer() {
       advanceWeek();
     }
     const committed = S.recruiting.pool.filter(r => r.committedTo).length;
+    const signedNow = S.recruiting.pool.filter(r => r.signed).length;
     const mine = S.recruiting.pool.filter(r => r.committedTo === me).length;
-    return { signed: S.recruiting.signed, phase: S.phase, committed, mine, tgtMine: tgt.committedTo === me, rank: myClassRank(),
+    return { signed: S.recruiting.signed, stage: S.recruiting.stage, phase: S.phase, committed, signedNow, mine, tgtMine: tgt.committedTo === me, rank: myClassRank(),
       postStarted: S.phase === 'Postseason' && !!S.postseason, seeds: S.postseason ? S.postseason.playoff.seeds.length : 0, bowls: S.postseason ? S.postseason.bowls.length : 0 };
   });
-  check('Recruiting cycle: Signing Day closes the class', cycle.signed && cycle.phase === 'Postseason');
+  check('Phase 14: season ends with VERBAL commits, class not yet signed', !cycle.signed && cycle.stage === 'open' && cycle.signedNow === 0 && cycle.phase === 'Postseason', `stage ${cycle.stage}, signed ${cycle.signedNow}`);
   check('Phase 12: regular season hands off to the postseason (12 seeds + bowls)', cycle.postStarted && cycle.seeds === 12 && cycle.bowls > 0, `seeds ${cycle.seeds}, bowls ${cycle.bowls}`);
-  check('Recruiting cycle: nearly all prospects commit league-wide', cycle.committed > 270, cycle.committed + ' commits');
+  check('Recruiting cycle: verbal commitments accrue through the season', cycle.committed > 60, cycle.committed + ' verbal commits');
   check('Recruiting cycle: an aggressively recruited target commits to you', cycle.tgtMine);
-  check('Recruiting cycle: the controlled team signs a class', cycle.mine > 0, cycle.mine + ' signees');
+  check('Recruiting cycle: the controlled team builds a class', cycle.mine > 0, cycle.mine + ' commits');
   check('Recruiting cycle: class rank is valid (1–134)', cycle.rank >= 1 && cycle.rank <= 134, '#' + cycle.rank);
   // Phase 10: a recruit's temperament is fogged until you scout them past the threshold
   const recFog = await page.evaluate(() => {
@@ -532,8 +533,8 @@ function startServer() {
   await page.locator('[data-tid="rtab-class"]').click();
   await page.waitForTimeout(150);
   const classTxt = await page.evaluate(() => document.querySelector('.view').innerText);
-  check('Recruiting cycle: Class tab shows the signed class + grade', /class rank/i.test(classTxt) && /projected/i.test(classTxt));
-  check('Recruiting cycle: Signing Day reflected in summary (CLOSED)', /CLOSED/.test(classTxt) || /Signing Day/i.test(classTxt));
+  check('Recruiting cycle: Class tab shows the class + grade', /class rank/i.test(classTxt) && /projected/i.test(classTxt));
+  check('Phase 14: in-season class reads as VERBAL commits (signing is in the offseason)', /verbal/i.test(classTxt), 'has "verbal" copy');
   await shot(page, '25-recruiting-class.png');
 
   // ---------- PHASE 12: postseason (watch-then-commit playoff + bowls) ----------
@@ -571,6 +572,45 @@ function startServer() {
   check('Phase 12: postseason finishers carry a recruiting boost for next year', post.boosted > 10, post.boosted + ' teams boosted');
   void watchedPost;
   await shot(page, '25b-postseason-bracket.png');
+
+  // ---------- PHASE 14: recruiting calendar — Early Signing Period + National Signing Day ----------
+  // Entering the Offseason auto-fired the Early Signing Period (committed verbals signed). Verify the
+  // staged class, the recruiting view's national-stage copy, then hold National Signing Day to close it.
+  const esp = await page.evaluate(() => {
+    const R = S.recruiting;
+    UI.view = 'recruit'; UI.recruitTab = 'class'; render();
+    const txt = document.querySelector('.view').innerText;
+    return {
+      stage: R.stage, earlySigned: R.earlySigned, signed: R.signed, points: R.points,
+      committedSigned: R.pool.filter(r => r.committedTo && r.signed).length,
+      committedUnsigned: R.pool.filter(r => r.committedTo && !r.signed).length,
+      copy: /Early Signing Period|National Signing Day|signed/i.test(txt)
+    };
+  });
+  check('Phase 14: Early Signing Period fires on entering the offseason (committed verbals sign)', esp.stage === 'national' && esp.earlySigned > 0 && esp.committedSigned > 0, `stage ${esp.stage}, early ${esp.earlySigned}`);
+  check('Phase 14: the class is not yet closed (National Signing Day pending)', esp.signed === false);
+  check('Phase 14: a final-push recruiting budget is granted for the window', esp.points > 0, esp.points + ' pts');
+  check('Phase 14: recruiting view shows the signing-calendar copy', esp.copy);
+  // hold National Signing Day from Home
+  await page.locator('[data-tid="nav-home"]').click();
+  await page.waitForTimeout(100);
+  await page.locator('[data-tid="adv-clock"]').click();   // "Hold National Signing Day →"
+  await page.waitForTimeout(140);
+  const nsd = await page.evaluate(() => {
+    const R = S.recruiting, haveSuitor = R.pool.filter(r => Object.keys(r.iv).length);
+    return { stage: R.stage, signed: R.signed, phase: S.phase,
+      unsigned: R.pool.filter(r => r.committedTo && !r.signed).length,
+      totalSigned: R.pool.filter(r => r.signed).length, haveSuitor: haveSuitor.length,
+      classSigned: R.pool.filter(r => r.committedTo === S.teamId).every(r => r.signed),
+      myClass: R.pool.filter(r => r.committedTo === S.teamId).length };
+  });
+  check('Phase 14: National Signing Day closes the class (all commits signed)', nsd.stage === 'closed' && nsd.signed && nsd.unsigned === 0, `stage ${nsd.stage}, unsigned ${nsd.unsigned}`);
+  check('Phase 14: the Early Signing Period inked the firm verbal commits', esp.earlySigned > 40, esp.earlySigned + ' signed early');
+  check('Phase 14: National Signing Day resolves the contested remainder', nsd.totalSigned - esp.earlySigned > 0, `+${nsd.totalSigned - esp.earlySigned} on Signing Day`);
+  check('Phase 14: nearly all prospects sign by the close of Signing Day', nsd.totalSigned / nsd.haveSuitor >= 0.9, `${nsd.totalSigned}/${nsd.haveSuitor}`);
+  check('Phase 14: still in the Offseason — rollover comes next', nsd.phase === 'Offseason');
+  check('Phase 14: the controlled team’s class is fully signed', nsd.classSigned && nsd.myClass > 0, nsd.myClass + ' signed');
+  await shot(page, '25c-signing-day.png');
 
   // ---------- PHASE 8: geography + season awards + non-conference series ----------
   // The season just ended (Offseason), so awards have been computed + stamped. Verify the ceremony,
@@ -676,7 +716,7 @@ function startServer() {
   check('Rollover: advances to the next calendar year', roPost.year === roPre.year + 1, `${roPre.year} → ${roPost.year}`);
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
-  check('Rollover: save version bumped to 15', roPost.version === 15, 'v' + roPost.version);
+  check('Rollover: save version bumped to 16', roPost.version === 16, 'v' + roPost.version);
   check('Phase 8: player honors survive the rollover', roPost.honoredAfter > 0, roPost.honoredAfter + ' still honored');
   check('Phase 8: series + awards history persist across the rollover', roPost.seriesKept > 0 && roPost.awardsKept > 0, `series ${roPost.seriesKept}, awards ${roPost.awardsKept}`);
   check('Phase 11: career totals accrue across the rollover', roPost.careerPlayers > 50, roPost.careerPlayers + ' players carry a career');

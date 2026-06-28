@@ -158,6 +158,15 @@ plain static files so Pages still serves it with zero config.
   the Program page (your `POS-U` factory chips), a draft-picks line in the offseason recap, and a rebel
   chip + factory note on the recruit sheet. Save **v15** (`S.draft`, per-team `factory`). See "Phase 13
   design — the draft & factories" below.
+- **Phase 14 — Recruiting calendar (signing in the offseason).** ✅ DONE. Recruiting's culmination moved out
+  of the regular season (the Phase 4 compromise) into the **offseason**, in two periods. During the season a
+  commitment is now a **verbal** (`committedTo`, not yet `signed`); `S.recruiting.stage` runs `'open'` →
+  `'national'` → `'closed'`. Entering the offseason (after the bowls/playoff) auto-fires the **Early Signing
+  Period** (the firm verbal commits sign + a final push-points budget is granted); a distinct **National
+  Signing Day** advance from Home then resolves the contested holdouts and closes the class, before rollover
+  enrolls it. `advanceRecruiting` gained a `finalize` flag so in-season passes are verbal-only (reclab stays
+  green; the app just controls *when* the finalize/Signing-Day pass runs). Save **v16** (`S.recruiting.stage`).
+  See "Phase 14 design — recruiting calendar" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast); and
   the recruit board stays **top-300 only** (the long 2–3★ tail is approximated, never individually
@@ -481,6 +490,51 @@ draft-and-stash — the draft is a graded board + factory reputation + a recruit
 
 ---
 
+## Phase 14 design — recruiting calendar (signing in the offseason)
+
+Decided 2026-06-28 with AJ. The Phase 4 recruiting loop deliberately **signed the class at the end of the
+regular season** because rollover/offseason didn't exist yet — an honest compromise the design called out.
+Now the full offseason structure exists (Phases 5/12), so signing moves where it belongs: the **offseason**,
+in **two periods** (Early Signing Period + National Signing Day), like real college football.
+
+### The new calendar
+A new `S.recruiting.stage`: **`'open'`** (in-season) → **`'national'`** (offseason, after the Early Signing
+Period, Signing Day pending) → **`'closed'`**.
+- **Regular season:** you work the board exactly as before, but a commitment is now a **VERBAL**
+  (`committedTo` set, `signed` stays false). The class no longer closes at the final week — `finishRegular
+  Season` just decides awards + starts the postseason.
+- **Offseason entry (`enterOffseason`, after the bowls/playoff):** the **Early Signing Period** fires
+  automatically — every recruit who already knows where he's going (the verbal commits) signs (`earlySigning
+  Period`). The genuine toss-ups (close two-way races — by definition the ones who *didn't* clear the
+  in-season commit gap) hold off. A final offseason recruiting-points budget is granted for the push window.
+- **National Signing Day** (a distinct offseason advance from Home): `nationalSigningDay` runs the engine's
+  **finalize pass** (`advanceRecruiting(..., finalize=true, bar=30)`) — the contested recruits make their
+  final call (sign with their leader, or go unsigned), every commit becomes binding, and the class **closes**.
+- **Rollover** then enrolls the signed class (unchanged — it reads `committedTo`).
+
+The split lands ~⅓ early / ~⅔ on Signing Day — so **Signing Day keeps real drama**: the undecided battles
+are exactly the ones you can still flip in the push window. (A lift to the in-season commit rate would shift
+more to the Early Period; left as-is on purpose because a meaningful Signing Day is better gameplay.)
+
+### Engine change (kept reclab-green)
+`advanceRecruiting` gained a `finalize` flag (+ optional `signBar`/`gapBar`): in-season passes are
+**verbal-only** (`signed` stays false), and only a finalize pass turns verbals into signatures + force-resolves
+the undecided. `reclab` passes `finalize` on its last week, so the engine's validated convergence is unchanged
+(still 100% signed by Signing Day). The app simply controls **when** the finalize happens (now National
+Signing Day, in the offseason) instead of the regular-season's final week.
+
+### UI & save
+The Home advance button gains a `Hold National Signing Day →` step in the offseason; the recruiting view +
+class tab read the stage (Recruiting points → **Final push** → CLOSED; Verbals → Signed), with an Early-Signing
+recap line and a verbal-vs-signed label on each commit; the on-the-clock card walks Early Signing Period →
+National Signing Day → roll over. Save **v16** (`S.recruiting.stage`); `migrateState` v15→v16 derives a stage
+for any in-progress class (`signed?'closed':'open'`). No new lab (it's a timing/sequencing change validated by
+`qa` end-to-end + the unchanged `reclab`). **Deliberately out of scope:** no transfer portal, no
+decommitments/flips of *signed* players, no per-recruit signing-date calendar — two periods, a push window,
+and the class closes.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -528,6 +582,11 @@ replay (replayed score == recorded score, week unchanged), honors on Home + the 
 tab, v5 migration, and honors surviving reload.
 
 ## Phase 4 recruiting design — the in-season recruiting loop
+
+> **Timing superseded by Phase 14:** the board-work still runs through the season, but a commitment is
+> now a **verbal**, and the class **signs in the offseason** (Early Signing Period + National Signing
+> Day), not at the regular-season's final week. The "Signing Day fires when the season ends" bits below
+> are historical — see "Phase 14 design — recruiting calendar."
 
 Decided 2026-06-27 with AJ. Recruiting runs **concurrently with the regular season** (weeks
 1–15), so it reuses the existing weekly cadence (`advanceWeek`) instead of needing new
@@ -898,7 +957,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **15**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **16**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -908,7 +967,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   `S.series=[]` + per-team `homeState` (from `TEAM_STATE`), with `p.honors` optional (Phase 8
   geography/awards/series); v10→v11 backfills `S.seriesOffers=null` (AI-initiated series offers,
   created when managing); v11→v12 is a structural no-op (per-player traits `p.mot`/`p.comp`, Phase 10
-  — absence reads as average); v14→v15 backfills `S.draft=null` (Phase 13 — created at the first rollover;
+  — absence reads as average); v15→v16 derives `S.recruiting.stage` for an in-progress class (Phase 14 —
+  `signed?'closed':'open'`; recruiting is otherwise recreated at kickoff); v14→v15 backfills `S.draft=null`
+  (Phase 13 — created at the first rollover;
   per-team `factory` absent reads as no reputation); v13→v14 backfills `S.postseason=null` (Phase 12 —
   created when the regular season ends, like the schedule; per-team `postseasonBoost`/`lastPostseason`/
   `titles`/`_pp` absent read as no-effect); v12→v13 backfills per-team `legends=[]` (Phase 11 Ring of Honor;
@@ -939,7 +1000,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
   weeklyHonors: [ ... ],         // Player-of-the-Week log (Phase 3.5)
-  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed } | null,  // null until kickoff (Phase 4)
+  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14)
   offseasonReport: { year, graduated, tracked, freshmen, departed } | undefined,  // last rollover recap (Phase 5)
   world: { teams: [ Team, ... ] }
 }
@@ -1078,16 +1139,18 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
-### Phases 6–13 landed — what used to be stubbed now works
-Phases 1–13 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
+### Phases 6–14 landed — what used to be stubbed now works
+Phases 1–14 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
 loop** + **facility upgrades** (Phase 6), **side-specific development** + **in-game coach effects** +
 **coach-responsive scouting fog** (Phase 7), **AI geography** + **season awards/All-America/Coach of
 the Year/Week** + **non-conference series** (Phase 8), the **columnar save codec** (Phase 9), **fogged
 player traits** (Phase 10), **program legacy** — Ring of Honor, career accumulation, alumni-visit
 recruiting, legacy aura, legend-coaches (Phase 11), the **postseason** — a 12-team playoff + bowls,
-watchable, feeding prestige/recruiting/revenue (Phase 12), and the **NFL draft + position factories** —
+watchable, feeding prestige/recruiting/revenue (Phase 12), the **NFL draft + position factories** —
 graduates get drafted, repeated high picks build a positional reputation that pulls recruits (and repels
-rebels) (Phase 13). The full career loop — recruit → season → awards → **postseason** → rollover
+rebels) (Phase 13), and the **recruiting calendar** — verbal commits all fall, then the Early Signing
+Period + National Signing Day close the class in the offseason (Phase 14). The full career loop — recruit
+(verbal) → season → awards → **postseason** → **Early Signing → National Signing Day** → rollover
 (graduate/enshrine/**draft**/develop/enroll) → finances settle → carousel → facilities/series — closes
 across multiple years, and your stars leave a permanent mark on the program both on its Ring of Honor and
 on its pro-pipeline reputation. **Ten green gates:** `npm run` + `simlab` / `reclab` / `rolllab` /
