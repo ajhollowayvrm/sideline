@@ -662,9 +662,9 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:14,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:15,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
-     recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,
+     recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // choose a save slot
   chooseSlotSheet();
@@ -800,6 +800,10 @@ function migrateState(state){
   if((state.version||1)<14){           // Phase 12: postseason (bowls + 12-team playoff). Created at
     if(!('postseason' in state))state.postseason=null;   // the end of the regular season, like the schedule.
     state.version=14;                  // postseasonBoost/lastPostseason/titles absent → no effect yet.
+  }
+  if((state.version||1)<15){           // Phase 13: NFL draft + position factories. Draft class is created
+    if(!('draft' in state))state.draft=null;   // at the first rollover; team.factory builds from picks (absent → none).
+    state.version=15;
   }
   return state;
 }
@@ -1105,6 +1109,9 @@ function recruitFit(team,rec){
   if(team.legends&&team.legends.length)fac+=legacyAura(team);
   // Postseason momentum (Phase 12): a deep playoff run / bowl win lifts next year's recruiting.
   if(team.postseasonBoost)fac+=team.postseasonBoost;
+  // Draft factory (Phase 13): a program that produces high picks at this position pulls recruits there
+  // (a rebel is repelled). Guarded so factory-less teams (the recruit lab) are unaffected.
+  if(team.factory)fac+=factoryPull(team,rec);
   return clamp(prox+need+fac,0,1.2);
 }
 // Class-ranking value of a landed prospect, and a team's total class score (landed value + a
@@ -1139,10 +1146,13 @@ function genRecruits(seed,teams){
     // onto the freshman in recruitToFreshman.
     const rid='r'+i.toString(36)+(seed>>>0).toString(36).slice(-2);
     const tr=genTraits(rng(hashStr(rid)));
+    // ~12% of prospects are "rebels" — they want to make their own name, not join a position factory
+    // (Phase 13). Keyed on a per-recruit rng (NOT the pool stream), so the board stays byte-identical.
+    const rebel=rng((hashStr(rid+'reb'))>>>0)()<0.12;
     pool.push({id:rid,
       fn:pick(r,FN),ln:pick(r,LN),pos,st,stars,ov,pot,
       spd:clamp(ov+ri(r,-10,12),40,99),str:clamp(ov+ri(r,-10,12),40,99),awr:clamp(ov+ri(r,-12,10),40,99),
-      mot:tr.mot,comp:tr.comp,
+      mot:tr.mot,comp:tr.comp,rebel,
       scout:0,prefs:[p1,p2],iv,committedTo:null,signed:false,offered:false,visited:false,promise:null});
   }
   return pool;
@@ -1631,6 +1641,48 @@ const POSTSEASON_PAYOFF={
 function postseasonPayoff(finish){return POSTSEASON_PAYOFF[finish]||POSTSEASON_PAYOFF.none;}
 // === POSTSEASON ENGINE (Phase 12) END ===
 
+// === DRAFT ENGINE (Phase 13) START ===
+// Pure, deterministic NFL-draft model: graduating players are drafted league-wide, and a program that
+// keeps producing high picks at a position becomes a "factory" there — a standing recruiting pull on
+// recruits at that position (and a turn-off for the rare "rebel" who wants to make his own name). Depends
+// only on rng/clamp/hashStr + honorWeight/careerScore (from the LEGACY block) — no DOM, no S — so
+// test/draftlab.js validates it offline. The app layer runs the draft at rollover from the graduate lists.
+
+const DRAFT_ROUNDS=3, DRAFT_PER_ROUND=32, DRAFT_BAR=40;   // a 96-pick board; the long undrafted tail is implicit
+// NFL-readiness grade (0..100) for a graduating prospect: dominated by peak OVR (pro talent), with honors
+// + career production on top. Reuses the LEGACY honorWeight ladder + careerScore so the signals are consistent.
+function draftProjection(snap){
+  const peak=clamp(((snap.peakOv||0)-68)/31,0,1)*70;        // peak 68..99 → 0..70 (the bulk of the grade)
+  const honorSum=(snap.honors||[]).reduce((s,h)=>s+honorWeight(h.award||h),0);
+  const hon=20*(honorSum/(honorSum+100));                   // decorated players climb boards (up to ~20)
+  const cs=careerScore(snap.career);
+  const car=10*(cs/(cs+40));                                // production matters a little (up to ~10)
+  return Math.round(clamp(peak+hon+car,0,100));
+}
+// Run the league-wide draft on a pool of graduate snaps. The top DRAFT_ROUNDS*DRAFT_PER_ROUND by grade
+// (with a small seeded jitter so it's not pure chalk) are drafted; returns ordered picks. Deterministic.
+function runDraft(grads,seed){
+  const scored=grads.map(g=>{const grade=draftProjection(g);
+    const jit=(rng((seed^hashStr('draft'+(g.id||'')))>>>0)()-0.5)*10;   // draft surprises, but reproducible
+    return {g,grade,eff:grade+jit};}).filter(x=>x.grade>=DRAFT_BAR);
+  scored.sort((a,b)=>b.eff-a.eff);
+  return scored.slice(0,DRAFT_ROUNDS*DRAFT_PER_ROUND).map((x,i)=>({
+    pick:i+1,round:Math.floor(i/DRAFT_PER_ROUND)+1,grade:x.grade,
+    pid:x.g.id,name:x.g.name,pos:x.g.pos,teamId:x.g.teamId,abbr:x.g.abbr,color:x.g.color}));
+}
+// Factory reputation one pick confers to its school at that position (an earlier, higher pick = more).
+function pickFactoryValue(pick){return clamp((DRAFT_ROUNDS+1-pick.round)*8+((pick.grade||70)-70)*0.4,0,32);}
+function factoryDecay(rep){return rep*0.7;}                 // reputation reflects RECENT production, then fades
+function factoryRep(team,pos){return (team&&team.factory&&team.factory[pos])||0;}
+// Recruiting pull a program's positional factory exerts on a recruit at that position (≤ +0.15 fit). A
+// "rebel" recruit is REPELLED — they'd rather be THE guy somewhere that isn't already a factory there.
+function factoryPull(team,rec){
+  const rep=factoryRep(team,rec.pos); if(rep<=0)return 0;
+  const pull=clamp(rep/420,0,0.15);
+  return rec.rebel?-pull*0.8:pull;
+}
+// === DRAFT ENGINE (Phase 13) END ===
+
 // In-game coach identity (Phase 7): a small, side-specific rating edge the controlled team plays
 // with — Motivator effort + Former Player respect + Coordinator game-planning lift both sides;
 // Offensive/Defensive Genius sharpen their own side. AI teams get none (z). Applied OUTSIDE the
@@ -1925,6 +1977,16 @@ function enshrineLegends(team,graduated,toYear){
   if(worthy.length)team.legends=enshrineInto(team.legends||[],worthy,12);
   return worthy;
 }
+// Phase 13: a lean draft-pool snapshot of a graduating player (peak OVR + honors + career drive the grade).
+function draftSnap(p,t){return {id:p.id,name:p.fn+' '+p.ln,pos:p.pos,peakOv:p.peakOv||p.ov||0,
+  honors:p.honors||[],career:p.career||{},teamId:t.id,abbr:t.abbr,color:t.color};}
+// Apply a draft class to program factory reputations: decay every team's standing first (so it reflects
+// RECENT production), then add this year's picks. Tiny entries are dropped to keep the map lean.
+function applyDraftFactories(picks){
+  S.world.teams.forEach(t=>{if(t.factory)for(const k in t.factory){t.factory[k]=factoryDecay(t.factory[k]);if(t.factory[k]<1)delete t.factory[k];}});
+  picks.forEach(pk=>{const t=teamById(pk.teamId);if(!t)return;t.factory=t.factory||{};
+    t.factory[pk.pos]=(t.factory[pk.pos]||0)+pickFactoryValue(pk);});
+}
 // Season rollover (Offseason → next Preseason). Graduates seniors, develops + ages every roster,
 // turns each team's recruiting signees into freshmen, honors/breaks the controlled team's promises,
 // then resets the season fields so the next kickoff rebuilds the schedule + a fresh recruiting cycle.
@@ -1937,14 +1999,20 @@ function rolloverSeason(){
   // (A) Finances settle once a year for EVERY team (uses last season's record, before it resets).
   const yr=S.year||2026;
   S.world.teams.forEach(t=>resolveFinances(t,yr,S.seed,t.id===me?mgrFinanceMult():1));  // Manager runs a tighter books
-  let summary=null,myInducted=[];
+  let summary=null,myInducted=[],allGrads=[];
   S.world.teams.forEach(t=>{
     const res=rolloverRoster(t.roster,signeesBy[t.id]||[],t.prestige,r,{rateFor:p=>devRateFor(t,p)});
     t.roster=res.roster;
     // Phase 11: enshrine this team's worthy graduates into its Ring of Honor (league-wide).
     const inducted=enshrineLegends(t,res.graduated,yr);
+    res.graduated.forEach(p=>allGrads.push(draftSnap(p,t)));   // Phase 13: feed the NFL draft pool
     if(t.id===me){summary=res;myInducted=inducted;}
   });
+  // (NFL draft — Phase 13) draft this graduating class league-wide, then update factory reputations.
+  const draftPicks=runDraft(allGrads,(S.seed^hashStr('draft'+yr))>>>0);
+  S.draft={year:yr,picks:draftPicks};
+  applyDraftFactories(draftPicks);
+  const myPicks=draftPicks.filter(p=>p.teamId===me);
   // (C) Coaching carousel: AI churn + possible poach of a player coordinator, then market refresh.
   ensureCoachMarket();
   const carousel=advanceCoachCarousel(S.world,S.coachMarket,S.seed,yr,{controlledId:me,coach:S.coach});
@@ -1967,6 +2035,7 @@ function rolloverSeason(){
     freshmen:nf,departed,
     finances:controlled().lastFinances||null,poached:poachedMine,
     postseason:(myPost&&myPost.label)||null,
+    draft:{count:myPicks.length,top:myPicks[0]?myPicks[0].pick:null,names:myPicks.slice(0,3).map(p=>p.name+' ('+p.pos+', #'+p.pick+')')},
     inducted:myInducted.map(l=>({name:l.name,pos:l.pos,tier:l.tier,stature:l.stature}))};
   autosave();
 }
@@ -2411,12 +2480,15 @@ function renderHome(app){
     const fin=o.finances?`<div class="row spread" style="margin-top:4px"><span>Finances net</span><span class="cond ${o.finances.net<0?'bad':'good'}" style="font-weight:800">${money(o.finances.net)}</span></div>`:'';
     // Phase 12: how the controlled team's postseason ended
     const pst=o.postseason?`<div class="row spread" style="margin-top:4px"><span>Postseason</span><span class="cond accent" style="font-weight:800">${o.postseason}</span></div>`:'';
+    // Phase 13: how many of your players heard their name called in the draft
+    const drf=o.draft&&o.draft.count?`<div class="row spread" style="margin-top:4px"><span>NFL Draft picks</span><span class="cond" style="font-weight:800">${o.draft.count}${o.draft.top?' (top #'+o.draft.top+')':''}</span></div>`+
+      (o.draft.names&&o.draft.names.length?`<div class="muted" style="font-size:12px;margin-top:2px">${o.draft.names.join(', ')}</div>`:''):'';
     // Phase 11: new Ring of Honor inductees from the class that just graduated
     const ind=o.inducted&&o.inducted.length?`<div class="muted" style="font-size:12px;margin-top:6px">⭐ Enshrined: ${o.inducted.map(i=>i.name+' ('+i.tier+')').join(', ')}</div>`:'';
     rc.innerHTML=`<div class="meta dim" style="margin-bottom:6px">Offseason recap</div>
       <div class="row spread"><span>Seniors graduated</span><span class="cond" style="font-weight:800">${o.graduated}</span></div>
       <div class="row spread"><span>Recruits enrolled</span><span class="cond" style="font-weight:800">${o.tracked}</span></div>
-      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${pst}${fin}${dep}${poa}${ind}`;
+      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${pst}${drf}${fin}${dep}${poa}${ind}`;
     v.append(rc);
   }
   if(inSeason||over){const sb=el('button','btn line','Season \u00b7 schedule & standings');sb.style.marginTop='10px';
@@ -2497,7 +2569,26 @@ function renderProgram(app){
   r.append(rankPill(t.ratings.ovr,'Overall'),rankPill(t.ratings.off,'Offense'),rankPill(t.ratings.def,'Defense'));
   v.append(r);
   ringOfHonor(v,t);
+  proPipeline(v,t);
   app.append(v);
+}
+// Phase 13: the program's NFL pipeline — positional "factory" reputations (built from draft picks) +
+// a link to the league draft board. Empty until your graduates start getting drafted.
+function proPipeline(v,t){
+  v.append(el('h2','sec','Pro Pipeline'));
+  const fac=t.factory||{}, reps=Object.entries(fac).filter(([,r])=>r>=12).sort((a,b)=>b[1]-a[1]);
+  const myPicks=((S.draft&&S.draft.picks)||[]).filter(p=>p.teamId===t.id);
+  const c=el('div','card');c.dataset.tid='pro-pipeline';
+  let html=`<div class="meta dim" style="margin-bottom:6px">${S.draft?S.draft.year+' draft — '+myPicks.length+' pick'+(myPicks.length===1?'':'s')+' from your program':'No draft history yet — send players to the NFL and you’ll build a reputation.'}</div>`;
+  if(reps.length){
+    html+='<div class="row" style="flex-wrap:wrap;gap:6px;margin-top:2px">'+reps.map(([pos,r])=>
+      `<span class="tag ${r>=60?'accent':''}" style="font-size:11px">${pos}-U</span>`).join('')+'</div>'+
+      '<div class="hint" style="margin-top:6px">Positions you’re known for — recruits there feel the pull.</div>';
+  }else if(S.draft){html+='<div class="meta dim">No standout position factory yet.</div>';}
+  c.innerHTML=html;
+  if(S.draft){const more=el('button','btn line','View the NFL draft board →');more.style.marginTop='10px';
+    more.onclick=()=>{UI.view='season';UI.seasonTab='draft';render();};c.append(more);}
+  v.append(c);
 }
 // Phase 11: the program's Ring of Honor — permanent legends earned from played seasons (league-wide,
 // AI included). Sorted by stature; empty-state explains history accrues as your stars graduate.
@@ -2582,6 +2673,9 @@ function renderSeason(app){
   const v=el('div','view');
   v.append(scoreboard(t));
   if(!S.schedule){
+    // No live schedule yet — but last spring's NFL draft board is still reviewable in the preseason.
+    if(S.draft){v.append(el('div','hint center','The season hasn’t kicked off — last spring’s NFL draft is below.'));
+      seasonDraft(v,t);app.append(v);return;}
     v.append(el('div','empty','The season hasn’t kicked off yet.\nHandle media day from the Home tab to generate the schedule.'));
     seriesCard(v,t);
     app.append(v);return;
@@ -2589,7 +2683,9 @@ function renderSeason(app){
   let st=UI.seasonTab||'schedule';
   const tabList=[['schedule','Schedule'],['standings','Standings'],['top25','Top 25'],['scores','Scores'],['honors','Honors'],['awards','Awards']];
   if(S.postseason)tabList.push(['bracket','Bracket']);   // playoff bracket while a postseason exists
+  if(S.draft)tabList.push(['draft','Draft']);            // last NFL draft class (Phase 13)
   if(st==='bracket'&&!S.postseason)st='schedule';
+  if(st==='draft'&&!S.draft)st='schedule';
   const tabs=el('div','tabs');tabs.style.marginTop='14px';
   tabList.forEach(([k,l])=>{
     const b=el('button',st===k?'on':'',l);b.dataset.tid='stab-'+k;
@@ -2602,6 +2698,7 @@ function renderSeason(app){
   else if(st==='honors')seasonHonors(v,t);
   else if(st==='awards')seasonAwards(v,t);
   else if(st==='bracket')seasonBracket(v,t);
+  else if(st==='draft')seasonDraft(v,t);
   else seasonScores(v,t);
   v.style.paddingBottom='10px';
   app.append(v);
@@ -2631,6 +2728,25 @@ function seasonBracket(v,t){
   PLAYOFF_ROUNDS.forEach((label,r)=>{const games=ps.playoff.rounds[r];if(!games)return;
     v.append(el('h2','sec',label));games.forEach(g=>v.append(bracketGameRow(g,t)));});
   if(ps.bowls.length){v.append(el('h2','sec','Bowls'));ps.bowls.forEach(g=>v.append(bracketGameRow(g,t)));}
+}
+// Phase 13: the most recent NFL draft class, league-wide, by round — the controlled team's picks highlighted.
+function seasonDraft(v,t){
+  const d=S.draft;
+  if(!d||!d.picks.length){v.append(el('div','empty','No draft has been held yet.\nGraduate NFL-caliber talent and the league drafts them each offseason.'));return;}
+  const myN=d.picks.filter(p=>p.teamId===t.id).length;
+  v.append(el('div','card',`<div class="meta dim">${d.year} NFL Draft</div>
+    <div class="cond" style="font-size:18px;font-weight:800">${d.picks.length} players drafted${myN?' · '+myN+' from '+t.abbr:''}</div>`));
+  let lastRound=0;
+  d.picks.forEach(p=>{
+    if(p.round!==lastRound){lastRound=p.round;v.append(el('h2','sec','Round '+p.round));}
+    const row=el('div','lrow');row.dataset.id='pick-'+p.pick;
+    if(p.teamId===t.id)row.style.boxShadow='inset 0 0 0 1px var(--accent)';
+    row.innerHTML=`<div class="ovr ${p.grade>=85?'elite':''}">${p.pick}</div>
+      <div style="flex:1"><div class="nm">${p.name} <span class="dim" style="font-weight:400">${p.pos}</span></div>
+      <div class="meta dim">from ${p.abbr}${p.teamId===t.id?' (YOU)':''}</div></div>
+      <div class="row" style="gap:6px;flex:none;align-items:center"><span class="dot" style="background:${p.color}"></span><span class="meta">${p.grade}</span></div>`;
+    v.append(row);
+  });
 }
 function bracketGameRow(g,t){
   const home=teamById(g.home),away=teamById(g.away),me=t.id;
@@ -3042,7 +3158,12 @@ function recruitSheet(rec){
     <div class="kv"><span class="k">Speed / Strength / Awareness</span><span>${rec.spd} · ${rec.str} · ${rec.awr}</span></div>
     <div class="kv"><span class="k">Work ethic</span><span>${traitRead('mot',rec.id,motVal(rec),rec.scout).text}</span></div>
     <div class="kv"><span class="k">Composure</span><span>${traitRead('comp',rec.id,compVal(rec),rec.scout).text}</span></div>
-    <div class="kv"><span class="k">Priorities</span><span>${sc.revealed?rec.prefs.map(prefLabel).join(', '):'— scout 50% to reveal —'}</span></div>`;
+    <div class="kv"><span class="k">Priorities</span><span>${sc.revealed?rec.prefs.map(prefLabel).join(', '):'— scout 50% to reveal —'}</span></div>
+    ${(sc.revealed&&rec.rebel)?'<div class="kv"><span class="k">Mindset</span><span class="accent">Wants to be THE guy — wary of position factories</span></div>':''}`;
+  // Phase 13: surface how the controlled team's positional reputation plays with this recruit
+  const myRep=(controlled().factory&&controlled().factory[rec.pos])||0;
+  if(myRep>=12){const pn=rec.pos+'-U';
+    body.append(el('div','hint',(sc.revealed&&rec.rebel)?`⚠ Your ${pn} reputation may turn this recruit off — he wants his own spotlight.`:`✓ Your ${pn} pipeline pulls position recruits like this one.`));}
   const ib=el('div');ib.style.marginTop='12px';
   if(committed){
     const ct=teamById(committed),mine=committed===S.teamId;

@@ -145,6 +145,19 @@ plain static files so Pages still serves it with zero config.
   the awards cards, `team.titles`, and a postseason line in the offseason recap. The Defensive POY had been
   surfaced as the Bednarik in Phase 11. Save **v14** (`S.postseason`, per-team `postseasonBoost`/
   `lastPostseason`/`titles`/`_pp`). See "Phase 12 design — postseason" below.
+- **Phase 13 — The NFL Draft & position factories.** ✅ DONE. Every offseason (at rollover) a league-wide
+  **NFL draft** picks the best ~96 graduates across **3 rounds** (`runDraft`): `draftProjection` grades each
+  on **peak OVR** (the bulk) + **honors** + **career** (reusing the LEGACY ladder), with a small seeded
+  jitter for draft surprises. A program that keeps producing high picks at a position becomes a **factory**
+  there (`team.factory[pos]`, built from `pickFactoryValue`, **decaying** so it reflects recent production)
+  — a standing **recruiting pull** (`factoryPull`, ≤ +0.15 fit) on recruits at that position, folded into
+  `recruitFit`. ~12% of recruits are **rebels** (`rec.rebel`, stamped in `genRecruits` off a per-recruit
+  rng so the board stays byte-identical) who are **repelled** by factories — they want to be THE guy
+  somewhere else. Pure fenced `DRAFT ENGINE` + `npm run draftlab` (22 checks). UI: a **Draft** board (Season
+  tab + reachable in the preseason, picks by round, your picks highlighted), a **Pro Pipeline** section on
+  the Program page (your `POS-U` factory chips), a draft-picks line in the offseason recap, and a rebel
+  chip + factory note on the recruit sheet. Save **v15** (`S.draft`, per-team `factory`). See "Phase 13
+  design — the draft & factories" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast); and
   the recruit board stays **top-300 only** (the long 2–3★ tail is approximated, never individually
@@ -416,6 +429,55 @@ v13→v14 backfills `postseason:null`. New gate `npm run postlab` (20 checks); `
 hand-off → watch/resolve → champion → recruiting boost. **Deliberately out of scope:** no conference
 championship games (the playoff seeds straight off the final poll), no bowl-tie-in/selection-committee
 politics, no separate transfer portal — the postseason is bracket + bowls + payoffs, nothing more.
+
+---
+
+## Phase 13 design — the NFL draft & position factories
+
+Decided 2026-06-28 with AJ. The other end of the player pipeline: graduates don't just vanish into the
+Ring of Honor — the best get **drafted**, and a program that keeps sending players to the league at a
+position becomes a **factory** there, which **generates recruiting** at that position (AJ's framing). The
+twist: a **rebel** recruit is *repelled* by a factory — he wants to make his own name elsewhere. Same
+house discipline: a pure fenced engine + node lab before UI, a save bump, all gates green.
+
+### Where the data comes from (build on Phase 11)
+Phase 11 already accrues **`p.peakOv`** + **`p.career`** + persists **`p.honors`** at rollover, for every
+graduate — exactly the NFL-readiness signals. So the draft is almost free: at rollover, `rolloverSeason`
+already builds each team's `graduated` list (it feeds enshrinement); we also snapshot each into a draft
+pool (`draftSnap`).
+
+### Pure `DRAFT ENGINE` (fenced, lab before UI)
+`// === DRAFT ENGINE (Phase 13) START/END ===`, depends only on `rng/clamp/hashStr` + `honorWeight`/
+`careerScore` (from the LEGACY block, for signal consistency) — no `S`, so `test/draftlab.js` evals LEGACY
++ DRAFT and validates offline:
+- `draftProjection(snap)` — 0..100 grade dominated by **peak OVR** (`(peakOv−68)/31 × 70`), plus an honors
+  term (the LEGACY ladder, ≤ ~20) and a career term (≤ ~10).
+- `runDraft(grads, seed)` — grades the pool, applies a small **seeded jitter** (draft surprises, but
+  reproducible), takes the top `DRAFT_ROUNDS×DRAFT_PER_ROUND` (3 × 32 = **96**) above `DRAFT_BAR`, and
+  returns ordered picks (`{pick, round, grade, pid, name, pos, teamId, abbr, color}`). A thin class drafts
+  fewer than the cap (no padding).
+- `pickFactoryValue(pick)` / `factoryDecay(rep)` / `factoryRep(team,pos)` — the reputation a pick confers
+  (earlier round = more), and the **decay** applied every year so a factory reflects *recent* production.
+- `factoryPull(team, rec)` — the recruiting term (≤ **+0.15** fit) a positional factory exerts on a recruit
+  at that position; a **rebel** (`rec.rebel`) gets `−0.8×` that (repelled). Returns 0 off a non-factory.
+
+### App wiring
+At rollover: collect `draftSnap`s from every team's graduates → `runDraft` → store `S.draft={year,picks}`
+→ `applyDraftFactories` (decay all teams' `factory`, then add this year's picks; drop tiny entries). The
+draft runs **after** Signing Day, so a factory built this offseason pays the *following* recruiting cycle
+(same timing as the postseason boost). `recruitFit` folds `factoryPull(team,rec)` (guarded by
+`team.factory`, so the recruit lab is unaffected). `genRecruits` stamps `rec.rebel` (~12%) off a
+per-recruit rng keyed on the id, so the prospect board stays **byte-identical** to pre-Phase-13.
+
+### UI & save
+A **Draft** board (Season tab, also reachable in the preseason when no schedule exists yet — picks by
+round, your picks highlighted), a **Pro Pipeline** section on the Program page (your `POS-U` factory chips
++ a link to the board), a draft-picks line in the offseason recap, and on the recruit sheet a **rebel**
+"wants to be THE guy" chip + a note on how your positional reputation plays with that recruit. Save **v15**
+(`S.draft`, per-team `factory`); `migrateState` v14→v15 backfills `draft:null`. New gate `npm run draftlab`
+(22 checks); `qa` drives a rollover draft + factory pull/rebel + the board render. **Deliberately out of
+scope:** no per-pick NFL teams/franchises, no combine/measurables, no underclassmen early declarations, no
+draft-and-stash — the draft is a graded board + factory reputation + a recruiting lever, nothing more.
 
 ---
 
@@ -836,7 +898,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **14**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **15**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -846,9 +908,10 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   `S.series=[]` + per-team `homeState` (from `TEAM_STATE`), with `p.honors` optional (Phase 8
   geography/awards/series); v10→v11 backfills `S.seriesOffers=null` (AI-initiated series offers,
   created when managing); v11→v12 is a structural no-op (per-player traits `p.mot`/`p.comp`, Phase 10
-  — absence reads as average); v13→v14 backfills `S.postseason=null` (Phase 12 — created when the
-  regular season ends, like the schedule; per-team `postseasonBoost`/`lastPostseason`/`titles`/`_pp`
-  absent read as no-effect); v12→v13 backfills per-team `legends=[]` (Phase 11 Ring of Honor;
+  — absence reads as average); v14→v15 backfills `S.draft=null` (Phase 13 — created at the first rollover;
+  per-team `factory` absent reads as no reputation); v13→v14 backfills `S.postseason=null` (Phase 12 —
+  created when the regular season ends, like the schedule; per-team `postseasonBoost`/`lastPostseason`/
+  `titles`/`_pp` absent read as no-effect); v12→v13 backfills per-team `legends=[]` (Phase 11 Ring of Honor;
   `p.career`/`p.peakOv` absent read as zero/none, honors already persist). Each step re-derives
   ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
@@ -871,6 +934,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   year,                   // calendar-year counter, init 2026, ++ each rollover (Phase 5)
   week, phase,            // Preseason → 1..15/"Regular Season" → "Postseason" (bowls+playoff) → "Offseason" → (rollover) → Preseason
   postseason,             // { year, round, playoff:{seeds[12], rounds:[[Game]], champion}, bowls:[Game], meDone } | null (Phase 12)
+  draft,                  // { year, picks:[{pick,round,grade,pid,name,pos,teamId,abbr,color}] } | null — last NFL draft class (Phase 13)
   lastPlayedWeek,         // last week resolved (for the Scores tab)
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
@@ -880,9 +944,10 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   world: { teams: [ Team, ... ] }
 }
 
-// Recruit: { id, fn, ln, pos, st, stars, ov, pot, spd,str,awr, mot,comp, scout, prefs:[primary,secondary],
+// Recruit: { id, fn, ln, pos, st, stars, ov, pot, spd,str,awr, mot,comp, rebel, scout, prefs:[primary,secondary],
 //   iv:{ [teamId]: interest }, committedTo: teamId|null, signed, offered, visited, promise, alumni? }
 //   alumni = id of the legend who already made an alumni visit (Phase 11; one per recruit, no stacking).
+//   rebel = wants to be THE guy; repelled by a program that's a factory at his position (Phase 13).
 //   ov/pot are fogged in the UI by `recScouted(rec)` (band shrinks with `scout`). `iv` keys are
 //   the prospect's suitors. A team's class = pool.filter(r=>r.committedTo===id).
 
@@ -905,7 +970,10 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   natRank, confRank, divRank,
   rec: { w, l, cw, cl, pf, pa, streak },  // season record (overall + conference); set at kickoff
   needs: { [posCode]: true },          // positions flagged for recruiting
-  legends: [ Legend ]                  // Ring of Honor (Phase 11); enshrined at rollover, capped at 12
+  legends: [ Legend ],                 // Ring of Honor (Phase 11); enshrined at rollover, capped at 12
+  factory: { [posCode]: rep },         // NFL "factory" reputation by position (Phase 13); built from draft picks, decays yearly
+  titles: [year],                      // national-championship years (Phase 12)
+  postseasonBoost, lastPostseason, _pp // postseason recruiting/revenue/prestige payoff carriers (Phase 12)
 }
 //   Legend: { id, name, pos, st, from, to, peakOv, honors:[{year,award}], career:{…}, stature, tier, app }
 //     a lean snapshot of a graduated great (no Player object); app = alumni-visit appearances left
@@ -1010,18 +1078,20 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
-### Phases 6–12 landed — what used to be stubbed now works
-Phases 1–12 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
+### Phases 6–13 landed — what used to be stubbed now works
+Phases 1–13 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
 loop** + **facility upgrades** (Phase 6), **side-specific development** + **in-game coach effects** +
 **coach-responsive scouting fog** (Phase 7), **AI geography** + **season awards/All-America/Coach of
 the Year/Week** + **non-conference series** (Phase 8), the **columnar save codec** (Phase 9), **fogged
 player traits** (Phase 10), **program legacy** — Ring of Honor, career accumulation, alumni-visit
-recruiting, legacy aura, legend-coaches (Phase 11), and the **postseason** — a 12-team playoff + bowls,
-watchable, feeding prestige/recruiting/revenue (Phase 12). The full career loop — recruit → season →
-awards → **postseason (bowls/playoff)** → rollover (graduate/enshrine/develop/enroll) → finances settle
-→ carousel → facilities/series — closes across multiple years, and your graduating stars leave a
-permanent mark on the program. **Nine green gates:** `npm run` + `simlab` / `reclab` / `rolllab` /
-`econlab` / `awardlab` / `traitlab` / `legacylab` / `postlab` / `qa`.
+recruiting, legacy aura, legend-coaches (Phase 11), the **postseason** — a 12-team playoff + bowls,
+watchable, feeding prestige/recruiting/revenue (Phase 12), and the **NFL draft + position factories** —
+graduates get drafted, repeated high picks build a positional reputation that pulls recruits (and repels
+rebels) (Phase 13). The full career loop — recruit → season → awards → **postseason** → rollover
+(graduate/enshrine/**draft**/develop/enroll) → finances settle → carousel → facilities/series — closes
+across multiple years, and your stars leave a permanent mark on the program both on its Ring of Honor and
+on its pro-pipeline reputation. **Ten green gates:** `npm run` + `simlab` / `reclab` / `rolllab` /
+`econlab` / `awardlab` / `traitlab` / `legacylab` / `postlab` / `draftlab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during

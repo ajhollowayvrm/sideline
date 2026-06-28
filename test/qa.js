@@ -439,7 +439,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 14 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 15 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -455,9 +455,10 @@ function startServer() {
   await page.waitForTimeout(150);
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
-  const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v14)', mig.v === 14, 'version=' + mig.v);
+  const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
+  check('Migration: v1 save upgrades to current version (v15)', mig.v === 15, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
+  check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
   check('Migration: staff backfilled (tier/boost)', mig.tier != null && mig.boost != null, JSON.stringify({ tier: mig.tier, boost: mig.boost }));
   check('Migration: season fields backfilled (records, null schedule)', mig.rec && mig.rec.w === 0 && mig.rec.l === 0 && mig.sched === null, JSON.stringify(mig.rec));
@@ -666,18 +667,23 @@ function startServer() {
       seriesKept: (S.series || []).length, awardsKept: (S.awards || []).length,
       careerPlayers: S.world.teams.reduce((n, x) => n + x.roster.filter(p => p.career).length, 0),
       ringTotal: S.world.teams.reduce((n, x) => n + (x.legends ? x.legends.length : 0), 0),
-      ringValid: S.world.teams.every(x => !x.legends || x.legends.length <= 12)
+      ringValid: S.world.teams.every(x => !x.legends || x.legends.length <= 12),
+      draftYear: S.draft ? S.draft.year : null, draftPicks: S.draft ? S.draft.picks.length : 0,
+      draftOrdered: S.draft ? S.draft.picks.every((p, i) => p.pick === i + 1) : false,
+      factoryTeams: S.world.teams.filter(x => x.factory && Object.keys(x.factory).length).length
     };
   });
   check('Rollover: advances to the next calendar year', roPost.year === roPre.year + 1, `${roPre.year} → ${roPost.year}`);
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
-  check('Rollover: save version bumped to 14', roPost.version === 14, 'v' + roPost.version);
+  check('Rollover: save version bumped to 15', roPost.version === 15, 'v' + roPost.version);
   check('Phase 8: player honors survive the rollover', roPost.honoredAfter > 0, roPost.honoredAfter + ' still honored');
   check('Phase 8: series + awards history persist across the rollover', roPost.seriesKept > 0 && roPost.awardsKept > 0, `series ${roPost.seriesKept}, awards ${roPost.awardsKept}`);
   check('Phase 11: career totals accrue across the rollover', roPost.careerPlayers > 50, roPost.careerPlayers + ' players carry a career');
   check('Phase 11: notable graduates enshrined into Rings of Honor (league-wide)', roPost.ringTotal > 0, roPost.ringTotal + ' legends league-wide');
   check('Phase 11: no Ring of Honor exceeds the 12-legend cap', roPost.ringValid);
+  check('Phase 13: an NFL draft is held at the rollover', roPost.draftYear === roPre.year && roPost.draftPicks > 0 && roPost.draftOrdered, `${roPost.draftPicks} picks, ${roPost.draftYear}`);
+  check('Phase 13: draft picks build factory reputations league-wide', roPost.factoryTeams > 0, roPost.factoryTeams + ' teams with a factory');
   check('Rollover: signed class enrolled as freshmen', roPost.myFresh === roPre.myClass && roPost.myFresh > 0, `${roPost.myFresh} enrolled (class ${roPre.myClass})`);
   check('Rollover: roster holds at ~84 league-wide', roPost.sizesOk && roPost.myRosterN >= 78 && roPost.myRosterN <= 96, 'mine ' + roPost.myRosterN);
   check('Rollover: last season stats wiped (no p.gs carryover)', roPost.statPlayers === 0, roPost.statPlayers + ' players still carry stats');
@@ -686,6 +692,34 @@ function startServer() {
   const recapTxt = await page.evaluate(() => document.querySelector('.view').innerText);
   check('Rollover: Home shows the offseason recap card', /offseason recap/i.test(recapTxt) && /freshmen on roster/i.test(recapTxt));
   await shot(page, '26-offseason-rollover.png');
+
+  // ---------- PHASE 13: NFL draft factory pull + rebel + UI ----------
+  const draft = await page.evaluate(() => {
+    const t = controlled();
+    // measure the recruiting pull a WR factory exerts on a WR vs a rebel WR vs an off-position recruit
+    const wr = { pos: 'WR', stars: 4, st: 'XX', prefs: [] };
+    const rebelWR = { pos: 'WR', stars: 4, st: 'XX', prefs: [], rebel: true };
+    const cb = { pos: 'CB', stars: 4, st: 'XX', prefs: [] };
+    const probe = r => { const lo = Object.assign({}, t, { prestige: 55, homeState: '', factory: {} }); const hi = Object.assign({}, t, { prestige: 55, homeState: '', factory: { WR: 80 } }); return { lo: recruitFit(lo, r), hi: recruitFit(hi, r) }; };
+    const pWR = probe(wr), pRebel = probe(rebelWR), pCB = probe(cb);
+    return {
+      factoryRaises: pWR.hi > pWR.lo, rebelLowers: pRebel.hi < pRebel.lo, offPosNeutral: Math.abs(pCB.hi - pCB.lo) < 1e-9,
+      wrGap: +(pWR.hi - pWR.lo).toFixed(3), rebelGap: +(pRebel.hi - pRebel.lo).toFixed(3)
+    };
+  });
+  check('Phase 13: a position factory raises recruitFit for matching recruits', draft.factoryRaises, 'WR pull ' + draft.wrGap);
+  check('Phase 13: a rebel recruit is repelled by a factory (fit drops)', draft.rebelLowers, 'rebel gap ' + draft.rebelGap);
+  check('Phase 13: factory pull is position-specific (CB unaffected by a WR-U)', draft.offPosNeutral);
+  // draft board + pro-pipeline render
+  const draftUI = await page.evaluate(() => {
+    UI.view = 'season'; UI.seasonTab = 'draft'; render();
+    const board = document.querySelector('.view').innerText, hasBoard = /NFL Draft/i.test(board) && /Round 1/i.test(board);
+    UI.view = 'program'; render();
+    return { hasBoard, pipeline: !!document.querySelector('[data-tid="pro-pipeline"]') };
+  });
+  check('Phase 13: Season Draft board renders the class by round', draftUI.hasBoard);
+  check('Phase 13: Program page shows the Pro Pipeline (factory) section', draftUI.pipeline);
+  await shot(page, '26b-nfl-draft.png');
 
   // ---------- PHASE 7: development depth + coach identity ----------
   // The rollover above developed every returning player toward (never past) their ceiling. Verify
