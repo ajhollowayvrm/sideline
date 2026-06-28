@@ -195,6 +195,14 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 
 Positions: `QB RB WR TE OT OG C  DE DT LB CB S  K P`.
 
+Rosters are **scholarship-sized**: ~84 players/team (all 134 teams ≈ 11.3k players),
+generated fresh from the world seed on every New Game (deterministic per seed; `?seed=N`
+is the only way to repeat a world). Each position is generated several deep, then `genRoster`
+**tapers everyone past the two-deep** (`so >= 2`) so backups and walk-ons fall off
+realistically — starters (`so 0–1`) are untouched, so team ratings (top 11 per side) aren't
+inflated by depth. First/last names draw from large pools to keep same-roster duplicate
+names rare (<1% league-wide).
+
 ---
 
 ## Roster import schema (`format: "sideline-roster"`)
@@ -247,8 +255,10 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 ## Conventions & gotchas
 
 - **No build step yet.** Everything is global in one `<script>`. If splitting into modules,
-  preserve the deterministic seed → `genWorld` contract; saves store the full world today
-  (a future optimization is seed + diff if `localStorage` quota gets tight — ~5MB/origin).
+  preserve the deterministic seed → `genWorld` contract; saves store the full world today.
+  With scholarship-sized rosters a full-world save is **~2 MB** (vs the ~5 MB/origin
+  `localStorage` cap), so the seed + diff optimization gets more attractive as seasons
+  accumulate — worth doing before saves carry per-season history.
 - After any roster/ratings/staff edit, call `teamRatings(roster, staff)` then
   `recomputeRanks(S.world)` (staff boosts feed into the rating, so pass the team's staff).
 - `autosave()` writes to the slot matching `S.createdAt`; explicit "Save game" is in the

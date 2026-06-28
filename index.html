@@ -190,13 +190,14 @@ function textOn(hex){const h=hex.replace('#','');const r=parseInt(h.slice(0,2),1
 
 /* ---------- data: states, names, positions ---------- */
 const STATES=["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"];
-const FN=["Jaylen","Marcus","Cole","Tyler","Devon","Isaiah","Cam","Brock","Khalil","Trey","Mason","Aiden","DJ","Zion","Tre","Jaden","Quan","Bryce","Caleb","Donovan","Malik","Hunter","Gavin","Rashad","Deshawn","Logan","Xavier","Jordan","Elijah","Nico","Brady","Antoine","Demarcus","Kade","Jamari","Roman","Silas","Tank","Vince","Omar","Reggie","Chase","Beau","Dante","Keon","Marlon","Pierce","Jalen","Sincere","Wyatt"];
-const LN=["Carter","Williams","Hayes","Brooks","Robinson","Bennett","Foster","Jefferson","Coleman","Mitchell","Sanders","Reed","Walker","Diaz","Okafor","Ramsey","Holloway","Pierce","Vaughn","Sterling","Booker","Whitfield","Adeyemi","Crawford","Dawson","Ellison","Maddox","Nakamura","Salazar","Thornton","Underwood","Vance","Washington","Yates","Abara","Castillo","Devine","Egwu","Freeman","Grimes","Huxley","Ironwood","Jennings","Kowalski","Langford","Montrose","Nunez","Ortega","Prince","Quill"];
-// pos: [code, side, perTeam, weight for OVR contribution]
-const POS=[["QB","off",3,1.4],["RB","off",3,1],["WR","off",6,1.2],["TE","off",2,.8],
-["OT","off",3,1],["OG","off",3,.9],["C","off",2,.8],
-["DE","def",3,1.1],["DT","def",3,1],["LB","def",5,1.1],["CB","def",4,1.1],["S","def",3,1],
-["K","st",1,.4],["P","st",1,.3]];
+const FN=["Jaylen","Marcus","Cole","Tyler","Devon","Isaiah","Cam","Brock","Khalil","Trey","Mason","Aiden","DJ","Zion","Tre","Jaden","Quan","Bryce","Caleb","Donovan","Malik","Hunter","Gavin","Rashad","Deshawn","Logan","Xavier","Jordan","Elijah","Nico","Brady","Antoine","Demarcus","Kade","Jamari","Roman","Silas","Tank","Vince","Omar","Reggie","Chase","Beau","Dante","Keon","Marlon","Pierce","Jalen","Sincere","Wyatt","Amari","Darius","Trevon","Jaxon","Kobe","Tyrese","Deion","Cedric","Marquise","Jermaine","Terrance","Dominic","Javon","Demetrius","Tariq","Kenyon","Jabari","Zaire","Keyshawn","Trayvon","Davion","Quincy","Hudson","Jett","Cooper","Knox","Tate","Colton","Ryder","Easton","Gunner","Maddox","Jace","Camden","Lincoln","Beckett","Drew","Grant","Carson","Holden","Anthony","Adrian","Julian","Mateo","Andre","Emmanuel","Josiah","Micah","Solomon","Gideon","Malachi","Nasir","Amir","Hakeem","Braylon","Kaden","Jaheim","Jaylon","Deandre","Keshawn","Tyshawn","Markell","Rondell","Bo","Maverick","Zane","Kasen","Rashawn","Tervell"];
+const LN=["Carter","Williams","Hayes","Brooks","Robinson","Bennett","Foster","Jefferson","Coleman","Mitchell","Sanders","Reed","Walker","Diaz","Okafor","Ramsey","Holloway","Pierce","Vaughn","Sterling","Booker","Whitfield","Adeyemi","Crawford","Dawson","Ellison","Maddox","Nakamura","Salazar","Thornton","Underwood","Vance","Washington","Yates","Abara","Castillo","Devine","Egwu","Freeman","Grimes","Huxley","Ironwood","Jennings","Kowalski","Langford","Montrose","Nunez","Ortega","Prince","Quill","Adams","Allen","Anderson","Bailey","Barnes","Bell","Brown","Bryant","Butler","Campbell","Chavez","Clark","Cox","Cruz","Daniels","Davis","Dixon","Dorsey","Edwards","Ellis","Evans","Fields","Fletcher","Flowers","Ford","Gibson","Gomez","Gonzalez","Graham","Green","Griffin","Hall","Hamilton","Harris","Hill","Hodge","Howard","Hughes","Hunt","Jackson","James","Johnson","Jones","Joseph","Kelly","King","Lane","Lewis","Lopez","Mack","Marshall","Martin","Mays","McCoy","McKinney","Meyers","Moore","Morgan","Morris","Murphy","Myers","Nelson","Norris","Owens","Parker","Patterson","Payne","Perry","Phillips","Powell","Price","Reeves","Rhodes","Rivers","Rogers","Russell","Scott","Shaw","Simmons","Sims","Smith","Spencer","Stewart","Stokes","Taylor","Thomas","Tucker","Turner","Wade","Ward","Watkins","Watson","Webb","Wells","West","Wheeler","White","Wilson","Wright","Young","Mensah","Owusu","Diallo","Traore","Olsen","Petrov"];
+// pos: [code, side, perTeam, weight for OVR contribution]. perTeam targets a scholarship-sized
+// roster (~84/team); ratings key off the top 11 per side, so deep players don't inflate them.
+const POS=[["QB","off",4,1.4],["RB","off",5,1],["WR","off",11,1.2],["TE","off",5,.8],
+["OT","off",7,1],["OG","off",6,.9],["C","off",3,.8],
+["DE","def",6,1.1],["DT","def",6,1],["LB","def",10,1.1],["CB","def",9,1.1],["S","def",8,1],
+["K","st",2,.4],["P","st",2,.3]];
 const CLASSES=["FR","RS-FR","SO","RS-SO","JR","RS-JR","SR","RS-SR"];
 // Coordinators: fixed slots, one per side. [code, title, side]
 const COORD_ROLES=[["OC","Offensive Coordinator","off"],["DC","Defensive Coordinator","def"],
@@ -319,7 +320,20 @@ function genRoster(r,prestige){
   POS.forEach(([code,,n])=>{for(let i=0;i<n;i++)out.push(genPlayer(r,prestige,code));});
   // depth order: sort each position by OVR, mark order; one captain overall (best non-K/P)
   const byPos={};out.forEach(p=>{(byPos[p.pos]=byPos[p.pos]||[]).push(p);});
-  Object.values(byPos).forEach(arr=>{arr.sort((a,b)=>b.ov-a.ov);arr.forEach((p,i)=>p.so=i);});
+  Object.values(byPos).forEach(arr=>{
+    arr.sort((a,b)=>b.ov-a.ov);
+    arr.forEach((p,i)=>{
+      // realistic depth taper: past the two-deep, backups & walk-ons fall off steeply.
+      // Starters (so 0-1) are untouched, so team ratings (top-11/side) are unaffected.
+      if(i>=2){
+        const pen=Math.min(2+(i-2)*2.6,26);
+        p.ov=clamp(Math.round(p.ov-pen),44,99);
+        p.pot=clamp(Math.round(p.pot-pen*0.4),p.ov,99);
+        p.stars=p.ov>=90?5:p.ov>=82?4:p.ov>=72?3:p.ov>=62?2:1;
+      }
+      p.so=i;
+    });
+  });
   const field=out.filter(p=>p.pos!=='K'&&p.pos!=='P').sort((a,b)=>b.ov-a.ov);
   if(field[0])field[0].cap=true; if(field[1])field[1].cap=true;
   return out;

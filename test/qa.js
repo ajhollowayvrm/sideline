@@ -123,6 +123,19 @@ function startServer() {
   check('Roster: no horizontal overflow', await overflow(page));
   await shot(page, '07-roster.png');
 
+  // scholarship-sized rosters: every team is deep, backups taper off, names don't repeat
+  const depth = await page.evaluate(() => {
+    const sizes = S.world.teams.map(t => t.roster.length);
+    const t = controlled();
+    const wr = t.roster.filter(p => p.pos === 'WR').sort((a, b) => a.so - b.so).map(p => p.ov);
+    let dupes = 0, players = 0;
+    S.world.teams.forEach(tm => { const seen = {}; tm.roster.forEach(p => { players++; const k = p.fn + ' ' + p.ln; if (seen[k]) dupes++; seen[k] = 1; }); });
+    return { min: Math.min(...sizes), total: sizes.reduce((a, b) => a + b, 0), wrTop: wr[0], wrBottom: wr[wr.length - 1], wrLen: wr.length, dupes, players };
+  });
+  check('Roster: scholarship-sized for every team (≥80)', depth.min >= 80, `min ${depth.min}, ${depth.total} league-wide`);
+  check('Roster: realistic depth taper (starters well above deep backups)', depth.wrLen >= 8 && depth.wrTop - depth.wrBottom >= 8, `WR ${depth.wrTop}→${depth.wrBottom} over ${depth.wrLen}`);
+  check('Roster: same-team duplicate names rare (<1%)', depth.dupes / depth.players < 0.01, `${depth.dupes}/${depth.players}`);
+
   // player sheet — ceiling/dev shown, raw potential hidden (data-id targets a specific player)
   const pid = await page.evaluate(() => controlled().roster[0].id);
   await page.locator(`[data-id="${pid}"]`).click();
