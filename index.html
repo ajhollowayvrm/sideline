@@ -584,9 +584,9 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:7,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:8,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
-     recruiting:null,
+     recruiting:null,coachMarket:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // choose a save slot
   chooseSlotSheet();
@@ -692,6 +692,11 @@ function migrateState(state){
   if((state.version||1)<7){            // Phase 5: season rollover adds a calendar-year counter.
     if(state.year==null)state.year=2026;
     state.version=7;
+  }
+  if((state.version||1)<8){            // Phase 6: coaching carousel market + per-team finances.
+    if(!('coachMarket' in state))state.coachMarket=null;   // created at the first offseason
+    state.world.teams.forEach(t=>{if(!('lastFinances' in t))t.lastFinances=null;});
+    state.version=8;
   }
   return state;
 }
@@ -961,7 +966,14 @@ function recruitFit(team,rec){
   let prox=clamp(1-Math.abs(team.prestige-target)/50,0,1);
   if(team.prestige>=target)prox=Math.max(prox,0.72+Math.min(team.prestige-target,22)/110);
   const need=(team.needs&&team.needs[rec.pos])?0.12:0;
-  return clamp(prox+need,0,1.1);
+  // Facilities nudge fit (Phase 6 wiring): a strong NIL collective helps everywhere; academics
+  // matters to recruits who value it. Guarded so fac-less teams (the recruit lab) are unaffected.
+  let fac=0;
+  if(team.fac){
+    fac+=((team.fac.nil||5)-5)*0.012;
+    if(rec.prefs&&rec.prefs.indexOf('academics')>=0)fac+=((team.fac.academics||5)-5)*0.014;
+  }
+  return clamp(prox+need+fac,0,1.15);
 }
 // Class-ranking value of a landed prospect, and a team's total class score (landed value + a
 // prestige baseline standing in for the ~20 unmodeled 2–3★ depth signees every program lands).
@@ -1113,6 +1125,124 @@ function rolloverRoster(roster,signees,prestige,r,opts){
 }
 // === ROLLOVER ENGINE (Phase 5) END ===
 
+// === ECONOMY ENGINE (Phase 6) START ===
+// Pure, deterministic program-management model: finances, facility upgrades, and the coaching
+// carousel. Depends only on rng/ri/clamp/pick/hashStr + the data arrays (COORD_ROLES/POS_COACHES/
+// POS/FN/LN) + coachBoost — no DOM, no S — so test/econlab.js can extract + validate it offline.
+// The "team" shape it reads is { id, conf, prestige, fac, payroll, budget, facilityDebt, rec,
+// natRank, staff }. The app layer (rolloverSeason + renderProgram/renderCoaches) drives it.
+
+// Annual base revenue by conference, in $M (media + distribution tier). Performance + stadium
+// gate stack on top. Independent sits with the power conferences (Notre Dame's own deal).
+const ECON_CONF_BASE={"SEC":48,"Big Ten":46,"ACC":31,"Big 12":31,"Pac-12":20,"American":14,
+  "Mountain West":11,"Sun Belt":9,"MAC":8,"C-USA":8,"Independent":26};
+// Base cost to take a facility from level 1→2 (escalates steeply with level). Stadium is dearest.
+const FAC_BASE={stadium:6e6,strength:2.2e6,training:2.4e6,academics:1.9e6,nil:2.7e6};
+
+// Resolve one team's annual finances (run at rollover, before records reset). MUTATES the team:
+// budget += net (cash carries over, can go negative → constrains spending), pays down debt
+// (interest + principal), and stores a lean team.lastFinances for the Program UI / recap.
+// Deterministic: a light seeded jitter keys off (seed, year, team id). Returns lastFinances.
+function resolveFinances(team,year,seed){
+  const fac=team.fac||{}, prestige=team.prestige||50, rec=team.rec||{w:0,l:0};
+  const games=(rec.w||0)+(rec.l||0), winPct=games?rec.w/games:0;
+  const confBase=(ECON_CONF_BASE[team.conf]||16)*1e6;
+  const stadiumTerm=(fac.stadium||5)*1.15e6;          // bigger house → more gate revenue
+  const perfBonus=(rec.w||0)*1.1e6
+    + (winPct>0.5?(winPct-0.5)*18e6:0)                 // winning seasons pay (bowls/playoff)
+    + (team.natRank&&team.natRank<=25?(26-team.natRank)*0.5e6:0);
+  const jit=(rng((seed^hashStr('fin'+year+(team.id||'')))>>>0)()-0.5)*4e6;
+  const revenue=Math.round(confBase + prestige*450000 + stadiumTerm + perfBonus + jit);
+  const debt=team.facilityDebt||0;
+  const interest=debt*0.08, principal=Math.min(debt, debt*0.18);
+  const debtService=interest+principal;
+  const expenses=Math.round((team.payroll||0)+debtService);
+  const net=revenue-expenses;
+  team.budget=Math.round((team.budget||0)+net);
+  team.facilityDebt=Math.max(0,Math.round(debt-principal));
+  team.lastFinances={revenue,expenses,net,debtService:Math.round(debtService)};
+  return team.lastFinances;
+}
+// Escalating cost to raise a facility from `level` → `level+1`. Caps at 10 (Infinity past it).
+function facilityUpgradeCost(key,level){
+  if(level>=10)return Infinity;
+  return Math.round((FAC_BASE[key]||2e6)*Math.pow(level+1,1.6));
+}
+// Build a deterministic free-agent coach market (~24–40 candidates, top-heavy on rating) for a
+// given year. Each candidate is a full coach object (role/tier/scope/groups/boost) ready to slot in.
+function genCoachMarket(seed,year,world){
+  const r=rng((seed^hashStr('market'+year))>>>0);
+  const roles=[...COORD_ROLES.map(c=>({code:c[0],title:c[1],tier:'coord',side:c[2]})),
+               ...POS_COACHES.map(c=>({code:c[0],title:c[1],tier:'pos',scope:c[2],groups:c[3]}))];
+  const n=ri(r,24,40), out=[];
+  for(let i=0;i<n;i++){
+    const role=pick(r,roles);
+    const rating=clamp(Math.round(48+Math.pow(r(),1.8)*48+ri(r,-3,3)),45,97);  // top-heavy: few elite
+    const groups=role.tier==='coord'?POS.filter(p=>p[1]===role.side).map(p=>p[0]):role.groups;
+    const scope=role.tier==='coord'?{off:'OFF',def:'DEF',st:'ST'}[role.side]:role.scope;
+    const mult=role.tier==='coord'?(role.code==='STC'?1.3:2.4):1;
+    const salary=Math.max(90000,Math.round((rating*8500+120000)*mult));
+    out.push({id:'fa'+year.toString(36)+i.toString(36),role:role.code,title:role.title,
+      name:pick(r,FN)+' '+pick(r,LN),rating,salary,years:ri(r,2,4),
+      tier:role.tier,scope,groups,boost:coachBoost(role.tier,rating)});
+  }
+  out.sort((a,b)=>b.rating-a.rating);
+  return out;
+}
+// Buyout to fire a coach early (≈ half the remaining contract). Hire fee = a small signing bonus.
+function buyoutCost(coach){return Math.round((coach.salary||0)*Math.max(1,coach.years||1)*0.5);}
+function hireCost(coach){return Math.round((coach.salary||0)*0.25);}
+// Slot a market candidate into a coordinator vacancy/slot, preserving the slot's role/scope/groups.
+function fitCoachToSlot(cand,role,title,scope,groups,tier,r){
+  return Object.assign({},cand,{role,title,scope,groups,tier,
+    boost:coachBoost(tier,cand.rating),years:ri(r,2,4)});
+}
+// The AI churn at rollover (pure-ish: mutates world staff + market, deterministic by (seed,year)).
+// Better programs (acting first, prestige-weighted) upgrade their weakest coordinator from the
+// market; displaced coaches re-enter the pool; a strong player coordinator can be poached by a
+// higher-prestige suitor (resisted by loyal histories), opening a vacancy. Market then refreshes.
+// Returns { poached:[{coach,fromId,toId}] } so the app can notify + flag the vacancy.
+function advanceCoachCarousel(world,market,seed,year,opts){
+  opts=opts||{};
+  const meId=opts.controlledId||null, poached=[];
+  const r=rng((seed^hashStr('carousel'+year))>>>0);
+  market.sort((a,b)=>b.rating-a.rating);
+  const ai=world.teams.filter(t=>t.id!==meId).sort((a,b)=>b.prestige-a.prestige);
+  // 1) AI upgrades its weakest coordinator from the market (high prestige acts more + grabs best)
+  ai.forEach(t=>{
+    if(r()>0.30+(t.prestige||50)/250)return;
+    const coords=(t.staff||[]).filter(c=>c.tier==='coord');
+    if(!coords.length)return;
+    const weak=coords.reduce((a,b)=>a.rating<b.rating?a:b);
+    const ci=market.findIndex(c=>c.tier==='coord'&&c.rating>weak.rating+4);
+    if(ci<0)return;
+    const cand=market[ci];
+    const hired=fitCoachToSlot(cand,weak.role,weak.title,weak.scope,weak.groups,'coord',r);
+    t.staff=t.staff.map(c=>c===weak?hired:c);
+    market.splice(ci,1);
+    market.push(Object.assign({},weak,{id:'fa'+Math.floor(r()*1e9).toString(36),years:ri(r,1,3)}));
+  });
+  // 2) a higher-prestige suitor may poach the player's best coordinator (loyal histories resist)
+  if(meId){
+    const me=world.teams.find(t=>t.id===meId);
+    const resist=opts.coach&&(opts.coach.history==='NFL Transplant'||opts.coach.history==='Lifer')?0.5:1;
+    if(me&&me.staff){
+      const star=me.staff.filter(c=>c.tier==='coord'&&c.rating>=82).sort((a,b)=>b.rating-a.rating)[0];
+      const suitor=ai.find(t=>(t.prestige||50)>((me.prestige||50)+6));
+      if(star&&suitor&&r()<0.18*resist){
+        me.staff=me.staff.filter(c=>c!==star);
+        poached.push({coach:star,fromId:meId,toId:suitor.id});
+      }
+    }
+  }
+  // 3) refresh the market back toward target size with a fresh wave of free agents
+  const fresh=genCoachMarket((seed^0x9e3779b1)>>>0,year,world);
+  while(market.length<28&&fresh.length)market.push(fresh.shift());
+  market.sort((a,b)=>b.rating-a.rating);
+  return {poached};
+}
+// === ECONOMY ENGINE (Phase 6) END ===
+
 // Resolve a game with the drive/play engine. Seeded per game id so outcomes are reproducible
 // regardless of advance order. Sets g.hs/g.as/g.played and RETURNS the per-game box (player
 // id → stat deltas) for stat folding. Pure w.r.t. players/teams — re-simming a clone is safe.
@@ -1224,12 +1354,19 @@ function rolloverSeason(){
   const signeesBy={};pool.forEach(rc=>{if(rc.committedTo)(signeesBy[rc.committedTo]=signeesBy[rc.committedTo]||[]).push(rc);});
   const me=S.teamId, r=rng((S.seed^hashStr('rollover'+(S.year||2026)))>>>0);
   const departed=resolvePromises(me,r);            // before rollover wipes last season's p.gs
+  // (A) Finances settle once a year for EVERY team (uses last season's record, before it resets).
+  const yr=S.year||2026;
+  S.world.teams.forEach(t=>resolveFinances(t,yr,S.seed));
   let summary=null;
   S.world.teams.forEach(t=>{
     const res=rolloverRoster(t.roster,signeesBy[t.id]||[],t.prestige,r,{rate:devRate(t)});
     t.roster=res.roster;
     if(t.id===me)summary=res;
   });
+  // (C) Coaching carousel: AI churn + possible poach of a player coordinator, then market refresh.
+  ensureCoachMarket();
+  const carousel=advanceCoachCarousel(S.world,S.coachMarket,S.seed,yr,{controlledId:me,coach:S.coach});
+  S.world.teams.forEach(t=>{t.payroll=(t.staff||[]).reduce((s,x)=>s+(x.salary||0),0);});
   S.year=(S.year||2026)+1;
   S.world.teams.forEach(t=>{t.rec=emptyRec();t.ratings=teamRatings(t.roster,t.staff);});
   S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;
@@ -1239,12 +1376,81 @@ function rolloverSeason(){
   S.task={type:'Media Day',label:S.year+' Media Day',
     note:'New year on campus. The returning core developed and '+nf+' freshman'+(nf===1?'':'men')+
       ' arrived. Kick off the season when you’re ready.'};
+  const poachedMine=(carousel.poached||[]).filter(p=>p.fromId===me)
+    .map(p=>({name:p.coach.name,role:p.coach.scope||p.coach.role}));
   S.offseasonReport={year:S.year,
     graduated:summary?summary.graduated.length:0,
     tracked:summary?summary.trackedCount:0,
-    freshmen:nf,departed};
+    freshmen:nf,departed,
+    finances:controlled().lastFinances||null,poached:poachedMine};
   autosave();
 }
+
+/* ============================================================
+   PROGRAM MANAGEMENT — finances, facility upgrades, coaching carousel (Phase 6)
+   The pure engine (resolveFinances/facilityUpgradeCost/genCoachMarket/advanceCoachCarousel/…)
+   lives in the ECONOMY ENGINE block above; this layer owns S.coachMarket + the player actions.
+   ============================================================ */
+function ensureCoachMarket(){
+  if(!S.coachMarket)S.coachMarket=genCoachMarket(S.seed,S.year||2026,S.world);
+  return S.coachMarket;
+}
+// Spending is only allowed when the season isn't live (no in-season roster/staff churn).
+function canManage(){return S.phase==='Preseason'||S.phase==='Offseason';}
+// Buy a facility upgrade. `credit` finances it onto facilityDebt instead of paying cash.
+function applyFacilityUpgrade(team,key,credit){
+  const lvl=team.fac[key]||1;
+  if(lvl>=10){toast('Already maxed');return false;}
+  const cost=facilityUpgradeCost(key,lvl);
+  if(credit){team.facilityDebt=(team.facilityDebt||0)+cost;}
+  else{if((team.budget||0)<cost){toast('Not enough budget — finance it or earn more');return false;}
+    team.budget-=cost;}
+  team.fac[key]=lvl+1;
+  team.ratings=teamRatings(team.roster,team.staff);
+  recomputeRanks(S.world);
+  autosave();return true;
+}
+// Fire a coach: pay the buyout from budget. Coordinators open a vacancy you must refill before
+// kickoff; position coaches may sit vacant (you simply lose their group boost).
+function fireCoach(team,coach){
+  const cost=buyoutCost(coach);
+  if((team.budget||0)<cost){toast('Can’t afford the buyout');return false;}
+  team.budget-=cost;
+  team.staff=team.staff.filter(c=>c!==coach);
+  team.payroll=team.staff.reduce((s,x)=>s+(x.salary||0),0);
+  team.ratings=teamRatings(team.roster,team.staff);
+  recomputeRanks(S.world);autosave();return true;
+}
+// Hire a market candidate into a slot. Coordinators take the matching OC/DC/STC slot (must be
+// vacant); position coaches fill/replace their group's slot. Pays a signing fee from budget.
+function hireCoach(team,cand,slotRole){
+  ensureCoachMarket();
+  const fee=hireCost(cand);
+  if((team.budget||0)<fee){toast('Can’t afford the signing fee');return false;}
+  const r=rng((S.seed^hashStr('hire'+cand.id+(S.year||2026)))>>>0);
+  let hired;
+  if(cand.tier==='coord'){
+    const slot=COORD_ROLES.find(x=>x[0]===slotRole)||COORD_ROLES.find(x=>x[2]===({OFF:'off',DEF:'def',ST:'st'}[cand.scope]));
+    if(!slot){toast('No matching coordinator slot');return false;}
+    if(team.staff.find(c=>c.role===slot[0]&&c.tier==='coord')){toast('That slot is filled — fire first');return false;}
+    const groups=POS.filter(p=>p[1]===slot[2]).map(p=>p[0]);
+    const scope={off:'OFF',def:'DEF',st:'ST'}[slot[2]];
+    hired=fitCoachToSlot(cand,slot[0],slot[1],scope,groups,'coord',r);
+  }else{
+    const pc=POS_COACHES.find(x=>x[0]===cand.role);
+    if(!pc){toast('Unknown role');return false;}
+    if(team.staff.find(c=>c.role===pc[0]&&c.tier==='pos')){toast('Replace from that coach’s card');return false;}
+    hired=fitCoachToSlot(cand,pc[0],pc[1],pc[2],pc[3],'pos',r);
+  }
+  team.budget-=fee;
+  team.staff.push(hired);
+  team.payroll=team.staff.reduce((s,x)=>s+(x.salary||0),0);
+  team.ratings=teamRatings(team.roster,team.staff);
+  S.coachMarket=S.coachMarket.filter(c=>c.id!==cand.id);
+  recomputeRanks(S.world);autosave();return true;
+}
+// Coordinator slots that are currently empty on the controlled team (must be filled before kickoff).
+function vacantCoordSlots(team){return COORD_ROLES.filter(([code])=>!team.staff.find(c=>c.role===code&&c.tier==='coord'));}
 
 /* ============================================================
    RECRUITING — weekly economy + player actions (Phase 4)
@@ -1465,7 +1671,11 @@ function renderHome(app){
       if(g&&!g.played)openGameViewer(g);            // watch your game, then commit the week
       else{advanceWeek();render();toast('Bye week \u2014 advanced');}  // bye: just advance
     }
-    else{startSeason();render();toast('Season underway \u2014 schedule set');}
+    else{
+      const vac=vacantCoordSlots(controlled());
+      if(vac.length){UI.view='team';UI.tab='coaches';render();toast('Fill your '+vac.length+' coordinator vacancy first');return;}
+      startSeason();render();toast('Season underway \u2014 schedule set');
+    }
   };
   task.append(adv);v.append(task);
   // offseason recap: surfaced the season AFTER a rollover (graduates out, freshmen in)
@@ -1473,10 +1683,12 @@ function renderHome(app){
     const o=S.offseasonReport;
     const rc=el('div','card');rc.dataset.tid='offseason-report';
     const dep=o.departed&&o.departed.length?`<div class="muted" style="font-size:12px;margin-top:6px">Transfers out (broken promises): ${o.departed.map(d=>d.name+' ('+d.pos+')').join(', ')}</div>`:'';
+    const poa=o.poached&&o.poached.length?`<div class="muted bad" style="font-size:12px;margin-top:6px">Coordinators poached: ${o.poached.map(p=>p.name+' ('+p.role+')').join(', ')}</div>`:'';
+    const fin=o.finances?`<div class="row spread" style="margin-top:4px"><span>Finances net</span><span class="cond ${o.finances.net<0?'bad':'good'}" style="font-weight:800">${money(o.finances.net)}</span></div>`:'';
     rc.innerHTML=`<div class="meta dim" style="margin-bottom:6px">Offseason recap</div>
       <div class="row spread"><span>Seniors graduated</span><span class="cond" style="font-weight:800">${o.graduated}</span></div>
       <div class="row spread"><span>Recruits enrolled</span><span class="cond" style="font-weight:800">${o.tracked}</span></div>
-      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${dep}`;
+      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${fin}${dep}${poa}`;
     v.append(rc);
   }
   if(inSeason||over){const sb=el('button','btn line','Season \u00b7 schedule & standings');sb.style.marginTop='10px';
@@ -1530,23 +1742,52 @@ function renderProgram(app){
   const v=el('div','view');
   v.append(headerBar('Program Status',t.name+' '+t.nick,()=>{UI.view='home';render();}));
   v.append(el('h2','sec','Finances'));
-  const g=el('div','stat-grid');
-  g.append(stat('Operating Budget',money(t.budget)),stat('Annual Revenue',money(t.revenue)),
-    stat('Staff Payroll',money(t.payroll)),stat('Facility Debt',money(t.facilityDebt)));
+  const g=el('div','stat-grid');g.dataset.tid='program-finances';
+  g.append(stat('Operating Budget',money(t.budget)),stat('Facility Debt',money(t.facilityDebt)),
+    stat('Staff Payroll',money(t.payroll)),stat('Last Year Net',t.lastFinances?money(t.lastFinances.net):'—'));
   v.append(g);
-  const owed=t.payroll+t.facilityDebt;
-  v.append(el('div','card',`<div class="kv"><span class="k">Money earned (yr)</span><span class="good cond" style="font-size:16px">${money(t.revenue)}</span></div>
-    <div class="kv"><span class="k">Money owed (committed)</span><span class="bad cond" style="font-size:16px">${money(owed)}</span></div>`));
+  // last settled year's breakdown (populated at rollover)
+  if(t.lastFinances){
+    const lf=t.lastFinances;
+    v.append(el('div','card',`<div class="meta dim" style="margin-bottom:6px">Last year settled</div>
+      <div class="kv"><span class="k">Revenue</span><span class="good cond" style="font-size:16px">${money(lf.revenue)}</span></div>
+      <div class="kv"><span class="k">Payroll + debt service</span><span class="bad cond" style="font-size:16px">${money(lf.expenses)}</span></div>
+      <div class="kv"><span class="k">Net to budget</span><span class="cond ${lf.net<0?'bad':'good'}" style="font-size:16px">${money(lf.net)}</span></div>`));
+  }else{
+    v.append(el('div','hint','Finances settle each offseason at rollover — your first annual statement posts then.'));
+  }
+  // facilities + upgrade buttons (only when the season isn't live)
   v.append(el('h2','sec','Facilities'));
-  const fc=el('div','card');
+  const fc=el('div','card');fc.dataset.tid='facilities';
+  const manage=canManage();
   [['Stadium','stadium'],['Strength','strength'],['Training','training'],['Academics','academics'],['NIL Collective','nil']]
-    .forEach(([lab,k])=>{fc.append(facBar(lab,t.fac[k]));});
+    .forEach(([lab,k])=>fc.append(facUpgradeRow(t,lab,k,manage)));
   v.append(fc);
+  if(!manage)v.append(el('div','hint center','Upgrade facilities in the preseason or offseason.'));
   v.append(el('h2','sec','Team Ratings'));
   const r=el('div','ranks');
   r.append(rankPill(t.ratings.ovr,'Overall'),rankPill(t.ratings.off,'Offense'),rankPill(t.ratings.def,'Defense'));
   v.append(r);
   app.append(v);
+}
+// A facility row with its level bar + an Upgrade (cost) button (cash, or finance on credit).
+function facUpgradeRow(t,label,key,manage){
+  const lvl=t.fac[key]||1;
+  const d=el('div');d.style.marginBottom='13px';d.dataset.id='fac-'+key;
+  d.innerHTML=`<div class="row spread"><span style="font-size:13px">${label}</span><span class="cond" style="font-weight:700">${lvl}/10</span></div>
+    <div class="bar"><i style="width:${lvl*10}%"></i></div>`;
+  if(!manage)return d;
+  if(lvl>=10){const m=el('div','meta dim');m.style.marginTop='5px';m.textContent='Maxed';d.append(m);return d;}
+  const cost=facilityUpgradeCost(key,lvl);
+  const row=el('div','btn-row');row.style.marginTop='7px';
+  const buy=el('button','btn sm','Upgrade '+money(cost));buy.dataset.tid='upg-'+key;
+  if(t.budget<cost){buy.classList.add('ghost');}
+  buy.onclick=()=>{if(applyFacilityUpgrade(t,key,false)){render();toast(label+' upgraded to '+(t.fac[key])+'/10');}};
+  const credit=el('button','btn sm line','Finance');credit.dataset.tid='upgcredit-'+key;
+  credit.onclick=()=>confirmSheet('Finance '+label+' upgrade?','Adds '+money(cost)+' to facility debt (paid down with interest each year).',
+    ()=>{if(applyFacilityUpgrade(t,key,true)){render();toast(label+' upgraded on credit');}});
+  row.append(buy,credit);d.append(row);
+  return d;
 }
 
 /* ============================================================
@@ -2052,18 +2293,46 @@ function coachRow(c,t){
   return row;
 }
 function renderCoaches(v,t){
+  const manage=canManage();
   v.append(el('div','card',`<div class="kv"><span class="k">Total payroll</span><span class="cond" style="font-size:17px">${money(t.payroll)}</span></div>
-    <div class="kv"><span class="k">Operating budget</span><span class="cond" style="font-size:17px">${money(t.budget)}</span></div>`));
-  const coords=t.staff.filter(c=>c.tier==='coord'), extra=t.staff.filter(c=>c.tier!=='coord');
+    <div class="kv"><span class="k">Operating budget</span><span class="cond ${t.budget<0?'bad':''}" style="font-size:17px">${money(t.budget)}</span></div>`));
+  const extra=t.staff.filter(c=>c.tier!=='coord');
   v.append(el('h2','sec','Coordinators'));
-  coords.forEach(c=>v.append(coachRow(c,t)));
+  // coordinators are fixed slots: show the coach, or a vacancy row that must be filled
+  COORD_ROLES.forEach(([code,title,side])=>{
+    const c=t.staff.find(x=>x.role===code&&x.tier==='coord');
+    if(c)v.append(coachRow(c,t));
+    else v.append(vacancyRow(t,code,title,'coord',manage));
+  });
   const ah=el('div','row spread');ah.style.margin='18px 2px 8px';
   ah.innerHTML=`<span class="cond" style="font-size:15px;font-weight:700;letter-spacing:.06em">ADDITIONAL COACHES <span class="dim" style="font-size:12px">(${extra.length})</span></span>`;
   v.append(ah);
   v.append(el('div','hint','Position coaches boost their group’s overall — for a price.'));
-  extra.forEach(c=>v.append(coachRow(c,t)));
-  v.append(el('div','hint center','Hiring, firing, and the coaching carousel arrive in a later phase.'));
+  POS_COACHES.forEach(([code,title])=>{
+    const c=t.staff.find(x=>x.role===code&&x.tier==='pos');
+    if(c)v.append(coachRow(c,t));
+    else v.append(vacancyRow(t,code,title,'pos',manage));
+  });
+  // coaching carousel — the free-agent market
+  if(manage){
+    const open=el('button','btn line','Open the coaching carousel →');open.style.marginTop='14px';open.dataset.tid='open-carousel';
+    open.onclick=()=>carouselSheet(t);
+    v.append(open);
+    const vac=vacantCoordSlots(t);
+    if(vac.length)v.append(el('div','hint center','⚠ '+vac.length+' coordinator slot'+(vac.length===1?'':'s')+' vacant — fill before kickoff.'));
+  }else{
+    v.append(el('div','hint center','Hire and fire in the preseason or offseason.'));
+  }
   v.style.paddingBottom='10px';
+}
+function vacancyRow(t,code,title,tier,manage){
+  const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=code;row.dataset.tid='vacancy-'+code;
+  row.innerHTML=`<div class="ovr" style="opacity:.4">—</div>
+    <div style="flex:1"><div class="nm dim">${title}</div>
+    <div class="meta ${tier==='coord'?'bad':'dim'}">${tier==='coord'?'VACANT — must fill':'Vacant (no boost)'}</div></div>
+    <div class="tag ${tier==='coord'?'accent':''}">Hire</div>`;
+  row.onclick=()=>{if(!manage){toast('Hire in the offseason/preseason');return;}carouselSheet(t,code);};
+  return row;
 }
 function coachSheet(c,t){
   const body=el('div');const f={};
@@ -2077,10 +2346,61 @@ function coachSheet(c,t){
   save.onclick=()=>{if(f.sal){c.salary=Math.max(60000,Math.round(+f.sal));
     t.payroll=t.staff.reduce((s,x)=>s+x.salary,0);autosave();}closeSheet();render();toast('Salary updated');};
   body.append(save);
-  const hint=el('div','hint');hint.style.marginTop='12px';
-  hint.textContent='Hiring, firing, and the coaching carousel arrive in a later phase.';
-  body.append(hint);
+  if(canManage()){
+    const bo=buyoutCost(c);
+    const fire=el('button','btn danger','Fire · buyout '+money(bo));fire.style.marginTop='9px';fire.dataset.tid='fire-coach';
+    fire.onclick=()=>confirmSheet('Fire '+c.name+'?',
+      (c.tier==='coord'?'Opens a coordinator vacancy you must refill before kickoff. ':'You lose this group’s boost. ')+'Buyout: '+money(bo)+'.',
+      ()=>{if(fireCoach(t,c)){render();toast(c.name+' let go');}else render();});
+    body.append(fire);
+  }else{
+    const hint=el('div','hint');hint.style.marginTop='12px';hint.textContent='Fire/replace in the preseason or offseason.';body.append(hint);
+  }
   openSheet(c.name,body);
+}
+// The free-agent coach market. If `slotRole` is given, pre-filter to candidates for that slot.
+function carouselSheet(t,slotRole){
+  ensureCoachMarket();
+  const body=el('div');body.dataset.tid='carousel-sheet';
+  body.append(el('div','hint','Free agents on the market. Hiring pays a signing fee from your budget and adds salary to payroll.'));
+  body.append(el('div','card',`<div class="kv"><span class="k">Budget</span><span class="cond ${t.budget<0?'bad':''}" style="font-size:16px">${money(t.budget)}</span></div>
+    <div class="kv"><span class="k">Payroll</span><span class="cond" style="font-size:16px">${money(t.payroll)}</span></div>`));
+  // filter chips
+  let filter=slotRole?(COORD_ROLES.find(c=>c[0]===slotRole)?'coord':'pos'):'all';
+  const listWrap=el('div');
+  function draw(){
+    listWrap.innerHTML='';
+    let cands=[...S.coachMarket];
+    if(slotRole){
+      const isCoord=!!COORD_ROLES.find(c=>c[0]===slotRole);
+      cands=cands.filter(c=>isCoord?(c.tier==='coord'):(c.role===slotRole));
+    }else if(filter!=='all')cands=cands.filter(c=>filter==='coord'?c.tier==='coord':c.tier==='pos');
+    cands.sort((a,b)=>b.rating-a.rating);
+    if(!cands.length){listWrap.append(el('div','empty','No matching free agents right now.'));return;}
+    cands.slice(0,40).forEach(c=>{
+      const fee=hireCost(c);
+      const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=c.id;
+      row.innerHTML=`<div class="ovr ${c.rating>=80?'elite':''}">${c.rating}</div>
+        <div style="flex:1"><div class="nm">${c.name}</div>
+        <div class="meta">${c.title} · ${money(c.salary)}/yr · +${c.boost} boost</div></div>
+        <div class="tag accent" style="flex:none">Hire ${money(fee)}</div>`;
+      row.onclick=()=>{
+        const role=c.tier==='coord'?(slotRole&&COORD_ROLES.find(x=>x[0]===slotRole)?slotRole:c.role):c.role;
+        if(hireCoach(t,c,role)){closeSheet();render();toast('Hired '+c.name);}
+      };
+      listWrap.append(row);
+    });
+  }
+  if(!slotRole){
+    const tabs=el('div','tabs');tabs.style.marginBottom='10px';
+    [['all','All'],['coord','Coordinators'],['pos','Position']].forEach(([k,l])=>{
+      const b=el('button',filter===k?'on':'',l);b.onclick=()=>{filter=k;[...tabs.children].forEach(x=>x.classList.remove('on'));b.classList.add('on');draw();};
+      tabs.append(b);
+    });
+    body.append(tabs);
+  }
+  body.append(listWrap);draw();
+  openSheet(slotRole?('Hire — '+(COORD_ROLES.find(c=>c[0]===slotRole)||POS_COACHES.find(c=>c[0]===slotRole)||['',''])[1]):'Coaching Carousel',body);
 }
 
 /* ============================================================

@@ -55,11 +55,15 @@ plain static files so Pages still serves it with zero config.
   kickoff). Broken playing-time promises risk a transfer out (save v7). See "Phase 5 rollover
   design" below. *(Originally scoped as the whole offseason; the rest of that work was split out
   into Phases 6–9 below once rollover landed.)*
-- **Phase 6 — Program building (staff & money).** The GM layer. **Coaching carousel** (hire/fire
-  coordinators + position coaches, AI poaching, openings to fill), **finances depth**, and
-  **facility upgrades** (spend `budget` to raise the 1–10 `fac` levels). Cohesive because hiring
-  and upgrades both spend money and both feed recruiting/development. Today only *salary editing*
-  works. See "Phase 6 kickoff — implementation plan" below for the full build order + gates.
+- **Phase 6 — Program building (staff & money).** ✅ DONE. The GM layer. A **finances loop**
+  (`resolveFinances` settles every team at rollover: conference/prestige/stadium revenue +
+  performance bonus − payroll − debt service → `budget`, which can go **negative**), **facility
+  upgrades** (`applyFacilityUpgrade` spends `budget` or finances onto `facilityDebt` to raise the
+  1–10 `fac` levels; `fac.nil`/`academics` now feed `recruitFit`), and a **coaching carousel**
+  (`genCoachMarket` free-agent pool, `advanceCoachCarousel` AI churn + poaching of player
+  coordinators; hire/fire with `buyoutCost`/`hireCost`; coordinator vacancies gate kickoff). New
+  pure `ECONOMY ENGINE` block + `npm run econlab` (24 checks); save **v8** (`S.coachMarket`,
+  `team.lastFinances`). See "Phase 6 kickoff — implementation plan" below.
 - **Phase 7 — Development & coach identity depth.** Make growth + identity mechanically rich:
   the **deeper player development** model (side-specific **Off/Def Genius** wiring, Analyst/coach
   signals feeding growth, surfacing growth in the roster UI beyond read-only grades), remaining
@@ -498,11 +502,12 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **7**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **8**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
-  (Phase 5 rollover). Each step re-derives ratings/ranks where needed.
+  (Phase 5 rollover); v7→v8 backfills `S.coachMarket=null` (created at the first offseason) +
+  per-team `lastFinances=null` (Phase 6 economy). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into

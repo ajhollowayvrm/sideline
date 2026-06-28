@@ -423,7 +423,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors (v7) survive reload', seasonPersist.version === 7 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 8 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -439,13 +439,15 @@ function startServer() {
   await page.waitForTimeout(150);
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
-  const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting }));
-  check('Migration: v1 save upgrades to current version (v7)', mig.v === 7, 'version=' + mig.v);
+  const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances }));
+  check('Migration: v1 save upgrades to current version (v8)', mig.v === 8, 'version=' + mig.v);
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
   check('Migration: staff backfilled (tier/boost)', mig.tier != null && mig.boost != null, JSON.stringify({ tier: mig.tier, boost: mig.boost }));
   check('Migration: season fields backfilled (records, null schedule)', mig.rec && mig.rec.w === 0 && mig.rec.l === 0 && mig.sched === null, JSON.stringify(mig.rec));
   check('Migration: weekly honors backfilled (empty array)', Array.isArray(mig.honors) && mig.honors.length === 0, JSON.stringify(mig.honors));
   check('Migration: recruiting backfilled (null until kickoff)', mig.recruiting === null, JSON.stringify(mig.recruiting));
+  check('Migration: coach market backfilled (null until offseason, v7→v8)', mig.coachMarket === null, JSON.stringify(mig.coachMarket));
+  check('Migration: lastFinances backfilled (null until settled, v7→v8)', mig.lastFinances === null, JSON.stringify(mig.lastFinances));
 
   // ---------- DELETE with confirm ----------
   await page.goto(BASE, { waitUntil: 'networkidle' }); // clean reload (no ?reset)
@@ -527,13 +529,14 @@ function startServer() {
       myFresh: t.roster.filter(p => p.fromRecruit).length, myFR: t.roster.filter(p => p.yr === 'FR').length,
       myRosterN: t.roster.length, sizesOk: S.world.teams.every(x => x.roster.length >= 78 && x.roster.length <= 96),
       statPlayers: S.world.teams.reduce((n, x) => n + x.roster.filter(p => p.gs).length, 0),
-      report: S.offseasonReport, noOldSR: t.roster.every(p => p.fromRecruit || p.yr !== undefined)
+      report: S.offseasonReport, noOldSR: t.roster.every(p => p.fromRecruit || p.yr !== undefined),
+      marketSize: S.coachMarket ? S.coachMarket.length : 0
     };
   });
   check('Rollover: advances to the next calendar year', roPost.year === roPre.year + 1, `${roPre.year} → ${roPost.year}`);
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
-  check('Rollover: save version bumped to 7', roPost.version === 7, 'v' + roPost.version);
+  check('Rollover: save version bumped to 8', roPost.version === 8, 'v' + roPost.version);
   check('Rollover: signed class enrolled as freshmen', roPost.myFresh === roPre.myClass && roPost.myFresh > 0, `${roPost.myFresh} enrolled (class ${roPre.myClass})`);
   check('Rollover: roster holds at ~84 league-wide', roPost.sizesOk && roPost.myRosterN >= 78 && roPost.myRosterN <= 96, 'mine ' + roPost.myRosterN);
   check('Rollover: last season stats wiped (no p.gs carryover)', roPost.statPlayers === 0, roPost.statPlayers + ' players still carry stats');
@@ -542,6 +545,51 @@ function startServer() {
   const recapTxt = await page.evaluate(() => document.querySelector('.view').innerText);
   check('Rollover: Home shows the offseason recap card', /offseason recap/i.test(recapTxt) && /freshmen on roster/i.test(recapTxt));
   await shot(page, '26-offseason-rollover.png');
+
+  // ---------- PHASE 6: program management (finances + facilities + coaching carousel) ----------
+  // We're in the post-rollover Preseason. Finances settled at rollover (lastFinances present + a
+  // refreshed coach market). Drive a facility upgrade, then fire + replace a coordinator, asserting
+  // budget/payroll/ratings move and no coordinator slot is left vacant before kickoff.
+  check('Phase 6: coach market refreshed at rollover', roPost.marketSize > 0, roPost.marketSize + ' free agents');
+  check('Phase 6: finances settled at rollover (lastFinances present)', roPost.report && roPost.report.finances != null);
+  await page.evaluate(() => { controlled().budget = 500e6; });   // fund the program so spend mechanics aren't gated by balance
+  await page.evaluate(() => { UI.view = 'program'; render(); });
+  await page.waitForTimeout(120);
+  const facPre = await page.evaluate(() => { const t = controlled(); return { budget: t.budget, strength: t.fac.strength, def: t.ratings.def }; });
+  await page.locator('[data-tid="upg-strength"]').click();
+  await page.waitForTimeout(150);
+  const facPost = await page.evaluate(() => { const t = controlled(); return { budget: t.budget, strength: t.fac.strength, def: t.ratings.def }; });
+  check('Phase 6: facility upgrade raises the level', facPost.strength === facPre.strength + 1, `${facPre.strength}→${facPost.strength}`);
+  check('Phase 6: facility upgrade spends budget', facPost.budget < facPre.budget, `${(facPre.budget / 1e6).toFixed(0)}M→${(facPost.budget / 1e6).toFixed(0)}M`);
+  await shot(page, '27-program-facilities.png');
+  // fire the OC, then hire a replacement from the carousel
+  await page.evaluate(() => { UI.view = 'team'; UI.tab = 'coaches'; render(); });
+  await page.waitForTimeout(120);
+  const coachPre = await page.evaluate(() => { const t = controlled(); return { payroll: t.payroll, off: t.ratings.off, staffN: t.staff.length }; });
+  await page.locator('.lrow[data-id="OC"]').first().click();   // open the OC coach sheet
+  await page.waitForTimeout(120);
+  await page.locator('[data-tid="fire-coach"]').click();
+  await page.waitForTimeout(120);
+  await page.getByRole('button', { name: /Yes, continue/ }).click();
+  await page.waitForTimeout(150);
+  const fired = await page.evaluate(() => { const t = controlled(); return { hasOC: !!t.staff.find(c => c.role === 'OC' && c.tier === 'coord'), payroll: t.payroll, payrollOk: t.payroll === t.staff.reduce((s, x) => s + x.salary, 0) }; });
+  check('Phase 6: firing a coordinator opens a vacancy', !fired.hasOC);
+  check('Phase 6: payroll == Σ salaries after firing', fired.payrollOk);
+  // hire a replacement via the vacancy row → carousel
+  await page.locator('[data-tid="vacancy-OC"]').click();
+  await page.waitForTimeout(150);
+  await page.locator('[data-tid="carousel-sheet"] .lrow').first().click();
+  await page.waitForTimeout(150);
+  const hired = await page.evaluate(() => { const t = controlled(); return { hasOC: !!t.staff.find(c => c.role === 'OC' && c.tier === 'coord'), payrollOk: t.payroll === t.staff.reduce((s, x) => s + x.salary, 0), off: t.ratings.off }; });
+  check('Phase 6: hiring fills the coordinator vacancy', hired.hasOC);
+  check('Phase 6: payroll == Σ salaries after hiring', hired.payrollOk);
+  await shot(page, '28-coaching-carousel.png');
+  // backstop: fill any coordinator slot a rollover poach may have opened, so kickoff isn't gated
+  await page.evaluate(() => { const t = controlled(); vacantCoordSlots(t).forEach(([code]) => { ensureCoachMarket(); const c = S.coachMarket.find(x => x.tier === 'coord'); if (c) hireCoach(t, c, code); }); });
+  await page.waitForTimeout(100);
+
+  await page.locator('[data-tid="nav-home"]').click();
+  await page.waitForTimeout(120);
   await page.locator('[data-tid="adv-clock"]').click();   // "Kick off the season →"
   await page.waitForTimeout(180);
   const next = await page.evaluate(() => ({ phase: S.phase, week: S.week, sched: !!S.schedule, pool: S.recruiting ? S.recruiting.pool.length : 0 }));
