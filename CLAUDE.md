@@ -60,7 +60,9 @@ plain static files so Pages still serves it with zero config.
 
 ### Team page — two tabs
 - **Roster:** manage starters & depth, mark a position as needing recruits, promote/demote
-  team captains, glance info (name, age, stats this year).
+  team captains, glance info (name, age, stats this year). Each player shows a **Ceiling**
+  (scouted potential tier — Depth…Superstar…Generational) and a **Development** stage
+  (Raw/Developing/Polished/Maxed). Both are read-only reads; actual growth is Phase 5.
 - **Coaches:** two sections. **Coordinators** (OC/DC/STC) are fixed slots — one per side,
   always filled. **Additional Coaches** are position coaches; each carries a small OVR
   *boost* to its position group that is applied live to `ratings` (see Team object).
@@ -142,6 +144,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 ```
 { id, fn, ln, pos, yr, age, st, stars, ov, pot, cap, spd, str, awr, so }
 //   so = depth order within position (0 = starter); cap = captain
+//   pot = TRUE ceiling (0..99). The UI never shows it raw — `scoutedCeiling(p)` renders a
+//   fuzzy tier/band whose uncertainty shrinks with scouting confidence (age/experience now;
+//   real scouting in Phase 4). `devStage(p)` buckets the ov→pot gap (Raw…Maxed).
 ```
 
 Positions: `QB RB WR TE OT OG C  DE DT LB CB S  K P`.
@@ -212,6 +217,9 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Coach hire/fire (→ Phase 5); only salary editing works now.
 - History/archetype mechanical effects (wire in with their systems).
 - Player "stats this year" show "— preseason —" until the sim exists.
+- Player development is **read-only grades** only (Ceiling/Development); actual ov→pot
+  growth over seasons is Phase 5. Scouting fog is currently a fixed function of age/class;
+  real scouting that sharpens it is Phase 4.
 
 ---
 
