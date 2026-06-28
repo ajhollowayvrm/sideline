@@ -39,9 +39,9 @@ plain static files so Pages still serves it with zero config.
   yet (AJ's call). See "Phase 3 sim design" below.
 - **Phase 4 — Deep recruiting.** Scouting, visits, pitches, promises, commitments.
   *Do a short design note on the recruiting loop before building.*
-- **Phase 3.5 — Watchable game + weekly honors.** Watch-then-commit play-by-play viewer for
-  the controlled team's game (with Skip), a **greatest-games replay** list, and **Player of the
-  Week** at national + per-conference scopes. See "Phase 3.5 design" below.
+- **Phase 3.5 — Watchable game + weekly honors.** ✅ DONE. Watch-then-commit play-by-play
+  viewer for the controlled team's game (Skip + Fast), a **greatest-games replay** list, and
+  **Player of the Week** at national + per-conference scopes (save v5). See "Phase 3.5 design".
 - **Phase 4 — Deep recruiting.** Scouting, visits, pitches, promises, commitments.
   *Do a short design note on the recruiting loop before building.*
 - **Phase 5 — Offseason & program.** Coaching carousel (hire/fire), player development,
@@ -90,10 +90,11 @@ survives later edits/rollover). New persisted field → **bump save to version 5
 v4→v5 backfills `S.weeklyHonors = []`. Surface on Home (this week's national POW card) and a new
 Season **"Honors"** tab (national + per-conference, by week).
 
-**Validation:** extend `npm run simlab` to assert the POW scorer picks sane positions
-(offensive POW is a skill player, defensive POW is a defender) and that honors are deterministic;
-extend `npm run qa` for the watch flow (skip commits the right result), greatest-games replay
-(replayed score == committed score), honors rendering, and v5 migration.
+**Validation (shipped):** `npm run simlab` (26 checks) asserts log-on/off parity (the log
+doesn't perturb the result) and that the POW scorer picks sane positions. `npm run qa`
+(78 checks) drives the watch flow (skip → commit gives the watched score), greatest-games
+replay (replayed score == recorded score, week unchanged), honors on Home + the Season Honors
+tab, v5 migration, and honors surviving reload.
 
 ## Planned: season awards (end of season → Phase 5)
 
@@ -346,9 +347,9 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Player development is **read-only grades** only (Ceiling/Development); actual ov→pot
   growth over seasons is Phase 5. Scouting fog is currently a fixed function of age/class;
   real scouting that sharpens it is Phase 4.
-- No **watchable** game screen yet: every game (controlled team included) is resolved
-  instantly by `simEngine`. A play-by-play viewer for your matchup is the natural Phase 3.5
-  follow-on — the engine already runs drive-by-drive, so a play log is a small extension.
+- Non-controlled games are resolved instantly by `simEngine`; only the controlled team's game
+  is watchable (watch-then-commit) or replayable (greatest games). There's no live viewer for
+  arbitrary other games — by design, so advancing a week stays fast.
 
 ---
 

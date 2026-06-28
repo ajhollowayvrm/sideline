@@ -128,6 +128,17 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   const beforeOv = w.teams[0].roster[0].ov;
   simEngine(w.teams[0], w.teams[5], 555);
   check('Engine is pure (does not mutate rosters)', w.teams[0].roster[0].ov === beforeOv);
+  // play-log parity: logging must not consume rng → identical score + box, on or off
+  const plain = simEngine(w.teams[0], w.teams[5], 12345);
+  const logged = simEngine(w.teams[0], w.teams[5], 12345, { log: true });
+  check('Play log does not perturb result (same score + box)', plain.hs === logged.hs && plain.as === logged.as && JSON.stringify(plain.box) === JSON.stringify(logged.box));
+  const lg = logged.log || [];
+  const last = lg[lg.length - 1];
+  check('Play log: non-empty, ends on Final with matching score', lg.length > 40 && last && last.kind === 'final' && last.hs === logged.hs && last.as === logged.as, `${lg.length} events, final ${last && last.hs}-${last && last.as}`);
+  // every scoring event's running score should be consistent (non-decreasing) and match the end
+  const scoreEvents = lg.filter(e => e.kind === 'score' || e.kind === 'final');
+  let mono = true; for (let i = 1; i < scoreEvents.length; i++) if (scoreEvents[i].hs < scoreEvents[i - 1].hs || scoreEvents[i].as < scoreEvents[i - 1].as) mono = false;
+  check('Play log: running score is monotonic non-decreasing', mono);
 })();
 
 // statistical realism across a full season
@@ -166,6 +177,26 @@ check('Sack leader realistic (7–22 / 12g)', sk[0].v >= 7 && sk[0].v <= 22, `${
   let pInt = 0, dInt = 0;
   R.teams.forEach(t => { const s = R.season[t.id]; for (const pid in s) { pInt += s[pid].pInt || 0; dInt += s[pid].dInt || 0; } });
   check('Box balances: league INTs thrown == league INTs caught', pInt === dInt && pInt > 0, `pInt ${pInt} / dInt ${dInt}`);
+})();
+
+// Player of the Week scorer (formula must mirror computeWeeklyHonors in index.html): the best
+// single-game offensive performance should be a skill player, the best defensive a defender.
+(function () {
+  const w = genWorld(2026);
+  const offScore = s => (s.pYds || 0) * 0.04 + (s.pTD || 0) * 4 + (s.rYds || 0) * 0.1 + (s.rTD || 0) * 6 + (s.reYds || 0) * 0.1 + (s.reTD || 0) * 6 - (s.pInt || 0) * 2;
+  const defScore = s => (s.tkl || 0) + (s.sk || 0) * 4 + (s.dInt || 0) * 6;
+  const SKILL = new Set(['QB', 'RB', 'WR', 'TE']), DEF = new Set(['DE', 'DT', 'LB', 'CB', 'S']);
+  let offSkill = 0, offTot = 0, defD = 0, defTot = 0;
+  for (let i = 0; i < 134; i++) {
+    const j = (i + 3) % 134, res = simEngine(w.teams[i], w.teams[j], (hashStr('pow' + i) ^ 7) >>> 0);
+    const byId = {}; [w.teams[i], w.teams[j]].forEach(t => t.roster.forEach(p => byId[p.id] = p));
+    let bo = null, bd = null, bos = -1, bds = -1;
+    for (const pid in res.box) { const p = byId[pid]; if (!p) continue; const o = offScore(res.box[pid]), d = defScore(res.box[pid]); if (o > bos) { bos = o; bo = p; } if (d > bds) { bds = d; bd = p; } }
+    if (bo) { offTot++; if (SKILL.has(bo.pos)) offSkill++; }
+    if (bd) { defTot++; if (DEF.has(bd.pos)) defD++; }
+  }
+  check('POW: best offensive performance is a skill player (≥98%)', offSkill / offTot >= 0.98, `${offSkill}/${offTot}`);
+  check('POW: best defensive performance is a defender (100%)', defD === defTot, `${defD}/${defTot}`);
 })();
 
 const passed = results.filter(r => r.pass).length;

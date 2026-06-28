@@ -462,6 +462,7 @@ function render(){
   if(UI.view==='browse_pick')  return renderBrowse(app,true);
   // in-game views
   applyAccent(controlled());
+  if(UI.view==='game') return renderGame(app);   // full-screen, no bottom nav (commit to exit)
   if(UI.view==='home') renderHome(app);
   if(UI.view==='team') renderTeam(app);
   if(UI.view==='season') renderSeason(app);
@@ -582,8 +583,8 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:4,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
-     week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,
+  S={version:5,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+     week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // choose a save slot
   chooseSlotSheet();
@@ -678,6 +679,10 @@ function migrateState(state){
   if((state.version||1)<4){            // Phase 3: per-player season stats (p.gs). Absence of
     state.version=4;                   // p.gs reads as "no stats yet", so no backfill needed.
   }
+  if((state.version||1)<5){            // Phase 3.5: weekly Player of the Week honors.
+    if(!Array.isArray(state.weeklyHonors))state.weeklyHonors=[];
+    state.version=5;
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -754,6 +759,7 @@ function lastGameFor(teamId){const gs=teamGames(teamId).filter(g=>g.played);retu
 function startSeason(){
   S.schedule=genSchedule(S.world,S.seed);
   S.world.teams.forEach(t=>t.rec=emptyRec());
+  S.weeklyHonors=[];
   S.phase='Regular Season';S.week=1;S.lastPlayedWeek=0;
   recomputeRanks(S.world);
   setWeeklyTask();
@@ -790,9 +796,13 @@ function gamePools(team){
 function wpick(pool,r){ let tot=0;for(const e of pool)tot+=e[1]; if(tot<=0)return null;
   let x=r()*tot; for(const e of pool){x-=e[1];if(x<0)return e[0];} return pool[pool.length-1][0]; }
 
-function simEngine(home,away,seed){
+// opts.log → also return res.log, a flat list of {q,team,kind,text,dd,hs,as,big} events for the
+// watchable viewer. Logging pushes strings only (no rng), so the score + box are identical with
+// it on or off — a "watch" is a faithful replay of the committed result, never a re-roll.
+function simEngine(home,away,seed,opts){
   const r=rng(seed>>>0);
   const box={};
+  const log=opts&&opts.log?[]:null;
   const add=(id,k,v)=>{ if(!id)return; (box[id]=box[id]||{gp:1})[k]=(box[id][k]||0)+(v==null?1:v); };
   const pools={[home.id]:gamePools(home),[away.id]:gamePools(away)};
   const score={[home.id]:0,[away.id]:0};
@@ -801,6 +811,10 @@ function simEngine(home,away,seed){
   // underdogs steal games and keeps the favorite from winning ~every time.
   const form={[home.id]:(r()+r()+r()-1.5)*8, [away.id]:(r()+r()+r()-1.5)*8};
   const flipTo=spot=>100-clamp(spot,1,99);                 // mirror a spot for the opponent
+  const nm=p=>p?((p.fn?p.fn[0]+'. ':'')+(p.ln||p.pos||'')).trim():'';
+  const fpos=l=>l===50?'midfield':(l<50?'own ':'opp ')+(l<50?l:100-l);
+  const L=(team,kind,text,dd,big)=>{ if(log)log.push({q:L._q,team:team?team.id:null,kind,text,dd:dd||'',hs:score[home.id],as:score[away.id],big:!!big}); };
+  L._q=1;
 
   // One possession, start at `startLos` (offense's own yard line). Returns the spot the
   // opponent takes over (mutates `score` + `box`); ~drive time charged to the caller's clock.
@@ -808,57 +822,62 @@ function simEngine(home,away,seed){
     const oP=pools[off.id], dP=pools[def.id];
     const adv=(off.ratings.off-def.ratings.def)+(off===home?HFA:0)+form[off.id]-form[def.id];
     let los=startLos, down=1, togo=10, time=0;
+    L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los));
     while(true){
+      const dd=(down)+' & '+(togo>=(100-los)?'goal':togo);
       // ---- 4th down: kick or go ----
       if(down===4){
         const fgDist=(100-los)+17, inFgRange=fgDist<=57, shortPlus=los>=58&&togo<=2;
         if(inFgRange && !(shortPlus && r()<0.45)){          // field-goal attempt
           time+=8; add(oP.k&&oP.k.id,'fga');
-          if(r()<clamp(0.965-(fgDist-20)*0.013,0.40,0.985)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; return {nextLos:25,time}; }
-          return {nextLos:flipTo(los),time};
+          if(r()<clamp(0.965-(fgDist-20)*0.013,0.40,0.985)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; L(off,'score',nm(oP.k)+' '+fgDist+'-yd field goal is GOOD',dd,true); return {nextLos:25,time}; }
+          L(off,'play',nm(oP.k)+' '+fgDist+'-yd field goal MISSED',dd); return {nextLos:flipTo(los),time};
         } else if(!(shortPlus && r()<0.55)){                // punt (net ~42; into EZ → touchback @20)
-          time+=10; return {nextLos:clamp(flipTo(los+ri(r,38,46)),20,99),time};
+          time+=10; L(off,'play','Punt',dd); return {nextLos:clamp(flipTo(los+ri(r,38,46)),20,99),time};
         } // else: go for it → fall through and run a normal play
       }
 
       // ---- run / pass ----
       const passProb=clamp(0.45+(togo>7?0.18:togo<3?-0.18:0)+(down>=3?0.17:0)+adv*0.003,0.12,0.92);
-      let gain=0, turnover=false, scored=false, tackled=true;
+      let gain=0, turnover=false, scored=false, tackled=true, txt='';
 
       if(r()<passProb){                                     // dropback (sacks aren't pass attempts)
         if(r()<clamp(0.062-adv*0.0012,0.02,0.11)){          // sack
-          gain=-ri(r,4,9); time+=36; const s=wpick(dP.rush4,r); add(s&&s.id,'sk');
+          gain=-ri(r,4,9); time+=36; const s=wpick(dP.rush4,r); add(s&&s.id,'sk'); txt=nm(oP.qb)+' sacked by '+nm(s)+' for '+gain;
         } else if(r()<clamp(0.615+adv*0.007,0.32,0.83)){    // completion
           const rec=wpick(oP.recv,r);
           gain=Math.max(-3,Math.round((2.2+r()*7.5)+(r()<0.18?r()*42:0)+adv*0.06));
           add(oP.qb&&oP.qb.id,'pAtt'); add(oP.qb&&oP.qb.id,'pCmp'); add(oP.qb&&oP.qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain);
-          time+=(r()<0.28?14:34);
+          time+=(r()<0.28?14:34); txt=nm(oP.qb)+' pass to '+nm(rec)+' for '+gain;
           if(los+gain>=100){ scored=true; add(oP.qb&&oP.qb.id,'pTD'); add(rec&&rec.id,'reTD'); }
         } else {                                            // incomplete (maybe picked)
-          time+=6; tackled=false; add(oP.qb&&oP.qb.id,'pAtt');
-          if(r()<clamp(0.030-adv*0.0008,0.008,0.06)){ turnover=true; add(oP.qb&&oP.qb.id,'pInt'); const h=wpick(dP.hawk,r); add(h&&h.id,'dInt'); }
+          time+=6; tackled=false; add(oP.qb&&oP.qb.id,'pAtt'); txt=nm(oP.qb)+' incomplete';
+          if(r()<clamp(0.030-adv*0.0008,0.008,0.06)){ turnover=true; add(oP.qb&&oP.qb.id,'pInt'); const h=wpick(dP.hawk,r); add(h&&h.id,'dInt'); txt=nm(oP.qb)+' INTERCEPTED by '+nm(h); }
         }
       } else {                                              // run
         const rb=wpick(oP.rush,r)||oP.qb;
         gain=Math.max(-4,Math.round((2.7+r()*4.1)+(r()<0.11?r()*30:0)+adv*0.035));
-        time+=36; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain);
+        time+=36; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); txt=nm(rb)+' run for '+gain;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
-        if(!scored && r()<0.011){ turnover=true; }          // fumble lost
+        if(!scored && r()<0.011){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
       }
 
       // ---- resolve the play ----
       if(scored){
         score[off.id]+=6;
-        add(oP.k&&oP.k.id,'xpa'); if(r()<0.965){ add(oP.k&&oP.k.id,'xpm'); score[off.id]+=1; }
+        add(oP.k&&oP.k.id,'xpa'); const xp=r()<0.965; if(xp){ add(oP.k&&oP.k.id,'xpm'); score[off.id]+=1; }
+        L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true);
         return {nextLos:25,time};
       }
       if(tackled){ const t=wpick(dP.tkl,r); add(t&&t.id,'tkl'); }
-      if(turnover){ return {nextLos:flipTo(clamp(los+gain,1,99)),time}; }
+      if(turnover){ L(off,'play',txt,dd,true); return {nextLos:flipTo(clamp(los+gain,1,99)),time}; }
 
+      const wasFirst=togo-gain<=0;
       los=clamp(los+gain,1,99); togo-=gain;
+      L(off,'play',txt+(wasFirst?' — 1ST DOWN':''),dd);
       if(togo<=0){ down=1; togo=10; }                       // first down
-      else if(++down>4){ return {nextLos:flipTo(los),time}; } // turnover on downs
+      else if(++down>4){ L(off,'play','Turnover on downs',dd); return {nextLos:flipTo(los),time}; }
     }
   }
 
@@ -866,6 +885,7 @@ function simEngine(home,away,seed){
   // final seconds — symmetric, and the scoreboard impact is negligible).
   let clock=3600, off=r()<0.5?home:away, def=off===home?away:home, startLos=25;
   while(clock>0){
+    L._q=clamp(Math.floor((3600-clock)/900)+1,1,4);
     const d=playDrive(off,def,startLos);
     clock-=Math.max(d.time,12); startLos=d.nextLos;
     const swap=off; off=def; def=swap;
@@ -873,10 +893,12 @@ function simEngine(home,away,seed){
   // overtime: each team a possession from the opponent's 25 (los 75) until someone leads.
   let ot=0;
   while(score[home.id]===score[away.id] && ot++<25){
+    L._q='OT'+ot;
     playDrive(home,away,75); playDrive(away,home,75);
   }
+  L(null,'final','Final',null,true);
 
-  return { hs:score[home.id], as:score[away.id], box };
+  return { hs:score[home.id], as:score[away.id], box, log };
 }
 // === SIM ENGINE (Phase 3) END ===
 
@@ -907,11 +929,38 @@ function applyResult(g,box){
   applyStats(g,box);
 }
 function advanceWeek(){
-  S.schedule.games.filter(g=>g.week===S.week&&!g.played).forEach(g=>{applyResult(g,simGame(g));});
-  S.lastPlayedWeek=S.week;S.week++;
+  const wk=S.week;
+  const boxes=S.schedule.games.filter(g=>g.week===wk&&!g.played).map(g=>{const box=simGame(g);applyResult(g,box);return {g,box};});
+  computeWeeklyHonors(wk,boxes);
+  S.lastPlayedWeek=wk;S.week++;
   recomputeRanks(S.world);
   if(S.week>S.schedule.weeks)endSeason();else setWeeklyTask();
   autosave();
+}
+// Player of the Week from the week's per-game boxes — Offensive & Defensive, at national scope
+// and one per conference. Stored lean in S.weeklyHonors with a snapshotted stat line so the
+// honor survives later roster edits / season rollover.
+function honorLine(s,side){
+  if(side==='def'){const d=[];if(s.tkl)d.push(s.tkl+' tkl');if(s.sk)d.push(s.sk+' sk');if(s.dInt)d.push(s.dInt+' INT');return d.join(', ')||'—';}
+  const p=[];
+  if(s.pYds||s.pTD)p.push(`${s.pYds||0} pass yd${s.pTD?', '+s.pTD+' TD':''}${s.pInt?', '+s.pInt+' INT':''}`);
+  if(s.rYds||s.rTD)p.push(`${s.rYds||0} rush yd${s.rTD?', '+s.rTD+' TD':''}`);
+  if(s.reYds||s.reTD)p.push(`${s.rec||0} rec, ${s.reYds||0} yd${s.reTD?', '+s.reTD+' TD':''}`);
+  return p.join(' · ')||'—';
+}
+function computeWeeklyHonors(week,boxes){
+  const cand=[];
+  boxes.forEach(({g,box})=>[g.home,g.away].forEach(tid=>{const t=teamById(tid);
+    t.roster.forEach(p=>{const s=box[p.id];if(!s)return;
+      const off=(s.pYds||0)*0.04+(s.pTD||0)*4+(s.rYds||0)*0.1+(s.rTD||0)*6+(s.reYds||0)*0.1+(s.reTD||0)*6-(s.pInt||0)*2;
+      const def=(s.tkl||0)+(s.sk||0)*4+(s.dInt||0)*6;
+      cand.push({p,t,conf:t.conf,off,def,s});});}));
+  const bestBy=(arr,key)=>arr.reduce((b,c)=>(!b||c[key]>b[key])?c:b,null);
+  const mk=(c,side)=>c?{pid:c.p.id,teamId:c.t.id,name:c.p.fn+' '+c.p.ln,pos:c.p.pos,abbr:c.t.abbr,color:c.t.color,line:honorLine(c.s,side)}:null;
+  const pick=arr=>({off:mk(bestBy(arr,'off'),'off'),def:mk(bestBy(arr,'def'),'def')});
+  const byConf={};[...new Set(cand.map(c=>c.conf))].forEach(cf=>byConf[cf]=pick(cand.filter(c=>c.conf===cf)));
+  S.weeklyHonors=S.weeklyHonors||[];
+  S.weeklyHonors.push({week,national:pick(cand),byConf});
 }
 function setWeeklyTask(){
   const t=controlled(),g=teamGame(t.id,S.week);
@@ -935,6 +984,90 @@ function gameView(g,teamId){
   return {opp,home,res,cls,my,th,week:g.week,played:g.played};
 }
 function recStr(t){return t.rec?t.rec.w+'–'+t.rec.l:'';}
+// One Player-of-the-Week row (handles a null honoree gracefully).
+function honorRowHTML(label,h){
+  if(!h)return `<div class="row spread" style="margin:6px 0"><span class="meta dim">${label}</span><span class="meta dim">—</span></div>`;
+  return `<div class="row spread" style="margin:6px 0;gap:8px">
+    <div class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${h.color};flex:none"></span>
+      <div style="min-width:0"><div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${h.name} <span class="dim" style="font-weight:400">${h.pos} · ${h.abbr}</span></div>
+      <div class="meta dim">${h.line}</div></div></div>
+    <span class="tag accent" style="font-size:10px;flex:none">${label}</span></div>`;
+}
+
+/* ============================================================
+   WATCHABLE GAME — animate simEngine's play log, then commit.
+   Two entry points: openGameViewer (your week → watch-then-commit) and openGameReplay
+   (a decided game → replay only). Both animate the SAME deterministic log, so the watched
+   score always equals the committed/recorded score.
+   ============================================================ */
+let gameTimer=null;
+function buildGameLog(gameId){
+  const g=S.schedule.games.find(x=>x.id===gameId); if(!g)return null;
+  const home=teamById(g.home),away=teamById(g.away);
+  const res=simEngine(home,away,(hashStr(g.id)^(S.seed>>>0))>>>0,{log:true});
+  return {gameId,home:g.home,away:g.away,log:res.log,hs:res.hs,as:res.as,idx:0,fast:false,done:false};
+}
+function openGameViewer(g){ UI.game=Object.assign(buildGameLog(g.id)||{},{replay:false}); UI.view='game'; render(); scheduleGameTick(); }
+function openGameReplay(gameId){ const G=buildGameLog(gameId); if(!G)return; G.replay=true; UI.game=G; UI.view='game'; render(); scheduleGameTick(); }
+function curGameScore(G){const e=G.idx>0?G.log[G.idx-1]:null;return e?{hs:e.hs,as:e.as,q:e.q}:{hs:0,as:0,q:1};}
+function qLabel(q){return (''+q).startsWith('OT')?q:'Q'+q;}
+function gameEventEl(e){
+  if(e.kind==='final')return null;
+  const line=el('div');
+  if(e.kind==='drive'){line.className='meta dim';line.style.cssText='margin:11px 2px 3px;font-weight:700;letter-spacing:.04em';line.textContent=e.text;}
+  else if(e.kind==='score'){line.className='lrow';line.style.cssText='box-shadow:inset 0 0 0 1px var(--accent);font-weight:700;margin:4px 0';line.innerHTML=`<div style="flex:1;font-size:13px">${e.text}</div>`;}
+  else{line.className='row';line.style.cssText='gap:8px;margin:3px 2px';line.innerHTML=`<span class="meta dim" style="flex:none;width:46px">${e.dd||''}</span><span style="flex:1;font-size:13px">${e.text}</span>`;}
+  return line;
+}
+function applyGameEvent(e){
+  const hs=$('#g-hs'),as=$('#g-as'),q=$('#g-q');
+  if(hs)hs.textContent=e.hs; if(as)as.textContent=e.as; if(q&&e.q)q.textContent=qLabel(e.q);
+  const ln=gameEventEl(e),feed=$('#g-feed'); if(ln&&feed){feed.append(ln);feed.scrollTop=feed.scrollHeight;}
+}
+function scheduleGameTick(){
+  const G=UI.game; if(!G||G.done)return;
+  if(G.idx>=G.log.length){gameDone();return;}
+  const e=G.log[G.idx];
+  const base=e.kind==='score'?760:e.kind==='drive'?260:e.kind==='final'?10:230;
+  gameTimer=setTimeout(()=>{ if(UI.view!=='game'||!UI.game){gameTimer=null;return;} applyGameEvent(e); UI.game.idx++; scheduleGameTick(); }, G.fast?Math.max(35,base/4):base);
+}
+function gameDone(){ if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} if(UI.game){UI.game.done=true;render();} }
+function skipGame(){ const G=UI.game; if(!G)return; if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} G.idx=G.log.length; G.done=true; render(); }
+function finishGame(){
+  if(gameTimer){clearTimeout(gameTimer);gameTimer=null;}
+  const G=UI.game; if(!G)return; const replay=G.replay, gid=G.gameId; UI.game=null;
+  if(replay){ UI.view='season'; render(); return; }
+  UI.view='home'; advanceWeek();
+  const g=S.schedule.games.find(x=>x.id===gid); render();
+  if(g){const gv=gameView(g,controlled().id);toast((gv.cls==='good'?'Won ':'Lost ')+gv.res.slice(2)+(gv.home?' vs ':' @ ')+gv.opp.abbr);}
+}
+function renderGame(app){
+  const G=UI.game; if(!G){UI.view='home';return renderHome(app);}
+  const home=teamById(G.home),away=teamById(G.away),t=controlled(),cs=curGameScore(G);
+  const v=el('div','view');v.style.paddingBottom='10px';
+  const sb=el('div','card');sb.dataset.tid='game-board';sb.style.cssText='position:sticky;top:0;z-index:5';
+  sb.innerHTML=`<div class="row spread" style="align-items:center">
+      <div class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${home.color};flex:none"></span><div class="nm">${home.abbr}${home.id===t.id?' <span class="cap">YOU</span>':''}</div></div>
+      <div class="cond" style="font-size:30px;font-weight:800;white-space:nowrap"><span id="g-hs">${cs.hs}</span> – <span id="g-as">${cs.as}</span></div>
+      <div class="row" style="gap:8px;min-width:0;justify-content:flex-end"><div class="nm">${away.abbr}${away.id===t.id?' <span class="cap">YOU</span>':''}</div><span class="dot" style="background:${away.color};flex:none"></span></div></div>
+    <div class="meta dim" style="text-align:center;margin-top:6px"><span id="g-q">${qLabel(cs.q)}</span> · ${G.replay?'Replay':'Live'} · ${home.name} vs ${away.name}</div>`;
+  v.append(sb);
+  const feed=el('div');feed.id='g-feed';feed.style.cssText='max-height:46vh;overflow-y:auto;margin-top:12px';
+  for(let i=0;i<G.idx;i++){const ln=gameEventEl(G.log[i]);if(ln)feed.append(ln);}
+  v.append(feed);
+  const ctr=el('div','btn-row');ctr.style.marginTop='14px';
+  if(G.done){
+    const cont=el('button','btn',G.replay?'Done':'Continue → commit week');cont.dataset.tid='game-continue';
+    cont.onclick=finishGame;ctr.append(cont);
+  }else{
+    const skip=el('button','btn line','Skip to result');skip.dataset.tid='game-skip';skip.onclick=skipGame;
+    const fast=el('button','btn ghost',G.fast?'Fast ✓':'Fast');fast.dataset.tid='game-fast';fast.onclick=()=>{G.fast=!G.fast;render();};
+    ctr.append(skip,fast);
+  }
+  v.append(ctr);
+  app.append(v);
+  requestAnimationFrame(()=>{const f=$('#g-feed');if(f)f.scrollTop=f.scrollHeight;});
+}
 
 /* ============================================================
    HOME PAGE
@@ -956,6 +1089,18 @@ function renderHome(app){
       <div class="cond ${gv.cls}" style="font-size:22px;font-weight:800">${gv.res}</div></div>`;
     v.append(lc);
   }
+  // weekly national Player of the Week (most recent resolved week)
+  const lastHonors=(S.weeklyHonors&&S.weeklyHonors.length)?S.weeklyHonors[S.weeklyHonors.length-1]:null;
+  if(lastHonors){
+    v.append(el('h2','sec','Players of the Week — Nat’l'));
+    const hc=el('div','card');
+    hc.innerHTML=`<div class="meta dim" style="margin-bottom:8px">Week ${lastHonors.week}</div>
+      ${honorRowHTML('Offense',lastHonors.national.off)}
+      ${honorRowHTML('Defense',lastHonors.national.def)}`;
+    const more=el('button','btn line','All honors · national & conference');more.style.marginTop='10px';
+    more.onclick=()=>{UI.view='season';UI.seasonTab='honors';render();};
+    hc.append(more);v.append(hc);
+  }
   // next task / season control
   const inSeason=S.phase==='Regular Season', over=S.phase==='Offseason';
   v.append(el('h2','sec','On the Clock'));
@@ -968,9 +1113,11 @@ function renderHome(app){
   const adv=el('button','btn','');adv.textContent=advLabel;adv.style.marginTop='12px';
   if(over)adv.disabled=true;
   else adv.onclick=()=>{
-    if(inSeason){advanceWeek();const g=lastGameFor(controlled().id);render();
-      if(g){const gv=gameView(g,controlled().id);toast((gv.cls==='good'?'Won ':'Lost ')+gv.res.slice(2)+(gv.home?' vs ':' @ ')+gv.opp.abbr);}
-      else toast('Bye week \u2014 advanced');}
+    if(inSeason){
+      const g=teamGame(controlled().id,S.week);
+      if(g&&!g.played)openGameViewer(g);            // watch your game, then commit the week
+      else{advanceWeek();render();toast('Bye week \u2014 advanced');}  // bye: just advance
+    }
     else{startSeason();render();toast('Season underway \u2014 schedule set');}
   };
   task.append(adv);v.append(task);
@@ -1044,7 +1191,7 @@ function renderSeason(app){
   }
   const st=UI.seasonTab||'schedule';
   const tabs=el('div','tabs');tabs.style.marginTop='14px';
-  [['schedule','Schedule'],['standings','Standings'],['top25','Top 25'],['scores','Scores']].forEach(([k,l])=>{
+  [['schedule','Schedule'],['standings','Standings'],['top25','Top 25'],['scores','Scores'],['honors','Honors']].forEach(([k,l])=>{
     const b=el('button',st===k?'on':'',l);b.dataset.tid='stab-'+k;
     b.onclick=()=>{UI.seasonTab=k;render();};tabs.append(b);
   });
@@ -1052,6 +1199,7 @@ function renderSeason(app){
   if(st==='schedule')seasonSchedule(v,t);
   else if(st==='standings')seasonStandings(v,t);
   else if(st==='top25')seasonTop25(v,t);
+  else if(st==='honors')seasonHonors(v,t);
   else seasonScores(v,t);
   v.style.paddingBottom='10px';
   app.append(v);
@@ -1120,9 +1268,41 @@ function scoreSide(team,pts,won){
       <span class="nm">${team.abbr} <span class="dim" style="font-weight:400">${team.nick}</span></span></span>
     <span class="cond ${won?'good':''}" style="font-weight:800;font-size:17px">${pts}</span></div>`;
 }
+// Curated highlight reel: the season's most notable results, each replayable. Tag + score by
+// upset (underdog won), shootout (high total), nailbiter (≤3 / OT), and your signature wins.
+function greatestGames(limit){
+  const scored=S.schedule.games.filter(g=>g.played).map(g=>{
+    const home=teamById(g.home),away=teamById(g.away),homeWon=g.hs>g.as;
+    const win=homeWon?home:away,lose=homeWon?away:home;
+    const margin=Math.abs(g.hs-g.as),total=g.hs+g.as,upset=lose.ratings.ovr-win.ratings.ovr;
+    const iWon=(win.id===S.teamId);
+    let tag='',score=0;
+    [['Upset',upset>=8?upset*2.0:0],['Shootout',total>=80?(total-60)*0.7:0],
+     ['Nailbiter',margin<=3?(8-margin)*2.5:0],['Signature win',iWon&&upset>=4?upset*1.5+12:0]]
+      .forEach(([tg,sc])=>{if(sc>score){score=sc;tag=tg;}});
+    return {g,win,lose,winScore:Math.max(g.hs,g.as),loseScore:Math.min(g.hs,g.as),tag,score};
+  }).filter(x=>x.tag);
+  scored.sort((a,b)=>b.score-a.score);
+  return scored.slice(0,limit||6);
+}
 function seasonScores(v,t){
   const wk=S.lastPlayedWeek;
   if(!wk){v.append(el('div','empty','No games played yet.\nAdvance a week from the Home tab to see scores.'));return;}
+  const greats=greatestGames(6);
+  if(greats.length){
+    v.append(el('h2','sec','Greatest Games'));
+    greats.forEach(x=>{
+      const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.tid='great-game';row.dataset.id=x.g.id;
+      const mine=(x.win.id===t.id||x.lose.id===t.id);
+      if(mine)row.style.boxShadow='inset 0 0 0 1px var(--accent)';
+      row.innerHTML=`<div style="flex:1;min-width:0">
+          <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${x.win.abbr} ${x.winScore}, ${x.lose.abbr} ${x.loseScore}</div>
+          <div class="meta"><span class="tag accent" style="font-size:10px">${x.tag}</span> <span class="dim">WK ${x.g.week}</span></div></div>
+        <span class="cond accent" style="font-size:18px;flex:none">▶</span>`;
+      row.onclick=()=>openGameReplay(x.g.id);
+      v.append(row);
+    });
+  }
   v.append(el('h2','sec','Week '+wk+' Scores'));
   const games=S.schedule.games.filter(g=>g.week===wk&&g.played)
     .sort((a,b)=>(teamById(b.home).ratings.ovr+teamById(b.away).ratings.ovr)-(teamById(a.home).ratings.ovr+teamById(a.away).ratings.ovr));
@@ -1134,6 +1314,33 @@ function seasonScores(v,t){
     v.append(row);
   });
   v.append(el('div','hint center',games.length+' games played · Week '+wk));
+}
+// Players of the Week — national + a conference (defaults to the controlled team's), most
+// recent week first. The conference is switchable via a small inline selector.
+function seasonHonors(v,t){
+  const wh=S.weeklyHonors||[];
+  if(!wh.length){v.append(el('div','empty','No honors yet.\nAdvance a week from the Home tab to crown Players of the Week.'));return;}
+  const conf=UI.honorsConf||t.conf;
+  const confs=[...new Set(S.world.teams.map(x=>x.conf))].sort();
+  // conference selector
+  const bar=el('div','row');bar.style.cssText='gap:8px;flex-wrap:wrap;margin:14px 2px 4px';
+  const sel=el('select');sel.dataset.tid='honors-conf';
+  sel.style.cssText='font-size:16px;padding:8px 10px;border-radius:10px;background:var(--card);color:var(--ink);border:1px solid var(--line);flex:1';
+  confs.forEach(cf=>{const o=el('option');o.value=cf;o.textContent=cf;if(cf===conf)o.selected=true;sel.append(o);});
+  sel.onchange=()=>{UI.honorsConf=sel.value;render();};
+  bar.append(el('span','meta dim','Conference'),sel);v.append(bar);
+  [...wh].reverse().forEach(h=>{
+    v.append(el('h2','sec','Week '+h.week));
+    const nat=el('div','card');
+    nat.innerHTML=`<div class="meta accent" style="margin-bottom:6px;font-weight:700">NATIONAL</div>
+      ${honorRowHTML('Offense',h.national.off)}${honorRowHTML('Defense',h.national.def)}`;
+    v.append(nat);
+    const cc=h.byConf[conf];
+    if(cc){const cf=el('div','card');
+      cf.innerHTML=`<div class="meta dim" style="margin-bottom:6px;font-weight:700">${conf.toUpperCase()}</div>
+        ${honorRowHTML('Offense',cc.off)}${honorRowHTML('Defense',cc.def)}`;
+      v.append(cf);}
+  });
 }
 
 /* ============================================================

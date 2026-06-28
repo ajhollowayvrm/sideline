@@ -211,8 +211,25 @@ function startServer() {
   check('Season: slate near 12 games/team (no near-empty schedules)', kicked.min >= 8, 'min ' + kicked.min);
   await shot(page, '13-home-inseason.png');
 
-  // game sim determinism: re-simming the same game id + seed reproduces the score
-  for (let i = 0; i < 3; i++) { await page.getByRole('button', { name: /Play Week/ }).click(); await page.waitForTimeout(120); }
+  // advancing now opens the watch-then-commit viewer for your game; skip + commit each week.
+  // bye weeks advance directly (no viewer). Capture the first watched game to verify its score
+  // equals the committed result (the replay is faithful, not a re-roll).
+  let sawViewer = false, watchCheck = null;
+  for (let i = 0; i < 3; i++) {
+    await page.getByRole('button', { name: /Play Week/ }).click();
+    await page.waitForTimeout(120);
+    if ((await screen(page)) === 'game') {
+      if (!sawViewer) { sawViewer = true; check('Watch: viewer shows a live game board', await page.locator('[data-tid="game-board"]').isVisible()); await shot(page, '19-watch-game.png'); }
+      await page.locator('[data-tid="game-skip"]').click();
+      await page.waitForTimeout(80);
+      const watched = await page.evaluate(() => UI.game ? { id: UI.game.gameId, hs: UI.game.hs, as: UI.game.as } : null);
+      await page.locator('[data-tid="game-continue"]').click();
+      await page.waitForTimeout(120);
+      if (!watchCheck && watched) { const committed = await page.evaluate(id => { const g = S.schedule.games.find(x => x.id === id); return { hs: g.hs, as: g.as, played: g.played }; }, watched.id); watchCheck = { watched, committed }; }
+    }
+  }
+  check('Watch: advancing opens the watch-then-commit viewer', sawViewer);
+  check('Watch: watched score == committed result (replay is faithful)', !!watchCheck && watchCheck.watched.hs === watchCheck.committed.hs && watchCheck.watched.as === watchCheck.committed.as && watchCheck.committed.played, JSON.stringify(watchCheck));
   const adv = await page.evaluate(() => {
     let W = 0, L = 0; S.world.teams.forEach(x => { W += x.rec.w; L += x.rec.l; });
     const t = controlled();
@@ -255,6 +272,18 @@ function startServer() {
   });
   check('Sim: per-game box score is deterministic (reproducible from id + seed)', detBox);
 
+  // ---------- PHASE 3.5: weekly Player of the Week ----------
+  const honors = await page.evaluate(() => {
+    const wh = S.weeklyHonors || [], last = wh[wh.length - 1];
+    return { weeks: wh.length, hasNatOff: !!(last && last.national.off), hasNatDef: !!(last && last.national.def),
+      confs: last ? Object.keys(last.byConf).length : 0,
+      offPos: last && last.national.off ? last.national.off.pos : '', defPos: last && last.national.def ? last.national.def.pos : '' };
+  });
+  check('Honors: weekly POW recorded for each played week', honors.weeks === 3, honors.weeks + ' weeks');
+  check('Honors: national Offensive + Defensive POW present', honors.hasNatOff && honors.hasNatDef);
+  check('Honors: per-conference POW computed', honors.confs >= 8, honors.confs + ' conferences');
+  check('Honors: Off POW is a skill player, Def POW a defender', ['QB', 'RB', 'WR', 'TE'].includes(honors.offPos) && ['DE', 'DT', 'LB', 'CB', 'S'].includes(honors.defPos), `off ${honors.offPos} / def ${honors.defPos}`);
+
   // player sheet now surfaces in-season stats instead of "— preseason —"
   await page.locator('[data-tid="nav-team"]').click();
   await page.waitForTimeout(120);
@@ -273,6 +302,7 @@ function startServer() {
   }
   await page.locator('[data-tid="nav-home"]').click();
   await page.waitForTimeout(120);
+  check('Home: Players of the Week card shown', /Players of the Week/i.test(await page.evaluate(() => document.querySelector('.view').innerText)));
 
   // season view tabs
   await page.locator('[data-tid="nav-season"]').click();
@@ -293,6 +323,36 @@ function startServer() {
   check('Season scores: shows last week scoreboard', /week 3 scores/i.test(await page.evaluate(() => document.querySelector('.view').innerText)));
   await shot(page, '17-season-scores.png');
 
+  // Honors tab: national + conference, with a conference selector
+  await page.locator('[data-tid="stab-honors"]').click();
+  await page.waitForTimeout(150);
+  const honorsTxt = await page.evaluate(() => document.querySelector('.view').innerText);
+  check('Season Honors tab: national + conference shown', /NATIONAL/.test(honorsTxt) && /week 3/i.test(honorsTxt));
+  check('Season Honors tab: conference selector present', await page.locator('[data-tid="honors-conf"]').isVisible());
+  check('Season Honors tab: no horizontal overflow', await overflow(page));
+  await shot(page, '20-season-honors.png');
+
+  // Greatest games: highlight list on the Scores tab, each replayable (no result change)
+  await page.locator('[data-tid="stab-scores"]').click();
+  await page.waitForTimeout(150);
+  const greatCount = await page.locator('[data-tid="great-game"]').count();
+  check('Greatest games: highlight reel rendered', greatCount > 0, greatCount + ' games');
+  await shot(page, '21-greatest-games.png');
+  if (greatCount > 0) {
+    const repId = await page.locator('[data-tid="great-game"]').first().getAttribute('data-id');
+    await page.locator('[data-tid="great-game"]').first().click();
+    await page.waitForTimeout(150);
+    const rep = await page.evaluate(() => UI.game ? { hs: UI.game.hs, as: UI.game.as, replay: !!UI.game.replay } : null);
+    check('Greatest games: tapping opens a replay (screen=game, replay mode)', (await screen(page)) === 'game' && rep && rep.replay);
+    await page.locator('[data-tid="game-skip"]').click();
+    await page.waitForTimeout(80);
+    await page.locator('[data-tid="game-continue"]').click();
+    await page.waitForTimeout(150);
+    const after = await page.evaluate(id => { const g = S.schedule.games.find(x => x.id === id); return { hs: g.hs, as: g.as, week: S.week, view: UI.view }; }, repId);
+    check('Greatest games: replay returns to Season, week unchanged', after.view === 'season' && after.week === 4);
+    check('Greatest games: replay score == recorded score', rep && rep.hs === after.hs && rep.as === after.as, JSON.stringify({ rep, after }));
+  }
+
   // ---------- SAVE → RELOAD → LOAD ----------
   await page.locator('[data-tid="nav-menu"]').click();
   await page.waitForTimeout(120);
@@ -307,9 +367,10 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).first().click();
   await page.waitForTimeout(150);
   check('Persistence: save survives reload + loads to Home', (await screen(page)) === 'home');
-  const seasonPersist = await page.evaluate(() => ({ sched: !!S.schedule, week: S.week, phase: S.phase, played: S.schedule ? S.schedule.games.filter(g => g.played).length : 0, version: S.version, statPlayers: S.world.teams.reduce((n, t) => n + t.roster.filter(p => p.gs).length, 0) }));
+  const seasonPersist = await page.evaluate(() => ({ sched: !!S.schedule, week: S.week, phase: S.phase, played: S.schedule ? S.schedule.games.filter(g => g.played).length : 0, version: S.version, statPlayers: S.world.teams.reduce((n, t) => n + t.roster.filter(p => p.gs).length, 0), honorWeeks: (S.weeklyHonors || []).length }));
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
-  check('Persistence: per-player stats (v4) survive reload', seasonPersist.version === 4 && seasonPersist.statPlayers > 50, `v${seasonPersist.version}, ${seasonPersist.statPlayers} players with stats`);
+  check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
+  check('Persistence: weekly honors (v5) survive reload', seasonPersist.version === 5 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -325,10 +386,11 @@ function startServer() {
   await page.waitForTimeout(150);
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
-  const mig = await page.evaluate(() => ({ v: S.version, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule }));
-  check('Migration: v1 save upgrades to current version (v4)', mig.v === 4, 'version=' + mig.v);
+  const mig = await page.evaluate(() => ({ v: S.version, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors }));
+  check('Migration: v1 save upgrades to current version (v5)', mig.v === 5, 'version=' + mig.v);
   check('Migration: staff backfilled (tier/boost)', mig.tier != null && mig.boost != null, JSON.stringify({ tier: mig.tier, boost: mig.boost }));
   check('Migration: season fields backfilled (records, null schedule)', mig.rec && mig.rec.w === 0 && mig.rec.l === 0 && mig.sched === null, JSON.stringify(mig.rec));
+  check('Migration: weekly honors backfilled (empty array)', Array.isArray(mig.honors) && mig.honors.length === 0, JSON.stringify(mig.honors));
 
   // ---------- DELETE with confirm ----------
   await page.goto(BASE, { waitUntil: 'networkidle' }); // clean reload (no ?reset)
