@@ -317,6 +317,36 @@ AKR:'OH',BALL:'IN',BGSU:'OH',BUFF:'NY',CMU:'MI',EMU:'MI',KENT:'OH','M-OH':'OH',U
 OHIO:'OH',TOL:'OH',WMU:'MI',FIU:'FL',JVST:'AL',KENN:'GA',LIB:'VA',LT:'LA',MTSU:'TN',NMSU:'NM',SHSU:'TX',
 UTEP:'TX',WKU:'KY',ND:'IN',CONN:'CT'};
 
+// === TRAIT ENGINE (Phase 10) START ===
+// Per-player temperament. Two fogged traits that mesh with coach identity, designed to be
+// MEAN-NEUTRAL so they add texture without skewing the validated dev/sim envelopes. Pure:
+// depends only on rng/ri/clamp. Values are 0..100, centered ~50 (average); absent reads as 50.
+//   mot  (Motor / work ethic) → biases OFFSEASON DEVELOPMENT   via motorMult()
+//   comp (Composure)          → biases IN-GAME yardage variance via compExp()/compDraw() + clutch
+// The UI never shows the raw number — it renders a fogged band (see traitBand, Phase 10 UI).
+const TRAIT_DEF=50;                                       // an absent trait reads as league-average
+// A fresh pair, gently bell-shaped (mean of two rolls) so most players are average and the tails
+// — true grinders / head-cases, ice-veined / streaky — stay rare. Deterministic from `r`.
+function genTraits(r){const bell=()=>clamp(Math.round((ri(r,0,100)+ri(r,0,100))/2),0,100);return {mot:bell(),comp:bell()};}
+function motVal(p){return (p&&p.mot!=null)?p.mot:TRAIT_DEF;}
+function compVal(p){return (p&&p.comp!=null)?p.comp:TRAIT_DEF;}
+// Motor → offseason development multiplier (~0.85..1.15, average 1.0). A grinder squeezes more
+// ov→pot out of every offseason; a coaster leaves growth on the table. Folded into devRateFor.
+function motorMult(p){return clamp(1+(motVal(p)-50)/333,0.85,1.15);}
+// Composure → a mean-PRESERVING reshape exponent for per-play yardage draws. The reshape is
+// symmetric about 0.5, so E[draw] is unchanged — only the SPREAD moves. comp>50 pulls draws to
+// their middle (consistent); comp<50 pushes them to the extremes (boom/bust). At comp==50 the
+// exponent is 1 and compReshape is the identity, so a trait-less player is byte-identical to the
+// pre-Phase-10 sim (keeps simlab envelopes + determinism intact).
+function compExp(p){return clamp(1+(compVal(p)-50)/100,0.5,1.5);}     // comp0→0.5 streaky … comp100→1.5 steady
+function compReshape(x,g){const d=2*x-1;return 0.5+0.5*(d<0?-1:1)*Math.pow(Math.abs(d),g);}
+function compDraw(r,p){return compReshape(r(),compExp(p));}           // one rng draw, reshaped by comp
+// Clutch: a tiny rating nudge applied to the OFFENSE's key man only when the game is "late &
+// close". High composure tightens up, low composure wobbles. Small by design (±~1.6 pts) so it
+// sways tight games without moving the season-long favorite/home win envelopes.
+function compClutch(p){return (compVal(p)-50)/31;}                    // ≈ -1.6 .. +1.6 rating pts
+// === TRAIT ENGINE (Phase 10) END ===
+
 /* ---------- world generation ---------- */
 function genPlayer(r,prestige,posCode){
   const cls=pick(r,CLASSES);
@@ -326,10 +356,12 @@ function genPlayer(r,prestige,posCode){
   const ov=clamp(Math.round(base),48,99);
   const pot=clamp(ov+ri(r,-3,16),ov,99);
   const stars=ov>=90?5:ov>=82?4:ov>=72?3:ov>=62?2:1;
+  const tr=genTraits(r);
   return {id:'p'+Math.floor(r()*1e9).toString(36),
     fn:pick(r,FN),ln:pick(r,LN),pos:posCode,yr:cls,age:ageBase+ri(r,0,1),
     st:pick(r,STATES),stars,ov,pot,cap:false,
-    spd:clamp(ov+ri(r,-12,12),40,99),str:clamp(ov+ri(r,-12,12),40,99),awr:clamp(ov+ri(r,-14,10),40,99)};
+    spd:clamp(ov+ri(r,-12,12),40,99),str:clamp(ov+ri(r,-12,12),40,99),awr:clamp(ov+ri(r,-14,10),40,99),
+    mot:tr.mot,comp:tr.comp};
 }
 function genRoster(r,prestige){
   const out=[];
@@ -439,7 +471,7 @@ function genWorld(seed){
    saves (no `_sv` tag) decode as themselves. Cuts a fresh save ~40%. */
 const SLOTS=[1,2,3];
 const slotKey=n=>'sideline_slot_'+n;
-const SAVE_PKEYS=['id','fn','ln','pos','yr','age','st','stars','ov','pot','cap','spd','str','awr','so'];
+const SAVE_PKEYS=['id','fn','ln','pos','yr','age','st','stars','ov','pot','cap','spd','str','awr','so','mot','comp'];
 function encRoster(roster){
   return roster.map(p=>{
     const core=SAVE_PKEYS.map(k=>p[k]);
@@ -630,7 +662,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:11,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:12,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -757,6 +789,9 @@ function migrateState(state){
   if((state.version||1)<11){           // Phase 8+: AI-initiated series offers (created when managing).
     if(!('seriesOffers' in state))state.seriesOffers=null;
     state.version=11;
+  }
+  if((state.version||1)<12){           // Phase 10: per-player traits (p.mot/p.comp). Structural
+    state.version=12;                  // no-op — absence reads as average (TRAIT_DEF) until set.
   }
   return state;
 }
@@ -912,9 +947,10 @@ function simEngine(home,away,seed,opts){
 
   // One possession, start at `startLos` (offense's own yard line). Returns the spot the
   // opponent takes over (mutates `score` + `box`); ~drive time charged to the caller's clock.
-  function playDrive(off,def,startLos){
+  function playDrive(off,def,startLos,clutch){
     const oP=pools[off.id], dP=pools[def.id];
-    const adv=(off.ratings.off-def.ratings.def)+(off===home?HFA:0)+form[off.id]-form[def.id];
+    let adv=(off.ratings.off-def.ratings.def)+(off===home?HFA:0)+form[off.id]-form[def.id];
+    if(clutch)adv+=compClutch(oP.qb);                   // late & close: the QB's composure shows (Phase 10)
     let los=startLos, down=1, togo=10, time=0;
     L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los));
     while(true){
@@ -940,7 +976,7 @@ function simEngine(home,away,seed,opts){
           gain=-ri(r,4,9); time+=36; const s=wpick(dP.rush4,r); add(s&&s.id,'sk'); txt=nm(oP.qb)+' sacked by '+nm(s)+' for '+gain;
         } else if(r()<clamp(0.615+adv*0.007,0.32,0.83)){    // completion
           const rec=wpick(oP.recv,r);
-          gain=Math.max(-3,Math.round((2.2+r()*7.5)+(r()<0.18?r()*42:0)+adv*0.06));
+          gain=Math.max(-3,Math.round((2.2+compDraw(r,rec)*7.5)+(r()<0.18?compDraw(r,rec)*42:0)+adv*0.06));
           add(oP.qb&&oP.qb.id,'pAtt'); add(oP.qb&&oP.qb.id,'pCmp'); add(oP.qb&&oP.qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain);
           time+=(r()<0.28?14:34); txt=nm(oP.qb)+' pass to '+nm(rec)+' for '+gain;
@@ -951,7 +987,7 @@ function simEngine(home,away,seed,opts){
         }
       } else {                                              // run
         const rb=wpick(oP.rush,r)||oP.qb;
-        gain=Math.max(-4,Math.round((2.7+r()*4.1)+(r()<0.11?r()*30:0)+adv*0.035));
+        gain=Math.max(-4,Math.round((2.7+compDraw(r,rb)*4.1)+(r()<0.11?compDraw(r,rb)*30:0)+adv*0.035));
         time+=36; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); txt=nm(rb)+' run for '+gain;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
         if(!scored && r()<0.011){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
@@ -980,7 +1016,8 @@ function simEngine(home,away,seed,opts){
   let clock=3600, off=r()<0.5?home:away, def=off===home?away:home, startLos=25;
   while(clock>0){
     L._q=clamp(Math.floor((3600-clock)/900)+1,1,4);
-    const d=playDrive(off,def,startLos);
+    const clutch=clock<600&&Math.abs(score[home.id]-score[away.id])<=8;   // late & close (Phase 10)
+    const d=playDrive(off,def,startLos,clutch);
     clock-=Math.max(d.time,12); startLos=d.nextLos;
     const swap=off; off=def; def=swap;
   }
@@ -988,7 +1025,7 @@ function simEngine(home,away,seed,opts){
   let ot=0;
   while(score[home.id]===score[away.id] && ot++<25){
     L._q='OT'+ot;
-    playDrive(home,away,75); playDrive(away,home,75);
+    playDrive(home,away,75,true); playDrive(away,home,75,true);   // OT is always late & close
   }
   L(null,'final','Final',null,true);
 
@@ -1083,9 +1120,15 @@ function genRecruits(seed,teams){
     const iv={};
     ranked.forEach((e,k)=>{const fit=recruitFit(e.t,{stars,pos,st});
       iv[e.t.id]=clamp(Math.round(20+fit*26+ri(r,-4,6)-k*2),8,70);});
-    pool.push({id:'r'+i.toString(36)+(seed>>>0).toString(36).slice(-2),
+    // Traits come from a per-recruit rng keyed on the id (not the pool stream), so the prospect
+    // board is byte-identical to pre-Phase-10 — the trait is just along for the ride, and carries
+    // onto the freshman in recruitToFreshman.
+    const rid='r'+i.toString(36)+(seed>>>0).toString(36).slice(-2);
+    const tr=genTraits(rng(hashStr(rid)));
+    pool.push({id:rid,
       fn:pick(r,FN),ln:pick(r,LN),pos,st,stars,ov,pot,
       spd:clamp(ov+ri(r,-10,12),40,99),str:clamp(ov+ri(r,-10,12),40,99),awr:clamp(ov+ri(r,-12,10),40,99),
+      mot:tr.mot,comp:tr.comp,
       scout:0,prefs:[p1,p2],iv,committedTo:null,signed:false,offered:false,visited:false,promise:null});
   }
   return pool;
@@ -1159,10 +1202,11 @@ function developPlayer(p,r,rate){
 function genFreshman(r,prestige,posCode){
   const ov=clamp(Math.round(prestige*0.40+ri(r,-8,7)+20),44,80);
   const pot=clamp(ov+ri(r,5,20),ov,95);
+  const tr=genTraits(r);
   return {id:'p'+Math.floor(r()*1e9).toString(36),fn:pick(r,FN),ln:pick(r,LN),pos:posCode,
     yr:'FR',age:18+ri(r,0,1),st:pick(r,STATES),stars:ov>=82?4:ov>=72?3:ov>=62?2:1,
     ov,pot,cap:false,spd:clamp(ov+ri(r,-12,12),40,99),str:clamp(ov+ri(r,-12,12),40,99),
-    awr:clamp(ov+ri(r,-14,10),40,99),so:0};
+    awr:clamp(ov+ri(r,-14,10),40,99),so:0,mot:tr.mot,comp:tr.comp};
 }
 // Convert a signed recruit into a true-freshman Player. Blue-chips enter "raw" (ov discounted by
 // pedigree) with the recruit's pot as their ceiling, so development carries them up over a career —
@@ -1171,10 +1215,12 @@ function recruitToFreshman(rec,r){
   const disc=rec.stars===5?6:rec.stars===4?10:rec.stars===3?14:16;
   const ov=clamp(rec.ov-disc+ri(r,-2,2),44,96);
   const pot=clamp(Math.max(rec.pot||rec.ov,rec.ov),ov,99);
+  // Carry the temperament you scouted on the trail (else generate) so the fogged read pays off.
+  const tr=(rec.mot!=null&&rec.comp!=null)?{mot:rec.mot,comp:rec.comp}:genTraits(r);
   return {id:'p'+Math.floor(r()*1e9).toString(36),fn:rec.fn,ln:rec.ln,pos:rec.pos,
     yr:'FR',age:18,st:rec.st,stars:rec.stars,ov,pot,cap:false,
     spd:clamp(rec.spd||ov,40,99),str:clamp(rec.str||ov,40,99),awr:clamp(rec.awr||ov,40,99),
-    so:0,promise:rec.promise||null,fromRecruit:true};
+    so:0,promise:rec.promise||null,fromRecruit:true,mot:tr.mot,comp:tr.comp};
 }
 // Roll one team's roster into the next season. `signees` = the prospects that committed to this
 // team. Returns the rebuilt roster + a summary (graduated/developed/freshmen). Mutates nothing it
@@ -1530,6 +1576,7 @@ function devRateFor(team,p){
     if(H==='Analyst')rate*=1.04;
     if(H==='High School Legend')rate*=1.05;
   }
+  rate*=motorMult(p);                      // the player's own work ethic (Phase 10 trait)
   return clamp(rate,0.6,1.6);
 }
 // Honor / break the controlled team's recruiting promises now that the season they were made for

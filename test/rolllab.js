@@ -40,6 +40,10 @@ const START = '// === ROLLOVER ENGINE (Phase 5) START ===';
 const END = '// === ROLLOVER ENGINE (Phase 5) END ===';
 const i0 = html.indexOf(START), i1 = html.indexOf(END);
 if (i0 < 0 || i1 < 0) { console.error('Could not find ROLLOVER ENGINE markers in index.html'); process.exit(2); }
+// genFreshman/recruitToFreshman now stamp per-player traits via the TRAIT ENGINE block — pull it in first.
+const T0 = html.indexOf('// === TRAIT ENGINE (Phase 10) START ==='), T1 = html.indexOf('// === TRAIT ENGINE (Phase 10) END ===');
+if (T0 < 0 || T1 < 0) { console.error('Could not find TRAIT ENGINE markers in index.html'); process.exit(2); }
+eval(html.slice(T0, T1));   // leaks genTraits/motorMult/comp* into scope
 eval(html.slice(i0, i1));   // leaks NEXT_CLASS/developPlayer/genFreshman/recruitToFreshman/rolloverRoster
 
 /* ---------- faithful-enough roster + ratings (mirror index.html genPlayer/genRoster/teamRatings) ---------- */

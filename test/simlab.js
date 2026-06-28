@@ -27,6 +27,12 @@ const START = '// === SIM ENGINE (Phase 3) START ===';
 const END = '// === SIM ENGINE (Phase 3) END ===';
 const i0 = html.indexOf(START), i1 = html.indexOf(END);
 if (i0 < 0 || i1 < 0) { console.error('Could not find SIM ENGINE markers in index.html'); process.exit(2); }
+// The sim now reads per-player composure via the TRAIT ENGINE block — pull it in first so
+// compDraw/compClutch resolve. Trait-less synthetic players default to 50 (identity reshape),
+// so the sim is byte-identical to pre-Phase-10 here and the envelopes below are unchanged.
+const T0 = html.indexOf('// === TRAIT ENGINE (Phase 10) START ==='), T1 = html.indexOf('// === TRAIT ENGINE (Phase 10) END ===');
+if (T0 < 0 || T1 < 0) { console.error('Could not find TRAIT ENGINE markers in index.html'); process.exit(2); }
+eval(html.slice(T0, T1));
 const engineSrc = html.slice(i0, i1);
 // eval into this scope so simEngine + helpers (gamePersonnel, etc.) become available
 eval(engineSrc);

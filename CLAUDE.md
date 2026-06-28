@@ -101,7 +101,9 @@ plain static files so Pages still serves it with zero config.
   `genWorld`'s exact code → silent corruption across deploys — too fragile for real player saves; the
   columnar codec gets most of the win safely) and the optional **module/build split** (splitting the
   working single-file app risks Pages' zero-config serving for no functional gain).
-- **Phase 10 — Player personality (fogged traits).** 🔵 PLANNED. Give each player **two fogged
+- **Phase 10 — Player personality (fogged traits).** 🟡 IN PROGRESS — pure engine + dev/sim wiring +
+  `traitlab` (16 checks) + save **v12** all landed and green; the **UI fog chips** are the only piece
+  left. Give each player **two fogged
   temperament traits** — **Motor** (work ethic → biases development) and **Composure** (clutch vs.
   streaky → biases in-game variance) — that **mesh with coach identity**. Both are stored sparsely
   (like `p.gs`/`p.dev`), read through a **scouting fog band** (the `scoutedCeiling`/`recScouted`
@@ -176,23 +178,34 @@ These edges live **inside** the pure engine (trait is an input like rating), unl
 property, coach edges are a controlled-team property.
 
 ### Save shape & validation
-- New optional per-player `p.mot` / `p.comp`. Bump save to **version 12**; `migrateState` v11→v12 is
-  a **structural no-op** (absence reads as "average, unscouted" — like the v3→v4 `p.gs` and v8→v9
-  `p.dev` steps). Old saves get traits the next time `genRoster`-style generation runs? No — existing
-  rosters won't regenerate, so v11→v12 should **backfill traits deterministically per player**
-  (`hashStr(p.id)`-seeded) so a loaded legacy roster has temperament too. (One real backfill, unlike
-  the no-op precedents — call it out in the migration comment.)
+- New per-player `p.mot` / `p.comp`, added as **core columns** in `SAVE_PKEYS` (cheap in the Phase 9
+  columnar codec — two extra ints in the flat tuple, no field names; ~5% save growth, far under the
+  cap). Bump save to **version 12**; `migrateState` v11→v12 is a **structural no-op** (absence reads
+  as `TRAIT_DEF` = 50 = league-average, like the v3→v4 `p.gs` / v8→v9 `p.dev` steps). No backfill —
+  AJ confirmed no official games have been played yet, so legacy saves can be wiped; an unmigrated
+  trait-less player simply plays/develops at the average until regenerated.
+- **Generation:** `genTraits(r)` stamps a gently bell-shaped pair (mean-of-two-rolls, so tails are
+  rare) in `genPlayer` / `genFreshman` / `recruitToFreshman`. **Recruits** derive traits from a
+  per-recruit rng keyed on `hashStr(rec.id)` (NOT the pool stream) so the prospect board stays
+  byte-identical to pre-Phase-10; the trait carries onto the freshman at conversion.
 - **Pure engine fenced** `// === TRAIT ENGINE (Phase 10) START/END ===` (depends only on
-  `rng/ri/clamp/hashStr` + `clamp`): `genTraits(seedish)`, `motorMult(p)`, `compVariance(p)` /
-  `compClutch(p, situation)`, `traitBand(value, spread)`. No DOM, no `S`.
-- New lab `test/traitlab.js` → **`npm run traitlab`** (extract the block like the others): motor
-  monotonically shifts offseason dev (high-motor cohort gains more ov→pot than low, ceiling never
-  exceeded); composure widens per-player stat variance **without** moving team-scoring mean/spread
-  outside `simlab`'s validated envelope; clutch only fires in late+close; trait bands shrink as
-  confidence rises; determinism by seed.
-- `npm run qa`: trait chips render fogged on the roster card and sharpen with coaching; a recruit's
-  trait band reveals past the scout threshold; v12 migration backfills + persists round-trips
-  through the columnar codec.
+  `rng/ri/clamp`): `genTraits`, `motVal`/`compVal` (+ `TRAIT_DEF`), `motorMult(p)`, `compExp(p)` /
+  `compReshape(x,g)` / `compDraw(r,p)`, `compClutch(p)`. No DOM, no `S`. **Key property:** at
+  `comp==50` the reshape is the exact identity, so a trait-less player is byte-identical to the
+  pre-Phase-10 sim — `simlab` envelopes + determinism are untouched (the lab extracts the TRAIT
+  block alongside SIM; `reclab`/`rolllab` extract it too since their generators call `genTraits`).
+- **Hooks wired:** `devRateFor` multiplies in `motorMult(p)`; `simEngine` replaces the run/pass
+  magnitude draws with `compDraw(r, ballCarrier)` (mean-preserving spread) and nudges `adv` by
+  `compClutch(oP.qb)` only when the drive is **late & close** (`clock<600 && |margin|≤8`, always in OT).
+- New lab `test/traitlab.js` → **`npm run traitlab`** (16 checks): `genTraits` centered + bell-shaped
+  + deterministic; `motorMult` bounded/monotonic and — fed through the **real** `developPlayer` —
+  a high-motor cohort out-develops low-motor without exceeding the ceiling; `compReshape` preserves
+  the mean at every composure, identity at 50, widens spread as composure drops (boom/bust: more
+  explosive AND more stuffed plays); clutch small/signed/bounded.
+- **DONE:** pure engine + all non-UI wiring (generation, dev, sim) + `traitlab` + the v12 bump, all
+  seven gates green. **REMAINING (UI, next):** fogged trait chips on the roster card (`traitBand` +
+  `traitChip`, sharpening with `scoutSharpen`/time-in-program) and a recruit-board trait band that
+  reveals past the scout threshold — then drive both in `qa`.
 - **Seven gates:** `simlab` + `reclab` + `rolllab` + `econlab` + `awardlab` + **`traitlab`** + `qa`.
 
 ### Deliberately out of scope (so it stays a factory, not The Sims)
@@ -619,7 +632,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **8**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **12**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -628,7 +641,8 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   offseason growth, Phase 7 — absence reads as "no growth yet"); v9→v10 backfills `S.awards=[]` +
   `S.series=[]` + per-team `homeState` (from `TEAM_STATE`), with `p.honors` optional (Phase 8
   geography/awards/series); v10→v11 backfills `S.seriesOffers=null` (AI-initiated series offers,
-  created when managing). Each step re-derives ratings/ranks where needed.
+  created when managing); v11→v12 is a structural no-op (per-player traits `p.mot`/`p.comp`, Phase 10
+  — absence reads as average). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -784,8 +798,9 @@ loop** + **facility upgrades** (Phase 6), **side-specific development** + **in-g
 **coach-responsive scouting fog** (Phase 7), **AI geography** + **season awards/All-America/Coach of
 the Year/Week** + **non-conference series** (Phase 8), and the **columnar save codec** (Phase 9). The
 full career loop — recruit → season → awards → rollover (graduate/develop/enroll) → finances settle →
-carousel → facilities/series — closes across multiple years. **Six green gates:** `npm run` +
-`simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` / `qa`.
+carousel → facilities/series — closes across multiple years. Phase 10 (player personality) is adding
+fogged temperament traits on top — engine landed, UI pending. **Seven green gates:** `npm run` +
+`simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` / `traitlab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during

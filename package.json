@@ -9,7 +9,8 @@
     "reclab": "node test/reclab.js",
     "rolllab": "node test/rolllab.js",
     "econlab": "node test/econlab.js",
-    "awardlab": "node test/awardlab.js"
+    "awardlab": "node test/awardlab.js",
+    "traitlab": "node test/traitlab.js"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

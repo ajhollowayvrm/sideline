@@ -36,6 +36,10 @@ const START = '// === RECRUIT ENGINE (Phase 4) START ===';
 const END = '// === RECRUIT ENGINE (Phase 4) END ===';
 const i0 = html.indexOf(START), i1 = html.indexOf(END);
 if (i0 < 0 || i1 < 0) { console.error('Could not find RECRUIT ENGINE markers in index.html'); process.exit(2); }
+// genRecruits now stamps per-player traits via the TRAIT ENGINE block — pull it in first.
+const T0 = html.indexOf('// === TRAIT ENGINE (Phase 10) START ==='), T1 = html.indexOf('// === TRAIT ENGINE (Phase 10) END ===');
+if (T0 < 0 || T1 < 0) { console.error('Could not find TRAIT ENGINE markers in index.html'); process.exit(2); }
+eval(html.slice(T0, T1));
 // eval into this scope so genRecruits/advanceRecruiting/coachMods/… leak out (sloppy eval)
 eval(html.slice(i0, i1));
 
