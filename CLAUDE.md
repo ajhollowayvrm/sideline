@@ -64,11 +64,17 @@ plain static files so Pages still serves it with zero config.
   coordinators; hire/fire with `buyoutCost`/`hireCost`; coordinator vacancies gate kickoff). New
   pure `ECONOMY ENGINE` block + `npm run econlab` (24 checks); save **v8** (`S.coachMarket`,
   `team.lastFinances`). See "Phase 6 kickoff — implementation plan" below.
-- **Phase 7 — Development & coach identity depth.** Make growth + identity mechanically rich:
-  the **deeper player development** model (side-specific **Off/Def Genius** wiring, Analyst/coach
-  signals feeding growth, surfacing growth in the roster UI beyond read-only grades), remaining
-  **archetype/history in-game effects**, and **roster scouting fog** that responds to coaching
-  rather than being a fixed age/class function. Builds on Phase 5's basic `developPlayer`.
+- **Phase 7 — Development & coach identity depth.** ✅ DONE. Growth + identity are now mechanically
+  rich. **Side-specific development** (`devRateFor(team,p)`: facilities base × the side's
+  coordinator + the player's position coach — every team — × the controlled coach's side-specific
+  Off/Def Genius, Motivator, Analyst, HS-Legend signals; `rolloverRoster` takes a per-player
+  `rateFor` and records `p.dev` = last offseason's OVR gain). **Growth surfaced** in the roster UI
+  (`growthChip` ▲+N). **In-game coach effects** (`coachGameEdges`/`withCoachEdge`/`simSides`: a
+  small side-specific rating edge the controlled team plays with — Motivator/Former-Player/
+  Coordinator both sides, Off/Def Genius their own — applied OUTSIDE the pure `simEngine`, identical
+  in commit + watch paths). **Coach-responsive scouting fog** (`scoutSharpen`: Analyst + a strong
+  coordinator room tighten the roster ceiling band). Save **v9** (optional `p.dev`); rolllab grew to
+  20 checks (per-player `rateFor`), qa drives the dev/edge/growth surfacing.
 - **Phase 8 — Schedule, geography & awards.** Season structure + end-of-season payoff:
   **non-conference series scheduling** (multi-year; forces a two-phase `genSchedule`), **AI
   geography** (a home state per `TEAMS` entry so regional recruiting is real for AI, not just the
@@ -507,7 +513,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
   (Phase 5 rollover); v7→v8 backfills `S.coachMarket=null` (created at the first offseason) +
-  per-team `lastFinances=null` (Phase 6 economy). Each step re-derives ratings/ranks where needed.
+  per-team `lastFinances=null` (Phase 6 economy); v8→v9 is a structural no-op (per-player `p.dev`
+  offseason growth, Phase 7 — absence reads as "no growth yet"). Each step re-derives ratings/ranks
+  where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into

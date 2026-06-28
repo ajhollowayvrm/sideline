@@ -584,7 +584,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:8,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:9,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -697,6 +697,9 @@ function migrateState(state){
     if(!('coachMarket' in state))state.coachMarket=null;   // created at the first offseason
     state.world.teams.forEach(t=>{if(!('lastFinances' in t))t.lastFinances=null;});
     state.version=8;
+  }
+  if((state.version||1)<9){            // Phase 7: per-player offseason growth (p.dev). Absence
+    state.version=9;                   // reads as "no growth recorded yet" → no backfill needed.
   }
   return state;
 }
@@ -1062,8 +1065,10 @@ function developPlayer(p,r,rate){
   const gap=(p.pot||p.ov)-p.ov;
   if(gap<=0)return 0;
   const youth=DEV_YOUTH[p.yr]!=null?DEV_YOUTH[p.yr]:0.5;
-  const portion=clamp((0.16+0.20*youth)*(rate||1),0,0.8);
-  const delta=clamp(Math.round(gap*portion+r()*1.4),0,gap);
+  const rt=(rate==null)?1:rate;
+  const portion=clamp((0.16+0.20*youth)*rt,0,0.8);
+  // random nudge scales with rate too, so a 0-rate (frozen) side genuinely doesn't grow.
+  const delta=clamp(Math.round(gap*portion+r()*1.4*clamp(rt,0,2.5)),0,gap);
   if(!delta)return 0;
   p.ov=clamp(p.ov+delta,40,99);
   const ab=Math.round(delta*0.6);
@@ -1097,7 +1102,9 @@ function recruitToFreshman(rec,r){
 // team. Returns the rebuilt roster + a summary (graduated/developed/freshmen). Mutates nothing it
 // is given (works on copies); clears p.gs so last season's stats never carry into the new season.
 function rolloverRoster(roster,signees,prestige,r,opts){
-  opts=opts||{};const rate=opts.rate||1;
+  opts=opts||{};
+  // `rateFor(player)` (Phase 7) gives a per-player dev rate (side/coach specific); else flat opts.rate.
+  const rateOf=p=>opts.rateFor?opts.rateFor(p):(opts.rate||1);
   const graduated=[],cont=[];
   roster.forEach(src=>{
     const p=Object.assign({},src);
@@ -1105,7 +1112,7 @@ function rolloverRoster(roster,signees,prestige,r,opts){
     if(nx===null){graduated.push(p);return;}
     p.yr=nx;p.age=(p.age||18)+1;
     if('gs' in p)delete p.gs;                       // fresh slate — no season-stat carryover
-    developPlayer(p,r,rate);
+    p.dev=developPlayer(p,r,rateOf(p));             // record this offseason's OVR gain (UI surfaces it)
     cont.push(p);
   });
   const freshmen=(signees||[]).map(s=>recruitToFreshman(s,r));
@@ -1243,11 +1250,31 @@ function advanceCoachCarousel(world,market,seed,year,opts){
 }
 // === ECONOMY ENGINE (Phase 6) END ===
 
+// In-game coach identity (Phase 7): a small, side-specific rating edge the controlled team plays
+// with — Motivator effort + Former Player respect + Coordinator game-planning lift both sides;
+// Offensive/Defensive Genius sharpen their own side. AI teams get none (z). Applied OUTSIDE the
+// pure simEngine (which simlab validates untouched) by handing it edge-adjusted team copies, so the
+// score stays deterministic and identical between commit (simGame) and watch (buildGameLog).
+function coachGameEdges(t){
+  const z={off:0,def:0};
+  if(!S||!S.coach||t.id!==S.teamId)return z;
+  const A=S.coach.archetype,H=S.coach.history; let both=0;
+  if(A==='Motivator')both+=1.6;
+  if(H==='Former Player')both+=0.8;
+  if(H==='Coordinator')both+=1.0;
+  z.off=both;z.def=both;
+  if(A==='Offensive Genius')z.off+=1.4;
+  if(A==='Defensive Genius')z.def+=1.4;
+  return z;
+}
+function withCoachEdge(t){const e=coachGameEdges(t);if(!e.off&&!e.def)return t;
+  return Object.assign({},t,{ratings:{off:clamp(t.ratings.off+e.off,40,99),def:clamp(t.ratings.def+e.def,40,99),ovr:t.ratings.ovr}});}
+function simSides(g){return {home:withCoachEdge(teamById(g.home)),away:withCoachEdge(teamById(g.away))};}
 // Resolve a game with the drive/play engine. Seeded per game id so outcomes are reproducible
 // regardless of advance order. Sets g.hs/g.as/g.played and RETURNS the per-game box (player
 // id → stat deltas) for stat folding. Pure w.r.t. players/teams — re-simming a clone is safe.
 function simGame(g){
-  const home=teamById(g.home),away=teamById(g.away);
+  const {home,away}=simSides(g);
   const res=simEngine(home,away,(hashStr(g.id)^(S.seed>>>0))>>>0);
   g.hs=res.hs;g.as=res.as;g.played=true;
   return res.box;
@@ -1322,13 +1349,33 @@ function endSeason(){
       cls.length+' tracked recruit'+(cls.length===1?'':'s')+' — class ranked #'+cr+' nationally. '+
       'Roll over to the next season when you’re ready — your class joins the roster.'};
 }
-// Development rate for a team's offseason: facilities (strength + training) set the base; the
-// controlled team's coach genius adds a small edge. AI teams develop off facilities alone.
+// Facilities base development rate for a team's offseason (strength + training). Side/coach
+// specifics layer on in devRateFor. AI teams develop off facilities + their staff alone.
 function devRate(team){
   const f=((team.fac&&team.fac.strength)||5)+((team.fac&&team.fac.training)||5);
-  let rate=0.85+(f/2)*0.03;
-  if(team.id===S.teamId&&(S.coach.archetype==='Offensive Genius'||S.coach.archetype==='Defensive Genius'))rate*=1.12;
-  return rate;
+  return 0.85+(f/2)*0.03;
+}
+function posSide(code){const p=POS.find(x=>x[0]===code);return p?p[1]:'off';}
+// Per-player offseason development rate (Phase 7): facilities base, then the side's coordinator and
+// the player's position coach (better coaches grow talent faster — applies to every team), then —
+// for the controlled team only — the head coach's side-specific Genius, Motivator, Analyst, and
+// High-School-Legend raw-talent signals. Clamped so league strength can't run away or collapse.
+function devRateFor(team,p){
+  let rate=devRate(team);
+  const side=posSide(p.pos), scope={off:'OFF',def:'DEF',st:'ST'}[side];
+  const coord=(team.staff||[]).find(c=>c.tier==='coord'&&c.scope===scope);
+  if(coord)rate*=1+clamp((coord.rating-60)/300,-0.05,0.12);
+  const pc=(team.staff||[]).find(c=>c.tier==='pos'&&(c.groups||[]).indexOf(p.pos)>=0);
+  if(pc)rate*=1+clamp((pc.rating-60)/400,-0.04,0.09);
+  if(S&&team.id===S.teamId&&S.coach){
+    const A=S.coach.archetype,H=S.coach.history;
+    if(side==='off'&&A==='Offensive Genius')rate*=1.14;
+    if(side==='def'&&A==='Defensive Genius')rate*=1.12;
+    if(A==='Motivator')rate*=1.04;
+    if(H==='Analyst')rate*=1.04;
+    if(H==='High School Legend')rate*=1.05;
+  }
+  return clamp(rate,0.6,1.6);
 }
 // Honor / break the controlled team's recruiting promises now that the season they were made for
 // has been played. A kept (or non-playing-time) promise clears; a broken playing-time promise
@@ -1359,7 +1406,7 @@ function rolloverSeason(){
   S.world.teams.forEach(t=>resolveFinances(t,yr,S.seed));
   let summary=null;
   S.world.teams.forEach(t=>{
-    const res=rolloverRoster(t.roster,signeesBy[t.id]||[],t.prestige,r,{rate:devRate(t)});
+    const res=rolloverRoster(t.roster,signeesBy[t.id]||[],t.prestige,r,{rateFor:p=>devRateFor(t,p)});
     t.roster=res.roster;
     if(t.id===me)summary=res;
   });
@@ -1556,7 +1603,7 @@ function honorRowHTML(label,h){
 let gameTimer=null;
 function buildGameLog(gameId){
   const g=S.schedule.games.find(x=>x.id===gameId); if(!g)return null;
-  const home=teamById(g.home),away=teamById(g.away);
+  const {home,away}=simSides(g);
   const res=simEngine(home,away,(hashStr(g.id)^(S.seed>>>0))>>>0,{log:true});
   return {gameId,home:g.home,away:g.away,log:res.log,hs:res.hs,as:res.as,idx:0,fast:false,done:false};
 }
@@ -2164,16 +2211,29 @@ function ceilingIndex(pot){return CEILINGS.findIndex(([m])=>pot>=m);}
 function hashStr(s){let h=2166136261;for(let i=0;i<String(s).length;i++){h^=String(s).charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
 // Scouting confidence: older/experienced players have a track record; freshmen are projections.
 function scoutConfidence(p){if(p.age>=22||/SR/.test(p.yr))return 'high';if(p.age>=20||/JR/.test(p.yr))return 'med';return 'low';}
-// Fuzzy ceiling read: a tier (or band) with uncertainty. Exact potential stays hidden;
-// the noise is deterministic per player (so it's stable) and shrinks as scouting improves later.
+// Coach-responsive scouting sharpness (Phase 7): an Analyst head coach and a strong coordinator
+// room sharpen the roster reads, tightening the ceiling band beyond the base age/class fog.
+function scoutSharpen(){
+  let s=0;
+  if(S&&S.coach&&S.coach.history==='Analyst')s+=2;
+  const t=(S&&S.teamId)?controlled():null;
+  if(t&&t.staff){const co=t.staff.filter(c=>c.tier==='coord');
+    if(co.length){const a=co.reduce((x,c)=>x+c.rating,0)/co.length;if(a>=85)s+=2;else if(a>=78)s+=1;}}
+  return s;
+}
+// Fuzzy ceiling read: a tier (or band) with uncertainty. Exact potential stays hidden; the noise
+// is deterministic per player (so it's stable) and now SHRINKS with coaching (scoutSharpen).
 function scoutedCeiling(p){
-  const conf=scoutConfidence(p), spread=conf==='high'?0:conf==='med'?3:7;
-  const noise=spread?(hashStr(p.id)%(2*spread+1))-spread:0;
+  const conf=scoutConfidence(p), base=conf==='high'?0:conf==='med'?3:7;
+  const spread=Math.max(0,base-scoutSharpen());
+  const noise=base?(hashStr(p.id)%(2*base+1))-base:0;     // noise tied to the base fog (stable per player)
   const est=clamp(p.pot+noise,40,99);
   const li=ceilingIndex(clamp(est-spread,40,99)), hi=ceilingIndex(clamp(est+spread,40,99));
   const text=li===hi?CEILINGS[hi][1]+(spread?' ?':''):CEILINGS[li][1]+'–'+CEILINGS[hi][1]+' ?';
   return {text, best:hi, hot:hi<=2, uncertain:spread>0};   // hot = upside reaches Star or better
 }
+// Growth chip: surfaces last offseason's OVR gain on returning players (Phase 7 development).
+function growthChip(p){return p.dev>0?` <span class="tag accent" style="font-size:10px">▲ +${p.dev}</span>`:'';}
 // Development stage from growth remaining (ov→pot gap). Qualitative; exact gap not shown.
 function devStage(p){const gap=p.pot-p.ov;return gap<=2?'Maxed':gap<=7?'Polished':gap<=13?'Developing':'Raw';}
 function ceilingChip(p){const sc=scoutedCeiling(p);return `<span class="tag ${sc.hot?'accent':''}" style="font-size:10px">${sc.text}</span>`;}
@@ -2216,7 +2276,7 @@ function playerRow(p,isStarter,t){
     <div style="flex:1">
       <div class="nm">${p.fn} ${p.ln} ${p.cap?'<span class="cap">© CAPTAIN</span>':''}</div>
       <div class="meta">${p.yr} · ${p.age}y · ${p.st} · ${'★'.repeat(p.stars)}${'☆'.repeat(5-p.stars)}</div>
-      <div class="meta" style="margin-top:3px">${ceilingChip(p)} <span class="dim">${devStage(p)}</span></div>
+      <div class="meta" style="margin-top:3px">${ceilingChip(p)} <span class="dim">${devStage(p)}</span>${growthChip(p)}</div>
     </div>
     <div style="text-align:right">
       ${isStarter?'<span class="tag accent" style="font-size:10px">ST</span>':'<span class="tag" style="font-size:10px">#'+(p.so+1)+'</span>'}

@@ -423,7 +423,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 8 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 9 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -440,7 +440,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances }));
-  check('Migration: v1 save upgrades to current version (v8)', mig.v === 8, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v9)', mig.v === 9, 'version=' + mig.v);
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
   check('Migration: staff backfilled (tier/boost)', mig.tier != null && mig.boost != null, JSON.stringify({ tier: mig.tier, boost: mig.boost }));
   check('Migration: season fields backfilled (records, null schedule)', mig.rec && mig.rec.w === 0 && mig.rec.l === 0 && mig.sched === null, JSON.stringify(mig.rec));
@@ -530,13 +530,14 @@ function startServer() {
       myRosterN: t.roster.length, sizesOk: S.world.teams.every(x => x.roster.length >= 78 && x.roster.length <= 96),
       statPlayers: S.world.teams.reduce((n, x) => n + x.roster.filter(p => p.gs).length, 0),
       report: S.offseasonReport, noOldSR: t.roster.every(p => p.fromRecruit || p.yr !== undefined),
-      marketSize: S.coachMarket ? S.coachMarket.length : 0
+      marketSize: S.coachMarket ? S.coachMarket.length : 0,
+      myDev: t.roster.filter(p => p.dev > 0).length, devNeverPastPot: t.roster.every(p => p.ov <= p.pot)
     };
   });
   check('Rollover: advances to the next calendar year', roPost.year === roPre.year + 1, `${roPre.year} → ${roPost.year}`);
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
-  check('Rollover: save version bumped to 8', roPost.version === 8, 'v' + roPost.version);
+  check('Rollover: save version bumped to 9', roPost.version === 9, 'v' + roPost.version);
   check('Rollover: signed class enrolled as freshmen', roPost.myFresh === roPre.myClass && roPost.myFresh > 0, `${roPost.myFresh} enrolled (class ${roPre.myClass})`);
   check('Rollover: roster holds at ~84 league-wide', roPost.sizesOk && roPost.myRosterN >= 78 && roPost.myRosterN <= 96, 'mine ' + roPost.myRosterN);
   check('Rollover: last season stats wiped (no p.gs carryover)', roPost.statPlayers === 0, roPost.statPlayers + ' players still carry stats');
@@ -545,6 +546,27 @@ function startServer() {
   const recapTxt = await page.evaluate(() => document.querySelector('.view').innerText);
   check('Rollover: Home shows the offseason recap card', /offseason recap/i.test(recapTxt) && /freshmen on roster/i.test(recapTxt));
   await shot(page, '26-offseason-rollover.png');
+
+  // ---------- PHASE 7: development depth + coach identity ----------
+  // The rollover above developed every returning player toward (never past) their ceiling. Verify
+  // growth was recorded + surfaced, side-specific dev wiring, and the in-game coach edge.
+  check('Phase 7: returning players developed (growth recorded)', roPost.myDev > 0, roPost.myDev + ' grew');
+  check('Phase 7: development never exceeds the ceiling (ov ≤ pot)', roPost.devNeverPastPot);
+  await page.locator('[data-tid="nav-team"]').click();
+  await page.waitForTimeout(150);
+  const growthUI = await page.evaluate(() => [...document.querySelectorAll('.lrow .tag')].some(t => t.textContent.includes('▲')));
+  check('Phase 7: roster surfaces growth (▲ chip after rollover)', growthUI);
+  const p7 = await page.evaluate(() => {
+    const t = controlled(), save = S.coach.archetype;
+    S.coach.archetype = 'Manager'; const mQB = devRateFor(t, { pos: 'QB' }), mLB = devRateFor(t, { pos: 'LB' });
+    S.coach.archetype = 'Offensive Genius'; const gQB = devRateFor(t, { pos: 'QB' }), gLB = devRateFor(t, { pos: 'LB' });
+    const og = coachGameEdges(t); S.coach.archetype = 'Defensive Genius'; const dg = coachGameEdges(t);
+    S.coach.archetype = save; const baseEdge = coachGameEdges(t);
+    return { mQB, mLB, gQB, gLB, og, dg, baseEdge };
+  });
+  check('Phase 7: Off Genius speeds offensive dev only', p7.gQB > p7.mQB && Math.abs(p7.gLB - p7.mLB) < 1e-9);
+  check('Phase 7: in-game edge is side-specific (OG→offense, DG→defense)', p7.og.off > p7.og.def && p7.dg.def > p7.dg.off);
+  check('Phase 7: controlled team carries a coach game edge (Former Player default)', p7.baseEdge.off > 0);
 
   // ---------- PHASE 6: program management (finances + facilities + coaching carousel) ----------
   // We're in the post-rollover Preseason. Finances settled at rollover (lastFinances present + a

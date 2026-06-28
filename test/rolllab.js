@@ -178,6 +178,20 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('Better programs still outrate weaker ones after 5 seasons', teamOVR(teams[0].roster) > teamOVR(teams[19].roster), `${teamOVR(teams[0].roster)} vs ${teamOVR(teams[19].roster)}`);
 })();
 
+/* 8) per-player rateFor (Phase 7): a side-specific rate develops only the side it's given to */
+(function () {
+  const r = rng(2027);
+  const roster = genRoster(r, 72);
+  const before = new Map(roster.map(p => [p.id, p.ov]));
+  // offense develops at full rate, defense frozen at 0
+  const res = rolloverRoster(roster, [], 72, r, { rateFor: p => sideOf(p.pos) === 'off' ? 1.2 : 0 });
+  const ret = res.roster.filter(p => before.has(p.id));
+  const offGrew = ret.filter(p => sideOf(p.pos) === 'off' && p.ov > before.get(p.id)).length;
+  const defGrew = ret.filter(p => sideOf(p.pos) === 'def' && p.ov > before.get(p.id)).length;
+  check('rateFor honored: offense develops when defense rate is 0', offGrew > 0 && defGrew === 0, `off ${offGrew} grew, def ${defGrew} grew`);
+  check('rateFor records growth on the player (p.dev)', ret.some(p => p.dev > 0) && ret.filter(p => sideOf(p.pos) === 'def').every(p => !p.dev));
+})();
+
 const passed = results.filter(r => r.pass).length;
 console.log(`\n===== ${passed}/${results.length} rollover-lab checks passed =====`);
 process.exit(results.every(r => r.pass) ? 0 : 1);
