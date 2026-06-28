@@ -4,7 +4,7 @@ A mobile-first, single-page head-coach career sim. Pure static HTML/CSS/JS, depl
 via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 
 > This file is the project brief + working memory. It reflects the state at the end of
-> **Phase 1**. Update the "Status" lines as phases land.
+> **Phase 2**. Update the "Status" lines as phases land.
 
 ---
 
@@ -29,8 +29,10 @@ plain static files so Pages still serves it with zero config.
 
 - **Phase 1 — Shell.** ✅ DONE. Menu, 3 save slots, new-game wizard, all 134 FBS teams
   generated, home page, team page (roster + coaches), league browser.
-- **Phase 2 — Season.** Schedule generation, week advancement, standings, live rankings,
-  placeholder game sim (final scores only) to fill results.
+- **Phase 2 — Season.** ✅ DONE. Deterministic full-league schedule (~12 games/team over
+  15 weeks), week-by-week advancement, placeholder score sim (OVR gap + home field + variance),
+  W/L + conference records, record-aware live rankings, and a Season view
+  (schedule / standings / top 25 / weekly scores).
 - **Phase 3 — Play-by-play sim.** Drive/play engine. No coaching decisions yet (AJ's call).
   *Do a short design note on the sim state machine + probability model before building.*
 - **Phase 4 — Deep recruiting.** Scouting, visits, pitches, promises, commitments.
@@ -103,8 +105,14 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **2**). v1→v2 backfills staff tiers/boosts via `normalizeStaff` and
-  re-derives ratings/ranks. **Bump `version` + extend `migrateState` on any save-shape change.**
+  (currently **3**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`). Each step re-derives
+  ratings/ranks. **Bump `version` + extend `migrateState` on any save-shape change.**
+- **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
+  picks ~12 conference-weighted matchups per team then greedy edge-colors them into
+  `SEASON_WEEKS` (15). `simGame` is seeded per game id (`rng(hashStr(id)^seed)`) so a result
+  is reproducible regardless of advance order. `rankScore(t)` blends OVR with record + point
+  margin; `recomputeRanks` sorts by it (preseason it's pure OVR, so Phase 1 behavior is intact).
 - `teamRatings(roster, staff)` derives `{off,def,ovr}`; `staffBoosts(staff)` maps each
   position code to the OVR points its coaches confer (applied inside `teamRatings`).
 - `S` — live game state. `UI` — current view/tab/wizard state. `render()` swaps `#app`.
@@ -116,10 +124,14 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   version, seed, createdAt, lastSaved,
   coach: { first, last, homeState, archetype, history },
   teamId,                 // id of the controlled team
-  week, phase,            // 0, "Preseason"
-  task: { type, label, note },
+  week, phase,            // 0/"Preseason" → 1..15/"Regular Season" → "Offseason"
+  lastPlayedWeek,         // last week resolved (for the Scores tab)
+  task: { type, label, note },   // weekly opponent card during the season
+  schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
   world: { teams: [ Team, ... ] }
 }
+
+// Game: { id, week, home: teamId, away: teamId, played, hs, as }   // hs/as = home/away score
 ```
 
 ### Team object
@@ -136,6 +148,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   //   groups: [posCode,...] the coach buffs;  boost: OVR pts added to each (coord 0-2, pos 0-3)
   //   scope: display label ("OFF"/"DEF"/"ST" for coords, role code for position coaches)
   natRank, confRank, divRank,
+  rec: { w, l, cw, cl, pf, pa, streak },  // season record (overall + conference); set at kickoff
   needs: { [posCode]: true }           // positions flagged for recruiting
 }
 ```
@@ -223,8 +236,11 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
-### Stubbed in Phase 1 (intentionally inert)
-- Home "Handle it →" button (season flow → Phase 2).
+### Still stubbed (intentionally inert)
+- Game results are a placeholder score model (no play-by-play yet → Phase 3); the Home
+  "Play Week →" button resolves the whole league's week at once.
+- Offseason is a dead end for now: after week 15 the phase becomes "Offseason" with a
+  season-complete card; rollover/recruiting/development land in Phases 4–5.
 - Coach hire/fire (→ Phase 5); only salary editing works now.
 - History/archetype mechanical effects (wire in with their systems).
 - Player "stats this year" show "— preseason —" until the sim exists.
@@ -234,10 +250,14 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 
 ---
 
-## Suggested next task (Phase 2 kickoff)
+## Suggested next task (Phase 3 kickoff)
 
-1. Generate a regular-season schedule per team (conference + non-conference slate).
-2. Advance by week; resolve unplayed games with a placeholder score model driven by
-   `ratings.ovr` (+ home-field, + variance).
-3. Update W/L records; recompute rankings live; surface next opponent on the home page.
-4. Replace the preseason `task` with the real weekly opponent card.
+*Do a short design note on the sim state machine + probability model before building.*
+
+1. Replace `simGame`'s final-score-only model with a drive/play engine (down & distance,
+   clock, possessions) that **produces the same `{hs, as}`** so the season layer is untouched.
+2. Accumulate per-player stats during the sim → fill the player sheet's "Stats (this year)".
+3. Optional: a watchable game screen for the controlled team's matchup; other games stay
+   resolved instantly (as today) so advancing a week is fast.
+4. Keep determinism: seed the play engine per game id like `simGame` does, so results remain
+   reproducible from `?seed`.

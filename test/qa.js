@@ -178,6 +178,64 @@ function startServer() {
   const rowsFiltered = await page.locator('.team-pick').count();
   check('League: search filters list', rowsFiltered > 0 && rowsFiltered < rowsAll, `${rowsAll} → ${rowsFiltered}`);
 
+  // ---------- PHASE 2: SEASON ----------
+  await page.locator('[data-tid="nav-home"]').click();
+  await page.waitForTimeout(120);
+  const pre = await page.evaluate(() => ({ phase: S.phase, sched: !!S.schedule, week: S.week }));
+  check('Season: starts in Preseason with no schedule', pre.phase === 'Preseason' && !pre.sched && pre.week === 0, JSON.stringify(pre));
+
+  await page.getByRole('button', { name: /Kick off the season/ }).click();
+  await page.waitForTimeout(150);
+  const kicked = await page.evaluate(() => {
+    const cnt = {}; S.schedule.games.forEach(g => { cnt[g.home] = (cnt[g.home] || 0) + 1; cnt[g.away] = (cnt[g.away] || 0) + 1; });
+    const counts = Object.values(cnt);
+    const wb = {}; let conf = 0;
+    S.schedule.games.forEach(g => [g.home, g.away].forEach(id => { const k = id + '|' + g.week; wb[k] = (wb[k] || 0) + 1; if (wb[k] > 1) conf++; }));
+    return { phase: S.phase, week: S.week, games: S.schedule.games.length, teams: Object.keys(cnt).length, min: Math.min(...counts), max: Math.max(...counts), conflicts: conf };
+  });
+  check('Season: kickoff generates schedule + enters Regular Season', kicked.games > 600 && kicked.phase === 'Regular Season' && kicked.week === 1, JSON.stringify(kicked));
+  check('Season: all teams scheduled, ≤1 game per team per week', kicked.teams >= 130 && kicked.conflicts === 0 && kicked.max <= 12, JSON.stringify(kicked));
+  check('Season: slate near 12 games/team (no near-empty schedules)', kicked.min >= 8, 'min ' + kicked.min);
+  await shot(page, '13-home-inseason.png');
+
+  // game sim determinism: re-simming the same game id + seed reproduces the score
+  for (let i = 0; i < 3; i++) { await page.getByRole('button', { name: /Play Week/ }).click(); await page.waitForTimeout(120); }
+  const adv = await page.evaluate(() => {
+    let W = 0, L = 0; S.world.teams.forEach(x => { W += x.rec.w; L += x.rec.l; });
+    const t = controlled();
+    const sched = S.schedule.games.filter(g => (g.home === t.id || g.away === t.id) && g.week <= 3).length;
+    return { week: S.week, played: S.schedule.games.filter(g => g.played).length, lastPlayed: S.lastPlayedWeek, W, L, mySched: sched, myRec: t.rec.w + t.rec.l };
+  });
+  check('Season: advancing weeks plays games + records results', adv.week === 4 && adv.played > 0 && adv.lastPlayed === 3, JSON.stringify(adv));
+  check('Season: league W/L balanced (each game one W, one L)', adv.W === adv.L && adv.W > 0, `W${adv.W} L${adv.L}`);
+  check('Season: controlled record matches its games played', adv.myRec === adv.mySched, JSON.stringify(adv));
+  const detSim = await page.evaluate(() => {
+    const g = S.schedule.games.find(x => x.played);
+    const clone = { id: g.id, home: g.home, away: g.away, played: false, hs: null, as: null };
+    simGame(clone);
+    return g.hs === clone.hs && g.as === clone.as;
+  });
+  check('Season: game sim is deterministic (reproducible from id + seed)', detSim);
+
+  // season view tabs
+  await page.locator('[data-tid="nav-season"]').click();
+  await page.waitForTimeout(150);
+  check('Season view: opens on schedule tab', (await screen(page)) === 'season' && await page.locator('[data-tid="stab-schedule"]').isVisible());
+  check('Season view: no horizontal overflow', await overflow(page));
+  await shot(page, '14-season-schedule.png');
+  await page.locator('[data-tid="stab-standings"]').click();
+  await page.waitForTimeout(150);
+  check('Season standings: shows conference table with YOU marker', /YOU/.test(await page.evaluate(() => document.querySelector('.view').innerText)));
+  await shot(page, '15-season-standings.png');
+  await page.locator('[data-tid="stab-top25"]').click();
+  await page.waitForTimeout(150);
+  check('Season top 25: lists 25 ranked teams', (await page.locator('.lrow').count()) >= 25, (await page.locator('.lrow').count()) + ' rows');
+  await shot(page, '16-season-top25.png');
+  await page.locator('[data-tid="stab-scores"]').click();
+  await page.waitForTimeout(150);
+  check('Season scores: shows last week scoreboard', /week 3 scores/i.test(await page.evaluate(() => document.querySelector('.view').innerText)));
+  await shot(page, '17-season-scores.png');
+
   // ---------- SAVE → RELOAD → LOAD ----------
   await page.locator('[data-tid="nav-menu"]').click();
   await page.waitForTimeout(120);
@@ -192,6 +250,8 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).first().click();
   await page.waitForTimeout(150);
   check('Persistence: save survives reload + loads to Home', (await screen(page)) === 'home');
+  const seasonPersist = await page.evaluate(() => ({ sched: !!S.schedule, week: S.week, phase: S.phase, played: S.schedule ? S.schedule.games.filter(g => g.played).length : 0 }));
+  check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -207,9 +267,10 @@ function startServer() {
   await page.waitForTimeout(150);
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
-  const mig = await page.evaluate(() => ({ v: S.version, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost }));
-  check('Migration: v1 save upgrades to v2', mig.v === 2, 'version=' + mig.v);
-  check('Migration: staff backfilled (tier/boost)', mig.tier != null && mig.boost != null, JSON.stringify(mig));
+  const mig = await page.evaluate(() => ({ v: S.version, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule }));
+  check('Migration: v1 save upgrades to current version (v3)', mig.v === 3, 'version=' + mig.v);
+  check('Migration: staff backfilled (tier/boost)', mig.tier != null && mig.boost != null, JSON.stringify({ tier: mig.tier, boost: mig.boost }));
+  check('Migration: season fields backfilled (records, null schedule)', mig.rec && mig.rec.w === 0 && mig.rec.l === 0 && mig.sched === null, JSON.stringify(mig.rec));
 
   // ---------- DELETE with confirm ----------
   await page.goto(BASE, { waitUntil: 'networkidle' }); // clean reload (no ?reset)

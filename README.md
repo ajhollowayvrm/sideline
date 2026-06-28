@@ -18,7 +18,8 @@ See [`CLAUDE.md`](CLAUDE.md) for the full project brief, architecture, and roadm
 ## Test
 
 A headless-browser QA gate drives the real game on a mobile viewport and asserts
-behavior across every screen (wizard, roster, coaches, league, save/load, migration):
+behavior across every screen (wizard, roster, coaches, league, season schedule/standings,
+week sim, save/load, migration):
 
 ```sh
 npm install

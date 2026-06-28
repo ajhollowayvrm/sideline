@@ -450,6 +450,7 @@ function render(){
   applyAccent(controlled());
   if(UI.view==='home') renderHome(app);
   if(UI.view==='team') renderTeam(app);
+  if(UI.view==='season') renderSeason(app);
   if(UI.view==='browse') renderBrowse(app,false);
   if(UI.view==='program') renderProgram(app);
   renderNav(app);
@@ -567,9 +568,9 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:2,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
-     week:0,phase:'Preseason',world:ng.world,
-     task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press before camp opens.'}};
+  S={version:3,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+     week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,
+     task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // choose a save slot
   chooseSlotSheet();
 }
@@ -653,15 +654,150 @@ function migrateState(state){
     recomputeRanks(state.world);
     state.version=2;
   }
+  if((state.version||1)<3){            // Phase 2: season fields. Schedule is created at kickoff.
+    if(!('schedule' in state))state.schedule=null;
+    if(state.lastPlayedWeek==null)state.lastPlayedWeek=0;
+    state.world.teams.forEach(t=>{if(!t.rec)t.rec=emptyRec();});
+    recomputeRanks(state.world);
+    state.version=3;
+  }
   return state;
+}
+// Ranking score: preseason (no games) is pure OVR; once games are played it blends in
+// record and point margin so winners climb and undefeated underdogs can crack the polls.
+function rankScore(t){
+  const ovr=t.ratings.ovr, rec=t.rec;
+  if(!rec||(rec.w+rec.l)===0)return ovr;
+  const g=rec.w+rec.l, margin=(rec.pf-rec.pa)/g;
+  return ovr + (rec.w-rec.l)*5 + clamp(margin,-28,28)*0.4;
 }
 function recomputeRanks(world){
   const ts=world.teams;
-  [...ts].sort((a,b)=>b.ratings.ovr-a.ratings.ovr).forEach((t,i)=>t.natRank=i+1);
+  [...ts].sort((a,b)=>rankScore(b)-rankScore(a)).forEach((t,i)=>t.natRank=i+1);
   const c={},d={};ts.forEach(t=>{(c[t.conf]=c[t.conf]||[]).push(t);const k=t.conf+'|'+(t.div||'');(d[k]=d[k]||[]).push(t);});
-  Object.values(c).forEach(a=>{a.sort((x,y)=>y.ratings.ovr-x.ratings.ovr).forEach;a.sort((x,y)=>y.ratings.ovr-x.ratings.ovr);a.forEach((t,i)=>t.confRank=i+1);});
-  Object.values(d).forEach(a=>{a.sort((x,y)=>y.ratings.ovr-x.ratings.ovr);a.forEach((t,i)=>t.divRank=i+1);});
+  Object.values(c).forEach(a=>{a.sort((x,y)=>rankScore(y)-rankScore(x));a.forEach((t,i)=>t.confRank=i+1);});
+  Object.values(d).forEach(a=>{a.sort((x,y)=>rankScore(y)-rankScore(x));a.forEach((t,i)=>t.divRank=i+1);});
 }
+
+/* ============================================================
+   SEASON ENGINE — schedule, game sim, records, standings  (Phase 2)
+   ============================================================ */
+const SEASON_WEEKS=15;       // 12 games + ~3 byes, mirrors a real CFB regular season
+function emptyRec(){return {w:0,l:0,cw:0,cl:0,pf:0,pa:0,streak:0};}
+
+// Build a full-league schedule: each team ~12 games (conference-weighted), one game per
+// week, packed into SEASON_WEEKS. Deterministic from the world seed. (Validated standalone:
+// ~11.9 games/team avg, 0 same-week conflicts, no duplicate matchups.)
+function genSchedule(world,seed){
+  const ids=world.teams.map(t=>t.id);
+  const confOf={};world.teams.forEach(t=>confOf[t.id]=t.conf);
+  const r=rng((seed^0x5ca1ab1e)>>>0);
+  const TARGET=12;
+  const pri=new Map(ids.map(id=>[id,r()]));          // random per-team key → seed-varied slate
+  const adj=new Map(ids.map(id=>[id,new Set()]));
+  const deg=id=>adj.get(id).size;
+  // 1) pick matchups: repeatedly connect the neediest team to a same-conference (then any)
+  //    opponent it hasn't played, until everyone has ~12 games.
+  let guard=ids.length*TARGET*6;
+  while(guard-->0){
+    const need=ids.filter(id=>deg(id)<TARGET);
+    if(need.length<2)break;
+    need.sort((a,b)=>deg(a)-deg(b)||pri.get(a)-pri.get(b));
+    const A=need[0],an=adj.get(A);
+    let cands=need.filter(B=>B!==A&&!an.has(B));
+    if(!cands.length){cands=ids.filter(B=>B!==A&&!an.has(B)&&deg(B)<TARGET);if(!cands.length)break;}
+    const sameConf=cands.filter(B=>confOf[B]===confOf[A]);
+    const pool=sameConf.length?sameConf:cands;
+    pool.sort((a,b)=>deg(a)-deg(b)||pri.get(a)-pri.get(b));
+    const B=pool[0];adj.get(A).add(B);adj.get(B).add(A);
+  }
+  // 2) assign each matchup to the lowest week free for both teams (greedy edge-coloring).
+  const matchups=[];const seen=new Set();
+  ids.forEach(A=>adj.get(A).forEach(B=>{const k=A<B?A+'|'+B:B+'|'+A;
+    if(!seen.has(k)){seen.add(k);matchups.push({A,B,d:deg(A)+deg(B),key:r(),ha:r()});}}));
+  matchups.sort((m,n)=>n.d-m.d||m.key-n.key);   // hardest (busiest) first
+  const busy=new Map(ids.map(id=>[id,new Set()]));
+  const games=[];let gi=0;
+  matchups.forEach(m=>{
+    let wk=-1;
+    for(let w=0;w<SEASON_WEEKS;w++){if(!busy.get(m.A).has(w)&&!busy.get(m.B).has(w)){wk=w;break;}}
+    if(wk<0)return;                              // couldn't place → mutual bye (rare)
+    busy.get(m.A).add(wk);busy.get(m.B).add(wk);
+    const home=m.ha<0.5?m.A:m.B,away=m.ha<0.5?m.B:m.A;
+    games.push({id:'g'+(gi++).toString(36),week:wk+1,home,away,played:false,hs:null,as:null});
+  });
+  return {weeks:SEASON_WEEKS,games};
+}
+
+function teamById(id){return S.world.teams.find(t=>t.id===id);}
+function teamGame(teamId,week){return S.schedule?S.schedule.games.find(g=>g.week===week&&(g.home===teamId||g.away===teamId)):null;}
+function teamGames(teamId){return S.schedule?S.schedule.games.filter(g=>g.home===teamId||g.away===teamId).sort((a,b)=>a.week-b.week):[];}
+function lastGameFor(teamId){const gs=teamGames(teamId).filter(g=>g.played);return gs.length?gs[gs.length-1]:null;}
+
+function startSeason(){
+  S.schedule=genSchedule(S.world,S.seed);
+  S.world.teams.forEach(t=>t.rec=emptyRec());
+  S.phase='Regular Season';S.week=1;S.lastPlayedWeek=0;
+  recomputeRanks(S.world);
+  setWeeklyTask();
+  autosave();
+}
+
+// Deterministic placeholder result driven by OVR gap + home field, with football-shaped
+// variance. Seeded per game id so outcomes are reproducible regardless of advance order.
+function simGame(g){
+  const home=teamById(g.home),away=teamById(g.away);
+  const r=rng((hashStr(g.id)^(S.seed>>>0))>>>0);
+  const edge=(home.ratings.ovr-away.ratings.ovr)*0.85 + 3;   // +3 home field, in points
+  const noise=(r()+r()+r()-1.5)*24;                           // ~normal, std ≈ 12 pts
+  const margin=edge+noise;
+  const total=ri(r,34,62);
+  let hs=clamp(Math.round(total/2+margin/2),0,84);
+  let as=clamp(Math.round(total/2-margin/2),0,84);
+  if(hs===1)hs=r()<.5?0:3;                                    // 1 is an impossible football score
+  if(as===1)as=r()<.5?0:3;
+  if(hs===as){if(edge>=0)hs+=3;else as+=3;}                   // no ties (OT decides)
+  g.hs=hs;g.as=as;g.played=true;
+  return g;
+}
+function applyResult(g){
+  const home=teamById(g.home),away=teamById(g.away),homeWon=g.hs>g.as;
+  home.rec.pf+=g.hs;home.rec.pa+=g.as;away.rec.pf+=g.as;away.rec.pa+=g.hs;
+  const W=homeWon?home:away,L=homeWon?away:home;
+  W.rec.w++;L.rec.l++;
+  W.rec.streak=W.rec.streak>=0?W.rec.streak+1:1;
+  L.rec.streak=L.rec.streak<=0?L.rec.streak-1:-1;
+  if(home.conf===away.conf){W.rec.cw++;L.rec.cl++;}
+}
+function advanceWeek(){
+  S.schedule.games.filter(g=>g.week===S.week&&!g.played).forEach(g=>{simGame(g);applyResult(g);});
+  S.lastPlayedWeek=S.week;S.week++;
+  recomputeRanks(S.world);
+  if(S.week>S.schedule.weeks)endSeason();else setWeeklyTask();
+  autosave();
+}
+function setWeeklyTask(){
+  const t=controlled(),g=teamGame(t.id,S.week);
+  if(!g){S.task={type:'Bye',label:'Bye Week',note:'No game scheduled. Rest the roster and advance.'};return;}
+  const home=g.home===t.id,opp=teamById(home?g.away:g.home);
+  S.task={type:'Game',label:(home?'vs ':'@ ')+opp.name+' '+opp.nick,
+    note:'Week '+S.week+' · '+(home?'Home':'Away')+' · '+opp.conf+' · OVR '+opp.ratings.ovr};
+}
+function endSeason(){
+  const t=controlled();
+  S.phase='Offseason';
+  S.task={type:'Offseason',label:'Season Complete',
+    note:'Final record '+t.rec.w+'–'+t.rec.l+' ('+t.rec.cw+'–'+t.rec.cl+' '+t.conf+'). Offseason, hiring, and player development arrive in a later phase.'};
+}
+// Result of a game from one team's perspective, formatted for the UI.
+function gameView(g,teamId){
+  const home=g.home===teamId,opp=teamById(home?g.away:g.home);
+  let res='',cls='',my=null,th=null;
+  if(g.played){my=home?g.hs:g.as;th=home?g.as:g.hs;const win=my>th;
+    res=(win?'W ':'L ')+my+'–'+th;cls=win?'good':'bad';}
+  return {opp,home,res,cls,my,th,week:g.week,played:g.played};
+}
+function recStr(t){return t.rec?t.rec.w+'–'+t.rec.l:'';}
 
 /* ============================================================
    HOME PAGE
@@ -670,15 +806,39 @@ function renderHome(app){
   const t=controlled();
   const v=el('div','view');
   v.append(scoreboard(t));
-  // next task
+  // last result (once a game has been played)
+  const last=lastGameFor(t.id);
+  if(last){
+    const gv=gameView(last,t.id);
+    v.append(el('h2','sec','Last Result'));
+    const lc=el('div','card');
+    lc.innerHTML=`<div class="row spread">
+      <div class="row"><span class="dot" style="background:${gv.opp.color}"></span>
+        <div><div class="nm">${gv.home?'vs ':'@ '}${gv.opp.name}</div>
+        <div class="meta">Week ${gv.week} \u00b7 ${gv.opp.conf}</div></div></div>
+      <div class="cond ${gv.cls}" style="font-size:22px;font-weight:800">${gv.res}</div></div>`;
+    v.append(lc);
+  }
+  // next task / season control
+  const inSeason=S.phase==='Regular Season', over=S.phase==='Offseason';
   v.append(el('h2','sec','On the Clock'));
   const task=el('div','card');
-  task.innerHTML=`<div class="row spread"><span class="tag accent">${S.phase}</span><span class="meta">Week ${S.week}</span></div>
+  const wkLabel=over?'\u2014':(inSeason?'Week '+S.week:S.phase);
+  task.innerHTML=`<div class="row spread"><span class="tag accent">${S.phase}</span><span class="meta">${wkLabel}</span></div>
     <div class="cond" style="font-size:22px;font-weight:800;margin-top:10px">${S.task.label}</div>
     <div class="muted" style="font-size:13px;margin-top:4px">${S.task.note}</div>`;
-  const adv=el('button','btn','Handle it \u2192');adv.style.marginTop='12px';
-  adv.onclick=()=>toast('Season flow arrives in Phase 2');
+  const advLabel=over?'Season complete':inSeason?'Play Week '+S.week+' \u2192':'Kick off the season \u2192';
+  const adv=el('button','btn','');adv.textContent=advLabel;adv.style.marginTop='12px';
+  if(over)adv.disabled=true;
+  else adv.onclick=()=>{
+    if(inSeason){advanceWeek();const g=lastGameFor(controlled().id);render();
+      if(g){const gv=gameView(g,controlled().id);toast((gv.cls==='good'?'Won ':'Lost ')+gv.res.slice(2)+(gv.home?' vs ':' @ ')+gv.opp.abbr);}
+      else toast('Bye week \u2014 advanced');}
+    else{startSeason();render();toast('Season underway \u2014 schedule set');}
+  };
   task.append(adv);v.append(task);
+  if(inSeason||over){const sb=el('button','btn line','Season \u00b7 schedule & standings');sb.style.marginTop='10px';
+    sb.onclick=()=>{UI.view='season';render();};v.append(sb);}
   // rankings
   v.append(el('h2','sec','Standing'));
   const ranks=el('div','ranks');
@@ -701,9 +861,10 @@ function renderHome(app){
 function scoreboard(t){
   const c=el('div','topbar');
   c.style.cssText='position:sticky;top:0;z-index:20;padding-top:calc(14px + env(safe-area-inset-top,0px))';
+  const rec=(S.schedule&&t.rec)?' · '+t.rec.w+'–'+t.rec.l:'';
   c.innerHTML=`<div class="crest" style="background:${t.color};color:${textOn(t.color)}">${t.abbr}</div>
     <div style="flex:1"><h1>${t.name} ${t.nick}</h1>
-    <div class="sub">${S.coach.first} ${S.coach.last} · ${S.coach.archetype} · ${t.conf}</div></div>
+    <div class="sub">${S.coach.first} ${S.coach.last} · ${S.coach.archetype} · ${t.conf}${rec}</div></div>
     <div class="ovr ${t.ratings.ovr>=85?'elite':''}" style="width:auto;padding:6px 10px">${t.ratings.ovr}</div>`;
   return c;
 }
@@ -731,6 +892,111 @@ function renderProgram(app){
   r.append(rankPill(t.ratings.ovr,'Overall'),rankPill(t.ratings.off,'Offense'),rankPill(t.ratings.def,'Defense'));
   v.append(r);
   app.append(v);
+}
+
+/* ============================================================
+   SEASON (schedule · standings · top 25 · scores)
+   ============================================================ */
+function renderSeason(app){
+  const t=controlled();
+  const v=el('div','view');
+  v.append(scoreboard(t));
+  if(!S.schedule){
+    v.append(el('div','empty','The season hasn’t kicked off yet.\nHandle media day from the Home tab to generate the schedule.'));
+    app.append(v);return;
+  }
+  const st=UI.seasonTab||'schedule';
+  const tabs=el('div','tabs');tabs.style.marginTop='14px';
+  [['schedule','Schedule'],['standings','Standings'],['top25','Top 25'],['scores','Scores']].forEach(([k,l])=>{
+    const b=el('button',st===k?'on':'',l);b.dataset.tid='stab-'+k;
+    b.onclick=()=>{UI.seasonTab=k;render();};tabs.append(b);
+  });
+  v.append(tabs);
+  if(st==='schedule')seasonSchedule(v,t);
+  else if(st==='standings')seasonStandings(v,t);
+  else if(st==='top25')seasonTop25(v,t);
+  else seasonScores(v,t);
+  v.style.paddingBottom='10px';
+  app.append(v);
+}
+function seasonSchedule(v,t){
+  v.append(el('div','card',`<div class="kv"><span class="k">Overall</span><span class="cond" style="font-size:17px">${t.rec.w}–${t.rec.l}</span></div>
+    <div class="kv"><span class="k">Conference</span><span class="cond" style="font-size:17px">${t.rec.cw}–${t.rec.cl}</span></div>
+    <div class="kv"><span class="k">National rank</span><span class="cond" style="font-size:17px">${t.natRank<=25?'#'+t.natRank:'NR'}</span></div>`));
+  for(let w=1;w<=S.schedule.weeks;w++){
+    const g=teamGame(t.id,w),row=el('div','lrow');
+    const cur=(w===S.week&&S.phase==='Regular Season');
+    if(cur)row.style.boxShadow='inset 0 0 0 1px var(--accent)';
+    if(!g){
+      row.innerHTML=`<div class="pos" style="width:42px">WK ${w}</div><div style="flex:1"><div class="nm dim">Bye week</div></div>`;
+    }else{
+      const gv=gameView(g,t.id);
+      row.innerHTML=`<div class="pos" style="width:42px">WK ${w}</div>
+        <span class="dot" style="background:${gv.opp.color}"></span>
+        <div style="flex:1"><div class="nm">${gv.home?'vs ':'@ '}${gv.opp.abbr} <span class="dim" style="font-weight:400">${gv.opp.name}</span></div>
+        <div class="meta">${gv.opp.conf} · OVR ${gv.opp.ratings.ovr}${gv.opp.natRank<=25?' · #'+gv.opp.natRank:''}</div></div>
+        <div class="cond ${gv.cls}" style="font-size:15px;font-weight:700;min-width:54px;text-align:right">${gv.played?gv.res:(cur?'NOW':'—')}</div>`;
+    }
+    v.append(row);
+  }
+}
+function seasonStandings(v,t){
+  const conf=t.conf,teams=S.world.teams.filter(x=>x.conf===conf);
+  const divs=[...new Set(teams.map(x=>x.div||''))];
+  const sortFn=(a,b)=>(b.rec.cw-b.rec.cl)-(a.rec.cw-a.rec.cl)||(b.rec.w-b.rec.l)-(a.rec.w-a.rec.l)||rankScore(b)-rankScore(a);
+  divs.forEach(dv=>{
+    v.append(el('h2','sec',divs.length>1?(dv||conf)+' Division':conf));
+    const arr=teams.filter(x=>(x.div||'')===dv).sort(sortFn);
+    const head=el('div','row spread');head.style.cssText='margin:2px 12px 6px;font-size:10px;letter-spacing:.06em;color:var(--ink3);text-transform:uppercase';
+    head.innerHTML=`<span>Team</span><span style="display:flex;gap:14px"><span style="width:34px;text-align:right">Conf</span><span style="width:38px;text-align:right">Overall</span></span>`;
+    v.append(head);
+    arr.forEach((x,i)=>{
+      const me=x.id===t.id,row=el('div','lrow');row.dataset.id=x.id;
+      if(me)row.style.boxShadow='inset 0 0 0 1px var(--accent)';
+      row.innerHTML=`<div class="pos" style="width:20px">${i+1}</div>
+        <span class="dot" style="background:${x.color}"></span>
+        <div style="flex:1"><div class="nm">${x.name} ${me?'<span class="cap">YOU</span>':''}</div>
+        <div class="meta">${x.natRank<=25?'#'+x.natRank+" nat'l · ":''}OVR ${x.ratings.ovr}</div></div>
+        <div class="cond" style="font-size:14px;display:flex;gap:14px">
+          <span style="width:34px;text-align:right">${x.rec.cw}–${x.rec.cl}</span>
+          <span style="width:38px;text-align:right">${x.rec.w}–${x.rec.l}</span></div>`;
+      v.append(row);
+    });
+  });
+}
+function seasonTop25(v,t){
+  v.append(el('div','hint','National rankings blend team rating with results — win games and you climb.'));
+  [...S.world.teams].sort((a,b)=>a.natRank-b.natRank).slice(0,25).forEach(x=>{
+    const me=x.id===t.id,row=el('div','lrow');row.dataset.id=x.id;
+    if(me)row.style.boxShadow='inset 0 0 0 1px var(--accent)';
+    row.innerHTML=`<div class="ovr ${x.natRank<=4?'elite':''}">${x.natRank}</div>
+      <span class="dot" style="background:${x.color}"></span>
+      <div style="flex:1"><div class="nm">${x.name} <span class="dim" style="font-weight:400">${x.nick}</span> ${me?'<span class="cap">YOU</span>':''}</div>
+      <div class="meta">${x.conf} · OVR ${x.ratings.ovr}</div></div>
+      <div class="cond" style="font-size:15px;font-weight:700">${x.rec.w}–${x.rec.l}</div>`;
+    v.append(row);
+  });
+}
+function scoreSide(team,pts,won){
+  return `<div class="row spread" style="${won?'':'opacity:.5'}">
+    <span class="row" style="gap:8px"><span class="dot" style="background:${team.color}"></span>
+      <span class="nm">${team.abbr} <span class="dim" style="font-weight:400">${team.nick}</span></span></span>
+    <span class="cond ${won?'good':''}" style="font-weight:800;font-size:17px">${pts}</span></div>`;
+}
+function seasonScores(v,t){
+  const wk=S.lastPlayedWeek;
+  if(!wk){v.append(el('div','empty','No games played yet.\nAdvance a week from the Home tab to see scores.'));return;}
+  v.append(el('h2','sec','Week '+wk+' Scores'));
+  const games=S.schedule.games.filter(g=>g.week===wk&&g.played)
+    .sort((a,b)=>(teamById(b.home).ratings.ovr+teamById(b.away).ratings.ovr)-(teamById(a.home).ratings.ovr+teamById(a.away).ratings.ovr));
+  games.forEach(g=>{
+    const home=teamById(g.home),away=teamById(g.away),homeWon=g.hs>g.as;
+    const mine=(g.home===t.id||g.away===t.id),row=el('div','lrow');
+    if(mine)row.style.boxShadow='inset 0 0 0 1px var(--accent)';
+    row.innerHTML=`<div style="flex:1">${scoreSide(away,g.as,!homeWon)}<div style="height:5px"></div>${scoreSide(home,g.hs,homeWon)}</div>`;
+    v.append(row);
+  });
+  v.append(el('div','hint center',games.length+' games played · Week '+wk));
 }
 
 /* ============================================================
@@ -980,11 +1246,12 @@ function openTeamEditor(t){
    bottom nav
    ============================================================ */
 function renderNav(app){
-  if(!['home','team','browse','program'].includes(UI.view))return;
+  if(!['home','team','season','browse','program'].includes(UI.view))return;
   const nav=el('div','nav');
   const items=[
     ['home','Home','M3 11l9-8 9 8M5 10v10h14V10'],
     ['team','Team','M16 7a4 4 0 11-8 0 4 4 0 018 0zM4 21v-1a6 6 0 0112 0v1'],
+    ['season','Season','M4 6h16v14H4zM4 10h16M8 3v4M16 3v4'],
     ['browse','League','M4 6h16M4 12h16M4 18h16'],
     ['menu','Menu','M4 6h16M4 12h16M4 18h16']];
   items.forEach(([v,l,d])=>{
