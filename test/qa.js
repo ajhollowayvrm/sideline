@@ -302,7 +302,59 @@ function startServer() {
   }
   await page.locator('[data-tid="nav-home"]').click();
   await page.waitForTimeout(120);
-  check('Home: Players of the Week card shown', /Players of the Week/i.test(await page.evaluate(() => document.querySelector('.view').innerText)));
+  const homeTxt = await page.evaluate(() => document.querySelector('.view').innerText);
+  check('Home: Players of the Week card shown', /Players of the Week/i.test(homeTxt));
+  check('Home: recruiting card shown', await page.locator('[data-tid="home-recruit"]').isVisible());
+
+  // ---------- PHASE 4: recruiting (in-season actions at week 4) ----------
+  await page.locator('[data-tid="home-recruit"]').click();
+  await page.waitForTimeout(150);
+  check('Recruiting: opens on the Board tab', (await screen(page)) === 'recruit' && await page.locator('[data-tid="rtab-board"]').isVisible());
+  check('Recruiting: no horizontal overflow', await overflow(page));
+  const recPts0 = await page.evaluate(() => S.recruiting.points);
+  check('Recruiting: weekly points granted (refilled in-season)', recPts0 > 0, recPts0 + ' pts');
+  await shot(page, '22-recruiting-board.png');
+  // prospects big board
+  await page.locator('[data-tid="rtab-prospects"]').click();
+  await page.waitForTimeout(150);
+  const recRows = await page.locator('[data-tid="rec-list"] .lrow').count();
+  check('Recruiting: prospects board lists many prospects', recRows > 20, recRows + ' rows');
+  await shot(page, '23-recruiting-prospects.png');
+  // pick a 4★+ target the player has not yet offered, open its sheet
+  const tgt = await page.evaluate(() => { const r = S.recruiting.pool.find(x => !x.committedTo && x.stars >= 4 && x.iv[S.teamId] == null); return r ? { id: r.id } : null; });
+  check('Recruiting: an un-offered blue-chip target exists', !!tgt);
+  await page.locator(`[data-id="${tgt.id}"]`).first().click();
+  await page.waitForTimeout(150);
+  check('Recruiting: prospect sheet hides the raw potential number', !/Potential/.test(await page.locator('[data-tid="sheet"]').innerText()));
+  await shot(page, '24-recruiting-prospect.png');
+  await page.locator('[data-tid="rec-offer"]').click();
+  await page.waitForTimeout(150);
+  const afterOffer = await page.evaluate(id => { const r = S.recruiting.pool.find(x => x.id === id); return { board: S.recruiting.board.includes(id), iv: r.iv[S.teamId] || 0 }; }, tgt.id);
+  check('Recruiting: offer adds to board + sets a starting interest', afterOffer.board && afterOffer.iv > 0, JSON.stringify(afterOffer));
+  // scout (spends points, raises confidence)
+  const ptsBeforeScout = await page.evaluate(() => S.recruiting.points);
+  await page.locator('[data-tid="rec-scout"]').click();
+  await page.waitForTimeout(150);
+  const afterScout = await page.evaluate(id => ({ scout: S.recruiting.pool.find(x => x.id === id).scout, pts: S.recruiting.points }), tgt.id);
+  check('Recruiting: scout raises confidence and spends points', afterScout.scout > 0 && afterScout.pts < ptsBeforeScout, JSON.stringify(afterScout));
+  // pitch (spends points, raises interest)
+  await page.locator('[data-tid="rec-pitch"]').click();
+  await page.waitForTimeout(150);
+  check('Recruiting: pitch angle picker opens', await page.locator('[data-tid^="pitch-"]').first().isVisible());
+  await page.locator('[data-tid^="pitch-"]').first().click();
+  await page.waitForTimeout(150);
+  const afterPitch = await page.evaluate(id => ({ iv: S.recruiting.pool.find(x => x.id === id).iv[S.teamId], pts: S.recruiting.points }), tgt.id);
+  check('Recruiting: pitch raises interest and spends points', afterPitch.iv > afterOffer.iv && afterPitch.pts < afterScout.pts, JSON.stringify(afterPitch));
+  await page.locator('[data-tid="sheet-bg"]').click({ position: { x: 5, y: 5 } }).catch(() => {});
+  await page.waitForTimeout(100);
+  // board now shows the offered target
+  await page.locator('[data-tid="rtab-board"]').click();
+  await page.waitForTimeout(150);
+  check('Recruiting: board shows the offered target', await page.locator(`[data-id="${tgt.id}"]`).first().isVisible());
+  // class tab renders a rank + grade even before any commit
+  await page.locator('[data-tid="rtab-class"]').click();
+  await page.waitForTimeout(150);
+  check('Recruiting: Class tab shows national rank + grade', /class rank/i.test(await page.evaluate(() => document.querySelector('.view').innerText)));
 
   // season view tabs
   await page.locator('[data-tid="nav-season"]').click();
@@ -367,10 +419,11 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).first().click();
   await page.waitForTimeout(150);
   check('Persistence: save survives reload + loads to Home', (await screen(page)) === 'home');
-  const seasonPersist = await page.evaluate(() => ({ sched: !!S.schedule, week: S.week, phase: S.phase, played: S.schedule ? S.schedule.games.filter(g => g.played).length : 0, version: S.version, statPlayers: S.world.teams.reduce((n, t) => n + t.roster.filter(p => p.gs).length, 0), honorWeeks: (S.weeklyHonors || []).length }));
+  const seasonPersist = await page.evaluate(() => ({ sched: !!S.schedule, week: S.week, phase: S.phase, played: S.schedule ? S.schedule.games.filter(g => g.played).length : 0, version: S.version, statPlayers: S.world.teams.reduce((n, t) => n + t.roster.filter(p => p.gs).length, 0), honorWeeks: (S.weeklyHonors || []).length, recruitPool: S.recruiting ? S.recruiting.pool.length : 0, recruitBoard: S.recruiting ? S.recruiting.board.length : 0 }));
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
-  check('Persistence: weekly honors (v5) survive reload', seasonPersist.version === 5 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
+  check('Persistence: weekly honors (v6) survive reload', seasonPersist.version === 6 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -386,11 +439,12 @@ function startServer() {
   await page.waitForTimeout(150);
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
-  const mig = await page.evaluate(() => ({ v: S.version, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors }));
-  check('Migration: v1 save upgrades to current version (v5)', mig.v === 5, 'version=' + mig.v);
+  const mig = await page.evaluate(() => ({ v: S.version, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting }));
+  check('Migration: v1 save upgrades to current version (v6)', mig.v === 6, 'version=' + mig.v);
   check('Migration: staff backfilled (tier/boost)', mig.tier != null && mig.boost != null, JSON.stringify({ tier: mig.tier, boost: mig.boost }));
   check('Migration: season fields backfilled (records, null schedule)', mig.rec && mig.rec.w === 0 && mig.rec.l === 0 && mig.sched === null, JSON.stringify(mig.rec));
   check('Migration: weekly honors backfilled (empty array)', Array.isArray(mig.honors) && mig.honors.length === 0, JSON.stringify(mig.honors));
+  check('Migration: recruiting backfilled (null until kickoff)', mig.recruiting === null, JSON.stringify(mig.recruiting));
 
   // ---------- DELETE with confirm ----------
   await page.goto(BASE, { waitUntil: 'networkidle' }); // clean reload (no ?reset)
@@ -402,6 +456,50 @@ function startServer() {
   await page.waitForTimeout(150);
   const slotsLeft = await page.evaluate(() => [1, 2, 3].map(n => !!localStorage.getItem('sideline_slot_' + n)).filter(Boolean).length);
   check('Delete (with confirm) removes a save', slotsLeft < 3, `${slotsLeft} slots remain`);
+
+  // ---------- PHASE 4: full recruiting cycle (fast-forward a fresh season) ----------
+  // Start a clean deterministic game, aggressively recruit one target all season, run to Signing
+  // Day via direct engine calls (no viewer), then assert the class closed + landed + UI grades it.
+  await page.goto(`${BASE}?seed=2026&reset=1`, { waitUntil: 'networkidle' });
+  await page.getByRole('button', { name: 'New Game' }).click();
+  await page.getByPlaceholder('Coach').fill('Bear');
+  await page.getByPlaceholder('Surname').fill('Bryant');
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByRole('button', { name: /Continue to team select/ }).click();
+  await page.getByPlaceholder('Search teams…').fill('Alabama');
+  await page.waitForTimeout(150);
+  await page.getByRole('button', { name: /Alabama/ }).first().click();
+  await page.getByRole('button', { name: /Slot 1/ }).click();
+  await page.waitForTimeout(150);
+  await page.getByRole('button', { name: /Kick off the season/ }).click();
+  await page.waitForTimeout(150);
+  const cycle = await page.evaluate(() => {
+    const me = S.teamId;
+    const tgt = S.recruiting.pool.find(r => r.stars >= 4 && r.iv[me] == null);
+    offerRecruit(tgt);
+    let guard = 0;
+    while (S.phase === 'Regular Season' && guard++ < 40) {
+      while (S.recruiting.points >= RECRUIT_COSTS.pitch) pitchRecruit(tgt, 'winning');
+      advanceWeek();
+    }
+    const committed = S.recruiting.pool.filter(r => r.committedTo).length;
+    const mine = S.recruiting.pool.filter(r => r.committedTo === me).length;
+    return { signed: S.recruiting.signed, phase: S.phase, committed, mine, tgtMine: tgt.committedTo === me, rank: myClassRank() };
+  });
+  check('Recruiting cycle: Signing Day closes the class', cycle.signed && cycle.phase === 'Offseason');
+  check('Recruiting cycle: nearly all prospects commit league-wide', cycle.committed > 270, cycle.committed + ' commits');
+  check('Recruiting cycle: an aggressively recruited target commits to you', cycle.tgtMine);
+  check('Recruiting cycle: the controlled team signs a class', cycle.mine > 0, cycle.mine + ' signees');
+  check('Recruiting cycle: class rank is valid (1–134)', cycle.rank >= 1 && cycle.rank <= 134, '#' + cycle.rank);
+  await page.locator('[data-tid="nav-recruit"]').click();
+  await page.waitForTimeout(150);
+  await page.locator('[data-tid="rtab-class"]').click();
+  await page.waitForTimeout(150);
+  const classTxt = await page.evaluate(() => document.querySelector('.view').innerText);
+  check('Recruiting cycle: Class tab shows the signed class + grade', /class rank/i.test(classTxt) && /projected/i.test(classTxt));
+  check('Recruiting cycle: Signing Day reflected in summary (CLOSED)', /CLOSED/.test(classTxt) || /Signing Day/i.test(classTxt));
+  await shot(page, '25-recruiting-class.png');
 
   check('No uncaught JS / console errors', jsErrors.length === 0, jsErrors.slice(0, 3).join(' | '));
   await ctx.close();
