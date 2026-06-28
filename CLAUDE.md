@@ -59,7 +59,7 @@ plain static files so Pages still serves it with zero config.
   coordinators + position coaches, AI poaching, openings to fill), **finances depth**, and
   **facility upgrades** (spend `budget` to raise the 1–10 `fac` levels). Cohesive because hiring
   and upgrades both spend money and both feed recruiting/development. Today only *salary editing*
-  works. See "Phase 6 plan" below.
+  works. See "Phase 6 kickoff — implementation plan" below for the full build order + gates.
 - **Phase 7 — Development & coach identity depth.** Make growth + identity mechanically rich:
   the **deeper player development** model (side-specific **Off/Def Genius** wiring, Analyst/coach
   signals feeding growth, surfacing growth in the roster UI beyond read-only grades), remaining
@@ -309,6 +309,89 @@ all four (`simlab`/`reclab`/`rolllab`/`qa`) green each phase.
 (only the controlled team's game is watchable/replayable, so a week stays fast); recruit board
 stays **top-300 only** (the 2–3★ tail is approximated by a prestige baseline + generated filler
 freshmen, never individually modeled).
+
+## Phase 6 kickoff — implementation plan (read this first)
+
+**Goal:** turn the static money/staff fields into a living **program-management loop** — win →
+earn → spend on **facilities** and **coaches** → better development + ratings + recruiting → win
+more. Three subsystems, built and validated in this order (each is useful on its own):
+**(A) finances loop → (B) facility upgrades → (C) coaching carousel.** A/B unlock spending; C is
+the richest and leans on both. Follow the house discipline: a **pure fenced engine** validated by
+a **node lab before any UI**, a **save-version bump + `migrateState` step**, and all gates green.
+
+### What already exists (build on it, don't reinvent)
+- Team money fields (static today): `revenue`, `budget`, `payroll`, `facilityDebt`; `fac` levels
+  `{stadium,strength,training,academics,nil}` 1–10. Set once in `genWorld`.
+- Staff: `genStaff(r,prestige)`, roles `COORD_ROLES` (OC/DC/STC, `tier:'coord'`) + `POS_COACHES`
+  (`tier:'pos'`). `coachBoost(tier,rating)` → per-coach OVR boost; `staffBoosts(staff)` →
+  `teamRatings(roster,staff)`. So a hire/fire is felt in ratings *immediately*.
+- `devRate(team)` (Phase 5) already reads `fac.strength`+`fac.training` → facility upgrades feed
+  development for free. `recruitFit(team,rec)` keys off `prestige` only — `fac.nil`/`academics`
+  are **not** wired yet (Phase 6 should wire them).
+- UI: `renderProgram(app)` (money snapshot + `facBar` levels) and `renderCoaches(v,t)` (coach
+  rows; salary-edit sheet recomputes `payroll`). `money()` formats currency. `UI.view==='program'`.
+- Rollover (`rolloverSeason()`) is the **annual settle point** — finances + the coach market hook
+  in here, exactly like development does.
+
+### (A) Finances loop
+Make money resolve once a year inside `rolloverSeason()` (before rosters change), for **every**
+team so AI economies move too.
+- `resolveFinances(team)` (pure): `revenue` = conference/prestige base + **performance bonus**
+  (last season `rec.w`, `natRank`, conf finish) + a **stadium gate** term (`fac.stadium`);
+  `expenses` = `payroll` + **debt service** on `facilityDebt` (interest + principal); then
+  `budget += revenue − expenses` (cash carries over and can go **negative** → constrains spending).
+  Deterministic (optionally light seeded jitter via `rng(seed^hashStr('fin'+year+team.id))`).
+- Store a lean `team.lastFinances = {revenue, expenses, net}` for the Program UI / offseason recap.
+
+### (B) Facility upgrades
+- `facilityUpgradeCost(key, level)` (pure): escalating cost to go `level → level+1` (e.g.
+  `base[key] * (level+1)^1.6`); higher levels much pricier; cap at 10.
+- `applyFacilityUpgrade(team, key)` (app): pay from `budget` (or finance → adds `facilityDebt`),
+  `fac[key]++`, re-derive anything affected. Effects to wire: `stadium`→revenue (already in A),
+  `strength`/`training`→`devRate` (already), `nil`→add a term to `recruitFit`, `academics`→
+  `recruitFit` for academics-pref recruits (+ optionally lower promise-break transfer risk).
+- UI: in `renderProgram`, each `facBar` gets an **Upgrade (cost)** button (disabled if `budget` <
+  cost), with a finance-on-credit option. Allow only in Preseason/Offseason.
+
+### (C) Coaching carousel
+- `genCoachMarket(seed, year, world)` (pure): a deterministic **free-agent pool** (~24–40
+  candidates across coord + pos roles), top-heavy on rating; each carries `rating`, asking
+  `salary` (scales with rating), eligible role/tier. Store as `S.coachMarket` (null until first
+  offseason, created at rollover — like `S.recruiting`/`schedule`).
+- Player actions (controlled team, Offseason/Preseason): **fire** a coach (`buyoutCost(coach)` ≈
+  remaining `salary*years`, out of `budget`; coordinators are fixed slots → firing opens a vacancy
+  you must refill before kickoff; position coaches may sit vacant = lose the boost) and **hire**
+  from the market (adds `salary` to `payroll`, must fit `budget`). Recompute `payroll` +
+  `teamRatings` after any change.
+- `advanceCoachCarousel(world, market, seed, year)` (pure-ish): the AI churn at rollover — better
+  programs with openings/weak staff poach the best available (or from weaker teams), vacancies
+  fill, the market refreshes. Keep AI modest but real; **the player's good coordinators can be
+  poached** (tie job-security to prestige; NFL Transplant history could resist). Determinism by
+  `(seed, year)`.
+
+### Save shape & validation
+- New persisted: `S.coachMarket` (null until rollover), `team.lastFinances`. Bump save to
+  **version 8**; `migrateState` v7→v8 backfills `coachMarket:null` + `lastFinances` (null reads as
+  "not computed yet", created at the next rollover — same pattern as recruiting/schedule).
+- **Pure engine fenced** `// === ECONOMY ENGINE (Phase 6) START/END ===` (depends only on
+  `rng/ri/clamp/pick/hashStr` + data arrays + `coachBoost`) holding `resolveFinances`,
+  `facilityUpgradeCost`, `genCoachMarket`, `advanceCoachCarousel`, `buyoutCost`/`hireCost`.
+- New lab `test/econlab.js` → **`npm run econlab`** (extract the block like reclab/rolllab):
+  better/more-successful programs net more revenue; budget can go negative (spending is
+  constrained); facility cost escalates and an upgrade raises the right derived effect
+  (`devRate`/revenue/`recruitFit`); coach market is top-heavy + deterministic by seed; the AI
+  carousel converges (no team left with an unfilled coordinator slot; better coaches drift to
+  better programs); `payroll == Σ salaries`; multi-season money stays sane (no runaway/■death).
+- `npm run qa`: drive `renderProgram` — upgrade a facility (budget drops, level + derived rating
+  rise), fire+hire a coach (payroll + position-group boost + team OVR change), roll a season over
+  (finances resolve, `lastFinances` shown, market refreshes), v8 migration + persistence.
+- **Five gates now:** `simlab` + `reclab` + `rolllab` + **`econlab`** + `qa` — all green.
+
+### Cohesion check (why these three ship together)
+Hiring raises `payroll` (an expense in A); facility upgrades spend `budget` (A) and feed
+`devRate`/`recruitFit` (B→Phase 5/Phase 4 systems); winning raises `revenue` (A) which funds B+C.
+Each piece is inert without the money loop, so build A first, then B, then C — but land them as
+one coherent Phase 6 so the management loop actually closes.
 
 ## Planned: season awards (end of season → Phase 8)
 
