@@ -123,10 +123,13 @@ plain static files so Pages still serves it with zero config.
   (`alumniBoost` = stature × position/home-state relevance × Former-Player/HS-Legend coach amp) lands a
   big interest boost; and **legend-coaches** (`legendCoachCandidates`) occasionally re-enter the carousel
   for their alma mater (flagged `fromLegend`/`legendOf`, rating off stature). **No seeding** — history is
-  earned from played seasons. UI: a **Ring of Honor** on the Program page, the alumni picker on the
-  recruit sheet, an enshrinement line in the offseason recap, an "Alum" carousel badge. Save **v13**
-  (`team.legends`, `p.career`, `p.peakOv`, `rec.alumni`); `npm run legacylab` (27 checks). See "Phase 11
-  design — program legacy & legends" below.
+  earned from played seasons. Also added the real named **position trophies** (Outland, Davey O'Brien,
+  Doak Walker, Biletnikoff, John Mackey, Butkus, Jim Thorpe, Lou Groza, Ray Guy; Defensive POY surfaced
+  as the Bednarik) — crowned in `computeAwards`, stamped by name, weighted in the stature ladder, and
+  shown on the Awards tab. UI: a **Ring of Honor** on the Program page, the alumni picker on the recruit
+  sheet, an enshrinement line in the offseason recap, an "Alum" carousel badge. Save **v13**
+  (`team.legends`, `p.career`, `p.peakOv`, `rec.alumni`); `npm run legacylab` (31 checks) + `awardlab`
+  grew to 25 (trophies). See "Phase 11 design — program legacy & legends" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast); and
   the recruit board stays **top-300 only** (the long 2–3★ tail is approximated, never individually
@@ -271,8 +274,11 @@ Both absent-read as zero/none (no backfill). This is a change to the fenced ROLL
 ### (B) Stature — the pure score (LEGACY ENGINE)
 `legendStature(snap)` (pure, fenced `// === LEGACY ENGINE (Phase 11) START/END ===`, depends only on
 data + `clamp`): a 0..~100 score blending three components, each saturating so no single one runs away:
-- **Honors weight** — `honorWeight(award)` ladder: Heisman 100, National Def POY 80, All-American 55,
-  conf POY 45, All-Conference 25, Freshman of the Year 20 (sum across `p.honors`, then soft-capped).
+- **Honors weight** — `honorWeight(award)` ladder: Heisman 100, Bednarik (best defender) 80, national
+  **position trophies** 60 (Outland/O'Brien/Doak/Biletnikoff/Mackey/Butkus/Thorpe), All-American 55,
+  conf POY 45, K/P trophies (Groza/Ray Guy) 35, All-Conference 25, Freshman of the Year 20 (sum across
+  `p.honors`, then soft-capped). The trophies are crowned in `computeAwards` (AWARDS engine) and stamped
+  by their real names in `stampHonors`, so a two-time Outland winner reads as a bigger legend.
 - **Career milestones** — threshold bonuses on `p.career` (e.g. 10k career pass yds, 3k rush, 30+ sacks,
   300+ tackles) so a compiler with no trophies can still be a beloved great.
 - **Peak OVR** — a modest term off `p.peakOv` (a 99-rated star reads as a legend even in a down era).

@@ -62,6 +62,36 @@ check('CoY beats the underachieving blue-blood (dud 3-9 @88)', aw.coy.teamId !==
 const none = computeAwards([team('x', 'SEC', 60, { w: 0, l: 0 }, [P('QB', 'FR', { gp: 0 })])], 2027);
 check('No production → null awards (no crash)', none.heisman === null && none.poyDef === null && Array.isArray(none.allAmerican));
 
+/* position trophies (real named hardware): a clear leader at every trophy position */
+(function () {
+  const qb = P('QB', 'JR', { pYds: 4000, pTD: 42 });
+  const rb = P('RB', 'SO', { rYds: 1700, rTD: 21 });
+  const wr = P('WR', 'SR', { rec: 95, reYds: 1500, reTD: 15 });
+  const te = P('TE', 'JR', { rec: 65, reYds: 950, reTD: 12 });
+  const dt = P('DT', 'SR', { tkl: 48, sk: 16 });
+  const lb = P('LB', 'JR', { tkl: 120, sk: 8 });
+  const cb = P('CB', 'SO', { tkl: 45, dInt: 9 });
+  const k = P('K', 'SR', { fga: 30, fgm: 28, xpa: 55, xpm: 55 });
+  const punter = Object.assign(P('P', 'SR', {}), { ov: 92 });
+  const decoyP = Object.assign(P('P', 'JR', {}), { ov: 70 });
+  const T = [team('a', 'SEC', 85, { w: 12, l: 1 }, [qb, rb, wr, te, dt, lb, cb, k, punter]),
+  team('b', 'SEC', 60, { w: 6, l: 6 }, [decoyP, P('QB', 'SR', { pYds: 2000, pTD: 12, pInt: 14 })])];
+  const tw = computeAwards(T, 2028).trophies;
+  check("Davey O'Brien → best QB", tw.obrien && tw.obrien.pid === qb.id);
+  check('Doak Walker → best RB', tw.doak && tw.doak.pid === rb.id);
+  check('Biletnikoff → best WR', tw.biletnikoff && tw.biletnikoff.pid === wr.id);
+  check('John Mackey → best TE', tw.mackey && tw.mackey.pid === te.id);
+  check('Outland → best interior DL (DT)', tw.outland && tw.outland.pid === dt.id);
+  check('Butkus → best LB', tw.butkus && tw.butkus.pid === lb.id);
+  check('Jim Thorpe → best DB', tw.thorpe && tw.thorpe.pid === cb.id);
+  check('Lou Groza → best kicker (FG production)', tw.groza && tw.groza.pid === k.id && /FG/.test(tw.groza.line), tw.groza && tw.groza.line);
+  check('Ray Guy → best punter by rating', tw.rayguy && tw.rayguy.pid === punter.id, tw.rayguy && tw.rayguy.line);
+  check('Each trophy carries its real name', tw.obrien.trophy === "Davey O'Brien" && tw.outland.trophy === 'Outland' && tw.groza.trophy === 'Lou Groza');
+  // a position with no eligible player → null trophy (no crash)
+  const sparse = computeAwards([team('z', 'SEC', 60, { w: 5, l: 5 }, [P('QB', 'JR', { pYds: 1000, pTD: 8 })])], 2028).trophies;
+  check('Trophy with no eligible player is null (no TE/K/DB → null)', sparse.mackey === null && sparse.groza === null && sparse.thorpe === null);
+})();
+
 /* determinism: pure function of stats */
 const a2 = computeAwards(teams, 2027);
 check('Awards are deterministic (pure of stats)', JSON.stringify(aw) === JSON.stringify(a2));

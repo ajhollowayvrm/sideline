@@ -549,13 +549,19 @@ function startServer() {
     const offers = ensureSeriesOffers();
     const offerN = offers.length;
     const accepted = offers.length ? acceptSeriesOffer(offers[0].id) : false;
+    const tw = aw && aw.trophies ? aw.trophies : {};
+    const trophyWon = Object.keys(tw).filter(k => tw[k]).length;
     return { hasAwards: !!aw, heisman: aw && aw.heisman ? aw.heisman.name : null, allAm: aw ? aw.allAmerican.length : 0,
       allConf: aw && aw.allConference && aw.allConference[me.conf] ? aw.allConference[me.conf].length : 0,
-      honored, myState: me.homeState,
+      honored, myState: me.homeState, trophyWon, obrienQB: tw.obrien ? tw.obrien.pos : null,
+      trophyHonored: S.world.teams.reduce((n, t) => n + t.roster.filter(p => p.honors && p.honors.some(h => /Outland|O'Brien|Doak|Biletnikoff|Mackey|Butkus|Thorpe|Groza|Ray Guy/.test(h.award))).length, 0),
       seriesOk: res.ok, seriesN: S.series.length, legYears: S.series.flatMap(s => s.legs.map(l => l.year)),
       twoForOneLegs: twoForOne ? twoForOne.legs.length : 0, offerN, accepted };
   });
   check('Phase 8: season awards computed at season end', p8.hasAwards && !!p8.heisman, 'Heisman: ' + p8.heisman);
+  check('Phase 11: position trophies awarded (Outland, O’Brien, Butkus…)', p8.trophyWon >= 6, p8.trophyWon + ' trophies awarded');
+  check('Phase 11: Davey O’Brien goes to a QB', p8.obrienQB === 'QB' || p8.obrienQB === null, 'pos ' + p8.obrienQB);
+  check('Phase 11: trophy winners stamped with honors', p8.trophyHonored > 0, p8.trophyHonored + ' trophy honorees');
   check('Phase 8: All-America team selected', p8.allAm > 5, p8.allAm + ' selections');
   check('Phase 8: All-Conference team selected for the player conf', p8.allConf > 5, p8.allConf + ' selections');
   check('Phase 8: award winners stamped with honors (league-wide)', p8.honored > 0, p8.honored + ' honored players');
@@ -585,6 +591,7 @@ function startServer() {
   await page.waitForTimeout(120);
   const awardsTxt = await page.evaluate(() => document.querySelector('.view').innerText);
   check('Phase 8: Season Awards tab renders honors', /Heisman/i.test(awardsTxt) && /All-America/i.test(awardsTxt));
+  check('Phase 11: Awards tab shows the Position Trophies section', /Position Trophies/i.test(awardsTxt) && await page.locator('[data-tid="trophies"]').count() > 0);
   check('Phase 8: series card lists the booked series', await page.evaluate(() => { UI.seasonTab = 'schedule'; render(); return document.querySelector('[data-tid="series-card"]') ? document.querySelector('[data-tid="series-card"]').innerText.length > 0 : false; }));
   await shot(page, '29-awards.png');
 

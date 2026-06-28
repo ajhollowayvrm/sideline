@@ -64,6 +64,14 @@ const snap = (o) => Object.assign({ honors: [], career: {}, peakOv: 80 }, o);
     honorWeight('All-SEC') > honorWeight('Freshman of the Year'),
     `H${honorWeight('Heisman (National POY)')} > Dpoy${honorWeight('National Defensive POY')} > AA${honorWeight('All-American')} > cPOY${honorWeight('SEC Offensive POY')} > AC${honorWeight('All-SEC')} > FY${honorWeight('Freshman of the Year')}`);
   check('honorWeight: unknown label still nonzero', honorWeight('Team MVP') > 0 && honorWeight(null) === 0);
+  // Phase 11 trophies: national position hardware sits between All-American and the best-defender award
+  check('honorWeight: Bednarik renames the best-defender award (80)', honorWeight('Bednarik (Defensive POY)') === 80 && honorWeight('National Defensive POY') === 80);
+  check('honorWeight: skill position trophies outweigh All-American', honorWeight('Outland') > honorWeight('All-American') && honorWeight("Davey O'Brien") === 60 && honorWeight('Biletnikoff') === 60);
+  check('honorWeight: K/P trophies are modest (Groza/Ray Guy = 35)', honorWeight('Lou Groza') === 35 && honorWeight('Ray Guy') === 35);
+  // a multi-trophy career reads as a bigger legend than a single All-American
+  const trophyCareer = legendStature(snap({ honors: honors('Outland', 'Outland', 'Bednarik (Defensive POY)'), peakOv: 90 }));
+  const oneAA = legendStature(snap({ honors: honors('All-American'), peakOv: 90 }));
+  check('honorWeight: a decorated trophy winner outranks a one-time All-American', trophyCareer.score > oneAA.score, `${trophyCareer.score} vs ${oneAA.score}`);
 })();
 
 /* 2) stature is bounded 0..100 across extremes */

@@ -1423,10 +1423,21 @@ function advanceCoachCarousel(world,market,seed,year,opts){
 // teams array (each { id, name, abbr, color, conf, prestige, rec, roster:[{...,gs}] }) where gs is a
 // player's accumulated season box, and returns the year's honors: national Heisman (offense-of-the-
 // year, weighted by team success), Defensive POY, Freshman of the Year, per-conference POY (off+def),
-// an All-America team (best at each position), and Coach of the Year (record vs prestige expectation).
+// an All-America team (best at each position), Coach of the Year (record vs prestige expectation), and
+// (Phase 11) the real named **position trophies** — Davey O'Brien (QB), Doak Walker (RB), Biletnikoff
+// (WR), John Mackey (TE), Outland (interior DL → best DT, since OL aren't box-scored), Butkus (LB), Jim
+// Thorpe (DB), Lou Groza (K, by FG/PAT), Ray Guy (P, by rating — punting isn't box-scored). The
+// Defensive POY is surfaced as the Bednarik. Each trophy is the best eligible season by the side score.
 function awardOff(s){return (s.pYds||0)*0.04+(s.pTD||0)*4+(s.rYds||0)*0.1+(s.rTD||0)*6+(s.reYds||0)*0.1+(s.reTD||0)*6-(s.pInt||0)*2;}
 function awardDef(s){return (s.tkl||0)+(s.sk||0)*4+(s.dInt||0)*6;}
+function awardK(s){const acc=(s.fga||0)?((s.fgm||0)/s.fga):0;return (s.fgm||0)*3+(s.xpm||0)+acc*8;}
+// Position-trophy slate (real named hardware). Each is the best eligible season by the side's score.
+// Outland → best DT (interior linemen aren't box-scored; the DL approximates it). K/P handled specially.
+const TROPHY_DEFS=[["obrien","Davey O'Brien",["QB"],"off"],["doak","Doak Walker",["RB"],"off"],
+  ["biletnikoff","Biletnikoff",["WR"],"off"],["mackey","John Mackey",["TE"],"off"],
+  ["outland","Outland",["DT"],"def"],["butkus","Butkus",["LB"],"def"],["thorpe","Jim Thorpe",["CB","S"],"def"]];
 function awardLine(s,side){
+  if(side==='k'){const d=[];if(s.fga)d.push((s.fgm||0)+'/'+s.fga+' FG');if(s.xpm)d.push((s.xpm||0)+' XP');return d.join(', ')||'—';}
   if(side==='def'){const d=[];if(s.tkl)d.push(s.tkl+' tkl');if(s.sk)d.push(s.sk+' sk');if(s.dInt)d.push(s.dInt+' INT');return d.join(', ')||'—';}
   const p=[];
   if(s.pYds||s.pTD)p.push(`${s.pYds||0} pass yd${s.pTD?', '+s.pTD+' TD':''}${s.pInt?', '+s.pInt+' INT':''}`);
@@ -1441,10 +1452,11 @@ function computeAwards(teams,year){
     t.roster.forEach(p=>{if(!p.gs||!p.gs.gp)return;
       cand.push({p,t,off:awardOff(p.gs),def:awardDef(p.gs),winPct,fr:p.yr==='FR'||p.yr==='RS-FR'});});
   });
-  const empty={year,heisman:null,poyDef:null,freshman:null,coy:null,byConf:{},allAmerican:[],allConference:{}};
+  const empty={year,heisman:null,poyDef:null,freshman:null,coy:null,byConf:{},allAmerican:[],allConference:{},trophies:{}};
   if(!cand.length)return empty;
   const snap=(c,side)=>c?{pid:c.p.id,teamId:c.t.id,name:c.p.fn+' '+c.p.ln,pos:c.p.pos,abbr:c.t.abbr,
-    color:c.t.color,line:awardLine(c.p.gs,side),score:Math.round(side==='def'?c.def:c.off)}:null;
+    color:c.t.color,line:awardLine(c.p.gs,side),
+    score:Math.round(side==='def'?c.def:side==='k'?awardK(c.p.gs):c.off)}:null;
   const bestOff=arr=>arr.reduce((b,c)=>(!b||c.off>b.off)?c:b,null);
   const bestDef=arr=>arr.reduce((b,c)=>(!b||c.def>b.def)?c:b,null);
   // Heisman: best offensive season, weighted by team success (narrative bump for winners)
@@ -1464,8 +1476,25 @@ function computeAwards(teams,year){
     return(!b||over>b._o)?{_o:over,t}:b;},null);
   const coy=coyT?{teamId:coyT.t.id,abbr:coyT.t.abbr,color:coyT.t.color,name:coyT.t.name,
     rec:coyT.t.rec.w+'–'+coyT.t.rec.l,over:Math.round(coyT._o*10)/10}:null;
+  // Position trophies: the best eligible season at each, by the side's score (one national winner each).
+  const trophies={};
+  TROPHY_DEFS.forEach(([key,name,poss,side])=>{
+    const cc=cand.filter(c=>poss.indexOf(c.p.pos)>=0);
+    const best=cc.length?(side==='def'?bestDef(cc):bestOff(cc)):null;
+    trophies[key]=best?Object.assign({trophy:name},snap(best,side)):null;
+  });
+  // Lou Groza (best kicker) — ranked on field-goal + PAT production.
+  const ks=cand.filter(c=>c.p.pos==='K'&&awardK(c.p.gs)>0);
+  const groza=ks.length?ks.reduce((b,c)=>{const v=awardK(c.p.gs);return(!b||v>b._k)?Object.assign({_k:v},c):b;},null):null;
+  trophies.groza=groza?Object.assign({trophy:'Lou Groza'},snap(groza,'k')):null;
+  // Ray Guy (best punter) — punting isn't box-scored, so rank punters by rating on a contending team.
+  let pun=null;
+  teams.forEach(t=>{const g=t.rec?(t.rec.w+t.rec.l):0,wp=g?t.rec.w/g:0;
+    t.roster.forEach(p=>{if(p.pos!=='P')return;const v=(p.ov||0)+wp*3;if(!pun||v>pun._v)pun={_v:v,p,t};});});
+  trophies.rayguy=pun?{trophy:'Ray Guy',pid:pun.p.id,teamId:pun.t.id,name:pun.p.fn+' '+pun.p.ln,pos:'P',
+    abbr:pun.t.abbr,color:pun.t.color,line:(pun.p.ov||0)+' OVR',score:pun.p.ov||0}:null;
   return {year,heisman:snap(heis,'off'),poyDef:snap(defPoy,'def'),
-    freshman:frPoy?snap(frPoy,frPoy.def>frPoy.off?'def':'off'):null,coy,byConf,allAmerican,allConference};
+    freshman:frPoy?snap(frPoy,frPoy.def>frPoy.off?'def':'off'):null,coy,byConf,allAmerican,allConference,trophies};
 }
 // === AWARDS ENGINE (Phase 8) END ===
 
@@ -1481,11 +1510,16 @@ function computeAwards(teams,year){
 // down era still reads as a legend). History is EARNED — there is no seeding; a fresh dynasty's ring
 // is empty and fills as your stars graduate.
 
+// National position-trophy weights (real named hardware). Keyed by the exact label stampHonors writes.
+const TROPHY_WEIGHTS={"Davey O'Brien":60,"Doak Walker":60,"Biletnikoff":60,"John Mackey":60,
+  "Outland":60,"Butkus":60,"Jim Thorpe":60,"Lou Groza":35,"Ray Guy":35};
 // Points per honor (matched against the labels stampHonors writes). National hardware ranks highest.
 function honorWeight(award){
   if(!award)return 0;
   if(award.indexOf('Heisman')>=0)return 100;            // National POY
-  if(award.indexOf('National Defensive POY')>=0)return 80;
+  if(award.indexOf('Bednarik')>=0)return 80;            // best defender (was 'National Defensive POY')
+  if(award.indexOf('National Defensive POY')>=0)return 80;   // legacy saves stamped pre-rename
+  if(TROPHY_WEIGHTS[award])return TROPHY_WEIGHTS[award]; // national position trophy
   if(award==='All-American')return 55;
   if(award.indexOf('Freshman of the Year')>=0)return 20;
   if(award.indexOf('POY')>=0)return 45;                 // conference Offensive/Defensive POY
@@ -1644,9 +1678,11 @@ function stampHonors(aw){
   const give=(snap,label)=>{if(!snap)return;const t=teamById(snap.teamId);if(!t)return;
     const p=t.roster.find(x=>x.id===snap.pid);if(!p)return;(p.honors=p.honors||[]).push({year:aw.year,award:label});};
   give(aw.heisman,'Heisman (National POY)');
-  give(aw.poyDef,'National Defensive POY');
+  give(aw.poyDef,'Bednarik (Defensive POY)');
   give(aw.freshman,'Freshman of the Year');
   (aw.allAmerican||[]).forEach(a=>give(a,'All-American'));
+  // Position trophies (national, one winner each) — stamped by their real names.
+  Object.values(aw.trophies||{}).forEach(tr=>{if(tr)give(tr,tr.trophy);});
   // Phase 11: stamp EVERY conference's first team + POYs (not just the controlled one), so AI
   // legends carry real résumés league-wide. Honors stay sparse-stored (only on actual winners).
   Object.entries(aw.allConference||{}).forEach(([cf,team])=>{(team||[]).forEach(a=>give(a,'All-'+cf));});
@@ -2181,8 +2217,8 @@ function renderHome(app){
       v.append(el('h2','sec',A.year+' Awards'));
       const ac=el('div','card');ac.dataset.tid='awards-card';
       const coy=A.coy?`<div class="row spread" style="margin:6px 0"><span class="meta dim">Coach of the Year</span><span class="nm">${A.coy.name} <span class="dim">${A.coy.rec}</span></span></div>`:'';
-      ac.innerHTML=awardRow('Heisman',A.heisman)+awardRow('Def. POY',A.poyDef)+awardRow('Freshman',A.freshman)+coy;
-      const more=el('button','btn line','Full awards & All-America');more.style.marginTop='10px';
+      ac.innerHTML=awardRow('Heisman',A.heisman)+awardRow('Bednarik',A.poyDef)+awardRow('Freshman',A.freshman)+coy;
+      const more=el('button','btn line','Full awards, trophies & All-America');more.style.marginTop='10px';
       more.onclick=()=>{UI.view='season';UI.seasonTab='awards';render();};
       ac.append(more);v.append(ac);
     }
@@ -2637,8 +2673,19 @@ function seasonAwards(v,t){
     <div class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${A.coy.color};flex:none"></span>
       <div class="nm">${A.coy.name} <span class="dim" style="font-weight:400">${A.coy.rec}</span></div></div>
     <span class="tag accent" style="font-size:10px;flex:none">Coach of Yr</span></div>`:'';
-  nat.innerHTML=awardRow('Heisman',A.heisman)+awardRow('Def. POY',A.poyDef)+awardRow('Freshman',A.freshman)+coy;
+  nat.innerHTML=awardRow('Heisman',A.heisman)+awardRow('Bednarik',A.poyDef)+awardRow('Freshman',A.freshman)+coy;
   v.append(nat);
+  // Position trophies (real named national hardware)
+  const TR_ORDER=[['obrien','Davey O’Brien'],['doak','Doak Walker'],['biletnikoff','Biletnikoff'],
+    ['mackey','John Mackey'],['outland','Outland'],['butkus','Butkus'],['thorpe','Jim Thorpe'],
+    ['groza','Lou Groza'],['rayguy','Ray Guy']];
+  const trs=A.trophies||{};
+  if(TR_ORDER.some(([k])=>trs[k])){
+    v.append(el('h2','sec','Position Trophies'));
+    const tc=el('div','card');tc.dataset.tid='trophies';
+    tc.innerHTML=TR_ORDER.map(([k,label])=>awardRow(label,trs[k])).join('');
+    v.append(tc);
+  }
   // conference POY (controlled team's conference)
   const cc=A.byConf&&A.byConf[t.conf];
   if(cc){v.append(el('h2','sec',t.conf+' POY'));
