@@ -151,6 +151,21 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('NFL Transplant trades board slots for prestige', nfl.prestige > 0 && nfl.slots < 0, `prestige +${nfl.prestige}, slots ${nfl.slots}`);
 })();
 
+/* 7) AI geography (Phase 8): an in-state program lands more of its in-state prospects than the
+   same program with no home state (geography off). */
+(function () {
+  const seed = 55;
+  function txLanded(geo) {
+    const teams = genWorld(seed);
+    const me = teams[40]; me.prestige = 72; if (geo) me.homeState = 'TX';
+    const pool = genRecruits(seed, teams);
+    for (let w = 1; w <= 15; w++) advanceRecruiting(pool, teams, w, 15, seed);
+    return pool.filter(r => r.committedTo === me.id && r.st === 'TX').length;
+  }
+  const withGeo = txLanded(true), without = txLanded(false);
+  check('AI geography: in-state program lands more in-state recruits', withGeo > without, `geo ${withGeo} vs none ${without}`);
+})();
+
 const passed = results.filter(r => r.pass).length;
 const summary = runCycle(2026);
 const signedPct = (100 * summary.pool.filter(r => r.signed).length / summary.pool.length).toFixed(0);

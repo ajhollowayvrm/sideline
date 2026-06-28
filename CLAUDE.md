@@ -75,12 +75,17 @@ plain static files so Pages still serves it with zero config.
   in commit + watch paths). **Coach-responsive scouting fog** (`scoutSharpen`: Analyst + a strong
   coordinator room tighten the roster ceiling band). Save **v9** (optional `p.dev`); rolllab grew to
   20 checks (per-player `rateFor`), qa drives the dev/edge/growth surfacing.
-- **Phase 8 — Schedule, geography & awards.** Season structure + end-of-season payoff:
-  **non-conference series scheduling** (multi-year; forces a two-phase `genSchedule`), **AI
-  geography** (a home state per `TEAMS` entry so regional recruiting is real for AI, not just the
-  player), and **season awards** (national POY/Heisman, All-Conference/All-American, conf POY,
-  Freshman of the Year, Coach of the Year, plus the **Coach of the Week** deferred from 3.5) with
-  cross-season award history. See "Planned: season awards" + "Planned: non-conference series".
+- **Phase 8 — Schedule, geography & awards.** ✅ DONE. Season structure + end-of-season payoff.
+  **AI geography** (`TEAM_STATE` → `team.homeState`; `recruitFit` + `genRecruits` now weight
+  in-state proximity for every program, not just the player). **Season awards** (pure `AWARDS
+  ENGINE`: Heisman/National POY, Defensive POY, Freshman of the Year, per-conference POY,
+  All-America team, Coach of the Year — computed at `endSeason` from season `p.gs`, stamped onto
+  winners' `p.honors`, logged in `S.awards`; **Coach of the Week** now crowned each week too) with a
+  Season **Awards** tab + Home ceremony card + `npm run awardlab` (12 checks). **Non-conference
+  series** (`S.series` multi-year agreements; `genSchedule` is now two-phase — series legs lock as
+  fixed edges, byte-identical when none; home-and-home / neutral / buy games proposed via a sheet,
+  AI accepts on prestige fit/guarantee). Save **v10** (`S.awards`, `S.series`, `team.homeState`,
+  optional `p.honors`). See "Planned: season awards" + "Planned: non-conference series".
 - **Phase 9 — Tech debt & scale.** Do once per-season history accrues: the **seed + diff save
   optimization** (saves still store the full ~2 MB world vs the ~5 MB cap) and an optional
   **module/build split** (today everything is global in one `index.html`).
@@ -514,8 +519,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
   (Phase 5 rollover); v7→v8 backfills `S.coachMarket=null` (created at the first offseason) +
   per-team `lastFinances=null` (Phase 6 economy); v8→v9 is a structural no-op (per-player `p.dev`
-  offseason growth, Phase 7 — absence reads as "no growth yet"). Each step re-derives ratings/ranks
-  where needed.
+  offseason growth, Phase 7 — absence reads as "no growth yet"); v9→v10 backfills `S.awards=[]` +
+  `S.series=[]` + per-team `homeState` (from `TEAM_STATE`), with `p.honors` optional (Phase 8
+  geography/awards/series). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into

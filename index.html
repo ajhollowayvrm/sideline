@@ -99,8 +99,9 @@ h2.sec:first-child{margin-top:6px}
 .cap{color:var(--accent);font-weight:700;font-size:11px}
 
 /* tabs */
-.tabs{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:14px}
-.tabs button{flex:1;padding:9px;border-radius:9px;font-family:'Saira Condensed';font-weight:700;
+.tabs{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:14px;overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tabs button{flex:1 0 auto;white-space:nowrap;padding:9px;border-radius:9px;font-family:'Saira Condensed';font-weight:700;
   font-size:14px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink3)}
 .tabs button.on{background:var(--accent);color:var(--accent-ink)}
 
@@ -300,6 +301,21 @@ Auburn:15,Miami:15,"Texas A&M":15,Washington:16,Utah:14,Wisconsin:12,Mississippi
 "Notre Dame ":0,"Boise State":12,Tulane:8,SMU:9,"James Madison":7,Liberty:6,Memphis:6,Army:6,Navy:5};
 const CONF_BASE={"SEC":62,"Big Ten":60,"ACC":54,"Big 12":54,"Pac-12":48,"American":44,"Mountain West":42,
 "Sun Belt":40,"MAC":38,"C-USA":37,"Independent":48};
+// Home state per program (keyed by abbr) — Phase 8 AI geography, so regional recruiting is real
+// for every school (not just the player via coach.homeState). Best-read as of early 2026.
+const TEAM_STATE={ALA:'AL',ARK:'AR',AUB:'AL',FLA:'FL',UGA:'GA',UK:'KY',LSU:'LA',MSST:'MS',MIZ:'MO',OU:'OK',
+MISS:'MS',SC:'SC',TENN:'TN',TEX:'TX',TAMU:'TX',VAN:'TN',ILL:'IL',IND:'IN',IOWA:'IA',MD:'MD',MICH:'MI',
+MSU:'MI',MINN:'MN',NEB:'NE',NW:'IL',OSU:'OH',ORE:'OR',PSU:'PA',PUR:'IN',RUT:'NJ',UCLA:'CA',USC:'CA',
+WASH:'WA',WIS:'WI',BC:'MA',CAL:'CA',CLEM:'SC',DUKE:'NC',FSU:'FL',GT:'GA',LOU:'KY',MIA:'FL',NCST:'NC',
+UNC:'NC',PITT:'PA',SMU:'TX',STAN:'CA',SYR:'NY',UVA:'VA',VT:'VA',WAKE:'NC',ARIZ:'AZ',ASU:'AZ',BAY:'TX',
+BYU:'UT',CIN:'OH',COL:'CO',HOU:'TX',ISU:'IA',KU:'KS',KSU:'KS',OKST:'OK',TCU:'TX',TTU:'TX',UCF:'FL',
+UTAH:'UT',WVU:'WV',ORST:'OR',WSU:'WA',ARMY:'NY',CLT:'NC',ECU:'NC',FAU:'FL',MEM:'TN',NAVY:'MD',UNT:'TX',
+RICE:'TX',USF:'FL',TEM:'PA',TUL:'LA',TLSA:'OK',UAB:'AL',UTSA:'TX',AF:'CO',BSU:'ID',CSU:'CO',FRES:'CA',
+HAW:'HI',NEV:'NV',UNM:'NM',SDSU:'CA',SJSU:'CA',UNLV:'NV',USU:'UT',WYO:'WY',APP:'NC',ARST:'AR',CCU:'SC',
+GASO:'GA',GAST:'GA',JMU:'VA',UL:'LA',ULM:'LA',MRSH:'WV',ODU:'VA',USA:'AL',USM:'MS',TXST:'TX',TROY:'AL',
+AKR:'OH',BALL:'IN',BGSU:'OH',BUFF:'NY',CMU:'MI',EMU:'MI',KENT:'OH','M-OH':'OH',UMASS:'MA',NIU:'IL',
+OHIO:'OH',TOL:'OH',WMU:'MI',FIU:'FL',JVST:'AL',KENN:'GA',LIB:'VA',LT:'LA',MTSU:'TN',NMSU:'NM',SHSU:'TX',
+UTEP:'TX',WKU:'KY',ND:'IN',CONN:'CT'};
 
 /* ---------- world generation ---------- */
 function genPlayer(r,prestige,posCode){
@@ -400,6 +416,7 @@ function genWorld(seed){
     const payroll=staff.reduce((t,s)=>t+s.salary,0);
     const budget=Math.round(revenue*0.18 + ri(r,-3,4)*1e6);
     return {id:abbr.toLowerCase().replace(/[^a-z0-9]/g,''),name,nick,abbr,conf,div,color,
+      homeState:TEAM_STATE[abbr]||pick(r,STATES),
       prestige,roster,ratings,fac,revenue,budget,staff,payroll,
       facilityDebt:Math.round(ri(r,0,prestige>70?40:12)*1e6)};
   });
@@ -584,9 +601,9 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:9,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:10,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
-     recruiting:null,coachMarket:null,
+     recruiting:null,coachMarket:null,awards:[],series:[],
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // choose a save slot
   chooseSlotSheet();
@@ -644,6 +661,7 @@ function mergeRosters(ng,data){
       const staff=genStaff(rng(id.length*7+1),td.prestige||60);
       t={id,name:td.name||id,nick:td.nickname||'',abbr:(td.abbr||id.slice(0,4)).toUpperCase(),
          conf:td.conference||'Independent',div:td.division||'',color:td.color||'#888',
+         homeState:td.homeState||TEAM_STATE[(td.abbr||'').toUpperCase()]||'TX',
          prestige:td.prestige||60,roster,ratings:teamRatings(roster,staff),
          fac:Object.assign({stadium:5,strength:5,training:5,academics:5,nil:5},td.facilities||{}),
          revenue:30e6,budget:6e6,staff,payroll:0,facilityDebt:0};
@@ -701,6 +719,12 @@ function migrateState(state){
   if((state.version||1)<9){            // Phase 7: per-player offseason growth (p.dev). Absence
     state.version=9;                   // reads as "no growth recorded yet" → no backfill needed.
   }
+  if((state.version||1)<10){           // Phase 8: AI geography + season awards + non-conf series.
+    if(!Array.isArray(state.awards))state.awards=[];
+    if(!Array.isArray(state.series))state.series=[];
+    state.world.teams.forEach(t=>{if(!t.homeState)t.homeState=TEAM_STATE[t.abbr]||'TX';});
+    state.version=10;                  // p.honors stays optional (absence reads as no honors)
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -728,7 +752,11 @@ function emptyRec(){return {w:0,l:0,cw:0,cl:0,pf:0,pa:0,streak:0};}
 // Build a full-league schedule: each team ~12 games (conference-weighted), one game per
 // week, packed into SEASON_WEEKS. Deterministic from the world seed. (Validated standalone:
 // ~11.9 games/team avg, 0 same-week conflicts, no duplicate matchups.)
-function genSchedule(world,seed){
+//
+// Phase 8 two-phase: `locked` = this year's non-conference series legs ({home,away,neutral}). They
+// are seeded as fixed edges (forced host) FIRST, then the conference/auto slate fills around them and
+// both are edge-colored into weeks together. With no series the path is byte-identical to before.
+function genSchedule(world,seed,locked){
   const ids=world.teams.map(t=>t.id);
   const confOf={};world.teams.forEach(t=>confOf[t.id]=t.conf);
   const r=rng((seed^0x5ca1ab1e)>>>0);
@@ -736,6 +764,12 @@ function genSchedule(world,seed){
   const pri=new Map(ids.map(id=>[id,r()]));          // random per-team key → seed-varied slate
   const adj=new Map(ids.map(id=>[id,new Set()]));
   const deg=id=>adj.get(id).size;
+  // 0) lock series legs as fixed edges (forced host) before the auto-fill
+  const lockMap=new Map();
+  (locked||[]).forEach(L=>{if(!adj.has(L.home)||!adj.has(L.away)||L.home===L.away)return;
+    if(adj.get(L.home).has(L.away))return;
+    const k=L.home<L.away?L.home+'|'+L.away:L.away+'|'+L.home;
+    adj.get(L.home).add(L.away);adj.get(L.away).add(L.home);lockMap.set(k,L);});
   // 1) pick matchups: repeatedly connect the neediest team to a same-conference (then any)
   //    opponent it hasn't played, until everyone has ~12 games.
   let guard=ids.length*TARGET*6;
@@ -754,8 +788,8 @@ function genSchedule(world,seed){
   // 2) assign each matchup to the lowest week free for both teams (greedy edge-coloring).
   const matchups=[];const seen=new Set();
   ids.forEach(A=>adj.get(A).forEach(B=>{const k=A<B?A+'|'+B:B+'|'+A;
-    if(!seen.has(k)){seen.add(k);matchups.push({A,B,d:deg(A)+deg(B),key:r(),ha:r()});}}));
-  matchups.sort((m,n)=>n.d-m.d||m.key-n.key);   // hardest (busiest) first
+    if(!seen.has(k)){seen.add(k);matchups.push({A,B,d:deg(A)+deg(B),key:r(),ha:r(),lock:lockMap.get(k)||null});}}));
+  matchups.sort((m,n)=>(n.lock?1:0)-(m.lock?1:0)||n.d-m.d||m.key-n.key);   // locked first, then hardest
   const busy=new Map(ids.map(id=>[id,new Set()]));
   const games=[];let gi=0;
   matchups.forEach(m=>{
@@ -763,10 +797,18 @@ function genSchedule(world,seed){
     for(let w=0;w<SEASON_WEEKS;w++){if(!busy.get(m.A).has(w)&&!busy.get(m.B).has(w)){wk=w;break;}}
     if(wk<0)return;                              // couldn't place → mutual bye (rare)
     busy.get(m.A).add(wk);busy.get(m.B).add(wk);
-    const home=m.ha<0.5?m.A:m.B,away=m.ha<0.5?m.B:m.A;
-    games.push({id:'g'+(gi++).toString(36),week:wk+1,home,away,played:false,hs:null,as:null});
+    const home=m.lock?m.lock.home:(m.ha<0.5?m.A:m.B),away=m.lock?m.lock.away:(m.ha<0.5?m.B:m.A);
+    const g={id:'g'+(gi++).toString(36),week:wk+1,home,away,played:false,hs:null,as:null};
+    if(m.lock){g.series=true;if(m.lock.neutral)g.neutral=true;}
+    games.push(g);
   });
   return {weeks:SEASON_WEEKS,games};
+}
+// This year's series legs (Phase 8), as locked schedule edges for genSchedule.
+function seriesLegsForYear(year){
+  const out=[];(S.series||[]).forEach(s=>(s.legs||[]).forEach(l=>{
+    if(l.year===year&&teamById(l.home)&&teamById(l.away))out.push({home:l.home,away:l.away,neutral:!!l.neutralSite});}));
+  return out;
 }
 
 function teamById(id){return S.world.teams.find(t=>t.id===id);}
@@ -775,7 +817,7 @@ function teamGames(teamId){return S.schedule?S.schedule.games.filter(g=>g.home==
 function lastGameFor(teamId){const gs=teamGames(teamId).filter(g=>g.played);return gs.length?gs[gs.length-1]:null;}
 
 function startSeason(){
-  S.schedule=genSchedule(S.world,S.seed);
+  S.schedule=genSchedule(S.world,S.seed,seriesLegsForYear(S.year||2026));
   S.world.teams.forEach(t=>t.rec=emptyRec());
   S.weeklyHonors=[];
   S.phase='Regular Season';S.week=1;S.lastPlayedWeek=0;
@@ -976,7 +1018,10 @@ function recruitFit(team,rec){
     fac+=((team.fac.nil||5)-5)*0.012;
     if(rec.prefs&&rec.prefs.indexOf('academics')>=0)fac+=((team.fac.academics||5)-5)*0.014;
   }
-  return clamp(prox+need+fac,0,1.15);
+  // AI geography (Phase 8): an in-state program is a stronger fit. Guarded so home-state-less
+  // teams (the recruit lab) are unaffected. The player also feels this via coach.homeState.
+  if(team.homeState&&rec.st&&team.homeState===rec.st)fac+=0.10;
+  return clamp(prox+need+fac,0,1.2);
 }
 // Class-ranking value of a landed prospect, and a team's total class score (landed value + a
 // prestige baseline standing in for the ~20 unmodeled 2–3★ depth signees every program lands).
@@ -1000,10 +1045,10 @@ function genRecruits(seed,teams){
     const p1=pick(r,PREFS); let p2=pick(r,PREFS),guard=0; while(p2===p1&&guard++<6)p2=pick(r,PREFS);
     const target=stars===5?88:stars===4?72:56;
     const nSuit=stars===5?ri(r,4,6):stars===4?ri(r,3,5):ri(r,2,4);
-    const ranked=teams.map(t=>({t,s:(1-Math.abs(t.prestige-target)/50)+r()*0.6}))
+    const ranked=teams.map(t=>({t,s:(1-Math.abs(t.prestige-target)/50)+r()*0.6+((t.homeState&&t.homeState===st)?0.3:0)}))
       .sort((a,b)=>b.s-a.s).slice(0,nSuit);
     const iv={};
-    ranked.forEach((e,k)=>{const fit=recruitFit(e.t,{stars,pos});
+    ranked.forEach((e,k)=>{const fit=recruitFit(e.t,{stars,pos,st});
       iv[e.t.id]=clamp(Math.round(20+fit*26+ri(r,-4,6)-k*2),8,70);});
     pool.push({id:'r'+i.toString(36)+(seed>>>0).toString(36).slice(-2),
       fn:pick(r,FN),ln:pick(r,LN),pos,st,stars,ov,pot,
@@ -1250,6 +1295,55 @@ function advanceCoachCarousel(world,market,seed,year,opts){
 }
 // === ECONOMY ENGINE (Phase 6) END ===
 
+// === AWARDS ENGINE (Phase 8) START ===
+// Pure, deterministic season-awards model (no rng — a pure function of season stats + records).
+// Depends only on POS (data array), so test/awardlab.js can extract + validate it offline. Reads a
+// teams array (each { id, name, abbr, color, conf, prestige, rec, roster:[{...,gs}] }) where gs is a
+// player's accumulated season box, and returns the year's honors: national Heisman (offense-of-the-
+// year, weighted by team success), Defensive POY, Freshman of the Year, per-conference POY (off+def),
+// an All-America team (best at each position), and Coach of the Year (record vs prestige expectation).
+function awardOff(s){return (s.pYds||0)*0.04+(s.pTD||0)*4+(s.rYds||0)*0.1+(s.rTD||0)*6+(s.reYds||0)*0.1+(s.reTD||0)*6-(s.pInt||0)*2;}
+function awardDef(s){return (s.tkl||0)+(s.sk||0)*4+(s.dInt||0)*6;}
+function awardLine(s,side){
+  if(side==='def'){const d=[];if(s.tkl)d.push(s.tkl+' tkl');if(s.sk)d.push(s.sk+' sk');if(s.dInt)d.push(s.dInt+' INT');return d.join(', ')||'—';}
+  const p=[];
+  if(s.pYds||s.pTD)p.push(`${s.pYds||0} pass yd${s.pTD?', '+s.pTD+' TD':''}${s.pInt?', '+s.pInt+' INT':''}`);
+  if(s.rYds||s.rTD)p.push(`${s.rYds||0} rush yd${s.rTD?', '+s.rTD+' TD':''}`);
+  if(s.reYds||s.reTD)p.push(`${s.rec||0} rec, ${s.reYds||0} yd${s.reTD?', '+s.reTD+' TD':''}`);
+  return p.join(' · ')||'—';
+}
+function computeAwards(teams,year){
+  const cand=[];
+  teams.forEach(t=>{
+    const g=t.rec?(t.rec.w+t.rec.l):0, winPct=g?t.rec.w/g:0;
+    t.roster.forEach(p=>{if(!p.gs||!p.gs.gp)return;
+      cand.push({p,t,off:awardOff(p.gs),def:awardDef(p.gs),winPct,fr:p.yr==='FR'||p.yr==='RS-FR'});});
+  });
+  const empty={year,heisman:null,poyDef:null,freshman:null,coy:null,byConf:{},allAmerican:[]};
+  if(!cand.length)return empty;
+  const snap=(c,side)=>c?{pid:c.p.id,teamId:c.t.id,name:c.p.fn+' '+c.p.ln,pos:c.p.pos,abbr:c.t.abbr,
+    color:c.t.color,line:awardLine(c.p.gs,side),score:Math.round(side==='def'?c.def:c.off)}:null;
+  const bestOff=arr=>arr.reduce((b,c)=>(!b||c.off>b.off)?c:b,null);
+  const bestDef=arr=>arr.reduce((b,c)=>(!b||c.def>b.def)?c:b,null);
+  // Heisman: best offensive season, weighted by team success (narrative bump for winners)
+  const heis=cand.reduce((b,c)=>{const v=c.off*(1+c.winPct*0.4);return(!b||v>b._v)?Object.assign({_v:v},c):b;},null);
+  const defPoy=bestDef(cand);
+  const frs=cand.filter(c=>c.fr);
+  const frPoy=frs.length?frs.reduce((b,c)=>{const v=Math.max(c.off,c.def*1.2);return(!b||v>b._v)?Object.assign({_v:v},c):b;},null):null;
+  const byConf={};[...new Set(cand.map(c=>c.t.conf))].forEach(cf=>{const cc=cand.filter(c=>c.t.conf===cf);
+    byConf[cf]={off:snap(bestOff(cc),'off'),def:snap(bestDef(cc),'def')};});
+  const allAmerican=POS.map(([code])=>{const cc=cand.filter(c=>c.p.pos===code);if(!cc.length)return null;
+    const best=cc.reduce((b,c)=>{const v=Math.max(c.off,c.def);return(!b||v>b._v)?Object.assign({_v:v},c):b;},null);
+    return Object.assign({pos:code},snap(best,best.def>best.off?'def':'off'));}).filter(Boolean);
+  const coyT=teams.reduce((b,t)=>{if(!t.rec||(t.rec.w+t.rec.l)===0)return b;const over=t.rec.w-(t.prestige||50)/10;
+    return(!b||over>b._o)?{_o:over,t}:b;},null);
+  const coy=coyT?{teamId:coyT.t.id,abbr:coyT.t.abbr,color:coyT.t.color,name:coyT.t.name,
+    rec:coyT.t.rec.w+'–'+coyT.t.rec.l,over:Math.round(coyT._o*10)/10}:null;
+  return {year,heisman:snap(heis,'off'),poyDef:snap(defPoy,'def'),
+    freshman:frPoy?snap(frPoy,frPoy.def>frPoy.off?'def':'off'):null,coy,byConf,allAmerican};
+}
+// === AWARDS ENGINE (Phase 8) END ===
+
 // In-game coach identity (Phase 7): a small, side-specific rating edge the controlled team plays
 // with — Motivator effort + Former Player respect + Coordinator game-planning lift both sides;
 // Offensive/Defensive Genius sharpen their own side. AI teams get none (z). Applied OUTSIDE the
@@ -1329,8 +1423,15 @@ function computeWeeklyHonors(week,boxes){
   const mk=(c,side)=>c?{pid:c.p.id,teamId:c.t.id,name:c.p.fn+' '+c.p.ln,pos:c.p.pos,abbr:c.t.abbr,color:c.t.color,line:honorLine(c.s,side)}:null;
   const pick=arr=>({off:mk(bestBy(arr,'off'),'off'),def:mk(bestBy(arr,'def'),'def')});
   const byConf={};[...new Set(cand.map(c=>c.conf))].forEach(cf=>byConf[cf]=pick(cand.filter(c=>c.conf===cf)));
+  // Coach of the Week (Phase 8, deferred from 3.5): the biggest upset win of the week.
+  let cotw=null;
+  boxes.forEach(({g})=>{const h=teamById(g.home),a=teamById(g.away),homeWon=g.hs>g.as;
+    const W=homeWon?h:a,Lt=homeWon?a:h,margin=Math.abs(g.hs-g.as);
+    const sc=(Lt.ratings.ovr-W.ratings.ovr)+margin*0.2;
+    if(!cotw||sc>cotw._s)cotw={_s:sc,teamId:W.id,abbr:W.abbr,color:W.color,name:W.name,
+      line:'def. '+Lt.abbr+' '+(homeWon?g.hs+'–'+g.as:g.as+'–'+g.hs)};});
   S.weeklyHonors=S.weeklyHonors||[];
-  S.weeklyHonors.push({week,national:pick(cand),byConf});
+  S.weeklyHonors.push({week,national:pick(cand),byConf,coach:cotw});
 }
 function setWeeklyTask(){
   const t=controlled(),g=teamGame(t.id,S.week);
@@ -1339,15 +1440,32 @@ function setWeeklyTask(){
   S.task={type:'Game',label:(home?'vs ':'@ ')+opp.name+' '+opp.nick,
     note:'Week '+S.week+' · '+(home?'Home':'Away')+' · '+opp.conf+' · OVR '+opp.ratings.ovr};
 }
+// Stamp a year's award winners onto the winning players' p.honors (survives rollover), so a
+// career's accolades persist on the player even after stats wipe. Lean: [{year, award}].
+function stampHonors(aw){
+  const give=(snap,label)=>{if(!snap)return;const t=teamById(snap.teamId);if(!t)return;
+    const p=t.roster.find(x=>x.id===snap.pid);if(!p)return;(p.honors=p.honors||[]).push({year:aw.year,award:label});};
+  give(aw.heisman,'Heisman (National POY)');
+  give(aw.poyDef,'National Defensive POY');
+  give(aw.freshman,'Freshman of the Year');
+  (aw.allAmerican||[]).forEach(a=>give(a,'All-American'));
+  const me=controlled();
+  Object.entries(aw.byConf||{}).forEach(([cf,v])=>{if(cf!==me.conf)return;   // stamp the player's conf POYs
+    give(v.off,cf+' Offensive POY');give(v.def,cf+' Defensive POY');});
+}
 function endSeason(){
   const t=controlled();
   S.phase='Offseason';
   if(S.recruiting)S.recruiting.signed=true;          // Signing Day: the class is locked
+  // Season awards (Phase 8): compute from season stats before the rollover wipes p.gs.
+  const aw=computeAwards(S.world.teams,S.year||2026);
+  S.awards=S.awards||[];S.awards.push(aw);stampHonors(aw);
   const cls=myClass(), cr=myClassRank();
+  const heis=aw.heisman?` ${aw.heisman.name} (${aw.heisman.abbr}) won the Heisman.`:'';
   S.task={type:'Offseason',label:'Season Complete',
     note:'Final record '+t.rec.w+'–'+t.rec.l+' ('+t.rec.cw+'–'+t.rec.cl+' '+t.conf+'). Signed '+
-      cls.length+' tracked recruit'+(cls.length===1?'':'s')+' — class ranked #'+cr+' nationally. '+
-      'Roll over to the next season when you’re ready — your class joins the roster.'};
+      cls.length+' tracked recruit'+(cls.length===1?'':'s')+' — class ranked #'+cr+' nationally.'+heis+
+      ' Roll over to the next season when you’re ready — your class joins the roster.'};
 }
 // Facilities base development rate for a team's offseason (strength + training). Side/coach
 // specifics layer on in devRateFor. AI teams develop off facilities + their staff alone.
@@ -1500,6 +1618,48 @@ function hireCoach(team,cand,slotRole){
 function vacantCoordSlots(team){return COORD_ROLES.filter(([code])=>!team.staff.find(c=>c.role===code&&c.tier==='coord'));}
 
 /* ============================================================
+   NON-CONFERENCE SERIES — multi-year scheduling agreements (Phase 8)
+   Conference games stay auto-assigned; only non-conf openings are player-fillable. A series is
+   pulled into the slate at kickoff via seriesLegsForYear (locked edges in genSchedule).
+   ============================================================ */
+const SERIES_TYPES=[['home-home','Home-and-Home','Two games, alternating hosts, across two seasons.'],
+  ['neutral','Neutral-Site','One game at a neutral venue (a season-opening showcase).'],
+  ['buy','Guarantee (Buy) Game','Pay a smaller program a guarantee to visit for one game.']];
+// The season the first leg lands: the upcoming one (this Preseason if not yet kicked off, else next).
+function nextSeriesYear(){return (!S.schedule)?(S.year||2026):((S.year||2026)+1);}
+// A smaller program's asking guarantee for a buy game (scales with its prestige).
+function seriesAsk(to){return Math.round(to.prestige*150000+1.0e6);}
+// Will `to` accept a series of `type` from `from`? Buy games hinge on the guarantee; home-and-homes
+// on prestige proximity (a smaller school will gladly host a marquee opponent for the payday/exposure).
+function seriesWillingness(from,to,type,guarantee){
+  if(from.conf===to.conf)return false;               // conference games are auto-scheduled
+  const dp=Math.abs(from.prestige-to.prestige);
+  if(type==='buy'){if(from.prestige<=to.prestige+8)return false;return (guarantee||0)>=seriesAsk(to);}
+  return dp<=24 || (from.prestige>to.prestige && to.prestige>=from.prestige-40);
+}
+function mySeries(){return (S.series||[]).filter(s=>s.a===S.teamId||s.b===S.teamId);}
+function seriesExistsWith(toId){return (S.series||[]).some(s=>(s.a===S.teamId&&s.b===toId)||(s.b===S.teamId&&s.a===toId));}
+// Propose (and, if accepted, book) a series from the controlled team to `toId`.
+function proposeSeries(toId,type,guarantee){
+  const from=controlled(),to=teamById(toId);
+  if(!to)return {ok:false,msg:'Unknown program'};
+  if(to.id===from.id)return {ok:false,msg:'Pick another program'};
+  if(from.conf===to.conf)return {ok:false,msg:'Conference games are auto-scheduled'};
+  if(seriesExistsWith(toId))return {ok:false,msg:'You already have a series with them'};
+  if(!seriesWillingness(from,to,type,guarantee))
+    return {ok:false,msg:type==='buy'?('They want at least '+money(seriesAsk(to))):'They declined — prestige mismatch'};
+  const Y=nextSeriesYear();
+  let legs;
+  if(type==='home-home')legs=[{year:Y,home:from.id,away:to.id},{year:Y+1,home:to.id,away:from.id}];
+  else if(type==='neutral')legs=[{year:Y,home:from.id,away:to.id,neutralSite:true}];
+  else legs=[{year:Y,home:from.id,away:to.id}];       // buy game: smaller program visits once
+  const s={id:'s'+(S.series.length).toString(36)+Y,type,a:from.id,b:to.id,legs};
+  if(type==='buy'){s.guarantee=guarantee;from.budget-=guarantee;}   // pay the guarantee on booking
+  S.series.push(s);autosave();
+  return {ok:true,msg:'Series booked with '+to.name,series:s};
+}
+
+/* ============================================================
    RECRUITING — weekly economy + player actions (Phase 4)
    The pure engine (genRecruits/advanceRecruiting/coachMods/…) lives in the RECRUIT ENGINE
    block above; this layer owns S.recruiting, the points economy, and the five player actions.
@@ -1540,7 +1700,7 @@ function offerRecruit(rec){
   if(rec.committedTo){toast('Already committed elsewhere');return;}
   if(S.recruiting.board.length>=boardSlots()){toast('Board full — drop a target first');return;}
   const m=myMods(),me=controlled();
-  const eff={prestige:clamp(me.prestige+m.prestige,20,99),needs:me.needs};
+  const eff={prestige:clamp(me.prestige+m.prestige,20,99),needs:me.needs,fac:me.fac,homeState:me.homeState};
   let fit=recruitFit(eff,rec);
   if(m.homeState&&rec.st===m.homeState)fit*=m.homeBonus;
   const start=clamp(Math.round(16+fit*24),8,72);
@@ -1725,6 +1885,19 @@ function renderHome(app){
     }
   };
   task.append(adv);v.append(task);
+  // end-of-season awards ceremony (Offseason, before rollover): the year's national honors
+  if(over&&S.awards&&S.awards.length){
+    const A=S.awards[S.awards.length-1];
+    if(A&&(A.heisman||A.coy)){
+      v.append(el('h2','sec',A.year+' Awards'));
+      const ac=el('div','card');ac.dataset.tid='awards-card';
+      const coy=A.coy?`<div class="row spread" style="margin:6px 0"><span class="meta dim">Coach of the Year</span><span class="nm">${A.coy.name} <span class="dim">${A.coy.rec}</span></span></div>`:'';
+      ac.innerHTML=awardRow('Heisman',A.heisman)+awardRow('Def. POY',A.poyDef)+awardRow('Freshman',A.freshman)+coy;
+      const more=el('button','btn line','Full awards & All-America');more.style.marginTop='10px';
+      more.onclick=()=>{UI.view='season';UI.seasonTab='awards';render();};
+      ac.append(more);v.append(ac);
+    }
+  }
   // offseason recap: surfaced the season AFTER a rollover (graduates out, freshmen in)
   if(S.phase==='Preseason'&&S.offseasonReport&&S.offseasonReport.year===S.year){
     const o=S.offseasonReport;
@@ -1846,11 +2019,12 @@ function renderSeason(app){
   v.append(scoreboard(t));
   if(!S.schedule){
     v.append(el('div','empty','The season hasn’t kicked off yet.\nHandle media day from the Home tab to generate the schedule.'));
+    seriesCard(v,t);
     app.append(v);return;
   }
   const st=UI.seasonTab||'schedule';
   const tabs=el('div','tabs');tabs.style.marginTop='14px';
-  [['schedule','Schedule'],['standings','Standings'],['top25','Top 25'],['scores','Scores'],['honors','Honors']].forEach(([k,l])=>{
+  [['schedule','Schedule'],['standings','Standings'],['top25','Top 25'],['scores','Scores'],['honors','Honors'],['awards','Awards']].forEach(([k,l])=>{
     const b=el('button',st===k?'on':'',l);b.dataset.tid='stab-'+k;
     b.onclick=()=>{UI.seasonTab=k;render();};tabs.append(b);
   });
@@ -1859,6 +2033,7 @@ function renderSeason(app){
   else if(st==='standings')seasonStandings(v,t);
   else if(st==='top25')seasonTop25(v,t);
   else if(st==='honors')seasonHonors(v,t);
+  else if(st==='awards')seasonAwards(v,t);
   else seasonScores(v,t);
   v.style.paddingBottom='10px';
   app.append(v);
@@ -1875,14 +2050,72 @@ function seasonSchedule(v,t){
       row.innerHTML=`<div class="pos" style="width:42px">WK ${w}</div><div style="flex:1"><div class="nm dim">Bye week</div></div>`;
     }else{
       const gv=gameView(g,t.id);
+      const tag=g.series?`<span class="tag accent" style="font-size:9px">${g.neutral?'NEUTRAL':'SERIES'}</span> `:'';
       row.innerHTML=`<div class="pos" style="width:42px">WK ${w}</div>
         <span class="dot" style="background:${gv.opp.color}"></span>
         <div style="flex:1"><div class="nm">${gv.home?'vs ':'@ '}${gv.opp.abbr} <span class="dim" style="font-weight:400">${gv.opp.name}</span></div>
-        <div class="meta">${gv.opp.conf} · OVR ${gv.opp.ratings.ovr}${gv.opp.natRank<=25?' · #'+gv.opp.natRank:''}</div></div>
+        <div class="meta">${tag}${gv.opp.conf} · OVR ${gv.opp.ratings.ovr}${gv.opp.natRank<=25?' · #'+gv.opp.natRank:''}</div></div>
         <div class="cond ${gv.cls}" style="font-size:15px;font-weight:700;min-width:54px;text-align:right">${gv.played?gv.res:(cur?'NOW':'—')}</div>`;
     }
     v.append(row);
   }
+  seriesCard(v,t);
+}
+// Non-conference series card: lists booked future series + a "Schedule a series" action.
+function seriesCard(v,t){
+  v.append(el('h2','sec','Non-Conference Series'));
+  const ms=mySeries();
+  const wrap=el('div','card');wrap.dataset.tid='series-card';
+  if(!ms.length){wrap.append(el('div','hint','No future series booked. Schedule home-and-homes, neutral-site showcases, or buy games against non-conference programs.'));}
+  else ms.forEach(s=>{
+    const other=teamById(s.a===t.id?s.b:s.a);if(!other)return;
+    const yrs=s.legs.map(l=>l.year).join('/');
+    const tlabel=(SERIES_TYPES.find(x=>x[0]===s.type)||['','Series'])[1];
+    const row=el('div','row spread');row.style.margin='6px 0';
+    row.innerHTML=`<div class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${other.color};flex:none"></span>
+      <div style="min-width:0"><div class="nm">${other.name}</div><div class="meta dim">${tlabel} · ${yrs}${s.guarantee?' · '+money(s.guarantee):''}</div></div></div>
+      <span class="tag" style="flex:none">${s.legs.length} game${s.legs.length===1?'':'s'}</span>`;
+    wrap.append(row);
+  });
+  if(canManage()){
+    const add=el('button','btn line','Schedule a series →');add.style.marginTop='10px';add.dataset.tid='add-series';
+    add.onclick=()=>seriesSheet();wrap.append(add);
+  }else wrap.append(el('div','hint center','Book series in the preseason or offseason.'));
+  v.append(wrap);
+}
+// Propose a new non-conference series.
+function seriesSheet(){
+  const me=controlled();const body=el('div');body.dataset.tid='series-sheet';
+  const f={type:'home-home',toId:null,guarantee:0};
+  body.append(el('div','hint','Choose a type, then a non-conference opponent. They’ll accept based on prestige fit (or, for buy games, the guarantee).'));
+  // type chooser
+  const tc=el('div','choice');
+  SERIES_TYPES.forEach(([k,l,d])=>tc.append(optEl(l,d,f.type===k,()=>{f.type=k;drawType();})));
+  body.append(tc);
+  const guarWrap=el('div');
+  function drawType(){[...tc.children].forEach((c,i)=>c.classList.toggle('on',SERIES_TYPES[i][0]===f.type));
+    guarWrap.innerHTML='';if(f.type==='buy')guarWrap.append(fld('Guarantee offered ($)',inputEl(f.guarantee||'',x=>f.guarantee=Math.round(+x||0),'e.g. 2000000','number')));}
+  body.append(guarWrap);drawType();
+  // opponent picker (non-conference only)
+  const search=el('input','search');search.placeholder='Search non-conf opponent…';search.style.margin='8px 0';
+  const list=el('div');list.style.maxHeight='40vh';list.style.overflow='auto';
+  function draw(){list.innerHTML='';const q=search.value.toLowerCase().trim();
+    const opts=S.world.teams.filter(x=>x.conf!==me.conf&&!seriesExistsWith(x.id)&&(!q||(x.name+' '+x.conf).toLowerCase().includes(q)))
+      .sort((a,b)=>b.prestige-a.prestige).slice(0,40);
+    opts.forEach(x=>{const ok=seriesWillingness(me,x,f.type,f.type==='buy'?(f.guarantee||0):0);
+      const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=x.id;
+      row.innerHTML=`<span class="dot" style="background:${x.color}"></span>
+        <div style="flex:1"><div class="nm">${x.name} <span class="dim" style="font-weight:400">${x.nick}</span></div>
+        <div class="meta">${x.conf} · OVR ${x.ratings.ovr} · Prestige ${x.prestige}${f.type==='buy'?' · asks '+money(seriesAsk(x)):''}</div></div>
+        <span class="tag ${ok?'accent':''}" style="flex:none">${ok?'Offer':'Unlikely'}</span>`;
+      row.onclick=()=>{const res=proposeSeries(x.id,f.type,f.type==='buy'?(f.guarantee||0):0);
+        toast(res.msg);if(res.ok){closeSheet();render();}else draw();};
+      list.append(row);});
+    if(!opts.length)list.append(el('div','empty','No eligible non-conference programs.'));
+  }
+  search.oninput=draw;draw();
+  body.append(search,list);
+  openSheet('Schedule a Series',body);
 }
 function seasonStandings(v,t){
   const conf=t.conf,teams=S.world.teams.filter(x=>x.conf===conf);
@@ -1991,8 +2224,12 @@ function seasonHonors(v,t){
   [...wh].reverse().forEach(h=>{
     v.append(el('h2','sec','Week '+h.week));
     const nat=el('div','card');
+    const cotw=h.coach?`<div class="row spread" style="margin:6px 0;gap:8px">
+      <div class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${h.coach.color};flex:none"></span>
+        <div style="min-width:0"><div class="nm">${h.coach.name} <span class="dim" style="font-weight:400">${h.coach.line}</span></div></div></div>
+      <span class="tag accent" style="font-size:10px;flex:none">Coach</span></div>`:'';
     nat.innerHTML=`<div class="meta accent" style="margin-bottom:6px;font-weight:700">NATIONAL</div>
-      ${honorRowHTML('Offense',h.national.off)}${honorRowHTML('Defense',h.national.def)}`;
+      ${honorRowHTML('Offense',h.national.off)}${honorRowHTML('Defense',h.national.def)}${cotw}`;
     v.append(nat);
     const cc=h.byConf[conf];
     if(cc){const cf=el('div','card');
@@ -2000,6 +2237,48 @@ function seasonHonors(v,t){
         ${honorRowHTML('Offense',cc.off)}${honorRowHTML('Defense',cc.def)}`;
       v.append(cf);}
   });
+}
+// End-of-season awards (Phase 8): the latest ceremony + a switchable year of history.
+function awardRow(label,snap){
+  if(!snap)return `<div class="row spread" style="margin:6px 0"><span class="meta dim">${label}</span><span class="meta dim">—</span></div>`;
+  return `<div class="row spread" style="margin:6px 0;gap:8px">
+    <div class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${snap.color};flex:none"></span>
+      <div style="min-width:0"><div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${snap.name} <span class="dim" style="font-weight:400">${snap.pos} · ${snap.abbr}</span></div>
+      <div class="meta dim">${snap.line||''}</div></div></div>
+    <span class="tag accent" style="font-size:10px;flex:none">${label}</span></div>`;
+}
+function seasonAwards(v,t){
+  const aw=S.awards||[];
+  if(!aw.length){v.append(el('div','empty','No awards yet.\nFinish a season to crown the year’s honors.'));return;}
+  const year=UI.awardsYear||aw[aw.length-1].year;
+  if(aw.length>1){
+    const bar=el('div','row');bar.style.cssText='gap:8px;flex-wrap:wrap;margin:14px 2px 4px';
+    const sel=el('select');sel.dataset.tid='awards-year';
+    sel.style.cssText='font-size:16px;padding:8px 10px;border-radius:10px;background:var(--card);color:var(--ink);border:1px solid var(--line);flex:1';
+    [...aw].reverse().forEach(a=>{const o=el('option');o.value=a.year;o.textContent=a.year+' season';if(a.year===year)o.selected=true;sel.append(o);});
+    sel.onchange=()=>{UI.awardsYear=+sel.value;render();};
+    bar.append(el('span','meta dim','Season'),sel);v.append(bar);
+  }
+  const A=aw.find(a=>a.year===year)||aw[aw.length-1];
+  v.append(el('h2','sec',A.year+' National'));
+  const nat=el('div','card');
+  const coy=A.coy?`<div class="row spread" style="margin:6px 0;gap:8px">
+    <div class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${A.coy.color};flex:none"></span>
+      <div class="nm">${A.coy.name} <span class="dim" style="font-weight:400">${A.coy.rec}</span></div></div>
+    <span class="tag accent" style="font-size:10px;flex:none">Coach of Yr</span></div>`:'';
+  nat.innerHTML=awardRow('Heisman',A.heisman)+awardRow('Def. POY',A.poyDef)+awardRow('Freshman',A.freshman)+coy;
+  v.append(nat);
+  // conference POY (controlled team's conference)
+  const cc=A.byConf&&A.byConf[t.conf];
+  if(cc){v.append(el('h2','sec',t.conf+' POY'));
+    const cf=el('div','card');cf.innerHTML=awardRow('Offense',cc.off)+awardRow('Defense',cc.def);v.append(cf);}
+  // All-America team
+  if(A.allAmerican&&A.allAmerican.length){
+    v.append(el('h2','sec','All-America'));
+    const aa=el('div','card');
+    aa.innerHTML=A.allAmerican.map(a=>`<div class="row spread" style="margin:5px 0"><span class="meta"><b>${a.pos}</b> ${a.name} <span class="dim">${a.abbr}</span></span><span class="meta dim">${a.score}</span></div>`).join('');
+    v.append(aa);
+  }
 }
 
 /* ============================================================
@@ -2294,6 +2573,8 @@ function playerSheet(p,t){
     <div class="kv"><span class="k">Ceiling</span><span>${sc.text}</span></div>
     <div class="kv"><span class="k">Development</span><span>${devStage(p)}${sc.uncertain?' · projection':''}</span></div>
     <div class="kv"><span class="k">Speed / Strength / Awareness</span><span>${p.spd} · ${p.str} · ${p.awr}</span></div>
+    ${p.dev>0?`<div class="kv"><span class="k">Developed (last offseason)</span><span class="good">▲ +${p.dev} OVR</span></div>`:''}
+    ${(p.honors&&p.honors.length)?`<div class="kv"><span class="k">Honors</span><span>${p.honors.map(h=>h.year+' '+h.award).join('; ')}</span></div>`:''}
     ${statBlock(p)}`;
   const r1=el('div','btn-row');
   const starter=el('button','btn sm '+(p.so===0?'line':'ghost'),p.so===0?'Already starter':'Promote to starter');
