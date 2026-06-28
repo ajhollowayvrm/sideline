@@ -302,3 +302,6 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
    resolved instantly (as today) so advancing a week is fast.
 4. Keep determinism: seed the play engine per game id like `simGame` does, so results remain
    reproducible from `?seed`.
+5. Per-player season stats are a new field on the Player object → **bump save `version` to 4
+   and extend `migrateState`** (backfill empty stats on load). Rosters are already deep
+   (~84/team) so there are realistic bodies to attribute stats to.
