@@ -236,7 +236,7 @@ function startServer() {
     const { home, away } = simSides(g), seed = gameSeed(g);
     const decisions = [];
     // call offense (always pass) AND defense (always cover) — exercises Phase 28 in the watch==commit path
-    const driven = simEngine(home, away, seed, { decideFor: me, aiDefVs: me, decide: ctx => { const c = ctx.phase === 'def' ? 'cover' : ctx.phase === 'fourth' ? ctx.ocAct : 'pass'; decisions.push(c); return c; } });
+    const driven = simEngine(home, away, seed, { decideFor: me, aiDefVs: me, aiOffVs: me, decide: ctx => { const c = ctx.phase === 'def' ? 'cover' : ctx.phase === 'fourth' ? ctx.ocAct : 'pass'; decisions.push(c); return c; } });
     const clone = { id: g.id, home: g.home, away: g.away, calls: decisions.slice() };
     simGame(clone);                                   // commit-path replay on a CLONE (real game untouched)
     const ai = simEngine(home, away, seed);           // OC/DC autopilot for comparison
@@ -257,6 +257,17 @@ function startServer() {
     return { dc, bs, harder: dc < bs };
   });
   check('Phase 29: an AI defensive coordinator makes your predictable offense work harder', aidc.harder, JSON.stringify(aidc));
+  // Phase 30: a predictable DEFENSE (all run-stop) gets exploited by the adaptive AI OC (you give up more)
+  const aioc = await page.evaluate(() => {
+    const me = S.teamId, mine = S.schedule.games.filter(x => x.home === me || x.away === me).slice(0, 6);
+    const dRunStop = ctx => ctx.phase === 'def' ? 'run' : ctx.phase === 'fourth' ? ctx.ocAct : ctx.ocCall;
+    let oc = 0, bs = 0;
+    mine.forEach(g => { const { home, away } = simSides(g), seed = gameSeed(g), opp = g.home === me ? 'as' : 'hs';
+      oc += simEngine(home, away, seed, { decideFor: me, aiOffVs: me, decide: dRunStop })[opp];
+      bs += simEngine(home, away, seed, { decideFor: me, decide: dRunStop })[opp]; });
+    return { oc, bs, harder: oc > bs };
+  });
+  check('Phase 30: an adaptive AI OC exploits a predictable defense (you give up more)', aioc.harder, JSON.stringify(aioc));
   // (b) UI smoke: open the viewer → Coach this game → Full control surfaces the field + a play call →
   // make a call → bail without committing (interactive never mutates the game until "Continue").
   await page.getByRole('button', { name: /Play Week/ }).click();

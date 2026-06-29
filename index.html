@@ -1160,6 +1160,13 @@ function aiDefCall(ctx,rv){
   if(longYd||leanPass) return rv<0.45?'cover':rv<0.80?'blitz':'base';   // defend the pass / bring heat
   return rv<0.62?'base':rv<0.82?'cover':'blitz';                        // standard down — mostly base, some disguise
 }
+// Phase 30 — the AI offensive coordinator's read on YOUR defensive tendency (the mirror of aiDefCall).
+// `d` = your defensive-call mix {base,blitz,cover,run}. Run-stop-heavy → throw on it (+passProb); blitz/
+// cover-heavy → run on it (−passProb; blitz gets gashed, cover = light box). Needs a sample before reacting.
+function aiOffPassAdj(d){
+  const tot=(d.base||0)+(d.blitz||0)+(d.cover||0)+(d.run||0); if(tot<3)return 0;
+  return clamp((((d.run||0)-(d.cover||0)-(d.blitz||0))/tot)*0.4,-0.18,0.18);
+}
 function wpick(pool,r,skip){ const pl=(skip&&skip.size)?pool.filter(e=>e[0]&&!skip.has(e[0].id)):pool;
   let tot=0;for(const e of pl)tot+=e[1]; if(tot<=0)return null;
   let x=r()*tot; for(const e of pl){x-=e[1];if(x<0)return e[0];} return pl[pl.length-1][0]; }
@@ -1183,6 +1190,7 @@ function simEngine(home,away,seed,opts){
   const decideFor=opts&&opts.decideFor;                    // which team id it controls (keeps simEngine pure — no global S)
   const benched=(opts&&opts.benched)||null;                // Phase 27: ids unavailable this game (frozen for faithful replay)
   const aiDefVs=opts&&opts.aiDefVs;                         // Phase 29: the AI DC schemes vs THIS team's offense (the controlled one)
+  const aiOffVs=opts&&opts.aiOffVs;                         // Phase 30: the AI OC adapts vs THIS team's defensive play-calling
   // Phase 24 in-game adjustments: a timeline [{at:playNo, plan}] of the controlled coach's coverage
   // reassignments + pep-talks. `planAt` returns the plan in effect at a play index (latest at≤pno), so
   // an adjustment applies only GOING FORWARD (the watched score-so-far never changes on re-run) and the
@@ -1198,6 +1206,7 @@ function simEngine(home,away,seed,opts){
   // the threshold and pays ~nothing (so the validated envelope holds), but spamming run OR pass gets
   // stuffed. Deterministic from the call history → no new rng draw, so determinism/replay are intact.
   const usage={[home.id]:{run:0,pass:0},[away.id]:{run:0,pass:0}};
+  const dusage={[home.id]:{base:0,blitz:0,cover:0,run:0},[away.id]:{base:0,blitz:0,cover:0,run:0}};  // Phase 30: defensive-call mix (the AI OC reads it)
   const KEY_THRESH=0.60, RUN_KEY=7.5, PASS_KEY=6.5;
   const keyedPen=(offId,type)=>{const c=usage[offId],tot=c.run+c.pass;return Math.max(0,((c[type]+4)/(tot+8))-KEY_THRESH);};
   // Phase 25 discipline/penalties: a per-snap pre-snap foul chance from team COMPOSURE (Phase 10) +
@@ -1283,7 +1292,10 @@ function simEngine(home,away,seed,opts){
       const dRunY =dcall==='blitz'?3:dcall==='cover'?1:dcall==='run'?-4:0;            // stack the box stuffs the run; blitz is gashed
 
       // ---- run / pass ----
-      const passProb=clamp(0.45+(togo>7?0.18:togo<3?-0.18:0)+(down>=3?0.17:0)+adv*0.003+schemeTendency(off.offScheme),0.12,0.92);
+      let passProb=clamp(0.45+(togo>7?0.18:togo<3?-0.18:0)+(down>=3?0.17:0)+adv*0.003+schemeTendency(off.offScheme),0.12,0.92);
+      // Phase 30: the AI OC reads YOUR defensive tendency (so far) and biases its run/pass to exploit it.
+      if(aiOffVs && def.id===aiOffVs && off.id!==aiOffVs) passProb=clamp(passProb+aiOffPassAdj(dusage[def.id]),0.12,0.92);
+      dusage[def.id][dcall]++;                              // record this snap's defensive call (for the NEXT one's read)
       const ocPass=r()<passProb;                            // OC's call (always drawn → rng stream stays stable)
       let wantPass=ocPass;
       if(mine){const pick=decide({phase:'play',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,ocPass,ocCall:ocPass?'pass':'run'});
@@ -2393,7 +2405,7 @@ function gameDecideOpts(g){
 function simGame(g){
   const benched=benchedFor(g); if(!g.out)g.out=[...benched];   // Phase 27: freeze who sat (faithful replay later)
   const {home,away}=simSides(g,benched);
-  const res=simEngine(home,away,gameSeed(g),Object.assign({benched,aiDefVs:S.teamId},gameDecideOpts(g)||{}));
+  const res=simEngine(home,away,gameSeed(g),Object.assign({benched,aiDefVs:S.teamId,aiOffVs:S.teamId},gameDecideOpts(g)||{}));
   g.hs=res.hs;g.as=res.as;g.played=true;
   g._inj=res.inj;     // Phase 27: hurt players — applied ONCE per real game (in the advance), not on determinism re-sims
   return res.box;
@@ -3335,7 +3347,7 @@ function buildGameLog(gameId){
   const g=findAnyGame(gameId); if(!g)return null;
   const benched=benchedFor(g);
   const {home,away}=simSides(g,benched);
-  const res=simEngine(home,away,gameSeed(g),Object.assign({log:true,benched,aiDefVs:S.teamId},gameDecideOpts(g)||{}));
+  const res=simEngine(home,away,gameSeed(g),Object.assign({log:true,benched,aiDefVs:S.teamId,aiOffVs:S.teamId},gameDecideOpts(g)||{}));
   return {gameId,home:g.home,away:g.away,log:res.log,hs:res.hs,as:res.as,idx:0,fast:false,done:false};
 }
 function openGameViewer(g){ UI.game=Object.assign(buildGameLog(g.id)||{},{replay:false,post:!!g.kind,champ:g.kind==='champ'}); UI.view='game'; render(); scheduleGameTick(); }
@@ -3389,7 +3401,7 @@ function runInteractive(){
   const benched=benchedFor(g); const {home,away}=simSides(g,benched); const seed=gameSeed(g);
   G.log=[]; G.box={}; G.pen={}; G.inj=[]; G.pending=null; let k=0; const PAUSE={pause:1};
   try{
-    const res=simEngine(home,away,seed,{logInto:G.log,boxInto:G.box,penInto:G.pen,injInto:G.inj,benched,aiDefVs:S.teamId,decideFor:S.teamId,adjustFor:S.teamId,adjusts:G.adjusts||[],decide:ctx=>{
+    const res=simEngine(home,away,seed,{logInto:G.log,boxInto:G.box,penInto:G.pen,injInto:G.inj,benched,aiDefVs:S.teamId,aiOffVs:S.teamId,decideFor:S.teamId,adjustFor:S.teamId,adjusts:G.adjusts||[],decide:ctx=>{
       if(k<G.decisions.length)return G.decisions[k++];                 // already resolved
       if(!G.simRest&&shouldPromptCtx(ctx,G.mode)){G.pending=ctx;throw PAUSE;}  // your call → pause here
       const dflt=ctx.phase==='def'?'base':ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall;G.decisions.push(dflt);k++;return dflt;  // OC/DC handles it

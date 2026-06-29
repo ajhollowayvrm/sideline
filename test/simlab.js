@@ -362,6 +362,25 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Phase 29: aiDefVs is inert when that team is not on offense (AI-vs-AI unaffected)', plain.hs === tagged.hs && plain.as === tagged.as && JSON.stringify(plain.box) === JSON.stringify(tagged.box));
 }());
 
+// Phase 30 — the adaptive AI offensive coordinator: reads YOUR defensive-call tendency and counters it,
+// only vs the controlled defense (so AI-vs-AI is byte-identical).
+(function () {
+  check('Phase 30: aiOffPassAdj — run-stop-heavy D → throw more (+)', aiOffPassAdj({ base: 0, blitz: 0, cover: 0, run: 20 }) > 0.1);
+  check('Phase 30: aiOffPassAdj — blitz/cover-heavy D → run more (−)', aiOffPassAdj({ base: 0, blitz: 10, cover: 10, run: 0 }) < -0.1);
+  check('Phase 30: aiOffPassAdj — small sample / balanced → no read', aiOffPassAdj({ base: 1 }) === 0 && Math.abs(aiOffPassAdj({ base: 10, blitz: 5, cover: 5, run: 10 })) < 0.05);
+  // a defense that ONLY calls run-stop gets thrown on more by the adaptive OC than by a static one
+  const w = genWorld(808), O = w.teams[1], D = w.teams[6];
+  const dRunStop = ctx => ctx.phase === 'def' ? 'run' : ctx.phase === 'fourth' ? ctx.ocAct : ctx.ocCall;
+  let withOC = 0, noOC = 0;
+  for (let s = 0; s < 30; s++) { const seed = (hashStr('aioc' + s) ^ 4) >>> 0;
+    const a = simEngine(O, D, seed, { decideFor: D.id, aiOffVs: D.id, decide: dRunStop });
+    const b = simEngine(O, D, seed, { decideFor: D.id, decide: dRunStop });
+    O.roster.forEach(p => { if (a.box[p.id]) withOC += a.box[p.id].pYds || 0; if (b.box[p.id]) noOC += b.box[p.id].pYds || 0; }); }
+  check('Phase 30: the AI OC throws more on a run-stop-happy defense', withOC > noOC, `${(withOC / 30).toFixed(0)} vs ${(noOC / 30).toFixed(0)} pass yd/g`);
+  const h = w.teams[2], a = w.teams[3], sd = 4242, plain = simEngine(h, a, sd), tagged = simEngine(h, a, sd, { aiOffVs: 'zzz_not_playing' });
+  check('Phase 30: aiOffVs is inert when that team is not on defense (AI-vs-AI unaffected)', plain.hs === tagged.hs && plain.as === tagged.as && JSON.stringify(plain.box) === JSON.stringify(tagged.box));
+}());
+
 // statistical realism across a full season
 const R = simSeason(2026);
 const meanPts = avg(R.scores);

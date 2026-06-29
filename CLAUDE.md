@@ -390,8 +390,18 @@ plain static files so Pages still serves it with zero config.
   predictable offense gets shut down (a scaled sim: an all-pass attack falls 10.6→6.3 pts/g vs the DC), while
   a balanced attack is barely keyed (standard downs are ~62% base) — you must mix to beat it. `simlab` → 63
   (situational calls; keys tendency; inert for AI-vs-AI), `qa` → 247 (your predictable offense works harder
-  vs the DC). See "Phase 29 design — AI defensive coordinator" below. *(Open: blitz/nickel personnel +
-  special packages.)*
+  vs the DC). See "Phase 29 design — AI defensive coordinator" below.
+- **Phase 30 — Adaptive AI offensive coordinator.** ✅ DONE — the mirror of Phase 29, so calling **defense**
+  is a real chess match too. When you're on defense, the AI OC reads **your defensive-call tendency** (a
+  `dusage` mix of base/blitz/cover/run-stop) and biases its run/pass to counter it (`aiOffPassAdj`): you
+  stack the box (run-stop) a lot → it throws; you blitz/cover a lot → it runs (blitz gets gashed, cover =
+  light box). It only fires when **`def.id===aiOffVs`** (you're the defense) and shifts `passProb` (no extra
+  rng → deterministic, watch == commit, **no save bump**); `aiOffVs` is **inert** in AI-vs-AI games, so the
+  league envelope is untouched. You have to **vary your defensive calls** or get exploited — exactly the
+  pressure the predictability tax + AI DC put on your offense. `simlab` → 68 (`aiOffPassAdj` direction +
+  sample gate; the OC throws more on a run-stop-happy D — 249→314 pass yd/g; inert for AI-vs-AI), `qa` → 248
+  (a predictable all-run-stop defense gives up more vs the adaptive OC). See "Phase 30 design — adaptive AI
+  offensive coordinator" below. *(Open: blitz/nickel personnel + special packages.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1436,8 +1446,41 @@ the DC than vs a base defense, averaged over your slate). **Fourteen gates**; no
 defer-to-OC offense (≈50/50) faces a mostly-base DC, so it isn't oppressive — only spam gets punished.
 
 ### Deliberately out of scope
-The AI DC is uniform (not yet scaled by the opponent's DC rating / prestige), there's no AI *offensive*
-coordinator tendency model beyond `passProb`, and still no blitz/nickel **personnel** packages.
+The AI DC is uniform (not yet scaled by the opponent's DC rating / prestige); the adaptive AI *offensive*
+coordinator is Phase 30; and still no blitz/nickel **personnel** packages.
+
+---
+
+## Phase 30 design — adaptive AI offensive coordinator
+
+Decided 2026-06-29 with AJ — the mirror of Phase 29: now calling **defense** is a chess match, because the
+AI OC reads and counters your defensive tendencies (before this, the AI offense used a fixed `passProb`).
+
+### The read (pure)
+The engine tracks each team's defensive-call mix in `dusage` ({base, blitz, cover, run-stop}). When the
+controlled team is on defense (`def.id===aiOffVs`, opponent on offense), `aiOffPassAdj(dusage[you])` biases
+the OC's `passProb`: run-stop-heavy → throw more (run-stop opens the pass); blitz/cover-heavy → run more
+(blitz gets gashed, cover = a light box). It reads your tendency **so far** (the current snap's call is
+recorded *after* the read), needs a small sample before reacting, and is bounded (±0.18). So a one-note
+defense gets punished, while a varied one isn't read — the exact mirror of the predictability tax + AI DC
+on offense.
+
+### Envelope-safe + deterministic (same pattern as Phase 29)
+`aiOffVs` (passed by the app as `S.teamId` through `simGame`/`buildGameLog`/the driver) fires **only when
+the controlled team is on defense**, so it's **inert in AI-vs-AI games** (the league envelope + `simlab`
+untouched). It only shifts `passProb` (no extra rng draw) and reads `dusage` (built from the player's
+defensive calls, which replay from `g.calls`), so it's fully deterministic → watch == commit, **no save
+bump**.
+
+### Validation
+`simlab` → 68 (`aiOffPassAdj` direction + the small-sample/balanced gate; the OC throws more on a
+run-stop-happy defense, 249→314 pass yd/g; `aiOffVs` inert when that team isn't on defense → AI-vs-AI
+byte-identical). `qa` → 248 (a predictable all-run-stop defense gives up more points vs the adaptive OC
+than vs a static one). **Fourteen gates**; no save change.
+
+### Deliberately out of scope
+The AI OC's read is run/pass only (no screen/PA/deep-shot palette yet), it isn't scaled by the opponent's
+OC rating, and there's still no blitz/nickel personnel or special packages.
 
 ---
 
