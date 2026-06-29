@@ -708,7 +708,7 @@ function renderLoad(app){
 /* ============================================================
    NEW GAME WIZARD
    ============================================================ */
-function freshNewGame(){return {step:0,coach:{first:'',last:'',homeState:'TX',archetype:'Recruiter',history:'Former Player'},
+function freshNewGame(){return {step:0,coach:{first:'',last:'',homeState:'TX',archetype:'Recruiter',history:'Former Player',offScheme:'Pro Style',defScheme:'4-3'},
   seed:(TEST_SEED!=null?TEST_SEED:((Date.now()^(Math.random()*1e9))>>>0)),world:null,teamId:null};}
 
 function renderNewGame(app){
@@ -737,6 +737,11 @@ function renderNewGame(app){
     const h=el('div','choice');
     HISTORIES.forEach(([t,d])=>h.append(optEl(t,d,ng.coach.history===t,()=>{ng.coach.history=t;render();})));
     v.append(h);
+    // Phase 21: the schemes you love. Your team installs these when you take over; recruit + develop
+    // players whose instincts fit them, and you'll play with a buy-in edge.
+    v.append(el('h2','sec','Your Schemes'));
+    v.append(fld('Offensive scheme',selectEl(OFF_SCHEMES,ng.coach.offScheme,x=>{ng.coach.offScheme=x;})),
+             fld('Defensive scheme',selectEl(DEF_SCHEMES,ng.coach.defScheme,x=>{ng.coach.defScheme=x;})));
     const next=el('button','btn','Continue');next.style.marginTop='14px';
     next.onclick=()=>{ensureWorld(ng);ng.step=2;render();};
     v.append(next);
@@ -775,6 +780,9 @@ function finishNewGame(ng){
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // Phase 19b: coach approval + tenure + a per-job career résumé (persist across seasons, not in S.media).
   S.coach.approval=55; S.coach.tenure=0; S.coach.approvalHistory=[]; S.coach.career=[];
+  // Phase 21: install the coach's preferred schemes onto the program he takes over (buy-in on day one;
+  // the roster only fits as well as the players' instincts do — a project to recruit/develop into).
+  const me=teamById(S.teamId); if(me){if(S.coach.offScheme)me.offScheme=S.coach.offScheme; if(S.coach.defScheme)me.defScheme=S.coach.defScheme;}
   // choose a save slot
   chooseSlotSheet();
 }
@@ -3242,6 +3250,7 @@ function renderHome(app){
   task.innerHTML=`<div class="row spread"><span class="tag accent">${S.phase}</span><span class="meta">${wkLabel}</span></div>
     <div class="cond" style="font-size:22px;font-weight:800;margin-top:10px">${S.task.label}</div>
     <div class="muted" style="font-size:13px;margin-top:4px">${S.task.note}</div>`;
+  if(inSeason){const wkGame=teamGame(t.id,S.week);if(wkGame){const opp=teamById(wkGame.home===t.id?wkGame.away:wkGame.home);task.insertAdjacentHTML('beforeend',schemeMatchupHTML(t,opp));}}
   const myPg=inPost?myPostseasonGame():null;
   const myCg=inChamp?myChampGame():null;
   const signing=over&&S.recruiting&&S.recruiting.stage==='national';   // Early Signing done, NSD pending
@@ -3403,10 +3412,62 @@ function renderProgram(app){
   const r=el('div','ranks');
   r.append(rankPill(t.ratings.ovr,'Overall'),rankPill(t.ratings.off,'Offense'),rankPill(t.ratings.def,'Defense'));
   v.append(r);
+  schemesCard(v,t);
   trophyCase(v,t);
   ringOfHonor(v,t);
   proPipeline(v,t);
   app.append(v);
+}
+// Phase 21: the program's schemes — what you run on each side, your roster's fit, and your coach's
+// preference (buy-in when they match). Install a new scheme (a multi-season project) in the offseason.
+function schemesCard(v,t){
+  v.append(el('h2','sec','Schemes'));
+  const c=el('div','card');c.dataset.tid='schemes';
+  const offFit=rosterSchemeFit(t.roster,'off',offSchemeIdx(t.offScheme));
+  const defFit=rosterSchemeFit(t.roster,'def',defSchemeIdx(t.defScheme));
+  const co=S.coach||{}, buyO=co.offScheme===t.offScheme, buyD=co.defScheme===t.defScheme;
+  const own=`<span class="tag accent" style="font-size:10px">your scheme</span>`;
+  c.innerHTML=
+    `<div class="kv"><span class="k">Offense</span><span class="nm">${t.offScheme} ${buyO?own:''}</span></div>
+     <div class="kv"><span class="k">Roster fit (O)</span><span class="dim">${schemeFitLabel(offFit)}</span></div>
+     <div class="kv"><span class="k">Defense</span><span class="nm">${t.defScheme} ${buyD?own:''}</span></div>
+     <div class="kv"><span class="k">Roster fit (D)</span><span class="dim">${schemeFitLabel(defFit)}</span></div>
+     <div class="meta dim" style="margin-top:8px">You prefer ${co.offScheme||'—'} / ${co.defScheme||'—'}${(buyO&&buyD)?' — buy-in active.':'.'}</div>`;
+  v.append(c);
+  if(canManage()){const b=el('button','btn line','Install schemes →');b.style.marginTop='10px';b.onclick=()=>installSchemeSheet(t);c.append(b);}
+  else v.append(el('div','hint center','Install a new scheme in the preseason or offseason.'));
+}
+function installSchemeSheet(t){
+  const draft={off:t.offScheme,def:t.defScheme};
+  const rebuild=()=>{
+    const co=S.coach||{}, body=el('div');
+    body.append(el('div','hint','A scheme fits only as well as your players’ instincts do — installing one is a multi-season project you recruit and develop into. Matching your preferred scheme adds a buy-in edge.'));
+    const group=(label,list,sideKey,idxFn,pref)=>{
+      body.append(el('h2','sec',label));
+      const ch=el('div','choice');
+      list.forEach(s=>{const fit=rosterSchemeFit(t.roster,sideKey,idxFn(s));
+        ch.append(optEl(s,schemeFitLabel(fit)+(pref===s?' · your scheme':''),draft[sideKey==='off'?'off':'def']===s,()=>{draft[sideKey==='off'?'off':'def']=s;rebuild();}));});
+      body.append(ch);
+    };
+    group('Offense',OFF_SCHEMES,'off',offSchemeIdx,co.offScheme);
+    group('Defense',DEF_SCHEMES,'def',defSchemeIdx,co.defScheme);
+    const apply=el('button','btn','Install schemes');apply.style.marginTop='14px';
+    apply.onclick=()=>{t.offScheme=draft.off;t.defScheme=draft.def;closeSheet();render();toast('Schemes installed');};
+    body.append(apply);
+    openSheet('Install schemes',body);
+  };
+  rebuild();
+}
+// Phase 21: the weekly scheme matchup preview — your offense vs their defense, your defense vs their
+// offense. Reads the same mean-zero SCHEME_EDGE the sim folds in, so the chip matches what happens.
+function schemeMatchupHTML(me,opp){
+  const oEdge=schemeEdge(me.offScheme,opp.defScheme);   // + = your offense has the edge
+  const dEdge=schemeEdge(opp.offScheme,me.defScheme);   // + = their offense has the edge (bad for your D)
+  const word=e=>e>=2?'big edge ▲':e>0?'edge ▲':e<=-2?'tough ▼':e<0?'slight ▼':'even';
+  const cls=e=>e>0?'good':e<0?'bad':'dim';
+  return `<div class="meta" style="margin-top:10px;border-top:1px solid rgba(255,255,255,.08);padding-top:8px">
+    <div class="row spread" style="margin:2px 0"><span class="dim">Your ${me.offScheme} vs ${opp.defScheme}</span><span class="${cls(oEdge)}">${word(oEdge)}</span></div>
+    <div class="row spread" style="margin:2px 0"><span class="dim">Your ${me.defScheme} vs ${opp.offScheme}</span><span class="${cls(-dEdge)}">${word(-dEdge)}</span></div></div>`;
 }
 // Phase 15: the program's trophy case — national championships (Phase 12) + conference titles earned
 // in Championship Week. Empty until the program wins some hardware in a played season.
@@ -4280,6 +4341,7 @@ function recruitSheet(rec){
     <div class="kv"><span class="k">Work ethic</span><span>${traitRead('mot',rec.id,motVal(rec),rec.scout).text}</span></div>
     <div class="kv"><span class="k">Composure</span><span>${traitRead('comp',rec.id,compVal(rec),rec.scout).text}</span></div>
     <div class="kv"><span class="k">Ego (media)</span><span>${traitRead('ego',rec.id,egoVal(rec),rec.scout).text}</span></div>
+    ${schemeKV(playerSchemeName(rec),rec.scout,sideOfPos(rec.pos)==='off'?controlled().offScheme:controlled().defScheme)}
     <div class="kv"><span class="k">Priorities</span><span>${sc.revealed?rec.prefs.map(prefLabel).join(', '):'— scout 50% to reveal —'}</span></div>
     ${(sc.revealed&&rec.rebel)?'<div class="kv"><span class="k">Mindset</span><span class="accent">Wants to be THE guy — wary of position factories</span></div>':''}`;
   // Phase 13: surface how the controlled team's positional reputation plays with this recruit
@@ -4478,6 +4540,30 @@ function moraleChip(p){
   const acc=m>=60||m<34;
   return ` <span class="tag ${acc?'accent':''}" style="font-size:10px">${moraleMood(m)} ${lbl}</span>`;
 }
+// ---- Phase 21: a player's preferred SCHEME (innate, per-id), read through the same fog as traits —
+// hidden until you know him, "likely X" while you're learning, the name once you've got a read.
+function playerSchemeName(p){const side=sideOfPos(p.pos);if(side!=='off'&&side!=='def')return null;return (side==='off'?OFF_SCHEMES:DEF_SCHEMES)[playerSchemeIdx(p)];}
+function schemeRead(name,conf){
+  if(!name)return {text:'—',revealed:false};
+  if(conf<40)return {text:'???',revealed:false};
+  if(conf<66)return {text:'likely '+name,revealed:false};
+  return {text:name,revealed:true};
+}
+function schemeFitLabel(f){return f>=0.5?'great fit':f>=0.15?'good fit':f>=-0.05?'neutral':f>=-0.18?'poor fit':'bad fit';}
+// Roster-row chip: a player's (fogged) scheme + a ✓/✗ once revealed, vs YOUR current scheme on his side.
+function schemeChip(p,t){
+  const name=playerSchemeName(p); if(!name)return '';
+  const rd=schemeRead(name,rosterTraitConf(p)); let fit='',acc=false;
+  if(rd.revealed&&t){const teamS=sideOfPos(p.pos)==='off'?t.offScheme:t.defScheme;acc=name===teamS;fit=acc?' ✓':' ✗';}
+  return ` <span class="tag ${acc?'accent':''}" style="font-size:10px">Scheme: ${rd.text}${fit}</span>`;
+}
+// Player-sheet KV: the fogged scheme + how it sits against your installed scheme (once revealed).
+function schemeKV(name,conf,teamScheme){
+  if(!name)return '';
+  const rd=schemeRead(name,conf);
+  const fit=rd.revealed?(name===teamScheme?` · fits your ${teamScheme}`:` · off your ${teamScheme}`):'';
+  return `<div class="kv"><span class="k">Scheme</span><span>${rd.text}${fit}</span></div>`;
+}
 // Recruit ceiling fog: like scoutedCeiling, but the band is driven by YOUR scouting confidence
 // (rec.scout 0→100) instead of age/class. Prefs unlock once you've scouted past halfway.
 function recScouted(rec){
@@ -4518,7 +4604,7 @@ function playerRow(p,isStarter,t){
       <div class="nm">${p.fn} ${p.ln} ${p.cap?'<span class="cap">© CAPTAIN</span>':''}</div>
       <div class="meta">${p.yr} · ${p.age}y · ${p.st} · ${'★'.repeat(p.stars)}${'☆'.repeat(5-p.stars)}</div>
       <div class="meta" style="margin-top:3px">${ceilingChip(p)} <span class="dim">${devStage(p)}</span>${growthChip(p)}</div>
-      <div class="meta" style="margin-top:3px">${traitChips(p)}${moraleChip(p)}</div>
+      <div class="meta" style="margin-top:3px">${traitChips(p)}${moraleChip(p)}${schemeChip(p,t)}</div>
     </div>
     <div style="text-align:right">
       ${isStarter?'<span class="tag accent" style="font-size:10px">ST</span>':'<span class="tag" style="font-size:10px">#'+(p.so+1)+'</span>'}
@@ -4538,6 +4624,7 @@ function playerSheet(p,t){
     <div class="kv"><span class="k">Work ethic</span><span>${traitRead('mot',p.id,motVal(p),rosterTraitConf(p)).text}</span></div>
     <div class="kv"><span class="k">Composure</span><span>${traitRead('comp',p.id,compVal(p),rosterTraitConf(p)).text}</span></div>
     <div class="kv"><span class="k">Ego (media)</span><span>${traitRead('ego',p.id,egoVal(p),rosterTraitConf(p)).text}</span></div>
+    ${schemeKV(playerSchemeName(p),rosterTraitConf(p),sideOfPos(p.pos)==='off'?t.offScheme:t.defScheme)}
     ${p.morale!=null?`<div class="kv"><span class="k">Locker room</span><span>${moraleMood(p.morale)} ${p.morale>=60?'buzzing':p.morale>=46?'good':p.morale>=34?'low':'unhappy'} (${p.morale})</span></div>`:''}
     <div class="kv"><span class="k">Speed / Strength / Awareness</span><span>${p.spd} · ${p.str} · ${p.awr}</span></div>
     ${p.dev>0?`<div class="kv"><span class="k">Developed (last offseason)</span><span class="good">▲ +${p.dev} OVR</span></div>`:''}

@@ -259,6 +259,29 @@ plain static files so Pages still serves it with zero config.
   (roster/player/recruit sheets) + an **open morale** mood chip on your roster + a Locker-room read on the
   approval strip. Save **v24** (structural no-op migration); `traitlab` → 30. See "Phase 20 design —
   personality reactions" below.
+- **Phase 21 — Schemes (identity, matchups & fit).** ✅ DONE. Every team runs an offensive + defensive
+  **scheme**, every player innately **prefers** one on his side (which may *not* be what he's rated for),
+  and your **coach** brings a scheme he loves. Pure fenced **`SCHEME ENGINE`** (depends only on
+  `hashStr`/`POS`): 5 offensive schemes (Air Raid · Spread-Option · Pro Style · Smashmouth · West Coast)
+  × 5 defensive (4-3 · 3-4 · Nickel/Cover-3 · Bear · Tampa-2); `SCHEME_EDGE` is a **doubly-balanced** 5×5
+  rock-paper-scissors matchup table (every row AND column sums to 0); `schemeFit` (+1 in his scheme,
+  −0.25 out → E[fit]=0) aggregates over the top-11 into `rosterSchemeFit`; `schemeDelta(off,def)` returns
+  the mean-zero rating delta (matchup edge + roster fit). All three effects — matchup, fit, and a coach
+  **buy-in** (`schemeBuyIn`, app layer, when the team runs the coach's own scheme; Off/Def Genius amplifies)
+  — fold into effective ratings **OUTSIDE** `simEngine` in `simSides` (like `coachGameEdges`/`moraleSpotlight`),
+  so the SIM block + determinism gate stay byte-identical and the validated scoring envelope holds on average;
+  the swing is ≤ ~4 rating pts so a real OVR gap still decides games ("the best players just win"). **No
+  rng-stream change**: team schemes derive from `hashStr(team.id)` (mutable — the player installs his own at
+  takeover and can re-install from Program), a player's preferred scheme from `hashStr(p.id)` (innate, no save
+  column). UI: scheme pickers in the new-game wizard, a Program **Schemes card** (your schemes + roster fit +
+  buy-in) with an **install** sheet (a multi-season project — recruit/develop players whose instincts fit),
+  a **fogged** scheme read on the roster row / player sheet / recruit sheet (??? → "likely X" → the name,
+  sharpening with tenure/scouting like the traits), and a weekly **matchup preview** on the Home card. Save
+  **v25** (per-team `offScheme`/`defScheme`, `S.coach.offScheme`/`defScheme`; migration backfills team schemes
+  from id + adopts them as an existing coach's preference). New gate `npm run schemelab` (31 checks); `qa` → 229.
+  See "Phase 21 design — schemes" below. *(Next: the interactive field + play-calling — the resumable
+  seed+decision-log engine, the SVG field, defer-to-OC with a live mode toggle — then special packages +
+  in-game adjustments, where scheme tendency folds into `passProb`.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast). This is a
   design choice, not a backlog.
@@ -898,6 +921,66 @@ with the four hooks above; anything not touching press / in-game / dev / portal 
 
 ---
 
+## Phase 21 design — schemes (identity, matchups & fit)
+
+Decided 2026-06-28 with AJ — the first slice of "actually calling a game." AJ's framing: every coach has a
+scheme they love, every player has one (which may *not* be what he's good at), schemes beat other schemes
+rock-paper-scissors but "sometimes the best players just win." This phase lands the **identity + ratings**
+layer; the **interactive play-calling** half (the live field, decision points, special packages, in-game
+adjustments) is a later phase that will re-architect the watch flow around a `seed + decision-log` engine.
+
+### The hard constraint that shaped every decision
+`simEngine` is **pure + deterministic** and that's load-bearing (the determinism gate, `buildGameLog` watch,
+greatest-games replay, `simGame` re-sim). So schemes must **not** change the engine. They're applied as a
+mean-zero **rating delta OUTSIDE** `simEngine`, in `simSides`, exactly like the Phase 7 `coachGameEdges` and
+the Phase 20 `moraleSpotlight`. The SIM block is byte-identical → `simlab` + determinism untouched. And to
+keep every existing seed's world byte-identical, **nothing consumes the rng stream**: schemes derive from id
+hashes (the same trick recruit traits use via `hashStr(rec.id)`).
+
+### Pure `SCHEME ENGINE` (fenced, lab before UI)
+`// === SCHEME ENGINE (Phase 21) START/END ===` (depends only on `hashStr`/`POS`):
+- `OFF_SCHEMES` (Air Raid · Spread-Option · Pro Style · Smashmouth · West Coast), `DEF_SCHEMES`
+  (4-3 · 3-4 · Nickel/Cover-3 · Bear · Tampa-2).
+- `SCHEME_EDGE` — a 5×5 matchup table in rating points, **doubly balanced** (every row and column sums to 0),
+  so over uniformly-random matchups the mean edge is exactly 0 (the envelope is preserved by construction)
+  while any single matchup still tilts ±. Reads like the chalk (Air Raid beats Bear blitz, dies to Tampa-2
+  zone; Smashmouth runs on light boxes, stalls vs 3-4/Bear; Spread-Option gashes read-and-react 3-4; …).
+- `schemeFit(p, idx)` = +1 in his scheme, −0.25 otherwise → **E[fit]=0** under a uniform draw (mean-neutral).
+  `rosterSchemeFit` averages it over a side's top-11. `playerSchemeIdx(p)` derives from `hashStr(p.id)`.
+- `schemeDelta(offTeam, defTeam)` → `{off, def}` rating adds (matchup edge + each side's roster fit). The
+  total swing is ≤ ~4 rating pts, far under a typical OVR gap → **raw OVR still decides games**.
+
+### App layer + wiring
+- `genWorld` stamps each team `offScheme`/`defScheme` from `defaultOffScheme/defDefScheme(id)` (mutable).
+- `simSides` folds **both directions** of `schemeDelta` + `schemeBuyIn` (controlled-team-only, S-dependent, so
+  it lives in the app layer next to `coachGameEdges`; Off/Def Genius amplifies) into the two edge-adjusted
+  team copies the engine plays with. Identical between commit (`simGame`) and watch (`buildGameLog`).
+- Taking over a program **installs the coach's schemes** (`finishNewGame`); buy-in is on day one, the roster
+  fits only as well as the players' instincts do — a project you recruit/develop into.
+
+### UI
+New-game wizard scheme pickers; a Program **Schemes card** (schemes + qualitative roster fit + buy-in state)
+with an **install** sheet (each option shows the resulting roster fit + a "your scheme" marker); a **fogged**
+scheme read on the roster row / player sheet / recruit sheet (`schemeRead`: ??? → "likely X" → the name,
+gated on `rosterTraitConf`/`rec.scout` like the traits); a weekly **matchup preview** chip on the Home card.
+
+### Save & validation
+Save **v25** (per-team `offScheme`/`defScheme`, `S.coach.offScheme`/`defScheme`); `migrateState` v24→v25
+backfills team schemes from id and adopts them as an existing coach's preference (a player's preferred scheme
+is innate-per-id, so **no save column**). New gate `npm run schemelab` (31 checks: table double-balance, fit
+& delta mean-zero over random worlds, swing small enough that OVR dominates, footbally matchups, determinism).
+`qa` → 229 (your program runs your schemes, buy-in active both sides, delta deterministic+bounded, scheme
+fogged, roster chip + Program card render, a non-preferred install drops buy-in). **Fourteen gates** now
+(adds `schemelab`).
+
+### Deliberately out of scope (this phase)
+The **run/pass tendency** shift (scheme → `passProb`) is held for the play-calling phase, since it's an
+in-engine change that re-baselines `simlab` — it belongs with the interactive field, where the OC's suggested
+play already reflects the scheme. No per-player scheme *overrides* (innate only), no scheme *progression*,
+no AI coach scheme identities beyond the id-derived team default.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -1323,7 +1406,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **24**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **25**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -1352,7 +1435,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   effect); v22→v23 backfills `S.coachSearch=null` (Phase 19c — the coaching search, created on firing,
   cleared on taking a job / retiring; `phase:'Retired'` is reached via the career retrospective); v23→v24 is a
   structural no-op (Phase 20 — absent `p.ego` reads as average 50 like `mot`/`comp`; `p.morale` absent reads
-  as neutral 50). Each step re-derives ratings/ranks where needed.
+  as neutral 50); v24→v25 backfills each team's `offScheme`/`defScheme` from its id (Phase 21 schemes) and
+  adopts them as an existing coach's `S.coach.offScheme`/`defScheme` preference (a player's preferred scheme is
+  innate-per-id → no save column). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -1368,7 +1453,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 ```
 {
   version, seed, createdAt, lastSaved,
-  coach: { first, last, homeState, archetype, history, approval, tenure, approvalHistory:[…], career:[…] },  // approval+hot-seat persist across seasons (Phase 19b); career = per-stop résumé (Phase 19c)
+  coach: { first, last, homeState, archetype, history, offScheme, defScheme, approval, tenure, approvalHistory:[…], career:[…] },  // off/defScheme = the schemes the coach loves (Phase 21, buy-in target); approval+hot-seat persist across seasons (Phase 19b); career = per-stop résumé (Phase 19c)
   teamId,                 // id of the controlled team
   year,                   // calendar-year counter, init 2026, ++ each rollover (Phase 5)
   week, phase,            // Preseason → 1..15/"Regular Season" → "Conference Championships" (Phase 15) → "Postseason" (bowls+playoff) → "Offseason" (Signing Day → transfer portal) → (rollover) → Preseason; "Retired" ends the career (Phase 19c)
@@ -1408,6 +1493,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 ```
 {
   id, name, nick, abbr, conf, div, color, prestige,
+  offScheme, defScheme,                // the schemes the team runs (Phase 21); mutable — installed at takeover / from Program. Folded into simSides (matchup edge + roster fit + coach buy-in), never into the pure simEngine.
   roster: [Player],
   ratings: { off, def, ovr },          // derived from roster + staff boosts
   fac: { stadium, strength, training, academics, nil },  // 1..10
@@ -1557,8 +1643,8 @@ National Signing Day → transfer portal** → rollover (graduate/enshrine/**dra
 settle → carousel → facilities/series — closes across multiple years, and the **hot seat** means a sustained
 slump can end your tenure; your stars leave a permanent mark on the program both on its Ring of Honor and on
 its pro-pipeline reputation.
-**Thirteen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
-`traitlab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `medialab` / `qa`.
+**Fourteen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
+`traitlab` / `schemelab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `medialab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during

@@ -532,6 +532,32 @@ function startServer() {
   check('Phase 20: the “hype” presser lifted the locker room overall', ego.teamMorale > 50, `avg ${ego.teamMorale.toFixed(1)}`);
   check('Phase 20: the Ego trait is fogged like the others (hidden until scouted)', ego.egoFogged);
   check('Phase 20: the roster surfaces the Ego trait chip', ego.egoChip);
+  const scheme = await page.evaluate(() => {
+    const t = S.world.teams.find(x => x.id === S.teamId);
+    const installedMatch = t.offScheme === S.coach.offScheme && t.defScheme === S.coach.defScheme;
+    const buyOff = schemeBuyIn(t, 'off'), buyDef = schemeBuyIn(t, 'def');
+    const opp = S.world.teams.find(x => x.id !== t.id);
+    const d1 = schemeDelta(t, opp), d2 = schemeDelta(t, opp);
+    const det = d1.off === d2.off && d1.def === d2.def, bounded = Math.abs(d1.off) <= 4 && Math.abs(d1.def) <= 1;
+    const p = t.roster.find(x => x.pos === 'QB'), name = playerSchemeName(p);
+    const fog = schemeRead(name, 0).text === '???' && schemeRead(name, 90).text === name;
+    UI.view = 'team'; UI.tab = 'roster'; render();
+    const rosterChip = /scheme:/i.test(document.querySelector('.view').innerText);
+    UI.view = 'program'; render();
+    const cardEl = document.querySelector('[data-tid="schemes"]');
+    const card = !!cardEl && cardEl.innerText.includes(t.offScheme);
+    const otherOff = OFF_SCHEMES.find(s => s !== t.offScheme), before = t.offScheme;
+    t.offScheme = otherOff; const buyDropped = schemeBuyIn(t, 'off') === 0 && buyOff > 0; t.offScheme = before;
+    UI.view = 'home'; render();
+    return { installedMatch, buyOff, buyDef, det, bounded, fog, rosterChip, card, buyDropped };
+  });
+  check('Phase 21: your program runs your preferred schemes (installed at takeover)', scheme.installedMatch);
+  check('Phase 21: running your scheme gives a buy-in edge on both sides', scheme.buyOff > 0 && scheme.buyDef > 0, `O+${scheme.buyOff} D+${scheme.buyDef}`);
+  check('Phase 21: scheme delta is deterministic + bounded (OVR still dominates)', scheme.det && scheme.bounded);
+  check('Phase 21: a player’s preferred scheme is fogged (??? until known)', scheme.fog);
+  check('Phase 21: the roster row surfaces a scheme chip', scheme.rosterChip);
+  check('Phase 21: the Program page shows the Schemes card', scheme.card);
+  check('Phase 21: installing a non-preferred scheme drops the buy-in', scheme.buyDropped);
   const cycle = await page.evaluate(() => {
     const me = S.teamId;
     const tgt = S.recruiting.pool.find(r => r.stars === 4 && r.iv[me] == null);
