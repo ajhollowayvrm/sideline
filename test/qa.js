@@ -560,7 +560,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 28 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 29 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -577,7 +577,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v28)', mig.v === 28, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v29)', mig.v === 29, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -973,8 +973,13 @@ function startServer() {
   });
   await page.locator('[data-tid="nav-home"]').click();
   await page.waitForTimeout(120);
-  await page.locator('[data-tid="adv-clock"]').click();   // "Roll over to <year> →"
-  await page.waitForTimeout(180);
+  // Phase 32: the rollover advance now opens the training-camp screen first; pick an intensity there.
+  await page.locator('[data-tid="adv-clock"]').click();   // "Open training camp →"
+  await page.waitForTimeout(120);
+  const campScreen = await page.evaluate(() => ({ shown: document.querySelector('#app').dataset.screen === 'camp', plans: !!document.querySelector('[data-tid="camp-grueling"]') }));
+  check('Phase 32: the training-camp screen opens before rollover', campScreen.shown && campScreen.plans);
+  await page.locator('[data-tid="camp-grueling"]').click();   // run a grueling camp, which rolls the season over
+  await page.waitForTimeout(220);
   const roPost = await page.evaluate(() => {
     const me = S.teamId, t = S.world.teams.find(x => x.id === me);
     return {
@@ -994,14 +999,21 @@ function startServer() {
       ringValid: S.world.teams.every(x => !x.legends || x.legends.length <= 12),
       draftYear: S.draft ? S.draft.year : null, draftPicks: S.draft ? S.draft.picks.length : 0,
       draftOrdered: S.draft ? S.draft.picks.every((p, i) => p.pick === i + 1) : false,
-      factoryTeams: S.world.teams.filter(x => x.factory && Object.keys(x.factory).length).length
+      factoryTeams: S.world.teams.filter(x => x.factory && Object.keys(x.factory).length).length,
+      // Phase 32: training camp ran during this rollover (set in the offseason, cleared at kickoff)
+      campPlan: S.camp ? S.camp.plan : null, campApplied: !!(S.camp && S.camp.applied),
+      campInjured: S.camp ? (S.camp.injured || []).length : 0,
+      campDevFelt: (() => { const t = S.world.teams.find(x => x.id === S.teamId), p = t.roster.find(x => x.so >= 2) || t.roster[0]; const a = devRateFor(t, p); const sv = S.camp; S.camp = null; const b = devRateFor(t, p); S.camp = sv; return a > b || a >= 1.6; })()
     };
   });
   check('Rollover: advances to the next calendar year', roPost.year === roPre.year + 1, `${roPre.year} → ${roPost.year}`);
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 28', roPost.version === 28, 'v' + roPost.version);
+  check('Rollover: save version bumped to 29', roPost.version === 29, 'v' + roPost.version);
+  check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
+  check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
+  check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);
   check('Phase 8: player honors survive the rollover', roPost.honoredAfter > 0, roPost.honoredAfter + ' still honored');
   check('Phase 8: series + awards history persist across the rollover', roPost.seriesKept > 0 && roPost.awardsKept > 0, `series ${roPost.seriesKept}, awards ${roPost.awardsKept}`);
   check('Phase 11: career totals accrue across the rollover', roPost.careerPlayers > 50, roPost.careerPlayers + ' players carry a career');
@@ -1056,11 +1068,12 @@ function startServer() {
   const growthUI = await page.evaluate(() => [...document.querySelectorAll('.lrow .tag')].some(t => t.textContent.includes('▲')));
   check('Phase 7: roster surfaces growth (▲ chip after rollover)', growthUI);
   const p7 = await page.evaluate(() => {
-    const t = controlled(), save = S.coach.archetype;
+    const t = controlled(), save = S.coach.archetype, savedCamp = S.camp;
+    S.camp = null;   // isolate the archetype effect from the live training-camp dev multiplier (Phase 32)
     S.coach.archetype = 'Manager'; const mQB = devRateFor(t, { pos: 'QB' }), mLB = devRateFor(t, { pos: 'LB' });
     S.coach.archetype = 'Offensive Genius'; const gQB = devRateFor(t, { pos: 'QB' }), gLB = devRateFor(t, { pos: 'LB' });
     const og = coachGameEdges(t); S.coach.archetype = 'Defensive Genius'; const dg = coachGameEdges(t);
-    S.coach.archetype = save; const baseEdge = coachGameEdges(t);
+    S.coach.archetype = save; S.camp = savedCamp; const baseEdge = coachGameEdges(t);
     return { mQB, mLB, gQB, gLB, og, dg, baseEdge };
   });
   check('Phase 7: Off Genius speeds offensive dev only', p7.gQB > p7.mQB && Math.abs(p7.gLB - p7.mLB) < 1e-9);
@@ -1113,10 +1126,13 @@ function startServer() {
   await page.waitForTimeout(120);
   await page.locator('[data-tid="adv-clock"]').click();   // "Kick off the season →"
   await page.waitForTimeout(180);
-  const next = await page.evaluate(() => ({ phase: S.phase, week: S.week, sched: !!S.schedule, pool: S.recruiting ? S.recruiting.pool.length : 0,
+  const next = await page.evaluate(() => { const t = controlled(); const ms = t.roster.filter(p => p.morale != null).map(p => p.morale);
+    return { phase: S.phase, week: S.week, sched: !!S.schedule, pool: S.recruiting ? S.recruiting.pool.length : 0,
     seriesGames: S.schedule ? S.schedule.games.filter(g => g.series).length : 0,
-    mySeriesGame: S.schedule ? S.schedule.games.some(g => g.series && (g.home === S.teamId || g.away === S.teamId)) : false }));
+    mySeriesGame: S.schedule ? S.schedule.games.some(g => g.series && (g.home === S.teamId || g.away === S.teamId)) : false,
+    campCleared: S.camp === null, mood: ms.length ? ms.reduce((a, b) => a + b, 0) / ms.length : 50 }; });
   check('Rollover: next season kicks off cleanly (schedule + fresh recruiting cycle)', next.phase === 'Regular Season' && next.week === 1 && next.sched && next.pool > 0, `pool ${next.pool}`);
+  check('Phase 32: camp is spent at kickoff + a grueling camp opens the room worn down', next.campCleared && next.mood < 50, `cleared ${next.campCleared}, mood ${next.mood}`);
 
   // ---------- PHASE 11: alumni visit + legacy aura (integrated) ----------
   // Inject a high-stature legend onto the controlled team (with appearances refreshed at kickoff),

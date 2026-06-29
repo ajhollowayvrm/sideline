@@ -662,6 +662,7 @@ function render(){
   if(UI.view==='team') renderTeam(app);
   if(UI.view==='recruit') renderRecruiting(app);
   if(UI.view==='portal') renderPortal(app);
+  if(UI.view==='camp') renderCamp(app);
   if(UI.view==='media') renderMedia(app);
   if(UI.view==='season') renderSeason(app);
   if(UI.view==='browse') renderBrowse(app,false);
@@ -786,9 +787,9 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:28,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:29,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
-     recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
+     recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // Phase 19b: coach approval + tenure + a per-job career résumé (persist across seasons, not in S.media).
   S.coach.approval=55; S.coach.tenure=0; S.coach.approvalHistory=[]; S.coach.career=[];
@@ -991,6 +992,9 @@ function migrateState(state){
   if((state.version||1)<28){           // Phase 27: week-to-week injuries. Per-player `p.inj` (weeks out) is
     state.version=28;                  // a sparse field — absent reads as healthy → structural no-op.
   }
+  if((state.version||1)<29){           // Phase 32: training camp. `S.camp` is set in the offseason + cleared
+    state.version=29;                  // at kickoff — absent reads as "no camp chosen yet" → structural no-op.
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1091,6 +1095,11 @@ function startSeason(){
   initRecruiting();
   S.world.teams.forEach(t=>{t.mediaBuzz=0;});   // Phase 19b: press-conference recruiting buzz resets each year
   controlled().roster.forEach(p=>{delete p.morale;});   // Phase 20: a fresh, neutral locker room each season
+  // Phase 32: a training camp leaves a mark on the opening-week mood — a light camp opens fresh, a
+  // grueling one opens worn down (decays back to neutral over a few weeks). Then the camp is spent.
+  if(S.camp){const seed=campMoraleSeed(S.camp.plan);
+    if(seed)controlled().roster.forEach(p=>{p.morale=clamp(MORALE_DEF+seed,0,100);});
+    S.camp=null;}
   recomputeRanks(S.world);
   initMedia();                 // Phase 19: a fresh preseason AP poll + an empty news feed
   setWeeklyTask();
@@ -1681,6 +1690,39 @@ function rolloverRoster(roster,signees,prestige,r,opts){
   return {roster:out,graduated,freshmen,trackedCount:freshmen.length};
 }
 // === ROLLOVER ENGINE (Phase 5) END ===
+
+// === CAMP ENGINE (Phase 32) START ===
+// Offseason TRAINING CAMP — a once-a-year, CONTROLLED-TEAM-ONLY lever to kickstart the year's
+// development, traded against injury + burnout risk. An intensity dial: light (safe, modest, a
+// fresh room) · normal (balanced) · grueling (the biggest growth, but bodies break down + the room
+// wears thin). Pure: depends only on rng/clamp + injDur (defined in the SIM block) — no DOM, no S —
+// so test/camplab.js extracts + validates it offline. The app consumes it at rollover (dev boost via
+// devRateFor + camp injuries onto the new roster) and at kickoff (the starting-morale seed).
+const CAMP_PLANS=[
+  {key:'light',   name:'Light Camp',    devMult:1.06, injRate:0.000, moraleSeed:8,
+    desc:'Easy reps, keep everyone healthy. A small developmental bump and no injury risk — and a fresh, motivated locker room to open the year.'},
+  {key:'normal',  name:'Standard Camp', devMult:1.16, injRate:0.013, moraleSeed:0,
+    desc:'A normal grind. Solid across-the-board development with only the occasional camp tweak.'},
+  {key:'grueling',name:'Grueling Camp', devMult:1.30, injRate:0.048, moraleSeed:-10,
+    desc:'Hammer them in the heat. The biggest jump in development — but more bodies break down and the room comes out of camp worn thin.'}
+];
+function campPlan(key){return CAMP_PLANS.find(p=>p.key===key)||CAMP_PLANS[1];}
+// The development multiplier the plan confers (folded into devRateFor for the controlled team only).
+function campDevMult(key){return campPlan(key).devMult;}
+// The morale the controlled room carries into Week 1 (seeded at kickoff; decays toward neutral over a
+// few weeks). A grind soured start vs a light fresh start; 0 (Standard) leaves a neutral room.
+function campMoraleSeed(key){return campPlan(key).moraleSeed;}
+// Roll camp injuries over a roster: each player has plan.injRate odds of getting dinged, with severity
+// from injDur (weeks out — mostly day-to-day, a small multi-week tail). Deterministic from r. Returns
+// [{id,pos,name,weeks}] (weeks>0 only — a 0-week tweak heals before Week 1 and isn't reported).
+function campInjuries(roster,key,r){
+  const rate=campPlan(key).injRate, out=[];
+  (roster||[]).forEach(p=>{
+    if(r()<rate){ const w=injDur(r); if(w>0)out.push({id:p.id,pos:p.pos,name:((p.fn||'')+' '+(p.ln||'')).trim(),weeks:w}); }
+  });
+  return out;
+}
+// === CAMP ENGINE (Phase 32) END ===
 
 // === ECONOMY ENGINE (Phase 6) START ===
 // Pure, deterministic program-management model: finances, facility upgrades, and the coaching
@@ -2928,6 +2970,7 @@ function devRateFor(team,p){
   rate*=motorMult(p);                      // the player's own work ethic (Phase 10 trait)
   if(team.id===S.teamId&&S.media&&S.media.pressDev)rate*=1+clamp(S.media.pressDev,0,0.08);   // Phase 19b: press "culture" focus
   if(team.id===S.teamId&&p.morale!=null)rate*=moraleDevMult(p.morale);                       // Phase 20: a buzzing locker room develops faster
+  if(team.id===S.teamId&&S.camp)rate*=campDevMult(S.camp.plan);                              // Phase 32: this offseason's training-camp intensity
   return clamp(rate,0.6,1.6);
 }
 // Clear out the controlled team's recruiting promises at rollover. Departures are now modeled by the
@@ -2972,6 +3015,7 @@ function rolloverSeason(){
   const pool=(S.recruiting&&S.recruiting.pool)||[];
   const signeesBy={};pool.forEach(rc=>{if(rc.committedTo)(signeesBy[rc.committedTo]=signeesBy[rc.committedTo]||[]).push(rc);});
   const me=S.teamId, r=rng((S.seed^hashStr('rollover'+(S.year||2026)))>>>0);
+  const campR=rng((S.seed^hashStr('camp'+(S.year||2026)))>>>0);   // Phase 32: deterministic camp injuries
   const myPost=controlled().lastPostseason||null;  // this year's bowl/playoff finish (for the recap)
   resolvePromises(me);                             // clear resolved obligations (departures modeled by the portal)
   const departed=(S.portal&&S.portal.departures)||[];   // who you lost to the transfer portal (Phase 18)
@@ -2987,7 +3031,16 @@ function rolloverSeason(){
     // Phase 11: enshrine this team's worthy graduates into its Ring of Honor (league-wide).
     const inducted=enshrineLegends(t,res.graduated,yr);
     res.graduated.forEach(p=>allGrads.push(draftSnap(p,t)));   // Phase 13: feed the NFL draft pool
-    if(t.id===me){summary=res;myInducted=inducted;}
+    if(t.id===me){
+      summary=res;myInducted=inducted;
+      // Phase 32: the training camp the coach ran this offseason — its grind can leave a few players
+      // banged up to start the year (p.inj persists into the season + heals weekly, like any injury).
+      if(S.camp){
+        const ci=campInjuries(t.roster,S.camp.plan,campR);
+        ci.forEach(it=>{const p=t.roster.find(x=>x.id===it.id);if(p)p.inj=it.weeks;});
+        S.camp.injured=ci;S.camp.applied=true;
+      }
+    }
   });
   // (NFL draft — Phase 13) draft this graduating class league-wide, then update factory reputations.
   const draftPicks=runDraft(allGrads,(S.seed^hashStr('draft'+yr))>>>0);
@@ -3017,6 +3070,7 @@ function rolloverSeason(){
     finances:controlled().lastFinances||null,poached:poachedMine,
     postseason:(myPost&&myPost.label)||null,
     draft:{count:myPicks.length,top:myPicks[0]?myPicks[0].pick:null,names:myPicks.slice(0,3).map(p=>p.name+' ('+p.pos+', #'+p.pick+')')},
+    camp:S.camp?{name:campPlan(S.camp.plan).name,injured:(S.camp.injured||[]).map(i=>i.name+' ('+i.pos+', '+i.weeks+'wk)')}:null,
     inducted:myInducted.map(l=>({name:l.name,pos:l.pos,tier:l.tier,stature:l.stature}))};
   if(S.coach&&S.coach.pendingFire)triggerCoachingSearch();   // Phase 19c: you were let go — find a new job or retire
   autosave();
@@ -3689,7 +3743,8 @@ function renderHome(app){
   const myCg=inChamp?myChampGame():null;
   const signing=over&&S.recruiting&&S.recruiting.stage==='national';   // Early Signing done, NSD pending
   const portalOpen=over&&S.portal&&S.portal.stage==='open';            // transfer portal window (Phase 18)
-  const advLabel=over?(signing?'Hold National Signing Day \u2192':portalOpen?'Close the transfer portal \u2192':'Roll over to '+((S.year||2026)+1)+' \u2192')
+  const campPending=over&&!signing&&!portalOpen&&!S.camp;              // Phase 32: set training camp, then roll over
+  const advLabel=over?(signing?'Hold National Signing Day \u2192':portalOpen?'Close the transfer portal \u2192':campPending?'Open training camp \u2192':'Roll over to '+((S.year||2026)+1)+' \u2192')
     :inSeason?'Play Week '+S.week+' \u2192'
     :inChamp?(myCg?'Play the '+myCg.name+' \u2192':'Set the playoff field \u2192')
     :inPost?(myPg?(myPg.kind==='bowl'?'Play the '+myPg.name+' \u2192':'Play '+PLAYOFF_ROUNDS[S.postseason.round]+' \u2192')
@@ -3700,6 +3755,7 @@ function renderHome(app){
     if(over){
       if(S.recruiting&&S.recruiting.stage==='national'){nationalSigningDay();render();toast('National Signing Day \u2014 class closed; the transfer portal is open');}
       else if(S.portal&&S.portal.stage==='open'){closePortal();render();toast('Transfer portal closed');}
+      else if(!S.camp){UI.view='camp';render();}   // Phase 32: run training camp before rolling over
       else{rolloverSeason();render();toast('Welcome to '+S.year+' \u2014 class enrolled, roster reloaded');}
     }
     else if(inSeason){
@@ -3760,10 +3816,13 @@ function renderHome(app){
       (o.draft.names&&o.draft.names.length?`<div class="muted" style="font-size:12px;margin-top:2px">${o.draft.names.join(', ')}</div>`:''):'';
     // Phase 11: new Ring of Honor inductees from the class that just graduated
     const ind=o.inducted&&o.inducted.length?`<div class="muted" style="font-size:12px;margin-top:6px">⭐ Enshrined: ${o.inducted.map(i=>i.name+' ('+i.tier+')').join(', ')}</div>`:'';
+    // Phase 32: the training camp the coach ran + anyone it left banged up
+    const cmp=o.camp?`<div class="row spread" style="margin-top:4px"><span>Training camp</span><span class="cond accent" style="font-weight:800">${o.camp.name}</span></div>`+
+      (o.camp.injured&&o.camp.injured.length?`<div class="muted bad" style="font-size:12px;margin-top:2px">🩹 Camp injuries: ${o.camp.injured.join(', ')}</div>`:''):'';
     rc.innerHTML=`<div class="meta dim" style="margin-bottom:6px">Offseason recap</div>
       <div class="row spread"><span>Seniors graduated</span><span class="cond" style="font-weight:800">${o.graduated}</span></div>
       <div class="row spread"><span>Recruits enrolled</span><span class="cond" style="font-weight:800">${o.tracked}</span></div>
-      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${pst}${drf}${fin}${arr}${dep}${poa}${ind}`;
+      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${cmp}${pst}${drf}${fin}${arr}${dep}${poa}${ind}`;
     v.append(rc);
   }
   if(inSeason||over){const sb=el('button','btn line','Season \u00b7 schedule & standings');sb.style.marginTop='10px';
@@ -4218,6 +4277,36 @@ function renderPortal(app){
   v.append(list,moreBtn);
   v.append(el('div','hint center','Pursue transfers to raise your interest, then close the portal from Home to roll over.'));
   app.append(v);draw();
+}
+
+// Phase 32: TRAINING CAMP — the offseason step (after the portal, before rollover) where the coach
+// sets how hard to push the team. Intensity trades development against injury + burnout risk. Picking
+// a plan sets S.camp and immediately rolls the season over (camp dev/injuries apply during rollover).
+function renderCamp(app){
+  const v=el('div','view');
+  v.append(headerBar('Training Camp',(S.year||2026)+' offseason',()=>{UI.view='home';render();}));
+  v.append(el('div','card','<div class="meta dim" style="margin-bottom:4px">Kickstart the year</div>'+
+    '<div class="muted" style="font-size:13px">Set how hard to push your program through the offseason. A harder camp develops your roster more — but bodies break down and a worn-out room opens the season flat. This applies to your team only, and resets every offseason.</div>'));
+  CAMP_PLANS.forEach(plan=>{
+    const risk=plan.injRate===0?'None':plan.injRate<0.02?'Low':'High';
+    const mood=plan.moraleSeed>0?'Fresh (+'+plan.moraleSeed+')':plan.moraleSeed<0?'Worn down ('+plan.moraleSeed+')':'Neutral';
+    const c=el('div','card');c.style.marginTop='10px';
+    c.innerHTML=`<div class="row spread"><span class="cond" style="font-size:18px;font-weight:800">${plan.name}</span>`+
+      `<span class="tag accent">+${Math.round((plan.devMult-1)*100)}% dev</span></div>`+
+      `<div class="muted" style="font-size:12.5px;margin-top:6px">${plan.desc}</div>`+
+      `<div class="row" style="gap:14px;margin-top:8px;font-size:12px">`+
+        `<span class="meta dim">Injury risk: <span class="${risk==='High'?'bad':risk==='Low'?'':'good'}" style="font-weight:700">${risk}</span></span>`+
+        `<span class="meta dim">Week 1 mood: <span style="font-weight:700">${mood}</span></span></div>`;
+    const run=el('button','btn','Run '+plan.name+' →');run.style.marginTop='10px';run.dataset.tid='camp-'+plan.key;
+    run.onclick=()=>{
+      S.camp={plan:plan.key};
+      rolloverSeason();
+      UI.view='home';render();
+      toast(plan.name+' complete — welcome to '+S.year);
+    };
+    c.append(run);v.append(c);
+  });
+  app.append(v);
 }
 function portalRow(tr){
   const me=S.teamId, mine=tr.committedTo===me, committed=tr.committedTo, fromT=teamById(tr.fromTeam);

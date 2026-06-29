@@ -419,6 +419,25 @@ plain static files so Pages still serves it with zero config.
   short yardage; spread gains more pass yards but takes more sacks), `qa` → 249 (packages callable + replay
   on commit). See "Phase 31 design — special packages" below. *(This closes the original game-day vision;
   open polish: AI use of packages, defensive nickel/dime personnel, a richer route/play-type palette.)*
+- **Phase 32 — Offseason training camp.** ✅ DONE. A once-a-year, **controlled-team-only** lever to
+  kickstart the year's development, run as an offseason step **after the transfer portal, before rollover**
+  (the advance walks: Hold National Signing Day → Close the portal → **Open training camp** → roll over).
+  Pure fenced **`CAMP ENGINE`** (depends only on `rng/clamp` + `injDur`): an **intensity dial** —
+  `CAMP_PLANS` Light (×1.06 dev, no risk, a fresh +8 room) · Standard (×1.16, low injury risk, neutral) ·
+  Grueling (×1.30 dev, real injury risk, a worn-down −10 room). `campDevMult` folds into `devRateFor` for the
+  controlled team (consumed during rollover's development pass); `campInjuries(roster,key,r)` rolls camp
+  injuries (severity via the shared `injDur`) onto the **rolled-over** roster as `p.inj` (persist into the
+  season + heal weekly, like any injury — applied after the offseason heal); `campMoraleSeed` seeds the
+  controlled room's **Week-1 morale** at kickoff (decays toward neutral). `S.camp={plan}` is set on the camp
+  screen, consumed at rollover (dev + injuries) and at kickoff (morale), then **cleared** — so it re-prompts
+  every offseason and the season runs with `S.camp` null. UI: a **Training Camp** screen (three intensity
+  cards showing dev boost / injury risk / Week-1 mood, one tap to run + roll over) + a camp line in the
+  offseason recap (incl. 🩹 camp injuries). Save **v29** (`S.camp`, null until set in the offseason →
+  structural no-op migration). New gate `npm run camplab` (17 checks: intensity orders dev + risk, light is
+  risk-free, grueling hurts more, injuries bounded + reference real players, determinism); `qa` → 254 (the
+  camp screen opens before rollover, a grueling camp applies + boosts dev + opens the room worn down, camp is
+  spent at kickoff). See "Phase 32 design — training camp" below. *(Open polish: a position-group focus + an
+  AI camp model — left out deliberately to keep it lean.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1543,6 +1562,65 @@ original game-day vision — further play-type depth is a future thread, not a g
 
 ---
 
+## Phase 32 design — offseason training camp
+
+Decided 2026-06-29 with AJ — "an offseason training camp thing that can kickstart progression for the year."
+AJ's two scoping calls: the camp's downside is **injury + burnout risk** (a harder camp develops more but
+breaks bodies + wears the room thin), and it's **free** (a pure strategy choice, no budget gate). Same house
+discipline: a pure fenced engine validated by a node lab before any UI, a save bump, all gates green.
+
+### Where it lives in the loop
+Development already happens at rollover (`rolloverSeason` → `rolloverRoster` with `rateFor:p=>devRateFor(t,p)`),
+and `devRateFor` is the established home for **controlled-team-only** dev multipliers (facilities → coords →
+position coach → archetype → motor → press culture → morale). Training camp is one more such multiplier,
+chosen by the coach for the upcoming offseason. It's a distinct offseason **step**: the Home advance walks
+Hold National Signing Day → Close the transfer portal → **Open training camp** → roll over, so running camp
+is a deliberate moment (not a passive setting). `campPending = over && !signing && !portalOpen && !S.camp`.
+
+### Pure `CAMP ENGINE` (fenced, lab before UI)
+`// === CAMP ENGINE (Phase 32) START/END ===` — depends only on `rng/clamp` + `injDur` (the shared SIM-block
+severity roll), so `test/camplab.js` extracts the block (+ that one `injDur` line) and validates it offline:
+- `CAMP_PLANS` — an **intensity dial**: Light (`devMult 1.06`, `injRate 0`, `moraleSeed +8`) · Standard
+  (`1.16`, `0.013`, `0`) · Grueling (`1.30`, `0.048`, `−10`). Development scales up, injury risk scales up,
+  the Week-1 room goes from fresh → neutral → worn. (No position-group **focus** — deliberately lean, one knob.)
+- `campPlan(key)` / `campDevMult(key)` / `campMoraleSeed(key)` — table reads (unknown key → Standard).
+- `campInjuries(roster, key, r)` — per-player `injRate` odds of a camp injury, severity from `injDur` (mostly
+  day-to-day, a multi-week tail). Deterministic; returns `[{id,pos,name,weeks}]` (weeks>0 only).
+
+### App wiring (three consumption points, all controlled-team-only)
+- **Development:** `devRateFor` multiplies in `campDevMult(S.camp.plan)` when `team.id===S.teamId && S.camp`
+  (sits next to the press/morale terms, under the same `clamp(rate,0.6,1.6)`).
+- **Injuries:** in `rolloverSeason`'s team loop, **after** the offseason heal (`delete p.inj`), the controlled
+  team rolls `campInjuries` (a `campR` rng keyed on `('camp'+year)`) and stamps `p.inj` onto the rolled-over
+  roster — so camp injuries persist into Week 1 and heal weekly like any in-season injury (Phase 27). Recorded
+  on `S.camp.injured` for the recap.
+- **Morale:** `startSeason` seeds the controlled room's Week-1 morale to `clamp(50 + campMoraleSeed, 0, 100)`
+  (after the usual neutral-room reset), so a grueling camp opens flat (the in-game spotlight / `moraleGameSkew`
+  is slightly negative until it decays to neutral over ~3 weeks), a light camp opens hot.
+- **Lifecycle:** `S.camp={plan}` is set on the camp screen → consumed at rollover (dev + injuries, stamped
+  `applied:true`) → consumed at kickoff (morale) → **nulled**. So the season runs with `S.camp` null and camp
+  re-prompts every offseason. Other teams never read `S.camp`, so the league dev envelope is untouched.
+
+### UI
+A **Training Camp** screen (`renderCamp`, `UI.view='camp'`, reached from the offseason advance) — three
+intensity cards each showing `+N% dev`, injury risk (None/Low/High), and Week-1 mood, with a one-tap
+"Run <name> →" (`data-tid="camp-<key>"`) that sets `S.camp` and rolls the season over. A camp line in the
+Home **offseason recap** (plan name + 🩹 camp injuries).
+
+### Save & validation
+Save **v29** (`S.camp`, null until set in the offseason → `migrateState` v28→v29 is a structural no-op).
+New gate `npm run camplab` (17 checks: three plans, dev + injury risk ordered by intensity, light is
+risk-free, grueling injures more than Standard, injuries bounded 1–8wk + reference real roster players,
+determinism). `qa` → 254 (the camp screen opens before rollover; a grueling camp applies, boosts `devRateFor`,
+and opens the room worn down; camp is spent at kickoff). **Fifteen gates** now (adds `camplab`).
+
+### Deliberately out of scope
+One intensity knob — no **position-group focus** (a where-to-pour-reps allocation), no **AI camp model** (AI
+teams develop off facilities/staff as before — camp is a player perk), no per-player camp assignment, no
+multi-stage camp (install vs. conditioning). The first two are the obvious next polish if camp proves fun.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -1968,7 +2046,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **28**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **29**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -2000,8 +2078,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   as neutral 50); v24→v25 backfills each team's `offScheme`/`defScheme` from its id (Phase 21 schemes) and
   adopts them as an existing coach's `S.coach.offScheme`/`defScheme` preference (a player's preferred scheme is
   innate-per-id → no save column); v25→v26 is a no-op (Phase 22 play-calling — a game's optional `g.calls`,
-  the coach's recorded play calls, is absent-safe → absent reads as a pure AI game). Each step re-derives
-  ratings/ranks where needed.
+  the coach's recorded play calls, is absent-safe → absent reads as a pure AI game); v28→v29 is a structural
+  no-op (Phase 32 training camp — `S.camp` is set in the offseason + cleared at kickoff, so absent reads as
+  "no camp chosen yet"). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -2212,8 +2291,9 @@ National Signing Day → transfer portal** → rollover (graduate/enshrine/**dra
 settle → carousel → facilities/series — closes across multiple years, and the **hot seat** means a sustained
 slump can end your tenure; your stars leave a permanent mark on the program both on its Ring of Honor and on
 its pro-pipeline reputation.
-**Fourteen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
-`traitlab` / `schemelab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `medialab` / `qa`.
+**Fifteen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
+`traitlab` / `schemelab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `medialab` /
+`camplab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during
