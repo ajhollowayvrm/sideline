@@ -219,7 +219,7 @@ plain static files so Pages still serves it with zero config.
   and Portal-in/out lines in the offseason recap. Save **v20** (`S.portal`, per-player `fromTransfer`); new
   gate `npm run portallab` (17 checks); `qa` (207) drives open → pursue → close → enroll → cleared at
   rollover. See "Phase 18 design — transfer portal" below.
-- **Phase 19 — Full media suite.** 🚧 IN PROGRESS (three sub-phases). A media layer over the data the sim
+- **Phase 19 — Full media suite.** ✅ DONE (three sub-phases). A media layer over the data the sim
   already produces, plus real career stakes. **19a (✅ DONE):** a pure fenced **`MEDIA ENGINE`** —
   `computePoll` (an AP-style Top 25 with **inertia**, so teams lag rather than teleport; distinct from the
   committee's `rankScore`), `gameStoryTag` (classify a result: upset / ranked / blowout), and `mkStory`
@@ -237,9 +237,12 @@ plain static files so Pages still serves it with zero config.
   end (`settleSeasonApproval` in `enterOffseason`); a weekly **optional press card** folds `buzz` into
   `recruitFit` (guarded `team.mediaBuzz`) + a `dev` focus into `devRateFor` (`S.media.pressDev`); an
   approval/hot-seat strip on Home + Program; a "pressure mounts" feed story when the seat heats up. Save
-  **v22** (`medialab` → 40). **19c (next):** firing → a **job carousel** (take a lesser/lateral job) **or
-  retire** (career summary). The **AP poll stays cosmetic** (the playoff seeds off `rankScore`/conf
-  champions). See "Phase 19 design — media suite" below.
+  **v22** (`medialab` → 40). **19c (✅ DONE):** the hot seat pays off — `firingDecision` (in
+  `settleSeasonApproval`) flags a sustained slump, and after the league rolls over `triggerCoachingSearch`
+  opens a **Coaching Search** (`coachOpenings` — mostly lesser/lateral jobs); `takeJob` switches `S.teamId`,
+  banks the stint on **`S.coach.career`**, and resets approval/tenure, or `retireCoach` ends the run with a
+  **career retrospective**. Save **v23** (`S.coachSearch`, `phase:'Retired'`; `medialab` → 46). The **AP poll
+  stays cosmetic** (the playoff seeds off `rankScore`/conf champions). See "Phase 19 design — media suite" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast). This is a
   design choice, not a backlog.
@@ -815,11 +818,16 @@ context-keyed question bank → a small `{approval, buzz, dev}` bag). App: appro
 (`S.media.pressDev`); an approval/hot-seat strip (Home + Program) + a "pressure mounts" feed story when the
 seat heats up. Save **v22**; `medialab` → 40.
 
-### 19c — Fired → job carousel or retire
-`coachOpenings(world, firedPrestige, seed)` (pure; reuses the carousel's prestige-tier idea — mostly lesser
-vacancies, the odd lateral, never your current job). On firing: a **Coaching Search** screen → take a job
-(switch `S.teamId`, reset approval/tenure, append to `S.coach.career` — a per-stop résumé) **or retire** → a
-career-retrospective (record, conf/national titles, legends, NFL picks, awards). Save **v23**.
+### 19c — Fired → job carousel or retire (✅ DONE)
+`coachOpenings(teams, firedPrestige, seed, n)` (pure; weighted toward programs **below** your last job — a
+step down is the likely landing, a lateral occasional, well-above almost never; caller excludes your old
+job). `firingDecision` (in `settleSeasonApproval`) flags `S.coach.pendingFire`; the consequence is deferred
+to the **end of `rolloverSeason`** (so the league advances normally) → `triggerCoachingSearch` builds
+`S.coachSearch`. The Home view routes to a **Coaching Search** screen (kickoff blocked): `takeJob(id)` banks
+the stint on `S.coach.career`, switches `S.teamId`, resets approval(52)/tenure(0), and starts fresh; or
+`retireCoach` sets `phase:'Retired'` → a **career retrospective** (`renderRetired`: programs / seasons /
+national + conf titles / stops) reached via the render dispatcher, with a back-to-menu. Save **v23**;
+`medialab` → 46.
 
 ### Deliberately out of scope
 No Sims-style per-player morale web; no real-time/streamed broadcast; no editable transcripts/voice; the AP
@@ -1252,7 +1260,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **22**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **23**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -1278,7 +1286,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   no effect); v20→v21 backfills `S.media=null` (Phase 19a — the AP poll + news feed, created at kickoff,
   nulled at rollover); v21→v22 backfills coach `approval`(55)/`tenure`(0)/`approvalHistory`([])/`career`([])
   on `S.coach` (Phase 19b — these persist across seasons; `team.mediaBuzz`/`S.media.pressDev` absent → no
-  effect). Each step re-derives ratings/ranks where needed.
+  effect); v22→v23 backfills `S.coachSearch=null` (Phase 19c — the coaching search, created on firing,
+  cleared on taking a job / retiring; `phase:'Retired'` is reached via the career retrospective). Each step
+  re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -1297,7 +1307,8 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   coach: { first, last, homeState, archetype, history, approval, tenure, approvalHistory:[…], career:[…] },  // approval+hot-seat persist across seasons (Phase 19b); career = per-stop résumé (Phase 19c)
   teamId,                 // id of the controlled team
   year,                   // calendar-year counter, init 2026, ++ each rollover (Phase 5)
-  week, phase,            // Preseason → 1..15/"Regular Season" → "Conference Championships" (Phase 15) → "Postseason" (bowls+playoff) → "Offseason" (Signing Day → transfer portal) → (rollover) → Preseason
+  week, phase,            // Preseason → 1..15/"Regular Season" → "Conference Championships" (Phase 15) → "Postseason" (bowls+playoff) → "Offseason" (Signing Day → transfer portal) → (rollover) → Preseason; "Retired" ends the career (Phase 19c)
+  coachSearch,            // { firedFrom, firedFromName, openings:[teamId], year } | null — the coaching search shown when fired (Phase 19c)
   champWeek,              // { year, games:[Game kind:'champ'], done, meDone } | null — Championship Week, created after the regular season, nulled into the postseason (Phase 15)
   portal,                 // { year, pool:[Transfer], points, stage:'open'|'closed', departures, arrivals } | null — offseason transfer portal (Phase 18); created after Signing Day, nulled at rollover
   media,                  // { poll:{week, top:[{teamId,rank,prev,pts}], others}, feed:[Story] } | null — AP poll + news feed (Phase 19); created at kickoff, nulled at rollover
@@ -1454,8 +1465,8 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
-### Phases 6–18 landed — what used to be stubbed now works
-Phases 1–18 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
+### Phases 6–19 landed — what used to be stubbed now works
+Phases 1–19 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
 loop** + **facility upgrades** (Phase 6), **side-specific development** + **in-game coach effects** +
 **coach-responsive scouting fog** (Phase 7), **AI geography** + **season awards/All-America/Coach of
 the Year/Week** + **non-conference series** (Phase 8), the **columnar save codec** (Phase 9), **fogged
@@ -1470,11 +1481,14 @@ byes (Phase 15), **decommits** — a verbal pledge can flip to a surging rival b
 (Phase 16), and the **full national recruit board** — the whole ~3,400-prospect class is individually
 modeled (columnar-saved, filtered + paginated), retiring the old top-300 board (Phase 17), and the
 **transfer portal** — players leave (buried depth / broken promises), you sign incoming transfers, AI
-churns, all in the offseason after Signing Day (Phase 18). The full career loop — recruit (verbal,
-flippable) → season → **conf championships** → awards → **postseason** → **Early Signing → National
-Signing Day → transfer portal** → rollover (graduate/enshrine/**draft**/develop/enroll) → finances settle →
-carousel → facilities/series — closes across multiple years, and your stars leave a permanent mark on the
-program both on its Ring of Honor and on its pro-pipeline reputation.
+churns, all in the offseason after Signing Day (Phase 18), and a **full media suite** — an AP poll + news
+feed, interactive press conferences, and a coach **approval rating + hot seat** that can get you fired (then
+a **job carousel or retirement**) (Phase 19). The full career loop — recruit (verbal, flippable) → season
+(work the **media** + **press**) → **conf championships** → awards → **postseason** → **Early Signing →
+National Signing Day → transfer portal** → rollover (graduate/enshrine/**draft**/develop/enroll) → finances
+settle → carousel → facilities/series — closes across multiple years, and the **hot seat** means a sustained
+slump can end your tenure; your stars leave a permanent mark on the program both on its Ring of Honor and on
+its pro-pipeline reputation.
 **Thirteen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
 `traitlab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `medialab` / `qa`.
 

@@ -131,6 +131,19 @@ const rankOf = (poll, id) => { const e = poll.top.find(x => x.teamId === id); re
   check('An unknown choice is a no-op', pressEffect('???').approval === 0 && pressEffect('???').buzz === 0);
 })();
 
+/* 10) coaching-search openings (Phase 19c) */
+(function () {
+  const teams = []; for (let i = 0; i < 60; i++) teams.push({ id: 't' + i, prestige: 20 + i });   // 20..79
+  const pres = id => teams.find(t => t.id === id).prestige;
+  const ids = coachOpenings(teams, 75, 9, 4);
+  check('coachOpenings returns the requested number of jobs', ids.length === 4 && new Set(ids).size === 4);
+  check('Openings skew below your last job (a step down is the likely landing)', ids.reduce((s, id) => s + pres(id), 0) / ids.length < 75, 'avg ' + (ids.reduce((s, id) => s + pres(id), 0) / ids.length).toFixed(0));
+  check('coachOpenings only offers jobs from the candidate pool', ids.every(id => teams.some(t => t.id === id)));
+  check('coachOpenings is deterministic by seed', JSON.stringify(coachOpenings(teams, 75, 9, 4)) === JSON.stringify(ids));
+  check('coachOpenings varies by seed', JSON.stringify(coachOpenings(teams, 75, 3, 4)) !== JSON.stringify(ids));
+  check('A short candidate list returns at most what exists', coachOpenings(teams.slice(0, 2), 75, 9, 4).length <= 2);
+})();
+
 const passed = results.filter(r => r.pass).length;
 console.log(`\n===== ${passed}/${results.length} media-lab checks passed =====`);
 process.exit(results.every(r => r.pass) ? 0 : 1);

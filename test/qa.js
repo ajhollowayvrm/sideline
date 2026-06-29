@@ -439,7 +439,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 22 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 23 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -456,7 +456,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v22)', mig.v === 22, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v23)', mig.v === 23, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -834,7 +834,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 22', roPost.version === 22, 'v' + roPost.version);
+  check('Rollover: save version bumped to 23', roPost.version === 23, 'v' + roPost.version);
   check('Phase 8: player honors survive the rollover', roPost.honoredAfter > 0, roPost.honoredAfter + ' still honored');
   check('Phase 8: series + awards history persist across the rollover', roPost.seriesKept > 0 && roPost.awardsKept > 0, `series ${roPost.seriesKept}, awards ${roPost.awardsKept}`);
   check('Phase 11: career totals accrue across the rollover', roPost.careerPlayers > 50, roPost.careerPlayers + ' players carry a career');
@@ -1007,6 +1007,31 @@ function startServer() {
   check('Phase 9: codec preserves top-level state (seed/year/awards/…)', codec.topOk);
   check('Phase 9: encoded save is meaningfully smaller', codec.encLen < codec.full * 0.78, `${(codec.full / 1024 | 0)}KB → ${(codec.encLen / 1024 | 0)}KB`);
   check('Phase 9: encode tags the blob, decode strips the tag', codec.encMarker && codec.decClean);
+
+  // ---------- PHASE 19c: firing → coaching search (take a job) or retire ----------
+  // (Runs last — it switches teamId / retires, so it must follow every teamId-dependent check above.)
+  const fireSearch = await page.evaluate(() => {
+    S.coach.approvalHistory = [18, 18]; S.coach.tenure = 2; S.coach.pendingFire = true;
+    triggerCoachingSearch();
+    UI.view = 'home'; render();
+    return { hasSearch: !!S.coachSearch, jobs: S.coachSearch ? S.coachSearch.openings.length : 0,
+      screen: !!document.querySelector('[data-tid="retire"]'), kickoffBlocked: !document.querySelector('[data-tid="adv-clock"]') };
+  });
+  check('Phase 19c: firing opens a coaching search with job openings', fireSearch.hasSearch && fireSearch.jobs > 0 && fireSearch.screen && fireSearch.kickoffBlocked, fireSearch.jobs + ' openings');
+  const took = await page.evaluate(() => {
+    const before = S.teamId, careerBefore = S.coach.career.length, job = S.coachSearch.openings[0];
+    takeJob(job);
+    return { switched: S.teamId === job && S.teamId !== before, careerGrew: S.coach.career.length === careerBefore + 1,
+      cleared: S.coachSearch === null, approvalReset: S.coach.approval === 52, tenureReset: S.coach.tenure === 0 };
+  });
+  check('Phase 19c: taking a job switches programs + extends the career résumé', took.switched && took.careerGrew && took.cleared && took.approvalReset && took.tenureReset);
+  const retired = await page.evaluate(() => {
+    S.coach.pendingFire = true; triggerCoachingSearch(); retireCoach();
+    UI.view = 'home'; render();
+    return { phase: S.phase, summary: /Career retrospective/i.test(document.querySelector('.view').innerText),
+      menuBtn: !!document.querySelector('[data-tid="to-menu"]'), stops: S.coach.career.length };
+  });
+  check('Phase 19c: retiring shows the career retrospective with both stops', retired.phase === 'Retired' && retired.summary && retired.menuBtn && retired.stops >= 2, retired.stops + ' stops');
 
   check('No uncaught JS / console errors', jsErrors.length === 0, jsErrors.slice(0, 3).join(' | '));
   await ctx.close();

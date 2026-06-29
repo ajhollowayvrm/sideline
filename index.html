@@ -564,6 +564,7 @@ function render(){
   if(UI.view==='browse_pick')  return renderBrowse(app,true);
   // in-game views
   applyAccent(controlled());
+  if(S.phase==='Retired') return renderRetired(app);   // Phase 19c: career over → the retrospective
   if(UI.view==='game') return renderGame(app);   // full-screen, no bottom nav (commit to exit)
   if(UI.view==='home') renderHome(app);
   if(UI.view==='team') renderTeam(app);
@@ -688,7 +689,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:22,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:23,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -863,6 +864,10 @@ function migrateState(state){
       if(!Array.isArray(state.coach.approvalHistory))state.coach.approvalHistory=[];
       if(!Array.isArray(state.coach.career))state.coach.career=[];}   // team.mediaBuzz / media.pressDev absent → no effect
     state.version=22;
+  }
+  if((state.version||1)<23){           // Phase 19c: coaching search (fired → job carousel or retire).
+    if(!('coachSearch' in state))state.coachSearch=null;   // created on firing, cleared on taking a job / retiring
+    state.version=23;
   }
   return state;
 }
@@ -2022,6 +2027,22 @@ function pressPrompt(ctx,seed){
   return {q:q.q,choices:q.choices.map(([key,label])=>({key,label}))};
 }
 function pressEffect(key){return PRESS_EFFECTS[key]||{approval:0,buzz:0,dev:0};}
+// Coaching-search openings (Phase 19c) — when fired, which programs offer you their job. `teams` = candidate
+// summaries [{id, prestige}] (caller excludes your old job); returns up to `n` ids, weighted toward programs
+// *below* where you were (a step down is the likeliest landing spot; a lateral is occasional; well above you
+// almost never). Deterministic by seed. Pure.
+function coachOpenings(teams,firedPrestige,seed,n){
+  const r=rng((seed^hashStr('openings'+(firedPrestige||0)))>>>0);
+  const scored=teams.map(t=>{
+    const below=(firedPrestige||50)-(t.prestige||50);    // >0 = a step down from your last job
+    let w;
+    if(below<-6)w=0.02;                                   // well above you — almost never
+    else if(below<2)w=0.35;                              // roughly lateral — occasional
+    else w=clamp(0.4+below*0.025,0,1.1);                 // a step down — the most likely landing spot
+    return {id:t.id,w:w*(0.5+r())};
+  }).sort((a,b)=>b.w-a.w);
+  return scored.slice(0,n||4).map(e=>e.id);
+}
 // === MEDIA ENGINE (Phase 19) END ===
 
 // In-game coach identity (Phase 7): a small, side-specific rating edge the controlled team plays
@@ -2387,6 +2408,11 @@ function settleSeasonApproval(){
   S.coach.approval=approvalUpdate(S.coach.approval==null?50:S.coach.approval,d);
   S.coach.approvalHistory=(S.coach.approvalHistory||[]).concat(S.coach.approval);
   S.coach.tenure=(S.coach.tenure||0)+1;
+  // Phase 19c: a sustained slump ends the tenure — flagged here, acted on after the league rolls over.
+  if(firingDecision(S.coach.approvalHistory,t.prestige,S.coach.tenure)){
+    S.coach.pendingFire=true;
+    if(S.media)mediaEvent(S.week,'milestone',t.abbr+' parts ways with its head coach','After a disappointing season ('+t.rec.w+'–'+t.rec.l+'), '+t.name+' is moving on.',{color:t.color,teams:[t.id],mine:true});
+  }
 }
 // Early Signing Period: every recruit already committed (a verbal) puts pen to paper now. The rest stay
 // open for one last push before National Signing Day. Grants a final offseason recruiting-points budget.
@@ -2615,7 +2641,49 @@ function rolloverSeason(){
     postseason:(myPost&&myPost.label)||null,
     draft:{count:myPicks.length,top:myPicks[0]?myPicks[0].pick:null,names:myPicks.slice(0,3).map(p=>p.name+' ('+p.pos+', #'+p.pick+')')},
     inducted:myInducted.map(l=>({name:l.name,pos:l.pos,tier:l.tier,stature:l.stature}))};
+  if(S.coach&&S.coach.pendingFire)triggerCoachingSearch();   // Phase 19c: you were let go — find a new job or retire
   autosave();
+}
+/* ============================================================
+   COACHING SEARCH — fired → take a new job, or retire (Phase 19c)
+   ============================================================ */
+function triggerCoachingSearch(){
+  const me=controlled();
+  const others=S.world.teams.filter(t=>t.id!==me.id).map(t=>({id:t.id,prestige:t.prestige}));
+  const ids=coachOpenings(others,me.prestige,(S.seed^hashStr('search'+(S.year||2026)))>>>0);
+  S.coachSearch={firedFrom:me.id,firedFromName:me.name,openings:ids,year:S.year};
+  S.coach.pendingFire=false;
+  S.task={type:'Fired',label:'Relieved of duty',
+    note:me.name+' has moved on from you after a rough stretch. Choose your next job — or retire and review your career.'};
+}
+// Record the just-ended stint on the coach's résumé (titles snapshotted from the old program).
+function recordStint(){const old=controlled();
+  S.coach.career=(S.coach.career||[]).concat({team:old.name,abbr:old.abbr,
+    seasons:S.coach.tenure||0,titles:(old.titles||[]).length,confTitles:(old.confTitles||[]).length});}
+// Take one of the open jobs: bank the old stint, switch programs, reset approval/tenure, fresh start.
+function takeJob(teamId){
+  if(!S.coachSearch)return;
+  const nu=teamById(teamId); if(!nu)return;
+  recordStint();
+  S.teamId=teamId;
+  S.coach.approval=52; S.coach.tenure=0; S.coach.approvalHistory=[];
+  S.coachSearch=null;
+  applyAccent(nu);recomputeRanks(S.world);
+  S.task={type:'Media Day',label:S.year+' Media Day',
+    note:'A new chapter at '+nu.name+'. Settle in, then kick off the season when you’re ready.'};
+  autosave();
+}
+// Retire: bank the final stint and show a career retrospective.
+function retireCoach(){
+  if(S.coach.career==null)S.coach.career=[];
+  recordStint();
+  S.phase='Retired';S.coachSearch=null;
+  autosave();
+}
+function careerTotals(){
+  const c=S.coach.career||[];
+  return {stops:c.length,seasons:c.reduce((n,s)=>n+(s.seasons||0),0),
+    titles:c.reduce((n,s)=>n+(s.titles||0),0),confTitles:c.reduce((n,s)=>n+(s.confTitles||0),0)};
 }
 
 /* ============================================================
@@ -2984,6 +3052,7 @@ function renderGame(app){
    ============================================================ */
 function renderHome(app){
   const t=controlled();
+  if(S.coachSearch)return renderCoachSearch(app);   // Phase 19c: fired — resolve the job search first
   const v=el('div','view');
   v.append(scoreboard(t));
   // last result (once a game has been played)
@@ -3395,6 +3464,41 @@ function pressHomeCard(v){
     b.dataset.tid='press-'+ch.key;
     b.onclick=()=>{answerPress(ch.key);render();toast('You addressed the media');};c.append(b);});
   v.append(c);
+}
+// Phase 19c: the coaching-search screen (shown when fired) — take a new job or retire.
+function renderCoachSearch(app){
+  const cs=S.coachSearch, v=el('div','view');
+  v.append(headerBar('Coaching Search',(cs.year||S.year)+' offseason',()=>{}));
+  v.append(el('div','card',`<div class="cond bad" style="font-size:20px;font-weight:800">Let go by ${cs.firedFromName}</div>
+    <div class="muted" style="font-size:13px;margin-top:4px">A sustained slump ended your tenure. Pick your next job — or retire and review your career.</div>`));
+  v.append(el('h2','sec','Job openings'));
+  if(!cs.openings.length)v.append(el('div','empty','No programs are calling. Time to hang it up.'));
+  cs.openings.forEach(id=>{const tm=teamById(id);if(!tm)return;
+    const b=el('button','btn line','');b.dataset.tid='job-'+id;b.style.cssText='margin-top:8px;text-align:left;height:auto;padding:11px 13px';
+    b.innerHTML=`<div class="row spread"><span class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${tm.color};flex:none"></span><span class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${tm.name} ${tm.nick}</span></span><span class="meta" style="flex:none">${tm.conf} · Prestige ${tm.prestige}</span></div>`;
+    b.onclick=()=>{takeJob(id);render();toast('Welcome to '+tm.name);};v.append(b);});
+  const ret=el('button','btn ghost','Retire & review career');ret.dataset.tid='retire';ret.style.marginTop='14px';
+  ret.onclick=()=>{retireCoach();render();};v.append(ret);
+  app.append(v);
+}
+// Phase 19c: the career retrospective (shown after retiring).
+function renderRetired(app){
+  const v=el('div','view'), tot=careerTotals();
+  v.append(el('div','card',`<div class="meta dim">Career retrospective</div>
+    <div class="cond" style="font-size:24px;font-weight:800;margin-top:4px">${S.coach.first} ${S.coach.last}</div>
+    <div class="muted" style="font-size:13px;margin-top:2px">${S.coach.archetype} · ${S.coach.history}</div>`));
+  const g=el('div','stat-grid');
+  g.append(stat('Programs',tot.stops),stat('Seasons',tot.seasons),stat('National Titles',tot.titles),stat('Conf Titles',tot.confTitles));
+  v.append(g);
+  v.append(el('h2','sec','Coaching stops'));
+  if(!(S.coach.career||[]).length)v.append(el('div','empty','No completed stops on record.'));
+  (S.coach.career||[]).forEach(s=>v.append(el('div','lrow',
+    `<div style="flex:1"><div class="nm">${s.team}</div><div class="meta dim">${s.seasons} season${s.seasons===1?'':'s'}</div></div>
+     <div class="meta">${s.titles?'🏆×'+s.titles+' ':''}${s.confTitles?'conf×'+s.confTitles:''}</div>`)));
+  const menu=el('button','btn','Back to main menu');menu.dataset.tid='to-menu';menu.style.marginTop='16px';
+  menu.onclick=()=>{UI.view='menu';render();};
+  v.append(menu);
+  app.append(v);
 }
 // Phase 19: Home headlines teaser — the top story or two + a link into the Media Center.
 function mediaHomeCard(v){
