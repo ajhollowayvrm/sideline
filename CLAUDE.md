@@ -219,6 +219,20 @@ plain static files so Pages still serves it with zero config.
   and Portal-in/out lines in the offseason recap. Save **v20** (`S.portal`, per-player `fromTransfer`); new
   gate `npm run portallab` (17 checks); `qa` (207) drives open → pursue → close → enroll → cleared at
   rollover. See "Phase 18 design — transfer portal" below.
+- **Phase 19 — Full media suite.** 🚧 IN PROGRESS (three sub-phases). A media layer over the data the sim
+  already produces, plus real career stakes. **19a (✅ DONE):** a pure fenced **`MEDIA ENGINE`** —
+  `computePoll` (an AP-style Top 25 with **inertia**, so teams lag rather than teleport; distinct from the
+  committee's `rankScore`), `gameStoryTag` (classify a result: upset / ranked / blowout), and `mkStory`
+  (headline+body templates with seeded phrasing). The app's `updateMedia` (in `advanceWeek`) refreshes
+  `S.media.poll` + pushes the week's stories into `S.media.feed` (cap 60) from scores, the weekly POW/COW,
+  poll risers, and 4★+ commits/flips; one-off `mediaEvent`s fire at conf titles / the Heisman / the national
+  championship / the portal. UI: a **Media Center** hub (`UI.view='media'` — News / AP Poll / Your Coverage,
+  with written previews+recaps), a Home headlines teaser, and the Season **Top 25** tab now renders the AP
+  poll with ▲/▼ movement. Save **v21** (`S.media`); new gate `npm run medialab` (17). **19b (next):** coach
+  **approval rating + the hot seat** + interactive **press conferences** (light hooks → approval + a
+  recruiting `buzz`). **19c:** firing → a **job carousel** (take a lesser/lateral job) **or retire** (career
+  summary). The **AP poll stays cosmetic** (the playoff seeds off `rankScore`/conf champions). See "Phase 19
+  design — media suite" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast). This is a
   design choice, not a backlog.
@@ -755,6 +769,53 @@ the roster cap, no coach-to-portal poaching of *signed* recruits.
 
 ---
 
+## Phase 19 design — full media suite (news, AP poll, press, approval & the hot seat)
+
+Decided 2026-06-28 with AJ. A media layer over the rich event stream the sim already produces, plus real
+career stakes (an approval meter that can get you fired). Confirmed scope: a **news feed**, an **AP Top 25**
+(with inertia), **interactive press conferences** (light effects), **program coverage**, a **coach approval
+rating + hot seat**, and on firing a **job carousel or retire**. Built as **three sub-phases**, each a pure
+fenced engine + lab + save bump + green gates, committed separately. **The AP poll is cosmetic** — the
+12-team playoff still seeds off `rankScore`/conf champions, so the Phase 12/15 gates are undisturbed.
+
+### 19a — Media core (✅ DONE)
+Pure fenced `// === MEDIA ENGINE (Phase 19) START/END ===` (depends only on `clamp/rng/hashStr`):
+- `computePoll(prev, ranked, week)` — an AP Top 25 with **inertia**: a team's effective key eases from its
+  previous poll rank toward its `rankScore`-derived score rank, capped at `POLL_MAX_MOVE` (4) per week, so a
+  fallen #1 slides a few spots, not ten. Preseason (no prev) = straight score order. Returns
+  `{week, top:[{teamId,rank,prev,pts}], others}`.
+- `gameStoryTag(w, l, margin)` — classify a result (`upset` / `ranked` / `blowout` / null) from poll ranks +
+  OVR + margin. `mkStory(tag, d, r)` — `{headline, body}` templates with seeded phrasing.
+- App layer: `S.media={poll, feed}` created at kickoff (`initMedia`), nulled at rollover. `updateMedia` (in
+  `advanceWeek`, after honors + recruiting) refreshes the poll and pushes the week's stories into the feed
+  (cap `MEDIA_FEED_CAP`=60) from the games, the weekly POW (reusing `S.weeklyHonors`), poll risers, and 4★+
+  commits/flips (`resolveRecruitingWeek` now returns the week's commits). One-off `mediaEvent`s fire at conf
+  titles / the Heisman / the national title / the portal close. UI: a **Media Center** hub (`renderMedia` —
+  News / AP Poll / Your Coverage; `'media'` added to the `renderNav` whitelist), a Home headlines teaser
+  (`mediaHomeCard`), and the Season **Top 25** tab renders the AP poll (`apPollRows`, ▲/▼ movement). Save
+  **v21**; `medialab` (17 checks: poll inertia / preseason==score / entrants climb gradually / determinism /
+  story classification / templates).
+
+### 19b — Approval, the hot seat & press conferences (next)
+`MEDIA ENGINE` additions: `winExpectation(prestige)`, `approvalUpdate(approval, ctx)` (bounded, mean-reverting
+to a prestige baseline), `hotSeatTier(approval, prestige, tenure)`, `firingDecision(history, prestige, tenure)`
+(fires only on **sustained** failure), and `pressPrompt(ctx, seed)` / `pressEffect(choiceKey)` (a templated
+question bank → a small `{approval, buzz, dev}` bag). App: `S.media.approval/approvalHistory/hotSeat/buzz`;
+a weekly **optional** press-conference Home card; `buzz` folds into `recruitFit` as a guarded additive term
+(same pattern as `postseasonBoost`); an approval/hot-seat strip + firing-rumor stories. Save **v22**.
+
+### 19c — Fired → job carousel or retire
+`coachOpenings(world, firedPrestige, seed)` (pure; reuses the carousel's prestige-tier idea — mostly lesser
+vacancies, the odd lateral, never your current job). On firing: a **Coaching Search** screen → take a job
+(switch `S.teamId`, reset approval/tenure, append to `S.coach.career` — a per-stop résumé) **or retire** → a
+career-retrospective (record, conf/national titles, legends, NFL picks, awards). Save **v23**.
+
+### Deliberately out of scope
+No Sims-style per-player morale web; no real-time/streamed broadcast; no editable transcripts/voice; the AP
+poll never feeds the bracket; no booster-donation economy beyond the existing finances loop.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -1180,7 +1241,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **20**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **21**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -1203,7 +1264,8 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   (Phase 17 full recruit board — the pool is recreated at kickoff, and the columnar pool codec decodes both
   the old plain pool and the new `_cp` form); v19→v20 backfills `S.portal=null` (Phase 18 — the transfer
   portal is created in the offseason after Signing Day, nulled at rollover; `p.fromTransfer` absent reads as
-  no effect). Each step re-derives ratings/ranks where needed.
+  no effect); v20→v21 backfills `S.media=null` (Phase 19a — the AP poll + news feed, created at kickoff,
+  nulled at rollover). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -1225,6 +1287,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   week, phase,            // Preseason → 1..15/"Regular Season" → "Conference Championships" (Phase 15) → "Postseason" (bowls+playoff) → "Offseason" (Signing Day → transfer portal) → (rollover) → Preseason
   champWeek,              // { year, games:[Game kind:'champ'], done, meDone } | null — Championship Week, created after the regular season, nulled into the postseason (Phase 15)
   portal,                 // { year, pool:[Transfer], points, stage:'open'|'closed', departures, arrivals } | null — offseason transfer portal (Phase 18); created after Signing Day, nulled at rollover
+  media,                  // { poll:{week, top:[{teamId,rank,prev,pts}], others}, feed:[Story] } | null — AP poll + news feed (Phase 19); created at kickoff, nulled at rollover
   postseason,             // { year, round, playoff:{seeds[12], rounds:[[Game]], champion}, bowls:[Game], meDone } | null (Phase 12)
   draft,                  // { year, picks:[{pick,round,grade,pid,name,pos,teamId,abbr,color}] } | null — last NFL draft class (Phase 13)
   lastPlayedWeek,         // last week resolved (for the Scores tab)
@@ -1399,8 +1462,8 @@ flippable) → season → **conf championships** → awards → **postseason** �
 Signing Day → transfer portal** → rollover (graduate/enshrine/**draft**/develop/enroll) → finances settle →
 carousel → facilities/series — closes across multiple years, and your stars leave a permanent mark on the
 program both on its Ring of Honor and on its pro-pipeline reputation.
-**Twelve green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
-`traitlab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `qa`.
+**Thirteen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
+`traitlab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `medialab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during

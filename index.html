@@ -569,6 +569,7 @@ function render(){
   if(UI.view==='team') renderTeam(app);
   if(UI.view==='recruit') renderRecruiting(app);
   if(UI.view==='portal') renderPortal(app);
+  if(UI.view==='media') renderMedia(app);
   if(UI.view==='season') renderSeason(app);
   if(UI.view==='browse') renderBrowse(app,false);
   if(UI.view==='program') renderProgram(app);
@@ -687,7 +688,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:20,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:21,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -850,6 +851,10 @@ function migrateState(state){
     if(!('portal' in state))state.portal=null;   // nulled at rollover (like the postseason/champ week).
     state.version=20;
   }
+  if((state.version||1)<21){           // Phase 19a: media suite (AP poll + news feed). Created at kickoff
+    if(!('media' in state))state.media=null;   // (like the schedule/recruiting), nulled at rollover.
+    state.version=21;
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -949,6 +954,7 @@ function startSeason(){
   S.world.teams.forEach(t=>(t.legends||[]).forEach(l=>l.app=LEGEND_APPS));   // refresh alumni appearances
   initRecruiting();
   recomputeRanks(S.world);
+  initMedia();                 // Phase 19: a fresh preseason AP poll + an empty news feed
   setWeeklyTask();
   autosave();
 }
@@ -1877,6 +1883,60 @@ function advancePortal(pool,teams,seed,finalize){
 }
 // === PORTAL ENGINE (Phase 18) END ===
 
+// === MEDIA ENGINE (Phase 19) START ===
+// Pure, deterministic media model: an AP-style Top 25 poll (with inertia, so teams lag rather than
+// teleport on one result), and the classification + templating that turns the week's events into news
+// stories. Depends only on clamp/rng/hashStr (no DOM, no S, no rankScore — the caller passes teams
+// pre-sorted by their ranking score), so test/medialab.js validates it offline. The app layer
+// (updateMedia / buildWeekStories) owns S.media + assembles the per-week context.
+const MEDIA_FEED_CAP=60;          // newest-first story feed, capped
+const POLL_MAX_MOVE=4;            // most a team's poll standing shifts toward its score in one week (inertia)
+// Build the weekly Top 25. `ranked` = [{id, score}] best→worst (caller sorts by rankScore); `prev` = last
+// week's poll ({top:[{teamId,rank}], …}) or null (preseason → straight score order). Returns {week, top:
+// [{teamId, rank, prev, pts}], others:[teamId…]}. Inertia: a team's effective key eases from its previous
+// rank toward its score rank, capped at POLL_MAX_MOVE per week, so a fallen #1 slides a few spots, not ten.
+function computePoll(prev,ranked,week){
+  const scoreRank={};ranked.forEach((e,i)=>scoreRank[e.id]=i+1);
+  const prevRank={};if(prev&&prev.top)prev.top.forEach(p=>prevRank[p.teamId]=p.rank);
+  const outside=Math.min(ranked.length,30);
+  const adj=ranked.map(e=>{
+    const sr=scoreRank[e.id];
+    const pr=prevRank[e.id]||(prev?outside:sr);                 // unranked last week start just outside
+    const key=prev?pr+clamp(sr-pr,-POLL_MAX_MOVE,POLL_MAX_MOVE):sr;
+    return {id:e.id,key,sr,prev:prevRank[e.id]||null};
+  }).sort((a,b)=>a.key-b.key||a.sr-b.sr);
+  const top=adj.slice(0,25).map((e,i)=>({teamId:e.id,rank:i+1,prev:e.prev,pts:(26-(i+1))*38}));
+  const others=adj.slice(25,30).map(e=>e.id);
+  return {week:week||0,top,others};
+}
+// Is a result newsworthy, and how? w/l = {rank (poll rank or null), ovr}. Returns a tag or null.
+function gameStoryTag(w,l,margin){
+  if(l.rank&&l.rank<=25&&(!w.rank||w.rank>l.rank+8)&&(l.ovr-w.ovr)>=4)return 'upset';
+  if(w.rank&&w.rank<=25&&l.rank&&l.rank<=25)return 'ranked';
+  if(margin>=28)return 'blowout';
+  return null;
+}
+// Turn a tagged event + its data into a {headline, body}. `r` is a seeded rng for phrasing variety. Pure.
+function mkStory(tag,d,r){
+  const pk=a=>a[Math.floor((r?r():0)*a.length)%a.length];
+  if(tag==='upset')return {headline:pk([`${d.w} stuns ${d.lRank?'#'+d.lRank+' ':''}${d.l}`,`${d.w} shocks ${d.l}`,`${d.l} falls to ${d.w}`]),
+    body:`${d.wLong} took down ${d.lRank?'#'+d.lRank+' ':''}${d.lLong} ${d.ws}–${d.ls}${d.margin<=7?' in a thriller':''}.`};
+  if(tag==='ranked')return {headline:pk([`#${d.wRank} ${d.w} tops #${d.lRank} ${d.l}`,`${d.w} wins ranked clash with ${d.l}`]),
+    body:`A top-25 showdown went to ${d.wLong}, ${d.ws}–${d.ls}.`};
+  if(tag==='blowout')return {headline:pk([`${d.w} routs ${d.l}`,`${d.w} buries ${d.l} ${d.ws}–${d.ls}`]),
+    body:`${d.wLong} dominated ${d.lLong} wire to wire.`};
+  if(tag==='pow')return {headline:pk([`${d.name} headlines the Players of the Week`,`${d.name} earns Player of the Week`]),
+    body:`${d.name} (${d.pos}, ${d.abbr}) — ${d.line}.`};
+  if(tag==='riser')return {headline:pk([`${d.w} surges in the poll`,`${d.w} climbing fast`]),
+    body:`${d.wLong} jumped ${d.delta} spot${d.delta===1?'':'s'} to #${d.rank}.`};
+  if(tag==='commit')return {headline:`${d.stars}★ ${d.pos} commits to ${d.w}`,
+    body:`${d.name}, a ${d.stars}-star ${d.pos}, pledged to ${d.wLong}.`};
+  if(tag==='flip')return {headline:`${d.w} flips ${d.stars}★ ${d.pos} from ${d.l}`,
+    body:`${d.name} decommitted from ${d.lLong} and flipped to ${d.wLong}.`};
+  return {headline:d.headline||'',body:d.body||''};   // portal/award/title/milestone: app supplies copy
+}
+// === MEDIA ENGINE (Phase 19) END ===
+
 // In-game coach identity (Phase 7): a small, side-specific rating edge the controlled team plays
 // with — Motivator effort + Former Player respect + Coordinator game-planning lift both sides;
 // Offensive/Defensive Genius sharpen their own side. AI teams get none (z). Applied OUTSIDE the
@@ -1927,9 +1987,10 @@ function advanceWeek(){
   const wk=S.week;
   const boxes=S.schedule.games.filter(g=>g.week===wk&&!g.played).map(g=>{const box=simGame(g);applyResult(g,box);return {g,box};});
   computeWeeklyHonors(wk,boxes);
-  resolveRecruitingWeek(wk);              // AI recruits + commitments for the week just finished
+  const recOut=resolveRecruitingWeek(wk);   // AI recruits + commitments for the week just finished
   S.lastPlayedWeek=wk;S.week++;
   recomputeRanks(S.world);
+  updateMedia(wk,boxes,recOut);             // Phase 19: refresh the AP poll + push the week's news stories
   if(S.week>S.schedule.weeks)finishRegularSeason();   // → postseason (bowls + playoff), then offseason
   else{setWeeklyTask();grantRecruitPoints();}
   autosave();
@@ -1965,6 +2026,67 @@ function computeWeeklyHonors(week,boxes){
       line:'def. '+Lt.abbr+' '+(homeWon?g.hs+'–'+g.as:g.as+'–'+g.hs)};});
   S.weeklyHonors=S.weeklyHonors||[];
   S.weeklyHonors.push({week,national:pick(cand),byConf,coach:cotw});
+}
+/* ============================================================
+   MEDIA SUITE — app layer over the pure MEDIA ENGINE (Phase 19)
+   Owns S.media (the AP poll + the news feed); assembles the per-week context from the data the sim
+   already produces (scores, weekly honors, recruiting commits/flips) and refreshes both.
+   ============================================================ */
+function rankedScored(){return [...S.world.teams].sort((a,b)=>rankScore(b)-rankScore(a)).map(t=>({id:t.id,score:rankScore(t)}));}
+function initMedia(){S.media={poll:computePoll(null,rankedScored(),0),feed:[]};}
+function pollRankOf(teamId){const p=S.media&&S.media.poll;if(!p)return null;const e=p.top.find(x=>x.teamId===teamId);return e?e.rank:null;}
+// A lean story record (newest-first feed). teamIds/colors snapshotted so rendering needs no lookups.
+let _mediaSeq=0;
+function pushStory(list,wk,tag,d,r,extra){
+  const s=mkStory(tag,d,r);
+  list.push(Object.assign({id:'st'+(wk)+'_'+(_mediaSeq++),week:wk,tag,headline:s.headline,body:s.body},extra||{}));
+}
+// Build the week's stories from the resolved games + honors + recruiting. `prevPoll` is last week's poll
+// (for ranks at game time); `poll` is the freshly computed one (for risers).
+function buildWeekStories(wk,boxes,recOut,prevPoll,poll){
+  const out=[], me=S.teamId;
+  const rankAt=tid=>{const e=prevPoll&&prevPoll.top.find(x=>x.teamId===tid);return e?e.rank:null;};
+  // game stories — upsets, ranked clashes, blowouts
+  (boxes||[]).forEach(({g})=>{
+    const h=teamById(g.home),a=teamById(g.away),homeWon=g.hs>g.as;
+    const W=homeWon?h:a,L=homeWon?a:h,ws=Math.max(g.hs,g.as),ls=Math.min(g.hs,g.as),margin=ws-ls;
+    const tag=gameStoryTag({rank:rankAt(W.id),ovr:W.ratings.ovr},{rank:rankAt(L.id),ovr:L.ratings.ovr},margin);
+    if(!tag)return;
+    const r=rng((S.seed^hashStr('story'+wk+g.id))>>>0);
+    pushStory(out,wk,tag,{w:W.abbr,wLong:W.name,wRank:rankAt(W.id),l:L.abbr,lLong:L.name,lRank:rankAt(L.id),ws,ls,margin},r,
+      {color:W.color,teams:[W.id,L.id],mine:W.id===me||L.id===me});
+  });
+  // player of the week (national offense)
+  const hon=(S.weeklyHonors&&S.weeklyHonors[S.weeklyHonors.length-1])||null;
+  if(hon&&hon.national&&hon.national.off){const o=hon.national.off;
+    pushStory(out,wk,'pow',{name:o.name,pos:o.pos,abbr:o.abbr,line:o.line},rng((S.seed^hashStr('pow'+wk))>>>0),{color:o.color,teams:[o.teamId]});}
+  // poll risers (jumped ≥4 spots into/up the top 25)
+  (poll?poll.top:[]).forEach(e=>{if(e.prev&&e.prev-e.rank>=4){const t=teamById(e.teamId);
+    pushStory(out,wk,'riser',{w:t.abbr,wLong:t.name,delta:e.prev-e.rank,rank:e.rank},rng((S.seed^hashStr('rise'+wk+e.teamId))>>>0),{color:t.color,teams:[t.id]});}});
+  // recruiting — a notable commit (4★+) or a flip
+  (recOut||[]).forEach(rec=>{
+    const to=teamById(rec.committedTo);if(!to)return;
+    if(rec._flipped){const from=teamById(rec._flipped.from);
+      if(rec.stars>=4)pushStory(out,wk,'flip',{w:to.abbr,wLong:to.name,l:from?from.abbr:'?',lLong:from?from.name:'a rival',stars:rec.stars,pos:rec.pos,name:rec.fn+' '+rec.ln},
+        rng((S.seed^hashStr('flip'+wk+rec.id))>>>0),{color:to.color,teams:[to.id],mine:to.id===me});
+    }else if(rec.stars>=4){
+      pushStory(out,wk,'commit',{w:to.abbr,wLong:to.name,stars:rec.stars,pos:rec.pos,name:rec.fn+' '+rec.ln},
+        rng((S.seed^hashStr('commit'+wk+rec.id))>>>0),{color:to.color,teams:[to.id],mine:to.id===me});
+    }
+  });
+  return out;
+}
+function updateMedia(wk,boxes,recOut){
+  if(!S.media)initMedia();
+  const prevPoll=S.media.poll;
+  S.media.poll=computePoll(prevPoll,rankedScored(),wk);
+  const stories=buildWeekStories(wk,boxes,recOut,prevPoll,S.media.poll);
+  S.media.feed=stories.reverse().concat(S.media.feed||[]).slice(0,MEDIA_FEED_CAP);
+}
+// Push a one-off story (awards/titles/portal) the app supplies copy for, newest-first.
+function mediaEvent(wk,tag,headline,body,extra){
+  if(!S.media)return;
+  S.media.feed=[Object.assign({id:'ev'+(_mediaSeq++),week:wk,tag,headline,body},extra||{})].concat(S.media.feed).slice(0,MEDIA_FEED_CAP);
 }
 function setWeeklyTask(){
   const t=controlled(),g=teamGame(t.id,S.week);
@@ -2035,9 +2157,12 @@ function finishConfChampionships(){
       t.budget=Math.round((t.budget||0)+CONF_TITLE_PAYOFF.revenue);   // a one-time title-game payout
       champWinners.push(w);});
   }
+  // Phase 19: conference champions + the Heisman make the news feed.
+  champWinners.forEach(w=>{const t=teamById(w);mediaEvent(S.week,'title',t.name+' wins the '+t.conf+' championship',t.name+' '+t.nick+' are '+t.conf+' champions.',{color:t.color,teams:[t.id]});});
   // Awards now reflect the title games too (decided post-Championship-Week, pre-bowls — like real life).
   const aw=computeAwards(S.world.teams,S.year||2026);
   S.awards=S.awards||[];S.awards.push(aw);stampHonors(aw);
+  if(aw.heisman)mediaEvent(S.week,'award',aw.heisman.name+' wins the Heisman',aw.heisman.name+' ('+aw.heisman.pos+', '+aw.heisman.abbr+') is the national player of the year — '+aw.heisman.line+'.',{color:aw.heisman.color,teams:[aw.heisman.teamId]});
   const champIds=[...champWinners].sort((a,b)=>rankScore(teamById(b))-rankScore(teamById(a)));
   S.champWeek=null;
   startPostseason(champIds);
@@ -2128,7 +2253,8 @@ function endPostseason(){
   });
   const aw=S.awards[S.awards.length-1];
   if(aw&&champ){const ct=teamById(champ);aw.champion={teamId:ct.id,name:ct.name,abbr:ct.abbr,color:ct.color,rec:ct.rec.w+'–'+ct.rec.l};
-    ct.titles=ct.titles||[];ct.titles.push(ps.year);}
+    ct.titles=ct.titles||[];ct.titles.push(ps.year);
+    mediaEvent(S.week,'title','🏆 '+ct.name+' wins the national championship',ct.name+' '+ct.nick+' are your '+ps.year+' national champions ('+ct.rec.w+'–'+ct.rec.l+').',{color:ct.color,teams:[ct.id]});}
   ps.done=true;
   enterOffseason();
 }
@@ -2234,6 +2360,10 @@ function closePortal(){
   P.stage='closed'; P.arrivals=arrivals;
   S.world.teams.forEach(t=>t.ratings=teamRatings(t.roster,t.staff));
   recomputeRanks(S.world);
+  const signed=P.pool.filter(tr=>tr.committedTo).length;
+  if(arrivals.length){const c=controlled();mediaEvent(S.week,'portal',c.abbr+' adds '+arrivals.length+' from the transfer portal',
+    'Incoming: '+arrivals.slice(0,4).map(a=>a.name+' ('+a.pos+')').join(', ')+'.',{color:c.color,teams:[c.id],mine:true});}
+  else mediaEvent(S.week,'portal','Transfer portal window closes',signed+' players found new homes around the country.',{});
   endOfSeasonTask();autosave();
 }
 function setPortalTask(){
@@ -2357,7 +2487,7 @@ function rolloverSeason(){
   S.world.teams.forEach(t=>{t.payroll=(t.staff||[]).reduce((s,x)=>s+(x.salary||0),0);});
   S.year=(S.year||2026)+1;
   S.world.teams.forEach(t=>{t.rec=emptyRec();t.ratings=teamRatings(t.roster,t.staff);});
-  S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;S.postseason=null;S.champWeek=null;S.portal=null;
+  S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;S.postseason=null;S.champWeek=null;S.portal=null;S.media=null;
   S.week=0;S.phase='Preseason';
   S.seriesOffers=genSeriesOffers(S.seed,S.year,me);   // a fresh wave of scheduling offers each offseason
   recomputeRanks(S.world);
@@ -2547,7 +2677,7 @@ function initRecruiting(){
 }
 function grantRecruitPoints(){if(S.recruiting&&!S.recruiting.signed)S.recruiting.points=weeklyPoints();}
 function resolveRecruitingWeek(week){
-  if(!S.recruiting||S.recruiting.signed)return;
+  if(!S.recruiting||S.recruiting.signed)return [];
   // in-season: verbal commitments only (finalize=false) — binding signatures wait for the offseason
   const out=advanceRecruiting(S.recruiting.pool,S.world.teams,week,S.schedule.weeks,S.seed,false);
   const me=S.teamId;
@@ -2559,6 +2689,7 @@ function resolveRecruitingWeek(week){
   if(fresh.length)setTimeout(()=>toast(fresh.length+' recruit'+(fresh.length===1?'':'s')+' verbally committed to you! 🎉'),d),d+=400;
   if(flippedToMe.length)setTimeout(()=>toast('Flipped '+flippedToMe.length+' commit'+(flippedToMe.length===1?'':'s')+' to you! 🔁'),d),d+=400;
   if(lost.length)setTimeout(()=>toast('⚠️ '+lost.length+' verbal'+(lost.length===1?'':'s')+' decommitted from you'),d);
+  return out;
 }
 /* ---- lookups ---- */
 function recById(id){return S.recruiting?S.recruiting.pool.find(r=>r.id===id):null;}
@@ -2822,6 +2953,7 @@ function renderHome(app){
   if(inChamp)champHomeCard(v);
   if(inPost)postseasonHomeCard(v);
   if(portalOpen)portalHomeCard(v);
+  if(S.media&&S.media.feed&&S.media.feed.length)mediaHomeCard(v);
   // end-of-season awards ceremony (Offseason, before rollover): the year's national honors
   if(over&&S.awards&&S.awards.length){
     const A=S.awards[S.awards.length-1];
@@ -3111,6 +3243,17 @@ function postseasonHomeCard(v){
   more.onclick=()=>{UI.view='season';UI.seasonTab='bracket';render();};
   c.append(more);v.append(c);
 }
+// Phase 19: Home headlines teaser — the top story or two + a link into the Media Center.
+function mediaHomeCard(v){
+  const M=S.media;
+  v.append(el('h2','sec','Headlines'));
+  const c=el('div','card');c.dataset.tid='media-card';
+  c.innerHTML=M.feed.slice(0,2).map(s=>{const meta=STORY_TAGS[s.tag]||['NEWS','#777'];
+    return `<div style="margin:4px 0"><span class="tag" style="background:${meta[1]};color:#fff;font-size:9px">${meta[0]}</span> <span class="nm" style="font-size:13px">${s.headline}</span></div>`;}).join('');
+  const b=el('button','btn line','Open the Media Center →');b.style.marginTop='10px';b.dataset.tid='home-media';
+  b.onclick=()=>{UI.view='media';UI.mediaTab='feed';render();};
+  c.append(b);v.append(c);
+}
 // Phase 18: Home transfer-portal card — your losses + a link into the portal board.
 function portalHomeCard(v){
   const P=S.portal;if(!P)return;
@@ -3185,6 +3328,51 @@ function portalRow(tr){
     row.append(b);
   }
   return row;
+}
+// Phase 19: the Media Center hub — news feed, the AP poll, and your program's coverage.
+const STORY_TAGS={upset:['UPSET','#e0573e'],ranked:['RANKED','#c9a227'],blowout:['BLOWOUT','#777'],
+  pow:['PLAYER OF WK','#3a86ff'],riser:['RISER','#2a9d4a'],commit:['COMMIT','#2a9d4a'],
+  flip:['FLIP','#e0573e'],portal:['PORTAL','#7a5cff'],award:['AWARD','#c9a227'],title:['TITLE','#c9a227'],milestone:['MILESTONE','#777']};
+function storyCard(s){
+  const meta=STORY_TAGS[s.tag]||['NEWS','#777'];
+  const card=el('div','card');card.dataset.tid='story';card.style.margin='8px 0';
+  if(s.mine)card.style.boxShadow='inset 0 0 0 1px var(--accent)';
+  card.innerHTML=`<div class="row spread" style="margin-bottom:5px"><span class="tag" style="background:${meta[1]};color:#fff;font-size:10px">${meta[0]}</span><span class="meta dim">Wk ${s.week}</span></div>
+    <div class="nm" style="font-size:15px;line-height:1.25">${s.headline}</div>
+    <div class="muted" style="font-size:13px;margin-top:3px">${s.body}</div>`;
+  return card;
+}
+function renderMedia(app){
+  const M=S.media, t=controlled();
+  const v=el('div','view');
+  v.append(headerBar('Media Center',(S.year||2026)+' season',()=>{UI.view='home';render();}));
+  if(!M){v.append(el('div','empty','No media yet.\nKick off the season to start the news cycle.'));app.append(v);return;}
+  const tab=UI.mediaTab||'feed';
+  const tabs=el('div','tabs');tabs.style.marginBottom='10px';
+  [['feed','News'],['poll','AP Poll'],['coverage','Your Coverage']].forEach(([k,l])=>{
+    const b=el('button',tab===k?'on':'',l);b.dataset.tid='mtab-'+k;b.onclick=()=>{UI.mediaTab=k;render();};tabs.append(b);});
+  v.append(tabs);
+  if(tab==='poll')apPollRows(v,t);
+  else if(tab==='coverage')mediaCoverage(v,t);
+  else{
+    if(!M.feed.length)v.append(el('div','empty','No headlines yet — play a week to start the news cycle.'));
+    else M.feed.forEach(s=>v.append(storyCard(s)));
+  }
+  app.append(v);
+}
+// Your program's written preview (next game) + recap (last game), generated from the schedule + ratings.
+function mediaCoverage(v,t){
+  const up=teamGame(t.id,S.week), last=lastGameFor(t.id);
+  if(up&&!up.played){const opp=teamById(up.home===t.id?up.away:up.home),gap=t.ratings.ovr-opp.ratings.ovr;
+    const fav=gap>=3?t.nick+' are favored':gap<=-3?opp.nick+' are favored':'it projects as a coin flip';
+    v.append(el('div','card',`<div class="meta dim">PREVIEW · Week ${up.week}</div>
+      <div class="nm" style="font-size:15px;margin-top:3px">${t.name} ${up.home===t.id?'host':'travel to'} ${opp.name}</div>
+      <div class="muted" style="font-size:13px;margin-top:4px">The ${t.nick} (${recStr(t)}) meet the ${opp.nick} (${recStr(opp)}) — ${fav}.</div>`));}
+  if(last){const gv=gameView(last,t.id),win=gv.cls==='good',d=Math.abs(gv.my-gv.th);
+    v.append(el('div','card',`<div class="meta dim">RECAP · Week ${last.week}</div>
+      <div class="nm ${gv.cls}" style="font-size:15px;margin-top:3px">${gv.res} ${gv.home?'vs':'@'} ${gv.opp.name}</div>
+      <div class="muted" style="font-size:13px;margin-top:4px">${t.name} ${win?'beat':'fell to'} ${gv.opp.name} ${gv.my}–${gv.th}${d<=7?' in a tight finish':win&&d>=28?' in a rout':'.'}</div>`));}
+  if((!up||up.played)&&!last)v.append(el('div','empty','No game to cover yet — kick off the season.'));
 }
 // Phase 12: the playoff bracket + bowl slate (Season → Bracket). Played games are replayable.
 function seasonBracket(v,t){
@@ -3357,6 +3545,8 @@ function seasonStandings(v,t){
   });
 }
 function seasonTop25(v,t){
+  // Phase 19: the presented AP-style poll (with weekly movement); falls back to rankScore order pre-poll.
+  if(S.media&&S.media.poll){apPollRows(v,t);return;}
   v.append(el('div','hint','National rankings blend team rating with results — win games and you climb.'));
   [...S.world.teams].sort((a,b)=>a.natRank-b.natRank).slice(0,25).forEach(x=>{
     const me=x.id===t.id,row=el('div','lrow');row.dataset.id=x.id;
@@ -3368,6 +3558,23 @@ function seasonTop25(v,t){
       <div class="cond" style="font-size:15px;font-weight:700">${x.rec.w}–${x.rec.l}</div>`;
     v.append(row);
   });
+}
+// Shared AP Top 25 render (Season → Top 25 + the Media hub). Movement arrows from each team's prev rank.
+function apPollRows(v,t){
+  const M=S.media;
+  v.append(el('div','hint','AP Top 25 — Week '+M.poll.week+'. A real poll lags, so teams move a few spots at a time.'));
+  M.poll.top.forEach(e=>{const x=teamById(e.teamId),me=x.id===t.id;
+    const mv=!e.prev?'NEW':e.prev>e.rank?'▲'+(e.prev-e.rank):e.prev<e.rank?'▼'+(e.rank-e.prev):'—';
+    const mc=!e.prev?'accent':e.prev>e.rank?'good':e.prev<e.rank?'bad':'dim';
+    const row=el('div','lrow');row.dataset.id=x.id;if(me)row.style.boxShadow='inset 0 0 0 1px var(--accent)';
+    row.innerHTML=`<div class="ovr ${e.rank<=4?'elite':''}">${e.rank}</div>
+      <span class="dot" style="background:${x.color}"></span>
+      <div style="flex:1"><div class="nm">${x.name} <span class="dim" style="font-weight:400">${x.nick}</span> ${me?'<span class="cap">YOU</span>':''}</div>
+      <div class="meta">${x.conf} · ${x.rec.w}–${x.rec.l}</div></div>
+      <div class="meta ${mc}" style="font-weight:700;min-width:34px;text-align:right">${mv}</div>`;
+    v.append(row);
+  });
+  if(M.poll.others&&M.poll.others.length)v.append(el('div','hint center','Others receiving votes: '+M.poll.others.map(id=>teamById(id).abbr).join(', ')));
 }
 function scoreSide(team,pts,won){
   return `<div class="row spread" style="${won?'':'opacity:.5'}">
@@ -4156,7 +4363,7 @@ function openTeamEditor(t){
    bottom nav
    ============================================================ */
 function renderNav(app){
-  if(!['home','team','recruit','portal','season','browse','program'].includes(UI.view))return;
+  if(!['home','team','recruit','portal','media','season','browse','program'].includes(UI.view))return;
   const nav=el('div','nav');
   const items=[
     ['home','Home','M3 11l9-8 9 8M5 10v10h14V10'],

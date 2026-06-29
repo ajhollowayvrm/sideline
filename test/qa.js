@@ -439,7 +439,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 20 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 21 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -456,7 +456,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v20)', mig.v === 20, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v21)', mig.v === 21, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -573,6 +573,25 @@ function startServer() {
   check('Phase 16: a SIGNED commit cannot be flipped', flip.signedLocked);
   check('Phase 16: a finalize (Signing Day) pass locks verbals (no flips)', flip.finalLocked);
   check('Phase 16: you can recruit a prospect verbally committed elsewhere (to flip him)', flip.offerOpens === null || flip.offerOpens === true);
+  // ---------- PHASE 19a: media suite (AP poll + news feed + Media hub) ----------
+  const media = await page.evaluate(() => {
+    const M = S.media; if (!M) return { ok: false };
+    UI.view = 'media'; UI.mediaTab = 'feed'; render();
+    const feedCard = !!document.querySelector('[data-tid="story"]');
+    UI.mediaTab = 'poll'; render();
+    const pollRows = document.querySelectorAll('.lrow').length;
+    UI.mediaTab = 'coverage'; render();
+    const coverage = /RECAP|PREVIEW/.test(document.querySelector('.view').innerText);
+    UI.view = 'home'; render();
+    const homeCard = !!document.querySelector('[data-tid="media-card"]');
+    return { ok: true, pollLen: M.poll.top.length, week: M.poll.week, feedLen: M.feed.length,
+      moved: M.poll.top.some(e => e.prev && e.prev !== e.rank), tags: [...new Set(M.feed.map(s => s.tag))],
+      feedCard, pollRows, coverage, homeCard, capped: M.feed.length <= 60 };
+  });
+  check('Phase 19a: the AP poll is a populated Top 25 that moved over the season', media.ok && media.pollLen === 25 && media.moved, `wk ${media.week}`);
+  check('Phase 19a: the news feed populated with sane tags (capped)', media.feedLen > 0 && media.tags.length > 0 && media.capped, `${media.feedLen} stories: ${media.tags.join(',')}`);
+  check('Phase 19a: the Media hub renders feed + poll + coverage', media.feedCard && media.pollRows >= 25 && media.coverage);
+  check('Phase 19a: Home shows a headlines teaser', media.homeCard);
   // Phase 10: a recruit's temperament is fogged until you scout them past the threshold
   const recFog = await page.evaluate(() => {
     const rec = S.recruiting.pool[0];
@@ -799,7 +818,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 20', roPost.version === 20, 'v' + roPost.version);
+  check('Rollover: save version bumped to 21', roPost.version === 21, 'v' + roPost.version);
   check('Phase 8: player honors survive the rollover', roPost.honoredAfter > 0, roPost.honoredAfter + ' still honored');
   check('Phase 8: series + awards history persist across the rollover', roPost.seriesKept > 0 && roPost.awardsKept > 0, `series ${roPost.seriesKept}, awards ${roPost.awardsKept}`);
   check('Phase 11: career totals accrue across the rollover', roPost.careerPlayers > 50, roPost.careerPlayers + ' players carry a career');
