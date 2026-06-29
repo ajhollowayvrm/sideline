@@ -289,6 +289,28 @@ function startServer() {
     check('Phase 22: leaving Coach mode does not commit the game', bailed);
   }
 
+  // ---------- PHASE 27: week-to-week injuries ----------
+  const inj = await page.evaluate(() => {
+    const t = controlled(), opp = S.world.teams.find(x => x.id !== t.id);
+    const qb = t.roster.filter(p => p.pos === 'QB').sort((a, b) => a.so - b.so)[0];
+    const stars = [...t.roster].sort((a, b) => b.ov - a.ov).slice(0, 3);   // top-3 by OVR → a clear rating hit
+    const outSet = new Set([qb.id, ...stars.map(p => p.id)]);
+    const fullOff = t.ratings.off;
+    outSet.forEach(id => { const p = t.roster.find(x => x.id === id); p.inj = 3; });   // bench them for 3 weeks
+    const droppedOff = availRatings(t).off < fullOff;          // available rating drops (live-p.inj fallback)
+    const res = simEngine(t, opp, 13131, { benched: outSet });
+    const qbPlayed = !!(res.box[qb.id] && res.box[qb.id].pAtt);
+    healWeek(); const afterHeal = qb.inj;                       // a week ticks off
+    UI.view = 'home'; render();
+    const reportShown = !!document.querySelector('[data-tid="injury-report"]');
+    outSet.forEach(id => { const p = t.roster.find(x => x.id === id); if (p) delete p.inj; });   // cleanup
+    return { droppedOff, qbPlayed, afterHeal, reportShown };
+  });
+  check('Phase 27: injured starters lower the team’s available rating', inj.droppedOff);
+  check('Phase 27: an injured player is held out of the game (backup plays)', !inj.qbPlayed);
+  check('Phase 27: injuries heal a week at a time', inj.afterHeal === 2, 'after heal: ' + inj.afterHeal);
+  check('Phase 27: the Home injury report lists who is out', inj.reportShown);
+
   // advancing now opens the watch-then-commit viewer for your game; skip + commit each week.
   // bye weeks advance directly (no viewer). Capture the first watched game to verify its score
   // equals the committed result (the replay is faithful, not a re-roll).
@@ -319,7 +341,7 @@ function startServer() {
   check('Season: controlled record matches its games played', adv.myRec === adv.mySched, JSON.stringify(adv));
   const detSim = await page.evaluate(() => {
     const g = S.schedule.games.find(x => x.played);
-    const clone = { id: g.id, home: g.home, away: g.away, played: false, hs: null, as: null };
+    const clone = { id: g.id, home: g.home, away: g.away, out: g.out, played: false, hs: null, as: null };  // carry frozen availability (Phase 27)
     simGame(clone);
     return g.hs === clone.hs && g.as === clone.as;
   });
@@ -501,7 +523,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 27 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 28 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -518,7 +540,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v27)', mig.v === 27, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v28)', mig.v === 28, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -942,7 +964,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 27', roPost.version === 27, 'v' + roPost.version);
+  check('Rollover: save version bumped to 28', roPost.version === 28, 'v' + roPost.version);
   check('Phase 8: player honors survive the rollover', roPost.honoredAfter > 0, roPost.honoredAfter + ' still honored');
   check('Phase 8: series + awards history persist across the rollover', roPost.seriesKept > 0 && roPost.awardsKept > 0, `series ${roPost.seriesKept}, awards ${roPost.awardsKept}`);
   check('Phase 11: career totals accrue across the rollover', roPost.careerPlayers > 50, roPost.careerPlayers + ' players carry a career');

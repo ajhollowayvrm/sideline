@@ -350,8 +350,22 @@ plain static files so Pages still serves it with zero config.
   no roster mutation, no save bump**; symmetric → the envelope holds. Surfaced via `injInto` (a 🩹 "Out" line
   in the matchup panel + injury events in the feed). `simlab` → 52 (injuries occur ~1/game + deterministic;
   fatigue zero-early / threshold / bounded), `qa` → 241. See "Phase 26 design — injuries & fatigue" below.
-  *(Cross-week injury persistence + a defensive-playcalling/blitz layer + special packages remain the open
-  threads.)*
+  *(Cross-week injury persistence is now Phase 27; a defensive-playcalling/blitz layer + special packages
+  remain the open threads.)*
+- **Phase 27 — Week-to-week injuries.** ✅ DONE. Injuries now **persist across weeks**: a player hurt in a
+  game gets `p.inj` = weeks out (severity rolled by the pure `injDur`), sits out his team's games while
+  it's >0, and **lowers his team's effective rating** (`availRatings` recomputes the top-11 over available
+  players — losing your star QB for weeks actually drops your offense, next man up via `qbList`), then heals
+  a week at a time (`healWeek`, after each advanced week/round) and fully at the offseason rollover. The pure
+  engine stays pure — the **app** applies injuries once per real game (`applyInjuries` on `g._inj`, never on
+  determinism re-sims) and decrements. Crucially, each game **freezes its availability** at kickoff
+  (**`g.out`** = ids that sat) so a *past* game replays faithfully (greatest-games / the determinism check)
+  even after rosters change — `gamePools`/`availRatings` use the frozen `benched` set when given, else fall
+  back to live `p.inj`. UI: a 🩹 **OUT (Nwk)** badge on the roster row + a Home **Injury Report**. Save
+  **v28** (sparse `p.inj`, absent = healthy; `g.out` rides on the schedule). `simlab` → 55 (duration mix +
+  bounded; an injured starter is benched, backup plays; multi-week injuries occur), `qa` → 245 (rating
+  drop, held out, heals weekly, report renders; replay stays faithful). See "Phase 27 design — week-to-week
+  injuries" below. *(Open: a defensive-playcalling/blitz layer + special packages.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1284,6 +1298,46 @@ position-by-position injury rates, fatigue only on ball-carriers (not linemen). 
 
 ---
 
+## Phase 27 design — week-to-week injuries
+
+Decided 2026-06-29 with AJ — the cross-week version of Phase 26: a star going down costs you for *weeks*,
+so depth and the "needs" board matter across a season.
+
+### Persistence without breaking the pure engine
+`simEngine` stays pure (never mutates inputs). So injuries persist as a sparse per-player `p.inj` (weeks
+out) that the engine *reads* (a player with `p.inj>0` sits) but the **app** writes. Flow: a game's
+`res.inj` (each {id, pos, name, **out**} where `out` = future weeks missed, rolled by the pure `injDur`)
+is applied **once** — in the advance (`applyInjuries(g._inj)`), never on a determinism re-sim — and the
+whole league heals a week (`healWeek`) after each advanced week/round (and fully at rollover). Severity
+is top-heavy toward day-to-day with a multi-week tail (`injDur`).
+
+### Effective rating + the "next man up"
+A depleted team is genuinely weaker: `availRatings(team)` recomputes the top-11 over *available* players,
+and `simSides` feeds that into the game (so losing your star QB drops your offense, not just one matchup);
+`gamePools` excludes the injured (the backup gets the touches; `qbList` presses the backup QB).
+
+### The replay problem → freeze availability per game (`g.out`)
+Because injuries mutate rosters mid-season, naively re-simming a *past* game (greatest-games replay, the
+determinism gate) would use *today's* roster and diverge. Fix: each game **freezes** the set of players
+who sat at kickoff (**`g.out`**), and `gamePools`/`availRatings` use that frozen `benched` set when given
+(else fall back to live `p.inj`). So a played game always replays its real result; a fresh game freezes
+from the current injury state (watch == commit, since the watch and commit use the same pre-game state).
+
+### Save & validation
+Save **v28** (sparse `p.inj`; `g.out` rides on the schedule, nulled at rollover; migration is a structural
+no-op — absent reads healthy). `simlab` → 55 (`injDur` mix + bounded; an injured starter is benched and
+the backup plays; multi-week injuries occur over a season). `qa` → 245 (injured starters drop the
+available rating; a player is held out; injuries heal a week at a time; the Home injury report renders;
+**greatest-games replay stays faithful** thanks to `g.out`; the determinism clone carries `g.out`). UI: a
+🩹 OUT (Nwk) roster badge + a Home Injury Report.
+
+### Deliberately out of scope
+No injury *types*/severity beyond a duration, no return-to-play ramp (a returning player is at full
+strength), no IR/roster-replacement management, no in-UI "rest a banged-up starter" toggle (injuries are
+engine-driven). These are follow-ups.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -1709,7 +1763,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **27**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **28**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -1791,7 +1845,8 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 //   committed transfer is stripped of those portal fields and pushed onto his new team's roster with
 //   `fromTransfer:true`. Unsigned transfers leave the modeled league.
 
-// Game: { id, week, home: teamId, away: teamId, played, hs, as, calls?, adjusts? }   // hs/as = home/away score
+// Game: { id, week, home: teamId, away: teamId, played, hs, as, calls?, adjusts?, out? }   // hs/as = home/away score
+//   out? = ids that sat (injured) at kickoff, frozen so a past game replays faithfully (Phase 27).
 //   calls? = the coach's ordered play calls if he coached it (Phase 22); adjusts? = his in-game
 //   adjustment timeline [{at:playNo, plan:{shadow,boost}}] (Phase 24, coverage reassignment + pep-talks).
 //   Both replay on commit/replay (simGame/buildGameLog via gameDecideOpts) so watch == commit. Absent = a pure AI game.
@@ -1828,7 +1883,8 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 ### Player object (kept lean for storage)
 ```
 { id, fn, ln, pos, yr, age, st, stars, ov, pot, cap, spd, str, awr, so,
-  mot?, comp?, ego?, morale?, gs?, dev?, honors?, career?, peakOv? }   // trailing fields are sparse (absent = default)
+  mot?, comp?, ego?, morale?, inj?, gs?, dev?, honors?, career?, peakOv? }   // trailing fields are sparse (absent = default)
+//   inj = weeks out injured (Phase 27; absent/0 = healthy; set by the app after a game, healed weekly + at rollover)
 //   so = depth order within position (0 = starter); cap = captain
 //   pot = TRUE ceiling (0..99). The UI never shows it raw — `scoutedCeiling(p)` renders a
 //   fuzzy tier/band whose uncertainty shrinks with scouting confidence (age/experience now;

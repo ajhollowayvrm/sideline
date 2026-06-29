@@ -304,6 +304,28 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Phase 26: fatigue rises with a heavy late workload, and is bounded', f(24, 4) > 0 && f(40, 4) <= 6 && f(40, 4) >= f(24, 4));
 }());
 
+// Phase 27 — week-to-week injuries: a duration roll (mostly short, multi-week tail), an injured player
+// is benched (excluded from selection so the backup plays), and multi-week injuries occur over a season.
+(function () {
+  const r = rng(321); let zero = 0, multi = 0, max = 0, N = 20000;
+  for (let i = 0; i < N; i++) { const d = injDur(r); if (d === 0) zero++; if (d >= 2) multi++; if (d > max) max = d; }
+  check('Phase 27: injury duration is mostly short with a multi-week tail (bounded ≤8)', zero / N > 0.3 && zero / N < 0.6 && multi / N > 0.05 && max <= 8, `0wk ${(100 * zero / N).toFixed(0)}% · ≥2wk ${(100 * multi / N).toFixed(0)}% · max ${max}`);
+}());
+(function () {
+  const w = genWorld(444), D = w.teams[1];
+  const O = JSON.parse(JSON.stringify(w.teams[0]));
+  const qb1 = O.roster.filter(p => p.pos === 'QB').sort((a, b) => a.so - b.so)[0]; qb1.inj = 2;
+  const res = simEngine(O, D, 55555);
+  const qb1Att = (res.box[qb1.id] || {}).pAtt || 0;
+  let backupAtt = 0; O.roster.forEach(p => { if (p.id !== qb1.id && res.box[p.id]) backupAtt += res.box[p.id].pAtt || 0; });
+  check('Phase 27: an injured starter is benched (records nothing); the backup plays', qb1Att === 0 && backupAtt > 0, `starter ${qb1Att} att, backup ${backupAtt} att`);
+}());
+(function () {
+  const w = genWorld(2200), N = w.teams.length; let multi = 0;
+  for (let s = 0; s < 80; s++) { const h = w.teams[s % N], a = w.teams[(s + 4) % N]; if (h === a) continue; simEngine(h, a, (hashStr('mw' + s) ^ 5) >>> 0).inj.forEach(i => { if (i.out >= 1) multi++; }); }
+  check('Phase 27: multi-week injuries occur over a season', multi > 0, multi + ' multi-week injuries');
+}());
+
 // statistical realism across a full season
 const R = simSeason(2026);
 const meanPts = avg(R.scores);

@@ -779,7 +779,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:27,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:28,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -981,6 +981,9 @@ function migrateState(state){
   if((state.version||1)<27){           // Phase 24: in-game adjustments. A game's optional `g.adjusts` (the
     state.version=27;                  // coach's coverage reassignments + pep-talks) is absent-safe → no-op.
   }
+  if((state.version||1)<28){           // Phase 27: week-to-week injuries. Per-player `p.inj` (weeks out) is
+    state.version=28;                  // a sparse field — absent reads as healthy → structural no-op.
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1099,8 +1102,11 @@ function startSeason(){
 // in rating points, plus a small home-field bump to the home offense.
 
 // Depth-weighted usage pools for one team-game (starters get the lion's share of touches).
-function gamePools(team){
-  const byPos={}; team.roster.forEach(p=>{(byPos[p.pos]=byPos[p.pos]||[]).push(p);});
+function gamePools(team,benched){
+  // Phase 27: injured players sit. `benched` (a Set of ids, frozen per game) is used when given so a
+  // PAST game replays faithfully even after rosters change; otherwise fall back to the live p.inj flag.
+  const out=p=>benched?benched.has(p.id):(p.inj>0);
+  const byPos={}; team.roster.forEach(p=>{if(out(p))return;(byPos[p.pos]=byPos[p.pos]||[]).push(p);});
   for(const k in byPos) byPos[k].sort((a,b)=>a.so-b.so);
   const dep=p=>1/Math.pow((p.so||0)+1,1.35);              // so 0 ≫ so 1 ≫ deep backups
   const W=(codes,base)=>{const out=[];codes.forEach(([c,m])=>(byPos[c]||[]).forEach(p=>out.push([p,base*m*dep(p)])));return out;};
@@ -1142,6 +1148,9 @@ function matchEdge(offOv,offAvg,defOv,defAvg){return MATCH_W*((offOv-offAvg)-(de
 // Phase 26 fatigue: a heavily-used ball-carrier fades in the 4th quarter. Zero until late + over a
 // workload threshold, then a small bounded OVR cost (rewards rotation). Pure → unit-tested in simlab.
 function fatigueCost(touches,q){ return (q<4||touches<=18)?0:Math.min((touches-18)*0.4,6); }
+// Phase 27 injury duration — FUTURE games (weeks) the player misses. Most are day-to-day (0, back next
+// week); a tail are multi-week. Pure (rng). 0 = he finished hurt but is fine next week (no weeks out).
+function injDur(r){ const x=r(); return x<0.45?0 : x<0.75?1 : x<0.90?2 : x<0.97?ri(r,3,4) : ri(r,5,8); }
 function wpick(pool,r,skip){ const pl=(skip&&skip.size)?pool.filter(e=>e[0]&&!skip.has(e[0].id)):pool;
   let tot=0;for(const e of pl)tot+=e[1]; if(tot<=0)return null;
   let x=r()*tot; for(const e of pl){x-=e[1];if(x<0)return e[0];} return pl[pl.length-1][0]; }
@@ -1163,6 +1172,7 @@ function simEngine(home,away,seed,opts){
   const log=(opts&&opts.logInto)||(opts&&opts.log?[]:null);  // logInto: a caller-owned array (survives a pause-throw, Phase 22)
   const decide=opts&&opts.decide;                          // the coach's play-call hook (Phase 22)
   const decideFor=opts&&opts.decideFor;                    // which team id it controls (keeps simEngine pure — no global S)
+  const benched=(opts&&opts.benched)||null;                // Phase 27: ids unavailable this game (frozen for faithful replay)
   // Phase 24 in-game adjustments: a timeline [{at:playNo, plan}] of the controlled coach's coverage
   // reassignments + pep-talks. `planAt` returns the plan in effect at a play index (latest at≤pno), so
   // an adjustment applies only GOING FORWARD (the watched score-so-far never changes on re-run) and the
@@ -1171,7 +1181,7 @@ function simEngine(home,away,seed,opts){
   const planAt=pno=>{ if(!adjusts||!adjusts.length)return null; let pl=null; for(const a of adjusts){ if(a.at<=pno)pl=a.plan; else break; } return pl; };
   let playNo=0;
   const add=(id,k,v)=>{ if(!id)return; (box[id]=box[id]||{gp:1})[k]=(box[id][k]||0)+(v==null?1:v); };
-  const pools={[home.id]:gamePools(home),[away.id]:gamePools(away)};
+  const pools={[home.id]:gamePools(home,benched),[away.id]:gamePools(away,benched)};
   const score={[home.id]:0,[away.id]:0};
   // Phase 22 balance: a defense keys on a one-dimensional offense. Track each team's run/pass mix
   // (smoothed toward 50/50) and tax OVER-reliance on a play type — a balanced / AI attack stays under
@@ -1204,7 +1214,8 @@ function simEngine(home,away,seed,opts){
   const injured=new Set(), touches={}, injOut=(opts&&opts.injInto)||[];
   const INJ_RATE=0.0055;
   const fatg=p=>p?fatigueCost(touches[p.id]||0,L._q):0;
-  const hurt=(p,team)=>{ if(!p||injured.has(p.id))return; injured.add(p.id); injOut.push({id:p.id,team:team.id,pos:p.pos,name:nm(p)}); L(team,'play','🩹 '+nm(p)+' ('+p.pos+') injured — out',' ',true); };
+  const hurt=(p,team)=>{ if(!p||injured.has(p.id))return; injured.add(p.id); const out=injDur(r);   // out = future weeks missed (Phase 27)
+    injOut.push({id:p.id,team:team.id,pos:p.pos,name:nm(p),out}); L(team,'play','🩹 '+nm(p)+' ('+p.pos+') injured'+(out?' — out ~'+out+(out===1?' wk':' wks'):' — day-to-day'),' ',true); };
 
   // One possession, start at `startLos` (offense's own yard line). Returns the spot the
   // opponent takes over (mutates `score` + `box`); ~drive time charged to the caller's clock.
@@ -2312,7 +2323,23 @@ function moraleSpotlight(g){
 // neutral world — no coach, mean-zero schemes, all morale 50 — yields no net edge): coach edges
 // (Phase 7), the Phase 21 SCHEME layer (directional matchup edge + roster fit + coach buy-in), and
 // the Phase 20 morale spotlight. Identical between commit (simGame) and watch (buildGameLog).
-function simSides(g){
+// Phase 27: a team's ratings with injured players SAT (next man up). Equals team.ratings when healthy
+// (same ref → byte-identical games), so only a depleted team is genuinely weaker — losing your star QB
+// for weeks actually drops your offense, not just one matchup.
+function availRatings(team,benched){
+  const out=p=>benched?benched.has(p.id):(p.inj>0);
+  const avail=team.roster.filter(p=>!out(p));
+  if(avail.length===team.roster.length)return team.ratings;
+  return teamRatings(avail,team.staff);
+}
+// The set of players unavailable for a game (Phase 27): the frozen `g.out` if it exists (so a played
+// game always replays the same), else computed from the current injury state (and frozen at sim time).
+function benchedFor(g){
+  if(g.out)return new Set(g.out);
+  const s=new Set();[g.home,g.away].forEach(tid=>{const t=teamById(tid);if(t)t.roster.forEach(p=>{if(p.inj>0)s.add(p.id);});});
+  return s;
+}
+function simSides(g,benched){
   const H=teamById(g.home), A=teamById(g.away);
   const cH=coachGameEdges(H), cA=coachGameEdges(A);
   const dHA=schemeDelta(H,A);   // H on offense vs A's defense: dHA.off→H.off, dHA.def→A.def
@@ -2321,7 +2348,7 @@ function simSides(g){
   let hOff=cH.off+dHA.off+schemeBuyIn(H,'off'), hDef=cH.def+dAH.def+schemeBuyIn(H,'def');
   let aOff=cA.off+dAH.off+schemeBuyIn(A,'off'), aDef=cA.def+dHA.def+schemeBuyIn(A,'def');
   if(spot){ if(g.home===me){hOff+=spot;hDef+=spot;} else if(g.away===me){aOff+=spot;aDef+=spot;} }
-  const mk=(t,o,d)=>(!o&&!d)?t:Object.assign({},t,{ratings:{off:clamp(t.ratings.off+o,40,99),def:clamp(t.ratings.def+d,40,99),ovr:t.ratings.ovr}});
+  const mk=(t,o,d)=>{const br=availRatings(t,benched); if(!o&&!d&&br===t.ratings)return t; return Object.assign({},t,{ratings:{off:clamp(br.off+o,40,99),def:clamp(br.def+d,40,99),ovr:br.ovr}});};
   return {home:mk(H,hOff,hDef), away:mk(A,aOff,aDef)};
 }
 // Resolve a game with the drive/play engine. Seeded per game id so outcomes are reproducible
@@ -2341,11 +2368,21 @@ function gameDecideOpts(g){
   return o;
 }
 function simGame(g){
-  const {home,away}=simSides(g);
-  const res=simEngine(home,away,gameSeed(g),gameDecideOpts(g)||undefined);
+  const benched=benchedFor(g); if(!g.out)g.out=[...benched];   // Phase 27: freeze who sat (faithful replay later)
+  const {home,away}=simSides(g,benched);
+  const res=simEngine(home,away,gameSeed(g),Object.assign({benched},gameDecideOpts(g)||{}));
   g.hs=res.hs;g.as=res.as;g.played=true;
+  g._inj=res.inj;     // Phase 27: hurt players — applied ONCE per real game (in the advance), not on determinism re-sims
   return res.box;
 }
+// Phase 27: stamp week-to-week injuries from a resolved game onto the real players (out>0 = weeks out).
+function applyInjuries(list){
+  (list||[]).forEach(i=>{ if(!i||!(i.out>0))return; const t=teamById(i.team); if(!t)return; const p=t.roster.find(x=>x.id===i.id); if(p)p.inj=Math.max(p.inj||0,i.out); });
+}
+// Heal the league by a week — everyone's injury clock ticks down. Called once per advanced week/round
+// AFTER the games but BEFORE applying that week's NEW injuries: pre-existing injuries tick down for the
+// week they just sat, while a fresh injury starts its full clock (so it isn't shortened by a week).
+function healWeek(){ S.world.teams.forEach(t=>t.roster.forEach(p=>{ if(p.inj>0){p.inj--; if(p.inj<=0)delete p.inj;} })); }
 // Fold a game's box score into each player's season totals (p.gs). Stored only for players
 // who recorded something, so the save-size hit is limited to players who saw the field.
 function applyStats(g,box){
@@ -2366,6 +2403,7 @@ function applyResult(g,box){
 function advanceWeek(){
   const wk=S.week;
   const boxes=S.schedule.games.filter(g=>g.week===wk&&!g.played).map(g=>{const box=simGame(g);applyResult(g,box);return {g,box};});
+  healWeek(); boxes.forEach(({g})=>applyInjuries(g._inj));   // Phase 27: tick down existing injuries, then start this week's
   computeWeeklyHonors(wk,boxes);
   const recOut=resolveRecruitingWeek(wk);   // AI recruits + commitments for the week just finished
   S.lastPlayedWeek=wk;S.week++;
@@ -2547,6 +2585,7 @@ function myChampGame(){const me=S.teamId;return S.champWeek?S.champWeek.games.fi
 // committed score), then crown champions + hand off to awards/playoff.
 function advanceChampWeek(){
   S.champWeek.games.forEach(g=>{if(!g.played){const box=simGame(g);applyResult(g,box);}});
+  healWeek(); S.champWeek.games.forEach(g=>applyInjuries(g._inj));   // Phase 27
   recomputeRanks(S.world);
   S.champWeek.done=true;
   finishConfChampionships();
@@ -2624,6 +2663,7 @@ function advancePostseason(){
   const ps=S.postseason,round=ps.round,me=S.teamId;
   const myGame=postseasonRoundGames(round).find(g=>g.home===me||g.away===me);
   postseasonRoundGames(round).forEach(g=>{if(!g.played){const box=simGame(g);applyResult(g,box);}});
+  healWeek(); postseasonRoundGames(round).forEach(g=>applyInjuries(g._inj));   // Phase 27
   recomputeRanks(S.world);
   if(myGame){const iWon=winnerOfGame(myGame)===me;        // did the controlled team just bow out / advance?
     if(!iWon||myGame.kind==='bowl'||round===3)ps.meDone=true;}
@@ -2896,6 +2936,7 @@ function rolloverSeason(){
   S.world.teams.forEach(t=>{
     const res=rolloverRoster(t.roster,signeesBy[t.id]||[],t.prestige,r,{rateFor:p=>devRateFor(t,p)});
     t.roster=res.roster;
+    t.roster.forEach(p=>{if(p.inj)delete p.inj;});   // Phase 27: the offseason heals everyone
     // Phase 11: enshrine this team's worthy graduates into its Ring of Honor (league-wide).
     const inducted=enshrineLegends(t,res.graduated,yr);
     res.graduated.forEach(p=>allGrads.push(draftSnap(p,t)));   // Phase 13: feed the NFL draft pool
@@ -3269,8 +3310,9 @@ function findAnyGame(id){
 }
 function buildGameLog(gameId){
   const g=findAnyGame(gameId); if(!g)return null;
-  const {home,away}=simSides(g);
-  const res=simEngine(home,away,gameSeed(g),Object.assign({log:true},gameDecideOpts(g)||{}));
+  const benched=benchedFor(g);
+  const {home,away}=simSides(g,benched);
+  const res=simEngine(home,away,gameSeed(g),Object.assign({log:true,benched},gameDecideOpts(g)||{}));
   return {gameId,home:g.home,away:g.away,log:res.log,hs:res.hs,as:res.as,idx:0,fast:false,done:false};
 }
 function openGameViewer(g){ UI.game=Object.assign(buildGameLog(g.id)||{},{replay:false,post:!!g.kind,champ:g.kind==='champ'}); UI.view='game'; render(); scheduleGameTick(); }
@@ -3321,10 +3363,10 @@ function shouldPromptCtx(ctx,mode){
 function runInteractive(){
   const G=UI.game; if(!G||!G.interactive)return;
   const g=findAnyGame(G.gameId); if(!g){UI.view='home';render();return;}
-  const {home,away}=simSides(g); const seed=gameSeed(g);
+  const benched=benchedFor(g); const {home,away}=simSides(g,benched); const seed=gameSeed(g);
   G.log=[]; G.box={}; G.pen={}; G.inj=[]; G.pending=null; let k=0; const PAUSE={pause:1};
   try{
-    const res=simEngine(home,away,seed,{logInto:G.log,boxInto:G.box,penInto:G.pen,injInto:G.inj,decideFor:S.teamId,adjustFor:S.teamId,adjusts:G.adjusts||[],decide:ctx=>{
+    const res=simEngine(home,away,seed,{logInto:G.log,boxInto:G.box,penInto:G.pen,injInto:G.inj,benched,decideFor:S.teamId,adjustFor:S.teamId,adjusts:G.adjusts||[],decide:ctx=>{
       if(k<G.decisions.length)return G.decisions[k++];                 // already resolved
       if(!G.simRest&&shouldPromptCtx(ctx,G.mode)){G.pending=ctx;throw PAUSE;}  // your call → pause here
       const def=ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall;G.decisions.push(def);k++;return def;  // OC handles it
@@ -3436,6 +3478,16 @@ function matchupPanel(G){
     const cooked=(b.cvYds||0)>=80||(b.cvTD||0)>0;
     return `<div class="row spread" style="margin:1px 0"><span class="meta">${nm(p)}</span><span class="meta ${cooked?'bad':''}">${b.cvCmp||0}/${b.cvTgt||0} · ${b.cvYds||0} yd${b.cvTD?' · '+b.cvTD+' TD':''}${cooked?' 🔥 cooked':''}</span></div>`;}).join('');
   c.innerHTML=h;return c;
+}
+// Phase 27: the week-to-week injury report on Home — your players currently out, longest first.
+function injuryReport(v,t){
+  const out=t.roster.filter(p=>p.inj>0).sort((a,b)=>b.inj-a.inj);
+  if(!out.length)return;
+  v.append(el('h2','sec','Injury Report'));
+  const c=el('div','card');c.dataset.tid='injury-report';
+  c.innerHTML=out.slice(0,8).map(p=>`<div class="row spread" style="margin:2px 0"><span class="nm" style="font-size:14px">${p.pos} ${p.fn} ${p.ln} <span class="dim" style="font-weight:400">${p.ov} OVR</span></span><span class="meta bad">out ${p.inj} wk${p.inj===1?'':'s'}</span></div>`).join('')
+    +(out.length>8?`<div class="meta dim" style="margin-top:4px">+${out.length-8} more</div>`:'');
+  v.append(c);
 }
 function renderInteractiveGame(app){
   const G=UI.game,home=teamById(G.home),away=teamById(G.away),t=controlled();
@@ -3566,6 +3618,7 @@ function renderHome(app){
     more.onclick=()=>{UI.view='season';UI.seasonTab='honors';render();};
     hc.append(more);v.append(hc);
   }
+  injuryReport(v,t);                          // Phase 27: who's banged up (and for how long)
   // next task / season control
   const inSeason=S.phase==='Regular Season', over=S.phase==='Offseason', inPost=S.phase==='Postseason',
     inChamp=S.phase==='Conference Championships';
@@ -4926,7 +4979,7 @@ function playerRow(p,isStarter,t){
   const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=p.id;
   row.innerHTML=`<div class="ovr ${p.ov>=85?'elite':''}">${p.ov}</div>
     <div style="flex:1">
-      <div class="nm">${p.fn} ${p.ln} ${p.cap?'<span class="cap">© CAPTAIN</span>':''}</div>
+      <div class="nm">${p.fn} ${p.ln} ${p.cap?'<span class="cap">© CAPTAIN</span>':''}${p.inj>0?` <span class="tag" style="font-size:10px;background:#7a1f1f;color:#fff">🩹 OUT ${p.inj}wk</span>`:''}</div>
       <div class="meta">${p.yr} · ${p.age}y · ${p.st} · ${'★'.repeat(p.stars)}${'☆'.repeat(5-p.stars)}</div>
       <div class="meta" style="margin-top:3px">${ceilingChip(p)} <span class="dim">${devStage(p)}</span>${growthChip(p)}</div>
       <div class="meta" style="margin-top:3px">${traitChips(p)}${moraleChip(p)}${schemeChip(p,t)}</div>
