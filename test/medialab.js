@@ -91,6 +91,46 @@ const rankOf = (poll, id) => { const e = poll.top.find(x => x.teamId === id); re
   check('Every story tag renders a headline', tags.every(tg => mkStory(tg, data, rng(1)).headline.length > 0), tags.join(','));
 })();
 
+/* 7) approval rating (Phase 19b) */
+(function () {
+  check('Win expectation rises with prestige + is bounded', winExpectation(90) > winExpectation(40) && winExpectation(10) >= 0.15 && winExpectation(99) <= 0.85, `${winExpectation(40).toFixed(2)} → ${winExpectation(90).toFixed(2)}`);
+  // per-game
+  const win = { won: true, myOvr: 80, oppOvr: 80 }, loss = { won: false, myOvr: 80, oppOvr: 80 };
+  check('A win helps approval, a loss hurts it', gameApprovalDelta(win) > 0 && gameApprovalDelta(loss) < 0);
+  check('Beating a better team helps more than beating a worse one', gameApprovalDelta({ won: true, myOvr: 75, oppOvr: 85 }) > gameApprovalDelta({ won: true, myOvr: 85, oppOvr: 70 }));
+  check('Losing to a much weaker team is the worst result', gameApprovalDelta({ won: false, myOvr: 85, oppOvr: 70 }) < gameApprovalDelta({ won: false, myOvr: 75, oppOvr: 85 }));
+  check('Per-game approval swing is bounded (±5)', [win, loss, { won: false, myOvr: 90, oppOvr: 60 }].every(c => Math.abs(gameApprovalDelta(c)) <= 5));
+  // season
+  const over = seasonApprovalDelta({ w: 11, l: 2, prestige: 50 }), under = seasonApprovalDelta({ w: 4, l: 9, prestige: 50 });
+  check('Over-performing prestige lifts approval, under-performing tanks it', over > 0 && under < 0, `${over.toFixed(1)} vs ${under.toFixed(1)}`);
+  check('Titles add to the season swing', seasonApprovalDelta({ w: 13, l: 1, prestige: 50, natTitle: true }) > seasonApprovalDelta({ w: 13, l: 1, prestige: 50 }));
+  check('Season swing is bounded (±25)', Math.abs(seasonApprovalDelta({ w: 14, l: 0, prestige: 20, natTitle: true })) <= 25);
+  check('approvalUpdate is bounded + mean-reverts toward 50', approvalUpdate(90, 0) < 90 && approvalUpdate(10, 0) > 10 && approvalUpdate(99, 25) <= 99 && approvalUpdate(3, -25) >= 3);
+})();
+
+/* 8) the hot seat + firing (Phase 19b) */
+(function () {
+  check('Hot-seat tier is monotonic in approval', hotSeatTier(80, 50, 3).tier === 'safe' && hotSeatTier(33, 50, 3).tier === 'warm' && hotSeatTier(15, 50, 3).tier === 'hot');
+  check('A blue-blood runs hotter for the same approval', hotSeatTier(30, 90, 3).tier === 'hot' && hotSeatTier(30, 30, 3).tier !== 'hot', `90→${hotSeatTier(30, 90, 3).tier}, 30→${hotSeatTier(30, 30, 3).tier}`);
+  check('Year one is a honeymoon (never hot)', hotSeatTier(20, 90, 0).tier !== 'hot');
+  check('Not fired after a single mediocre year', firingDecision([45], 50, 1) === false);
+  check('A total meltdown ends a tenure even early', firingDecision([10], 50, 1) === true);
+  check('Two straight years on the hot seat → fired', firingDecision([20, 20], 50, 2) === true);
+  check('A recovery year saves the job', firingDecision([20, 45], 50, 2) === false);
+  check('A blue-blood is fired for sustained mediocrity a mid-major survives', firingDecision([26, 26], 90, 2) === true && firingDecision([26, 26], 30, 2) === false);
+})();
+
+/* 9) press conferences (Phase 19b) */
+(function () {
+  const p = pressPrompt({ loss: true }, 123);
+  check('pressPrompt returns a question + ≥2 keyed choices', p.q.length > 0 && p.choices.length >= 2 && p.choices.every(c => c.key && c.label));
+  check('pressPrompt is deterministic by seed', JSON.stringify(pressPrompt({ loss: true }, 123)) === JSON.stringify(pressPrompt({ loss: true }, 123)));
+  check('Every offered choice maps to an effect', [pressPrompt({ win: true }, 1), pressPrompt({ marquee: true }, 2), pressPrompt({}, 3)].every(pr => pr.choices.every(c => pressEffect(c.key))));
+  check('Press effects are signed sensibly', pressEffect('deflect').approval < 0 && pressEffect('hype').buzz > 0 && pressEffect('accountability').dev > 0);
+  check('Press effects stay small + bounded', ['rally', 'accountability', 'deflect', 'humble', 'hype', 'respect', 'confident', 'bulletin', 'pitch', 'culture'].every(k => { const e = pressEffect(k); return Math.abs(e.approval) <= 3 && e.buzz <= 0.05 && Math.abs(e.dev) <= 0.02; }));
+  check('An unknown choice is a no-op', pressEffect('???').approval === 0 && pressEffect('???').buzz === 0);
+})();
+
 const passed = results.filter(r => r.pass).length;
 console.log(`\n===== ${passed}/${results.length} media-lab checks passed =====`);
 process.exit(results.every(r => r.pass) ? 0 : 1);

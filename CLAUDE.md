@@ -228,11 +228,18 @@ plain static files so Pages still serves it with zero config.
   poll risers, and 4★+ commits/flips; one-off `mediaEvent`s fire at conf titles / the Heisman / the national
   championship / the portal. UI: a **Media Center** hub (`UI.view='media'` — News / AP Poll / Your Coverage,
   with written previews+recaps), a Home headlines teaser, and the Season **Top 25** tab now renders the AP
-  poll with ▲/▼ movement. Save **v21** (`S.media`); new gate `npm run medialab` (17). **19b (next):** coach
-  **approval rating + the hot seat** + interactive **press conferences** (light hooks → approval + a
-  recruiting `buzz`). **19c:** firing → a **job carousel** (take a lesser/lateral job) **or retire** (career
-  summary). The **AP poll stays cosmetic** (the playoff seeds off `rankScore`/conf champions). See "Phase 19
-  design — media suite" below.
+  poll with ▲/▼ movement. Save **v21**; new gate `npm run medialab` (17). **19b (✅ DONE):** a coach
+  **approval rating + the hot seat** + interactive **press conferences**. `MEDIA ENGINE` grew:
+  `winExpectation`/`gameApprovalDelta`/`seasonApprovalDelta`/`approvalUpdate` (bounded, mean-reverting),
+  `hotSeatTier`/`firingDecision` (fire only on *sustained* failure), and `pressPrompt`/`pressEffect` (a
+  context-keyed question bank → a small `{approval, buzz, dev}` bag). Approval persists on **`S.coach`**
+  (`approval`/`tenure`/`approvalHistory`), moves weekly from results (`updateMedia`) and settles at season
+  end (`settleSeasonApproval` in `enterOffseason`); a weekly **optional press card** folds `buzz` into
+  `recruitFit` (guarded `team.mediaBuzz`) + a `dev` focus into `devRateFor` (`S.media.pressDev`); an
+  approval/hot-seat strip on Home + Program; a "pressure mounts" feed story when the seat heats up. Save
+  **v22** (`medialab` → 40). **19c (next):** firing → a **job carousel** (take a lesser/lateral job) **or
+  retire** (career summary). The **AP poll stays cosmetic** (the playoff seeds off `rankScore`/conf
+  champions). See "Phase 19 design — media suite" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast). This is a
   design choice, not a backlog.
@@ -796,13 +803,17 @@ Pure fenced `// === MEDIA ENGINE (Phase 19) START/END ===` (depends only on `cla
   **v21**; `medialab` (17 checks: poll inertia / preseason==score / entrants climb gradually / determinism /
   story classification / templates).
 
-### 19b — Approval, the hot seat & press conferences (next)
-`MEDIA ENGINE` additions: `winExpectation(prestige)`, `approvalUpdate(approval, ctx)` (bounded, mean-reverting
-to a prestige baseline), `hotSeatTier(approval, prestige, tenure)`, `firingDecision(history, prestige, tenure)`
-(fires only on **sustained** failure), and `pressPrompt(ctx, seed)` / `pressEffect(choiceKey)` (a templated
-question bank → a small `{approval, buzz, dev}` bag). App: `S.media.approval/approvalHistory/hotSeat/buzz`;
-a weekly **optional** press-conference Home card; `buzz` folds into `recruitFit` as a guarded additive term
-(same pattern as `postseasonBoost`); an approval/hot-seat strip + firing-rumor stories. Save **v22**.
+### 19b — Approval, the hot seat & press conferences (✅ DONE)
+`MEDIA ENGINE` additions: `winExpectation(prestige)`, `gameApprovalDelta`/`seasonApprovalDelta` +
+`approvalUpdate` (bounded, mean-reverting toward 50), `hotSeatTier`/`hotSeatBar` (prestige-adjusted, year-1
+honeymoon), `firingDecision(history, prestige, tenure)` (fires only on **sustained** failure — a meltdown
+year, or two straight years under the bar), and `pressPrompt(ctx, seed)` / `pressEffect(choiceKey)` (a
+context-keyed question bank → a small `{approval, buzz, dev}` bag). App: approval persists on **`S.coach`**
+(`approval`/`tenure`/`approvalHistory`) — it moves weekly in `updateMedia` and settles at season end
+(`settleSeasonApproval`, in `enterOffseason`); a weekly **optional** press card folds `buzz` into
+`recruitFit` (guarded `team.mediaBuzz`, reset at kickoff) + a `dev` focus into `devRateFor`
+(`S.media.pressDev`); an approval/hot-seat strip (Home + Program) + a "pressure mounts" feed story when the
+seat heats up. Save **v22**; `medialab` → 40.
 
 ### 19c — Fired → job carousel or retire
 `coachOpenings(world, firedPrestige, seed)` (pure; reuses the carousel's prestige-tier idea — mostly lesser
@@ -1241,7 +1252,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **21**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **22**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -1265,7 +1276,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   the old plain pool and the new `_cp` form); v19→v20 backfills `S.portal=null` (Phase 18 — the transfer
   portal is created in the offseason after Signing Day, nulled at rollover; `p.fromTransfer` absent reads as
   no effect); v20→v21 backfills `S.media=null` (Phase 19a — the AP poll + news feed, created at kickoff,
-  nulled at rollover). Each step re-derives ratings/ranks where needed.
+  nulled at rollover); v21→v22 backfills coach `approval`(55)/`tenure`(0)/`approvalHistory`([])/`career`([])
+  on `S.coach` (Phase 19b — these persist across seasons; `team.mediaBuzz`/`S.media.pressDev` absent → no
+  effect). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -1281,7 +1294,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 ```
 {
   version, seed, createdAt, lastSaved,
-  coach: { first, last, homeState, archetype, history },
+  coach: { first, last, homeState, archetype, history, approval, tenure, approvalHistory:[…], career:[…] },  // approval+hot-seat persist across seasons (Phase 19b); career = per-stop résumé (Phase 19c)
   teamId,                 // id of the controlled team
   year,                   // calendar-year counter, init 2026, ++ each rollover (Phase 5)
   week, phase,            // Preseason → 1..15/"Regular Season" → "Conference Championships" (Phase 15) → "Postseason" (bowls+playoff) → "Offseason" (Signing Day → transfer portal) → (rollover) → Preseason

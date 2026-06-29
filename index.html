@@ -688,10 +688,12 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:21,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:22,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
+  // Phase 19b: coach approval + tenure + a per-job career résumé (persist across seasons, not in S.media).
+  S.coach.approval=55; S.coach.tenure=0; S.coach.approvalHistory=[]; S.coach.career=[];
   // choose a save slot
   chooseSlotSheet();
 }
@@ -855,6 +857,13 @@ function migrateState(state){
     if(!('media' in state))state.media=null;   // (like the schedule/recruiting), nulled at rollover.
     state.version=21;
   }
+  if((state.version||1)<22){           // Phase 19b: coach approval + the hot seat + a career résumé.
+    if(state.coach){if(state.coach.approval==null)state.coach.approval=55;
+      if(state.coach.tenure==null)state.coach.tenure=0;
+      if(!Array.isArray(state.coach.approvalHistory))state.coach.approvalHistory=[];
+      if(!Array.isArray(state.coach.career))state.coach.career=[];}   // team.mediaBuzz / media.pressDev absent → no effect
+    state.version=22;
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -953,6 +962,7 @@ function startSeason(){
   S.phase='Regular Season';S.week=1;S.lastPlayedWeek=0;
   S.world.teams.forEach(t=>(t.legends||[]).forEach(l=>l.app=LEGEND_APPS));   // refresh alumni appearances
   initRecruiting();
+  S.world.teams.forEach(t=>{t.mediaBuzz=0;});   // Phase 19b: press-conference recruiting buzz resets each year
   recomputeRanks(S.world);
   initMedia();                 // Phase 19: a fresh preseason AP poll + an empty news feed
   setWeeklyTask();
@@ -1163,6 +1173,8 @@ function recruitFit(team,rec){
   // Draft factory (Phase 13): a program that produces high picks at this position pulls recruits there
   // (a rebel is repelled). Guarded so factory-less teams (the recruit lab) are unaffected.
   if(team.factory)fac+=factoryPull(team,rec);
+  // Media buzz (Phase 19b): press-conference hype is a small standing recruiting nudge. Guarded.
+  if(team.mediaBuzz)fac+=clamp(team.mediaBuzz,0,0.1);
   return clamp(prox+need+fac,0,1.2);
 }
 // Class-ranking value of a landed prospect, and a team's total class score. Phase 17: the whole national
@@ -1935,6 +1947,81 @@ function mkStory(tag,d,r){
     body:`${d.name} decommitted from ${d.lLong} and flipped to ${d.wLong}.`};
   return {headline:d.headline||'',body:d.body||''};   // portal/award/title/milestone: app supplies copy
 }
+
+// --- Approval rating & the hot seat (Phase 19b) — pure, lab-tested ---
+// Expected win rate for a program of this prestige, so approval measures over/under-performance, not raw
+// record (a blue-blood is *expected* to win; a bottom program isn't).
+function winExpectation(prestige){return clamp(((prestige||50)-25)/65,0.15,0.85);}
+// The approval below which a coach is on the hot seat — prestige-adjusted (powers run hotter for mediocrity).
+function hotSeatBar(prestige){return clamp(28+((prestige||50)-50)*0.18,18,46);}
+// Per-game approval swing: winning helps, beating a better/ranked team helps more, losing to a clearly
+// weaker team hurts most, losing to a better team is forgivable. Bounded.
+function gameApprovalDelta(ctx){
+  let d=ctx.won?2:-2;
+  const gap=(ctx.oppOvr||70)-(ctx.myOvr||70);          // + = opponent was the stronger team
+  if(ctx.won){if(gap>=2||ctx.oppRanked)d+=2; if(gap>=6)d+=1;}
+  else{if(gap<=-3)d-=3; else if(gap>=2||ctx.oppRanked)d+=1.5;}
+  return clamp(d,-5,5);
+}
+// Season-end approval swing: wins vs the prestige expectation, plus title bonuses. Bounded.
+function seasonApprovalDelta(ctx){
+  const games=(ctx.w||0)+(ctx.l||0), exp=winExpectation(ctx.prestige)*games;
+  let d=((ctx.w||0)-exp)*3;
+  if(ctx.confTitle)d+=6; if(ctx.natTitle)d+=12;
+  return clamp(d,-25,25);
+}
+// Apply a season-end delta with a gentle pull toward 50 so approval can't run away in either direction.
+function approvalUpdate(approval,delta){
+  const reverted=approval+(50-approval)*0.08;
+  return clamp(Math.round(reverted+delta),3,99);
+}
+// Hot-seat read. A first-year coach gets a honeymoon (never "hot"); otherwise tiers off the prestige bar.
+function hotSeatTier(approval,prestige,tenure){
+  const bar=hotSeatBar(prestige), warm=bar+13;
+  if((tenure||0)<1)return {tier:approval<bar-8?'warm':'safe',label:'Honeymoon'};
+  if(approval>=warm)return {tier:'safe',label:'Secure'};
+  if(approval>=bar)return {tier:'warm',label:'Warm seat'};
+  return {tier:'hot',label:'Hot seat'};
+}
+// Fire only on sustained failure: never after year one (unless a total meltdown), else two straight
+// seasons under the hot-seat bar. `history` = per-season end-of-year approvals, oldest→newest.
+function firingDecision(history,prestige,tenure){
+  if((tenure||0)<1||!history.length)return false;
+  const last=history[history.length-1], bar=hotSeatBar(prestige);
+  if(last!=null&&last<12)return true;                  // a total meltdown ends a tenure even early
+  if((tenure||0)<2)return false;
+  const recent=history.slice(-2);
+  return recent.length>=2&&recent.every(a=>a<bar);     // two consecutive years on the hot seat
+}
+// Interactive press conferences — a context-keyed question bank; each choice maps to a small effect bag.
+const PRESS_BANK=[
+  {when:'loss',q:'A tough loss. What’s your message to the team?',choices:[
+    ['rally','“We’ll bounce back — believe in this group.”'],
+    ['accountability','“That one’s on me. We’ll fix it.”'],
+    ['deflect','“The calls didn’t go our way out there.”']]},
+  {when:'win',q:'Big win. What’s next?',choices:[
+    ['humble','“We’re 1-0 this week. Back to work.”'],
+    ['hype','“Nobody in the country is playing better than us.”']]},
+  {when:'marquee',q:'They’re favored. Your thoughts heading in?',choices:[
+    ['respect','“They’re a great program — we respect them.”'],
+    ['confident','“We’ll be ready. We belong on this stage.”'],
+    ['bulletin','“We’re going in there to shock the world.”']]},
+  {when:'any',q:'Recruiting is heating up. A message to prospects?',choices:[
+    ['pitch','“Come build something special with us.”'],
+    ['culture','“We develop players for the next level.”']]}];
+const PRESS_EFFECTS={
+  rally:{approval:2,buzz:0.01,dev:0}, accountability:{approval:3,buzz:0,dev:0.02}, deflect:{approval:-3,buzz:0,dev:0},
+  humble:{approval:2,buzz:0,dev:0.02}, hype:{approval:1,buzz:0.03,dev:-0.01},
+  respect:{approval:2,buzz:0,dev:0}, confident:{approval:1,buzz:0.02,dev:0}, bulletin:{approval:0,buzz:0.05,dev:0},
+  pitch:{approval:0,buzz:0.03,dev:0}, culture:{approval:1,buzz:0.02,dev:0.02}};
+function pressPrompt(ctx,seed){
+  const r=rng((seed||0)>>>0);
+  let pool=PRESS_BANK.filter(p=>p.when==='any'||(ctx&&ctx[p.when]));
+  if(!pool.length)pool=PRESS_BANK.filter(p=>p.when==='any');
+  const q=pool[Math.floor(r()*pool.length)%pool.length];
+  return {q:q.q,choices:q.choices.map(([key,label])=>({key,label}))};
+}
+function pressEffect(key){return PRESS_EFFECTS[key]||{approval:0,buzz:0,dev:0};}
 // === MEDIA ENGINE (Phase 19) END ===
 
 // In-game coach identity (Phase 7): a small, side-specific rating edge the controlled team plays
@@ -2033,7 +2120,7 @@ function computeWeeklyHonors(week,boxes){
    already produces (scores, weekly honors, recruiting commits/flips) and refreshes both.
    ============================================================ */
 function rankedScored(){return [...S.world.teams].sort((a,b)=>rankScore(b)-rankScore(a)).map(t=>({id:t.id,score:rankScore(t)}));}
-function initMedia(){S.media={poll:computePoll(null,rankedScored(),0),feed:[]};}
+function initMedia(){S.media={poll:computePoll(null,rankedScored(),0),feed:[],pressDev:0,pressWeek:-1};}
 function pollRankOf(teamId){const p=S.media&&S.media.poll;if(!p)return null;const e=p.top.find(x=>x.teamId===teamId);return e?e.rank:null;}
 // A lean story record (newest-first feed). teamIds/colors snapshotted so rendering needs no lookups.
 let _mediaSeq=0;
@@ -2082,6 +2169,16 @@ function updateMedia(wk,boxes,recOut){
   S.media.poll=computePoll(prevPoll,rankedScored(),wk);
   const stories=buildWeekStories(wk,boxes,recOut,prevPoll,S.media.poll);
   S.media.feed=stories.reverse().concat(S.media.feed||[]).slice(0,MEDIA_FEED_CAP);
+  // Phase 19b: this week's result moves the controlled coach's approval; a crater makes the news.
+  const me=S.teamId, mg=(boxes||[]).find(({g})=>g.home===me||g.away===me);
+  if(mg&&S.coach){
+    const g=mg.g, mine=teamById(me), opp=teamById(g.home===me?g.away:g.home);
+    const myPts=g.home===me?g.hs:g.as, oppPts=g.home===me?g.as:g.hs, won=myPts>oppPts;
+    const before=hotSeatTier(S.coach.approval||50,mine.prestige,S.coach.tenure||0).tier;
+    S.coach.approval=clamp((S.coach.approval||50)+gameApprovalDelta({won,myOvr:mine.ratings.ovr,oppOvr:opp.ratings.ovr,oppRanked:!!pollRankOf(opp.id)}),3,99);
+    const after=hotSeatTier(S.coach.approval,mine.prestige,S.coach.tenure||0).tier;
+    if(after==='hot'&&before!=='hot')mediaEvent(wk,'milestone','Pressure mounts on '+mine.abbr,'The seat is heating up after the latest result — approval has slipped to '+Math.round(S.coach.approval)+'%.',{color:mine.color,teams:[me],mine:true});
+  }
 }
 // Push a one-off story (awards/titles/portal) the app supplies copy for, newest-first.
 function mediaEvent(wk,tag,headline,body,extra){
@@ -2275,9 +2372,21 @@ function setPostseasonTask(){
 // and a final push window precedes Signing Day — all in the offseason, like real college football.
 function enterOffseason(){
   S.phase='Offseason';
+  settleSeasonApproval();          // Phase 19b: record vs expectation + titles → approval, tenure, history
   if(S.recruiting&&S.recruiting.stage!=='closed'){earlySigningPeriod();setSigningTask();}
   else endOfSeasonTask();          // no open recruiting class (e.g. a custom world) → straight to roll-over
   autosave();
+}
+// Settle the controlled coach's approval at season's end: wins vs the prestige expectation + title bonuses,
+// then log the year into approvalHistory and bump tenure (the firing check reads these in Phase 19c).
+function settleSeasonApproval(){
+  if(!S.coach)return;
+  const t=controlled(), yr=S.year||2026, champ=((S.awards&&S.awards[S.awards.length-1])||{}).champion;
+  const d=seasonApprovalDelta({w:t.rec.w,l:t.rec.l,prestige:t.prestige,
+    confTitle:(t.confTitles||[]).includes(yr),natTitle:!!(champ&&champ.teamId===t.id)});
+  S.coach.approval=approvalUpdate(S.coach.approval==null?50:S.coach.approval,d);
+  S.coach.approvalHistory=(S.coach.approvalHistory||[]).concat(S.coach.approval);
+  S.coach.tenure=(S.coach.tenure||0)+1;
 }
 // Early Signing Period: every recruit already committed (a verbal) puts pen to paper now. The rest stay
 // open for one last push before National Signing Day. Grants a final offseason recruiting-points budget.
@@ -2416,6 +2525,7 @@ function devRateFor(team,p){
     if(H==='High School Legend')rate*=1.05;
   }
   rate*=motorMult(p);                      // the player's own work ethic (Phase 10 trait)
+  if(team.id===S.teamId&&S.media&&S.media.pressDev)rate*=1+clamp(S.media.pressDev,0,0.08);   // Phase 19b: press "culture" focus
   return clamp(rate,0.6,1.6);
 }
 // Clear out the controlled team's recruiting promises at rollover. Departures are now modeled by the
@@ -2950,6 +3060,8 @@ function renderHome(app){
     }
   };
   task.append(adv);v.append(task);
+  approvalStrip(v);                          // Phase 19b: approval + hot-seat read
+  if(inSeason)pressHomeCard(v);              // weekly press conference (optional)
   if(inChamp)champHomeCard(v);
   if(inPost)postseasonHomeCard(v);
   if(portalOpen)portalHomeCard(v);
@@ -3041,6 +3153,7 @@ function renderProgram(app){
   const t=controlled();
   const v=el('div','view');
   v.append(headerBar('Program Status',t.name+' '+t.nick,()=>{UI.view='home';render();}));
+  approvalStrip(v);                          // Phase 19b: approval + hot-seat read
   v.append(el('h2','sec','Finances'));
   const g=el('div','stat-grid');g.dataset.tid='program-finances';
   g.append(stat('Operating Budget',money(t.budget)),stat('Facility Debt',money(t.facilityDebt)),
@@ -3242,6 +3355,46 @@ function postseasonHomeCard(v){
   const more=el('button','btn line','View the full bracket →');more.style.marginTop='10px';
   more.onclick=()=>{UI.view='season';UI.seasonTab='bracket';render();};
   c.append(more);v.append(c);
+}
+// Phase 19b: press conferences — context from your last result + next opponent; one presser per week.
+function pressContext(){
+  const t=controlled(), last=lastGameFor(t.id), up=teamGame(t.id,S.week), ctx={};
+  if(last){const gv=gameView(last,t.id);if(gv.cls==='good')ctx.win=true;else if(gv.cls==='bad')ctx.loss=true;}
+  if(up&&!up.played){const opp=teamById(up.home===t.id?up.away:up.home);if(opp.ratings.ovr>t.ratings.ovr+2||pollRankOf(opp.id))ctx.marquee=true;}
+  return ctx;
+}
+function currentPress(){
+  if(!S.media||S.media.pressWeek===S.week)return null;   // already addressed the media this week
+  return pressPrompt(pressContext(),(S.seed^hashStr('press'+(S.year||2026)+'w'+S.week))>>>0);
+}
+function answerPress(key){
+  if(!S.media||S.media.pressWeek===S.week)return;
+  const e=pressEffect(key), t=controlled();
+  if(S.coach)S.coach.approval=clamp((S.coach.approval==null?50:S.coach.approval)+(e.approval||0),3,99);
+  t.mediaBuzz=clamp((t.mediaBuzz||0)+(e.buzz||0),0,0.1);
+  S.media.pressDev=clamp((S.media.pressDev||0)+(e.dev||0),0,0.08);
+  S.media.pressWeek=S.week;autosave();
+}
+// Coach approval + hot-seat strip (Home + Program).
+function approvalStrip(v){
+  if(!S.coach||S.coach.approval==null)return;
+  const t=controlled(), a=Math.round(S.coach.approval), hs=hotSeatTier(S.coach.approval,t.prestige,S.coach.tenure||0);
+  const col=hs.tier==='hot'?'#e0573e':hs.tier==='warm'?'#c9a227':'#2a9d4a';
+  const c=el('div','card');c.dataset.tid='approval-strip';
+  c.innerHTML=`<div class="row spread"><span class="meta dim">Approval · ${hs.label}</span><span class="cond" style="font-weight:800;color:${col}">${a}%${hs.tier==='hot'?' 🔥':''}</span></div>
+    <div class="bar" style="margin-top:6px"><i style="width:${a}%;background:${col}"></i></div>`;
+  v.append(c);
+}
+function pressHomeCard(v){
+  const p=currentPress();if(!p)return;
+  v.append(el('h2','sec','Press Conference'));
+  const c=el('div','card');c.dataset.tid='press-card';
+  c.innerHTML=`<div class="muted" style="font-size:13px;margin-bottom:6px">“${p.q}”</div>`;
+  p.choices.forEach(ch=>{const b=el('button','btn line',ch.label);
+    b.style.cssText='margin-top:7px;text-align:left;white-space:normal;height:auto;padding:10px 12px;line-height:1.3';
+    b.dataset.tid='press-'+ch.key;
+    b.onclick=()=>{answerPress(ch.key);render();toast('You addressed the media');};c.append(b);});
+  v.append(c);
 }
 // Phase 19: Home headlines teaser — the top story or two + a link into the Media Center.
 function mediaHomeCard(v){
