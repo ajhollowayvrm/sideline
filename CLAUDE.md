@@ -204,6 +204,21 @@ plain static files so Pages still serves it with zero config.
   ~90% of the national pool signs (the capacity-limited tail backfills as walk-ons at rollover, as before).
   Save **v19**; `reclab` grew to 27 (full pool, star mix, substantial classes, convergence), `qa` to 200
   (columnar pool round-trip). See "Phase 17 design — full national board" below.
+- **Phase 18 — Transfer portal (full two-way).** ✅ DONE. An offseason **transfer portal** now sits between
+  National Signing Day and rollover. Pure fenced **`PORTAL ENGINE`**: `portalLeaveProb` (a player's odds of
+  entering the portal — buried depth + a broken playing-time promise push; captains, starters, and stars on
+  winning teams stay; coach retention lowers it), `portalFit` (a program's pull on a transfer — a positional
+  **need** + prestige proximity to his overall), and `advancePortal` (a recruiting-like commit loop —
+  programs with a hole chase the available transfers, who commit to their leader; a finalize pass signs
+  everyone with a real suitor). App layer: `openPortal` (after NSD) pulls leavers off **every** roster into
+  `S.portal.pool` (a transfer keeps his real class/age/ov — not reset to a freshman); the player works the
+  board (`pursueTransfer` spends portal points to raise interest); `closePortal` finalizes + drops each
+  committed transfer onto his new roster; `rolloverSeason`'s **scholarship cap** (Phase 17) trims any
+  resulting overflow. Broken-promise departures now flow through the portal (`resolvePromises` just clears
+  obligations). UI: a **Portal** view (board + your departures, filters + pagination), a Home portal card,
+  and Portal-in/out lines in the offseason recap. Save **v20** (`S.portal`, per-player `fromTransfer`); new
+  gate `npm run portallab` (17 checks); `qa` (207) drives open → pursue → close → enroll → cleared at
+  rollover. See "Phase 18 design — transfer portal" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast). This is a
   design choice, not a backlog.
@@ -565,9 +580,9 @@ class tab read the stage (Recruiting points → **Final push** → CLOSED; Verba
 recap line and a verbal-vs-signed label on each commit; the on-the-clock card walks Early Signing Period →
 National Signing Day → roll over. Save **v16** (`S.recruiting.stage`); `migrateState` v15→v16 derives a stage
 for any in-progress class (`signed?'closed':'open'`). No new lab (it's a timing/sequencing change validated by
-`qa` end-to-end + the unchanged `reclab`). **Deliberately out of scope:** no transfer portal, no
-decommitments/flips of *signed* players, no per-recruit signing-date calendar — two periods, a push window,
-and the class closes.
+`qa` end-to-end + the unchanged `reclab`). **Deliberately out of scope (at the time):** no per-recruit
+signing-date calendar — two periods, a push window, and the class closes. *(The "no transfer portal" and
+"no flips of commits" limits here were later reversed — see Phases 16 & 18.)*
 
 ---
 
@@ -692,6 +707,51 @@ land a substantial class (≥100 of 134 fill ≥18), class cap respected. `qa` (
 recruit-pool round-trip** (all ~3,400 recruits byte-exact). **No new gate** (reclab + qa cover it).
 **Deliberately out of scope:** still no sub-2★ / preferred-walk-on individuals (the genFreshman backfill
 stands in for the deepest tail), no JUCO/FCS recruiting, no early-enrollee timing.
+
+---
+
+## Phase 18 design — transfer portal (full two-way)
+
+Decided 2026-06-28 with AJ (Phases 15–18 batch). The last reversed non-goal: players can now move between
+programs in an offseason **transfer portal** — you lose your own, you sign others', and the AI churns.
+House discipline: a pure fenced engine + node lab before UI, a save bump, all gates green.
+
+### Timing
+The portal opens **after National Signing Day**, before rollover (`nationalSigningDay` → `openPortal`). The
+Home advance walks: Hold National Signing Day → **Close the transfer portal** → Roll over. `S.portal` is
+created here and nulled at rollover (like the postseason / Championship Week).
+
+### Pure `PORTAL ENGINE` (fenced, lab before UI)
+Depends only on `rng/clamp/hashStr` (no DOM, no S), so `test/portallab.js` validates it offline:
+- `portalLeaveProb(p, opts)` — a player's odds of entering the portal (0..0.8): **buried** depth (`so≥2`)
+  and a **broken playing-time promise** push him out; captains, starters, and **stars on winning teams**
+  stay; `opts.retention` (coach identity) lowers it. Bounded.
+- `portalTarget(tr)`/`portalFit(team, tr)` — a transfer's tier from his overall, and a program's pull:
+  a positional **need** + prestige proximity. (The app passes lightweight team views with a computed
+  needs map, so the engine stays pure.)
+- `advancePortal(pool, teams, seed, finalize)` — a recruiting-like loop: suitors grow interest, transfers
+  commit to their leader; a finalize pass signs every transfer with a real suitor (the rest go unsigned,
+  i.e. leave the modeled league). Deterministic.
+
+### App layer
+- `openPortal` runs `portalLeaveProb` over **every** roster (skipping graduating seniors), removes the
+  leavers into `S.portal.pool` as **Transfers** (a real Player snapshot — keeps yr/age/ov, NOT reset to a
+  freshman — plus `iv` suitors), runs one opening AI round, recomputes ratings/ranks.
+- `pursueTransfer` spends portal points to become a suitor / raise your interest.
+- `closePortal` finalizes, then drops each committed transfer onto his new roster (`fromTransfer:true`);
+  `rolloverSeason`'s **scholarship cap** (Phase 17, trims depth beyond each position's target to ~85)
+  absorbs any net inflow. **Broken-promise departures now flow through the portal** — `resolvePromises` was
+  simplified to just clear obligations (the portal models the exits).
+- Retention: a **Motivator** / **Former Player** coach keeps more of his own players (`portalRetentionMult`).
+
+### UI & save
+A **Portal** view (`renderPortal`: your departures + the available-transfer board with position/availability
+filters + pagination; `pursueTransfer` per row), a Home **portal card**, and **Portal in / Portal out** lines
+in the offseason recap. `renderNav`'s whitelist gains `'portal'`. Save **v20** (`S.portal`, per-player
+`fromTransfer`); `migrateState` v19→v20 backfills `portal:null`. New gate `npm run portallab` (17 checks);
+`qa` (207) drives open → pursue → close → enroll → cleared-at-rollover. **Deliberately out of scope:** no
+in-season portal window, no NIL bidding war / tampering mechanic, no scholarship-count micromanagement beyond
+the roster cap, no coach-to-portal poaching of *signed* recruits.
 
 ---
 
@@ -1120,7 +1180,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **19**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **20**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -1141,8 +1201,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   + per-team `confTitles=[]` (conference-title years); v17→v18 is a structural no-op (Phase 16 decommits —
   a transient `rec._flipped` is recomputed each week, nothing to backfill); v18→v19 is a structural no-op
   (Phase 17 full recruit board — the pool is recreated at kickoff, and the columnar pool codec decodes both
-  the old plain pool and the new `_cp` form). Each step re-derives
-  ratings/ranks where needed.
+  the old plain pool and the new `_cp` form); v19→v20 backfills `S.portal=null` (Phase 18 — the transfer
+  portal is created in the offseason after Signing Day, nulled at rollover; `p.fromTransfer` absent reads as
+  no effect). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -1161,8 +1222,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   coach: { first, last, homeState, archetype, history },
   teamId,                 // id of the controlled team
   year,                   // calendar-year counter, init 2026, ++ each rollover (Phase 5)
-  week, phase,            // Preseason → 1..15/"Regular Season" → "Conference Championships" (Phase 15) → "Postseason" (bowls+playoff) → "Offseason" → (rollover) → Preseason
+  week, phase,            // Preseason → 1..15/"Regular Season" → "Conference Championships" (Phase 15) → "Postseason" (bowls+playoff) → "Offseason" (Signing Day → transfer portal) → (rollover) → Preseason
   champWeek,              // { year, games:[Game kind:'champ'], done, meDone } | null — Championship Week, created after the regular season, nulled into the postseason (Phase 15)
+  portal,                 // { year, pool:[Transfer], points, stage:'open'|'closed', departures, arrivals } | null — offseason transfer portal (Phase 18); created after Signing Day, nulled at rollover
   postseason,             // { year, round, playoff:{seeds[12], rounds:[[Game]], champion}, bowls:[Game], meDone } | null (Phase 12)
   draft,                  // { year, picks:[{pick,round,grade,pid,name,pos,teamId,abbr,color}] } | null — last NFL draft class (Phase 13)
   lastPlayedWeek,         // last week resolved (for the Scores tab)
@@ -1182,6 +1244,11 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 //   transient per-week tag set when a verbal decommits to a rival (Phase 16; recomputed each week).
 //   ov/pot are fogged in the UI by `recScouted(rec)` (band shrinks with `scout`). `iv` keys are
 //   the prospect's suitors. A team's class = pool.filter(r=>r.committedTo===id).
+
+// Transfer (S.portal.pool, Phase 18): a real Player snapshot (keeps yr/age/ov — NOT reset to a freshman)
+//   + { fromTeam: teamId, iv:{ [teamId]: interest }, committedTo: teamId|null }. On closePortal the
+//   committed transfer is stripped of those portal fields and pushed onto his new team's roster with
+//   `fromTransfer:true`. Unsigned transfers leave the modeled league.
 
 // Game: { id, week, home: teamId, away: teamId, played, hs, as }   // hs/as = home/away score
 ```
@@ -1311,8 +1378,8 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
-### Phases 6–17 landed — what used to be stubbed now works
-Phases 1–17 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
+### Phases 6–18 landed — what used to be stubbed now works
+Phases 1–18 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
 loop** + **facility upgrades** (Phase 6), **side-specific development** + **in-game coach effects** +
 **coach-responsive scouting fog** (Phase 7), **AI geography** + **season awards/All-America/Coach of
 the Year/Week** + **non-conference series** (Phase 8), the **columnar save codec** (Phase 9), **fogged
@@ -1325,13 +1392,15 @@ Period + National Signing Day close the class in the offseason (Phase 14), and *
 championships** — a Championship Week of title games that feed the playoff with real CFP auto-bids +
 byes (Phase 15), **decommits** — a verbal pledge can flip to a surging rival before Signing Day
 (Phase 16), and the **full national recruit board** — the whole ~3,400-prospect class is individually
-modeled (columnar-saved, filtered + paginated), retiring the old top-300 board (Phase 17). The full
-career loop — recruit (verbal, flippable) → season → **conf championships** → awards →
-**postseason** → **Early Signing → National Signing Day** → rollover (graduate/enshrine/**draft**/develop/
-enroll) → finances settle → carousel → facilities/series — closes across multiple years, and your stars
-leave a permanent mark on the program both on its Ring of Honor and on its pro-pipeline reputation.
-**Eleven green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
-`traitlab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `qa`.
+modeled (columnar-saved, filtered + paginated), retiring the old top-300 board (Phase 17), and the
+**transfer portal** — players leave (buried depth / broken promises), you sign incoming transfers, AI
+churns, all in the offseason after Signing Day (Phase 18). The full career loop — recruit (verbal,
+flippable) → season → **conf championships** → awards → **postseason** → **Early Signing → National
+Signing Day → transfer portal** → rollover (graduate/enshrine/**draft**/develop/enroll) → finances settle →
+carousel → facilities/series — closes across multiple years, and your stars leave a permanent mark on the
+program both on its Ring of Honor and on its pro-pipeline reputation.
+**Twelve green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
+`traitlab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during

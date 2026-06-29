@@ -568,6 +568,7 @@ function render(){
   if(UI.view==='home') renderHome(app);
   if(UI.view==='team') renderTeam(app);
   if(UI.view==='recruit') renderRecruiting(app);
+  if(UI.view==='portal') renderPortal(app);
   if(UI.view==='season') renderSeason(app);
   if(UI.view==='browse') renderBrowse(app,false);
   if(UI.view==='program') renderProgram(app);
@@ -686,7 +687,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:19,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:20,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -845,6 +846,10 @@ function migrateState(state){
   if((state.version||1)<19){           // Phase 17: full national recruit board (~3,400) + columnar pool codec.
     state.version=19;                  // Structural no-op — the pool is recreated at the next kickoff; the codec
   }                                    // decodes both the old plain pool and the new columnar (_cp) form.
+  if((state.version||1)<20){           // Phase 18: transfer portal. Created in the offseason after Signing Day,
+    if(!('portal' in state))state.portal=null;   // nulled at rollover (like the postseason/champ week).
+    state.version=20;
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1816,6 +1821,62 @@ function factoryPull(team,rec){
 }
 // === DRAFT ENGINE (Phase 13) END ===
 
+// === PORTAL ENGINE (Phase 18) START ===
+// Pure, deterministic transfer-portal model: which players leave a program (buried depth, broken
+// playing-time promises, stagnation — stars on winners rarely go), and a recruiting-like loop where
+// programs with a hole at a position chase the available transfers. Depends only on rng/clamp/hashStr
+// + POS (data array) — no DOM, no S — so test/portallab.js validates it offline. The app layer
+// (openPortal/closePortal) owns S.portal: it removes leavers from rosters into a pool, runs this loop,
+// then drops the committed transfers onto their new rosters. A "transfer" is a real Player snapshot
+// (keeps yr/age/ov — NOT reset to a freshman) plus `iv` interest keyed by suitor, mirroring a Recruit.
+const PORTAL={BASE:0.05,COMMIT_THRESH:60,LEAD_GAP:6,SIGN_BAR:30,POINTS:60,MAX_SUITORS:5};
+// Probability a player enters the portal (0..0.8). opts: {brokenPromise, winPct, retention}.
+function portalLeaveProb(p,opts){
+  opts=opts||{};
+  let pr=PORTAL.BASE;
+  const so=p.so==null?0:p.so;
+  if(so>=2)pr+=0.10+Math.min(so-2,7)*0.03;            // buried deeper on the chart → likelier to leave
+  if(opts.brokenPromise)pr+=0.35;                      // a broken playing-time promise is a big push
+  if((p.dev||0)===0&&so>=2)pr+=0.05;                   // stagnating depth (no growth + buried)
+  if(p.cap)pr-=0.15;                                   // captains stay
+  if(so<=1)pr-=0.10;                                   // starters / two-deep usually stay
+  if((p.ov||0)>=85&&(opts.winPct||0)>=0.6)pr-=0.22;    // stars on winning teams rarely transfer
+  pr*=(opts.retention||1);                             // coach retention (Motivator / Former Player)
+  return clamp(pr,0,0.8);
+}
+// A transfer's "tier target" prestige from his overall, and a team's fit for him (need + proximity).
+function portalTarget(tr){return clamp(Math.round(((tr.ov||70)-55)*2.2+28),25,92);}
+function portalFit(team,tr){
+  const target=portalTarget(tr);
+  let prox=clamp(1-Math.abs((team.prestige||50)-target)/45,0,1);
+  if((team.prestige||50)>=target)prox=Math.max(prox,0.70);
+  const need=(team.needs&&team.needs[tr.pos])?0.18:0;   // a hole at his position is the draw
+  return clamp(prox+need,0,1.2);
+}
+// Advance the portal: grow every suitor's interest, then commit transfers to their leader. A finalize
+// pass forces every transfer with a real leader (≥ SIGN_BAR) to sign; the rest go unsigned (leave the
+// modeled league). Seeded deterministically. Mutates `pool`; returns the new commitments.
+function advancePortal(pool,teams,seed,finalize){
+  const byId={};teams.forEach(t=>byId[t.id]=t);
+  const r=rng((seed^hashStr('portal'+(finalize?'f':'r')))>>>0);
+  const out=[];
+  pool.forEach(tr=>{
+    if(tr.committedTo)return;
+    for(const tid in tr.iv){const t=byId[tid];if(!t)continue;
+      tr.iv[tid]=clamp(tr.iv[tid]+(1.0+portalFit(t,tr)*3.0)*(0.6+r()*0.9),0,100);}
+  });
+  pool.forEach(tr=>{
+    if(tr.committedTo)return;
+    const entries=Object.entries(tr.iv).filter(([tid])=>byId[tid]).sort((a,b)=>b[1]-a[1]);
+    if(!entries.length)return;
+    const [leadId,lead]=entries[0],second=entries[1]?entries[1][1]:0;
+    if(finalize){if(lead>=PORTAL.SIGN_BAR){tr.committedTo=leadId;out.push(tr);}return;}
+    if(lead>=PORTAL.COMMIT_THRESH&&(lead-second)>=PORTAL.LEAD_GAP&&r()<0.5){tr.committedTo=leadId;out.push(tr);}
+  });
+  return out;
+}
+// === PORTAL ENGINE (Phase 18) END ===
+
 // In-game coach identity (Phase 7): a small, side-specific rating edge the controlled team plays
 // with — Motivator effort + Former Player respect + Coordinator game-planning lift both sides;
 // Offensive/Defensive Genius sharpen their own side. AI teams get none (z). Applied OUTSIDE the
@@ -2108,7 +2169,77 @@ function nationalSigningDay(){
   const R=S.recruiting; if(!R||R.stage==='closed')return;
   advanceRecruiting(R.pool,S.world.teams,99,99,S.seed,true,30);   // mop-up: any real leader now signs
   R.stage='closed'; R.signed=true;
-  endOfSeasonTask();
+  openPortal();                                                   // the offseason transfer portal opens next (Phase 18)
+}
+// ---- TRANSFER PORTAL (Phase 18) — app layer over the pure PORTAL ENGINE ----
+// Coach retention: a Motivator / Former Player keeps more of his own players from leaving.
+function portalRetentionMult(){const c=S.coach||{};let m=1;
+  if(c.archetype==='Motivator')m*=0.8; if(c.history==='Former Player')m*=0.85; return m;}
+function portalPoints(){const c=S.coach||{};return PORTAL.POINTS+(c.archetype==='Recruiter'?20:0);}
+// A team's portal needs = positions now below their target depth (a hole a transfer can fill).
+function computePortalNeeds(t){const need={};POS.forEach(([code,,n])=>{if(t.roster.filter(p=>p.pos===code).length<n)need[code]=true;});return need;}
+function portalTeamViews(){return S.world.teams.map(t=>({id:t.id,prestige:t.prestige,needs:computePortalNeeds(t)}));}
+// Open the transfer portal (offseason, after National Signing Day): pull leavers off every roster into
+// the pool, seed suitor interest, run an opening AI round, then let the player work the board.
+function openPortal(){
+  const me=S.teamId, yr=S.year||2026, r=rng((S.seed^hashStr('portal'+yr))>>>0);
+  const pool=[], departures=[], views=portalTeamViews();
+  S.world.teams.forEach(t=>{
+    const g=t.rec?(t.rec.w+t.rec.l):0, winPct=g?t.rec.w/g:0, retention=t.id===me?portalRetentionMult():1;
+    const leaving=t.roster.filter(p=>{
+      if(NEXT_CLASS[p.yr]===null)return false;            // graduating seniors leave via graduation, not the portal
+      const broken=!!(p.promise&&p.promise.type==='playingTime'&&!((p.so!=null&&p.so<=1)||(p.gs&&p.gs.gp)));
+      return r()<portalLeaveProb(p,{brokenPromise:broken,winPct,retention});
+    });
+    if(!leaving.length)return;
+    t.roster=t.roster.filter(p=>leaving.indexOf(p)<0);
+    leaving.forEach(p=>{
+      const ranked=views.filter(o=>o.id!==t.id).map(o=>({o,s:portalFit(o,p)+r()*0.5}))
+        .sort((a,b)=>b.s-a.s).slice(0,PORTAL.MAX_SUITORS);
+      const iv={};ranked.forEach((e,k)=>{iv[e.o.id]=clamp(Math.round(16+portalFit(e.o,p)*24+ri(r,-3,5)-k*2),8,68);});
+      pool.push(Object.assign({},p,{fromTeam:t.id,iv,committedTo:null}));
+      if(t.id===me)departures.push({name:p.fn+' '+p.ln,pos:p.pos,ov:p.ov});
+    });
+  });
+  advancePortal(pool,views,S.seed,false);                // an opening AI round so interest builds
+  S.portal={year:yr,pool,points:portalPoints(),stage:'open',departures,arrivals:null};
+  S.world.teams.forEach(t=>t.ratings=teamRatings(t.roster,t.staff));   // rosters shrank
+  recomputeRanks(S.world);
+  setPortalTask();autosave();
+}
+// Pursue a transfer: spend portal points to become a suitor / raise your interest.
+function pursueTransfer(tr){
+  const P=S.portal; if(!P||P.stage!=='open')return false;
+  if(tr.committedTo){toast('Already committed elsewhere');return false;}
+  const cost=10; if(P.points<cost){toast('Not enough portal points');return false;}
+  P.points-=cost;
+  const meView={id:S.teamId,prestige:controlled().prestige,needs:computePortalNeeds(controlled())};
+  if(tr.iv[S.teamId]==null)tr.iv[S.teamId]=clamp(Math.round(22+portalFit(meView,tr)*22),8,60);
+  else tr.iv[S.teamId]=clamp(tr.iv[S.teamId]+15,0,100);
+  autosave();return true;
+}
+// Close the portal: finalize commitments, drop each committed transfer onto his new roster, then move on.
+function closePortal(){
+  const P=S.portal; if(!P||P.stage==='closed')return;
+  advancePortal(P.pool,portalTeamViews(),S.seed,true);
+  const arrivals=[];
+  P.pool.forEach(tr=>{
+    if(!tr.committedTo)return;
+    const t=teamById(tr.committedTo); if(!t)return;
+    const player=Object.assign({},tr); delete player.iv; delete player.fromTeam; delete player.committedTo;
+    player.fromTransfer=true; player.cap=false;
+    t.roster.push(player);
+    if(t.id===S.teamId)arrivals.push({name:player.fn+' '+player.ln,pos:player.pos,ov:player.ov});
+  });
+  P.stage='closed'; P.arrivals=arrivals;
+  S.world.teams.forEach(t=>t.ratings=teamRatings(t.roster,t.staff));
+  recomputeRanks(S.world);
+  endOfSeasonTask();autosave();
+}
+function setPortalTask(){
+  const P=S.portal, dep=(P&&P.departures.length)||0, avail=P?P.pool.length:0;
+  S.task={type:'Offseason',label:'Transfer Portal',
+    note:dep+' player'+(dep===1?'':'s')+' entered the portal from your program. '+avail+' transfers are available — sign some, then close the portal to roll over.'};
 }
 // The offseason "make your push, then sign" card (Early Signing done, National Signing Day pending).
 function setSigningTask(){
@@ -2157,23 +2288,12 @@ function devRateFor(team,p){
   rate*=motorMult(p);                      // the player's own work ethic (Phase 10 trait)
   return clamp(rate,0.6,1.6);
 }
-// Honor / break the controlled team's recruiting promises now that the season they were made for
-// has been played. A kept (or non-playing-time) promise clears; a broken playing-time promise
-// risks a transfer out. Runs on the PRE-rollover roster (p.gs from last season still present).
-function resolvePromises(teamId,r){
-  const t=teamById(teamId),departed=[];
-  // Strong academics keep players invested in the degree → a broken promise is likelier forgiven.
-  const aca=(t.fac&&t.fac.academics)||5, risk=clamp(0.45-(aca-5)*0.025,0.18,0.6);
-  t.roster=t.roster.filter(p=>{
-    if(!p.promise)return true;
-    if(p.promise.type==='playingTime'){
-      const played=(p.so!=null&&p.so<=1)||(p.gs&&p.gs.gp);
-      if(!played&&r()<risk){departed.push({name:p.fn+' '+p.ln,pos:p.pos});return false;}
-    }
-    p.promise=null;                       // obligation cleared (honored / kept on roster)
-    return true;
-  });
-  return departed;
+// Clear out the controlled team's recruiting promises at rollover. Departures are now modeled by the
+// transfer portal (Phase 18) — a broken playing-time promise feeds portalLeaveProb when the portal opens,
+// so here we just clear the (now-resolved) obligations.
+function resolvePromises(teamId){
+  const t=teamById(teamId);
+  t.roster.forEach(p=>{if(p.promise)p.promise=null;});
 }
 // Per-season alumni appearances a legend can make (reset at kickoff). Limited resource.
 const LEGEND_APPS=2;
@@ -2211,7 +2331,9 @@ function rolloverSeason(){
   const signeesBy={};pool.forEach(rc=>{if(rc.committedTo)(signeesBy[rc.committedTo]=signeesBy[rc.committedTo]||[]).push(rc);});
   const me=S.teamId, r=rng((S.seed^hashStr('rollover'+(S.year||2026)))>>>0);
   const myPost=controlled().lastPostseason||null;  // this year's bowl/playoff finish (for the recap)
-  const departed=resolvePromises(me,r);            // before rollover wipes last season's p.gs
+  resolvePromises(me);                             // clear resolved obligations (departures modeled by the portal)
+  const departed=(S.portal&&S.portal.departures)||[];   // who you lost to the transfer portal (Phase 18)
+  const arrived=(S.portal&&S.portal.arrivals)||[];      // who you signed out of it
   // (A) Finances settle once a year for EVERY team (uses last season's record, before it resets).
   const yr=S.year||2026;
   S.world.teams.forEach(t=>resolveFinances(t,yr,S.seed,t.id===me?mgrFinanceMult():1));  // Manager runs a tighter books
@@ -2235,7 +2357,7 @@ function rolloverSeason(){
   S.world.teams.forEach(t=>{t.payroll=(t.staff||[]).reduce((s,x)=>s+(x.salary||0),0);});
   S.year=(S.year||2026)+1;
   S.world.teams.forEach(t=>{t.rec=emptyRec();t.ratings=teamRatings(t.roster,t.staff);});
-  S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;S.postseason=null;S.champWeek=null;
+  S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;S.postseason=null;S.champWeek=null;S.portal=null;
   S.week=0;S.phase='Preseason';
   S.seriesOffers=genSeriesOffers(S.seed,S.year,me);   // a fresh wave of scheduling offers each offseason
   recomputeRanks(S.world);
@@ -2248,7 +2370,7 @@ function rolloverSeason(){
   S.offseasonReport={year:S.year,
     graduated:summary?summary.graduated.length:0,
     tracked:summary?summary.trackedCount:0,
-    freshmen:nf,departed,
+    freshmen:nf,departed,arrived,
     finances:controlled().lastFinances||null,poached:poachedMine,
     postseason:(myPost&&myPost.label)||null,
     draft:{count:myPicks.length,top:myPicks[0]?myPicks[0].pick:null,names:myPicks.slice(0,3).map(p=>p.name+' ('+p.pos+', #'+p.pick+')')},
@@ -2660,7 +2782,8 @@ function renderHome(app){
   const myPg=inPost?myPostseasonGame():null;
   const myCg=inChamp?myChampGame():null;
   const signing=over&&S.recruiting&&S.recruiting.stage==='national';   // Early Signing done, NSD pending
-  const advLabel=over?(signing?'Hold National Signing Day \u2192':'Roll over to '+((S.year||2026)+1)+' \u2192')
+  const portalOpen=over&&S.portal&&S.portal.stage==='open';            // transfer portal window (Phase 18)
+  const advLabel=over?(signing?'Hold National Signing Day \u2192':portalOpen?'Close the transfer portal \u2192':'Roll over to '+((S.year||2026)+1)+' \u2192')
     :inSeason?'Play Week '+S.week+' \u2192'
     :inChamp?(myCg?'Play the '+myCg.name+' \u2192':'Set the playoff field \u2192')
     :inPost?(myPg?(myPg.kind==='bowl'?'Play the '+myPg.name+' \u2192':'Play '+PLAYOFF_ROUNDS[S.postseason.round]+' \u2192')
@@ -2669,7 +2792,8 @@ function renderHome(app){
   const adv=el('button','btn','');adv.textContent=advLabel;adv.style.marginTop='12px';adv.dataset.tid='adv-clock';
   adv.onclick=()=>{
     if(over){
-      if(S.recruiting&&S.recruiting.stage==='national'){nationalSigningDay();render();toast('National Signing Day \u2014 class closed');}
+      if(S.recruiting&&S.recruiting.stage==='national'){nationalSigningDay();render();toast('National Signing Day \u2014 class closed; the transfer portal is open');}
+      else if(S.portal&&S.portal.stage==='open'){closePortal();render();toast('Transfer portal closed');}
       else{rolloverSeason();render();toast('Welcome to '+S.year+' \u2014 class enrolled, roster reloaded');}
     }
     else if(inSeason){
@@ -2697,6 +2821,7 @@ function renderHome(app){
   task.append(adv);v.append(task);
   if(inChamp)champHomeCard(v);
   if(inPost)postseasonHomeCard(v);
+  if(portalOpen)portalHomeCard(v);
   // end-of-season awards ceremony (Offseason, before rollover): the year's national honors
   if(over&&S.awards&&S.awards.length){
     const A=S.awards[S.awards.length-1];
@@ -2715,7 +2840,8 @@ function renderHome(app){
   if(S.phase==='Preseason'&&S.offseasonReport&&S.offseasonReport.year===S.year){
     const o=S.offseasonReport;
     const rc=el('div','card');rc.dataset.tid='offseason-report';
-    const dep=o.departed&&o.departed.length?`<div class="muted" style="font-size:12px;margin-top:6px">Transfers out (broken promises): ${o.departed.map(d=>d.name+' ('+d.pos+')').join(', ')}</div>`:'';
+    const dep=o.departed&&o.departed.length?`<div class="muted bad" style="font-size:12px;margin-top:6px">Portal out: ${o.departed.map(d=>d.name+' ('+d.pos+')').join(', ')}</div>`:'';
+    const arr=o.arrived&&o.arrived.length?`<div class="muted good" style="font-size:12px;margin-top:6px">Portal in: ${o.arrived.map(d=>d.name+' ('+d.pos+', '+d.ov+')').join(', ')}</div>`:'';
     const poa=o.poached&&o.poached.length?`<div class="muted bad" style="font-size:12px;margin-top:6px">Coordinators poached: ${o.poached.map(p=>p.name+' ('+p.role+')').join(', ')}</div>`:'';
     const fin=o.finances?`<div class="row spread" style="margin-top:4px"><span>Finances net</span><span class="cond ${o.finances.net<0?'bad':'good'}" style="font-weight:800">${money(o.finances.net)}</span></div>`:'';
     // Phase 12: how the controlled team's postseason ended
@@ -2728,7 +2854,7 @@ function renderHome(app){
     rc.innerHTML=`<div class="meta dim" style="margin-bottom:6px">Offseason recap</div>
       <div class="row spread"><span>Seniors graduated</span><span class="cond" style="font-weight:800">${o.graduated}</span></div>
       <div class="row spread"><span>Recruits enrolled</span><span class="cond" style="font-weight:800">${o.tracked}</span></div>
-      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${pst}${drf}${fin}${dep}${poa}${ind}`;
+      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${pst}${drf}${fin}${arr}${dep}${poa}${ind}`;
     v.append(rc);
   }
   if(inSeason||over){const sb=el('button','btn line','Season \u00b7 schedule & standings');sb.style.marginTop='10px';
@@ -2984,6 +3110,81 @@ function postseasonHomeCard(v){
   const more=el('button','btn line','View the full bracket →');more.style.marginTop='10px';
   more.onclick=()=>{UI.view='season';UI.seasonTab='bracket';render();};
   c.append(more);v.append(c);
+}
+// Phase 18: Home transfer-portal card — your losses + a link into the portal board.
+function portalHomeCard(v){
+  const P=S.portal;if(!P)return;
+  v.append(el('h2','sec','Transfer Portal'));
+  const c=el('div','card');c.dataset.tid='portal-card';
+  const dep=P.departures.length, signedMine=P.pool.filter(tr=>tr.committedTo===S.teamId).length;
+  c.innerHTML=`<div class="row spread"><div><div class="cond" style="font-size:22px;font-weight:800">${P.points} pts</div>
+      <div class="muted" style="font-size:13px;margin-top:2px">${dep} out · ${signedMine} incoming · ${P.pool.length} available</div></div>
+      <span class="tag accent" style="font-size:12px">OPEN</span></div>`;
+  const b=el('button','btn line','Work the portal →');b.style.marginTop='10px';b.dataset.tid='home-portal';
+  b.onclick=()=>{UI.view='portal';render();};
+  c.append(b);v.append(c);
+}
+// Phase 18: the transfer-portal board — your departures + the available transfers you can pursue.
+function renderPortal(app){
+  const P=S.portal;
+  const v=el('div','view');
+  v.append(headerBar('Transfer Portal',(P?P.year:S.year)+' offseason',()=>{UI.view='home';render();}));
+  if(!P){v.append(el('div','empty','The transfer portal isn’t open.\nIt opens each offseason after National Signing Day.'));app.append(v);return;}
+  v.append(el('div','card',`<div class="row spread"><span>Portal points</span><span class="cond accent" style="font-weight:800">${P.points}</span></div>
+    <div class="row spread" style="margin-top:4px"><span>Players you lost</span><span class="cond bad" style="font-weight:800">${P.departures.length}</span></div>
+    <div class="row spread" style="margin-top:4px"><span>Incoming commits</span><span class="cond good" style="font-weight:800">${P.pool.filter(tr=>tr.committedTo===S.teamId).length}</span></div>`));
+  if(P.departures.length){
+    v.append(el('h2','sec','Out of your program'));
+    const d=el('div','card');d.innerHTML=P.departures.map(x=>`<div class="row spread" style="margin:3px 0"><span class="meta">${x.name} <span class="dim">${x.pos}</span></span><span class="cond bad" style="font-weight:700">${x.ov} OVR</span></div>`).join('');
+    v.append(d);
+  }
+  v.append(el('h2','sec','Available transfers'));
+  const fbar=el('div','row');fbar.style.cssText='gap:8px;margin-bottom:10px;flex-wrap:wrap';
+  const posSel=el('select');posSel.dataset.tid='portal-pos';
+  [['','All pos'],...POS.map(([c])=>[c,c])].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;posSel.append(o);});
+  const mineSel=el('select');[['','All transfers'],['mine','Committed to me'],['need','Fills a need']].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;mineSel.append(o);});
+  fbar.append(posSel,mineSel);v.append(fbar);
+  const list=el('div');list.dataset.tid='portal-list';
+  const myNeeds=computePortalNeeds(controlled());
+  const PAGE=60;let shown=PAGE;
+  const moreBtn=el('button','btn line','Load more');moreBtn.style.marginTop='10px';
+  moreBtn.onclick=()=>{shown+=PAGE;draw();};
+  function draw(){
+    list.innerHTML='';
+    let arr=P.pool.slice();
+    if(posSel.value)arr=arr.filter(tr=>tr.pos===posSel.value);
+    if(mineSel.value==='mine')arr=arr.filter(tr=>tr.committedTo===S.teamId);
+    else if(mineSel.value==='need')arr=arr.filter(tr=>myNeeds[tr.pos]);
+    arr.sort((a,b)=>b.ov-a.ov);
+    arr.slice(0,shown).forEach(tr=>list.append(portalRow(tr)));
+    if(!arr.length)list.append(el('div','empty','No transfers match.'));
+    moreBtn.style.display=arr.length>shown?'':'none';
+  }
+  posSel.onchange=()=>{shown=PAGE;draw();};mineSel.onchange=()=>{shown=PAGE;draw();};
+  v.append(list,moreBtn);
+  v.append(el('div','hint center','Pursue transfers to raise your interest, then close the portal from Home to roll over.'));
+  app.append(v);draw();
+}
+function portalRow(tr){
+  const me=S.teamId, mine=tr.committedTo===me, committed=tr.committedTo, fromT=teamById(tr.fromTeam);
+  const myIv=Math.round(tr.iv[me]||0);
+  const row=el('div','lrow');row.dataset.id='tr-'+tr.id;
+  if(mine)row.style.boxShadow='inset 0 0 0 1px var(--accent)';
+  const lead=Object.entries(tr.iv).sort((a,b)=>b[1]-a[1])[0];
+  const leadT=lead?teamById(lead[0]):null;
+  const status=committed
+    ? `<span class="tag ${mine?'good':'bad'}" style="font-size:10px">${mine?'TO YOU ✓':'→ '+(teamById(committed)||{abbr:'?'}).abbr}</span>`
+    : `<span class="meta dim">lead ${leadT?leadT.abbr:'—'}</span>`;
+  row.innerHTML=`<div class="ovr ${tr.ov>=85?'elite':''}">${tr.ov}</div>
+    <div style="flex:1;min-width:0"><div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${tr.fn} ${tr.ln} <span class="dim" style="font-weight:400">${tr.pos} · ${tr.yr}</span></div>
+      <div class="meta dim">from ${fromT?fromT.abbr:'?'} · your interest ${myIv}%</div></div>
+    <div style="text-align:right;flex:none;margin-left:8px">${status}</div>`;
+  if(!committed&&S.portal.stage==='open'){
+    const b=el('button','btn sm ghost','Pursue · 10');b.style.marginLeft='8px';b.dataset.tid='tr-pursue';
+    b.onclick=(e)=>{e.stopPropagation();if(pursueTransfer(tr)){render();toast('Pursued '+tr.ln);}};
+    row.append(b);
+  }
+  return row;
 }
 // Phase 12: the playoff bracket + bowl slate (Season → Bracket). Played games are replayable.
 function seasonBracket(v,t){
@@ -3955,7 +4156,7 @@ function openTeamEditor(t){
    bottom nav
    ============================================================ */
 function renderNav(app){
-  if(!['home','team','recruit','season','browse','program'].includes(UI.view))return;
+  if(!['home','team','recruit','portal','season','browse','program'].includes(UI.view))return;
   const nav=el('div','nav');
   const items=[
     ['home','Home','M3 11l9-8 9 8M5 10v10h14V10'],

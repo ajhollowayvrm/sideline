@@ -14,7 +14,8 @@
     "legacylab": "node test/legacylab.js",
     "postlab": "node test/postlab.js",
     "draftlab": "node test/draftlab.js",
-    "champlab": "node test/champlab.js"
+    "champlab": "node test/champlab.js",
+    "portallab": "node test/portallab.js"
   },
   "devDependencies": {
     "playwright": "^1.61.1"
