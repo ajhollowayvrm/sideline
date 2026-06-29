@@ -270,17 +270,19 @@ function startServer() {
       check('Phase 24: the in-game adjustments sheet opens', sheetOK);
       await page.evaluate(() => { const G = UI.game, me = S.teamId, opp = teamById(G.home === me ? G.away : G.home), t = controlled();
         const rc = opp.roster.filter(p => p.pos === 'WR').sort((a, b) => a.so - b.so)[0]; const db = t.roster.filter(p => p.pos === 'CB').sort((a, b) => a.so - b.so)[1] || t.roster.filter(p => p.pos === 'CB')[0];
-        G.plan.shadow[rc.pos + (rc.so || 0)] = db.id; const any = t.roster.find(p => p.pos === 'S'); if (any) G.plan.boost[any.id] = 4; });
+        G.plan.shadow[rc.pos + (rc.so || 0)] = db.id; const any = t.roster.find(p => p.pos === 'S'); if (any) G.plan.boost[any.id] = 4; G.plan.calm = true; });
       await page.locator('[data-tid="adjust-apply"]').click();
       await page.waitForTimeout(70);
-      const adj = await page.evaluate(() => ({ n: (UI.game.adjusts || []).length, hasShadow: (UI.game.adjusts || []).some(a => Object.keys(a.plan.shadow || {}).length), hasBoost: (UI.game.adjusts || []).some(a => Object.keys(a.plan.boost || {}).length) }));
+      const adj = await page.evaluate(() => ({ n: (UI.game.adjusts || []).length, hasShadow: (UI.game.adjusts || []).some(a => Object.keys(a.plan.shadow || {}).length), hasBoost: (UI.game.adjusts || []).some(a => Object.keys(a.plan.boost || {}).length), hasCalm: (UI.game.adjusts || []).some(a => a.plan.calm) }));
       check('Phase 24: applying an adjustment records it on the timeline (coverage + pep-talk)', adj.n > 0 && adj.hasShadow && adj.hasBoost, JSON.stringify(adj));
+      check('Phase 25: "calm them down" is recorded on the adjustment timeline', adj.hasCalm);
     }
     // resolve the rest (Auto) → the live matchup / coverage panel populates from the running box
     await page.locator('[data-mode="auto"]').click();
     await page.waitForTimeout(90);
-    const panel = await page.evaluate(() => ({ done: !!(UI.game && UI.game.done), matchups: !!document.querySelector('[data-tid="matchups"]'), boxCov: !!(UI.game && UI.game.box && Object.values(UI.game.box).some(b => b && b.cvYds)) }));
+    const panel = await page.evaluate(() => ({ done: !!(UI.game && UI.game.done), matchups: !!document.querySelector('[data-tid="matchups"]'), boxCov: !!(UI.game && UI.game.box && Object.values(UI.game.box).some(b => b && b.cvYds)), pen: !!(UI.game && UI.game.pen && Object.values(UI.game.pen).some(p => p && p.n > 0)) }));
     check('Phase 23: the coach view shows a live matchup / coverage panel', panel.matchups && panel.boxCov, JSON.stringify(panel));
+    check('Phase 25: penalties accrue + surface during a game', panel.pen, JSON.stringify(panel));
     await shot(page, '19c-coach-matchups.png');
     // bail without committing — the upcoming game must stay unplayed
     const bailed = await page.evaluate(() => { const me = S.teamId, wk = S.week; UI.game = null; UI.view = 'home'; render(); const g = S.schedule.games.find(x => (x.home === me || x.away === me) && x.week === wk); return g ? g.played === false : true; });

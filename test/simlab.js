@@ -135,7 +135,7 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Engine deterministic: same seed → same score', a.hs === b.hs && a.as === b.as, `${a.hs}-${a.as}`);
   check('Engine deterministic: same seed → same box', JSON.stringify(a.box) === JSON.stringify(b.box));
   const c = simEngine(w.teams[0], w.teams[5], 99999);
-  check('Engine varies by seed', a.hs !== c.hs || a.as !== c.as, `${a.hs}-${a.as} vs ${c.hs}-${c.as}`);
+  check('Engine varies by seed', a.hs !== c.hs || a.as !== c.as || JSON.stringify(a.box) !== JSON.stringify(c.box), `${a.hs}-${a.as} vs ${c.hs}-${c.as}`);
   // purity: inputs not mutated
   const beforeOv = w.teams[0].roster[0].ov;
   simEngine(w.teams[0], w.teams[5], 555);
@@ -258,6 +258,51 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   const lr = simEngine(O, D, seed, { adjustFor: D.id, adjusts: late });
   check('Phase 24: an adjustment set in the future does not change the past', lr.hs === base.hs && lr.as === base.as, `${lr.hs}-${lr.as} vs ${base.hs}-${base.as}`);
 })();
+
+// Phase 25 — penalties/discipline: pre-snap fouls driven by composure + situation, with a coach
+// "calm them down" lever. Realistic rate; an undisciplined team flags more; calm cuts your fouls.
+(function () {
+  const w = genWorld(77), N = w.teams.length;
+  let totPen = 0, games = 0;
+  for (let s = 0; s < 50; s++) { const h = w.teams[s % N], a = w.teams[(s + 3) % N]; if (h === a) continue; const res = simEngine(h, a, (hashStr('pen' + s) ^ 9) >>> 0); totPen += res.pen[h.id].n + res.pen[a.id].n; games++; }
+  const perTeam = totPen / games / 2;
+  check('Phase 25: penalties occur at a realistic rate (3–9 per team/game)', perTeam >= 3 && perTeam <= 9, perTeam.toFixed(1) + ' /team');
+}());
+(function () {
+  const w = genWorld(88), opp = w.teams[1];
+  const lo = JSON.parse(JSON.stringify(w.teams[0])), hi = JSON.parse(JSON.stringify(w.teams[0]));
+  lo.roster.forEach(p => { if ((p.so || 0) <= 1) p.comp = 12; });  // undisciplined starters
+  hi.roster.forEach(p => { if ((p.so || 0) <= 1) p.comp = 92; });  // ice-veined starters
+  let loPen = 0, hiPen = 0;
+  for (let s = 0; s < 25; s++) { const seed = (hashStr('disc' + s) ^ 1) >>> 0; loPen += simEngine(lo, opp, seed).pen[lo.id].n; hiPen += simEngine(hi, opp, seed).pen[hi.id].n; }
+  check('Phase 25: an undisciplined (low-composure) team commits more penalties', loPen > hiPen, `${loPen} vs ${hiPen}`);
+}());
+(function () {
+  const w = genWorld(99), t = w.teams[0], opp = w.teams[1];
+  let normal = 0, calm = 0;
+  const calmPlan = { adjustFor: t.id, adjusts: [{ at: 0, plan: { shadow: {}, boost: {}, calm: true } }] };
+  for (let s = 0; s < 25; s++) { const seed = (hashStr('calm' + s) ^ 1) >>> 0; normal += simEngine(t, opp, seed).pen[t.id].n; calm += simEngine(t, opp, seed, calmPlan).pen[t.id].n; }
+  check('Phase 25: "calm them down" reduces your team\'s penalties', calm < normal, `${calm} vs ${normal}`);
+}());
+
+// Phase 26 — injuries (in-game): occur at a low rate, are deterministic, and force the backup in.
+(function () {
+  const w = genWorld(2200), N = w.teams.length;
+  let inj = 0, games = 0;
+  for (let s = 0; s < 60; s++) { const h = w.teams[s % N], a = w.teams[(s + 4) % N]; if (h === a) continue; const res = simEngine(h, a, (hashStr('inj' + s) ^ 5) >>> 0); inj += res.inj.length; games++; }
+  const perGame = inj / games;
+  check('Phase 26: injuries occur at a low realistic rate (0.1–3 per game)', perGame >= 0.1 && perGame <= 3, perGame.toFixed(2) + ' /game');
+  const h = w.teams[0], a = w.teams[1], seed = 70707;
+  const r1 = simEngine(h, a, seed), r2 = simEngine(h, a, seed);
+  check('Phase 26: injuries are deterministic (same seed → same out list)', JSON.stringify(r1.inj) === JSON.stringify(r2.inj));
+}());
+// Phase 26 — fatigue cost: zero early / under the workload threshold, rises with touches, bounded.
+(function () {
+  const f = fatigueCost;
+  check('Phase 26: fatigue is 0 before the 4th quarter', f(40, 1) === 0 && f(40, 3) === 0);
+  check('Phase 26: fatigue is 0 under the workload threshold', f(18, 4) === 0 && f(10, 4) === 0);
+  check('Phase 26: fatigue rises with a heavy late workload, and is bounded', f(24, 4) > 0 && f(40, 4) <= 6 && f(40, 4) >= f(24, 4));
+}());
 
 // statistical realism across a full season
 const R = simSeason(2026);

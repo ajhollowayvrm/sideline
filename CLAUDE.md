@@ -331,8 +331,27 @@ plain static files so Pages still serves it with zero config.
   pickers + a "settle a player down" toggle, with the live 🔥-cooked panel right there to inform it. Save
   **v27** (optional `g.adjusts`, absent-safe); `simlab` → 44 (shadowing a stud WR cuts him 117→52 yds;
   pep-talk helps; deterministic; forward-only; AI-inert), `qa` → 239. See "Phase 24 design — in-game
-  adjustments" below. *(Next on this track: **special packages**, **penalties/discipline** ("talk them down"),
-  and **injuries/fatigue** — now that a forced-in backup is exposed at his specific matchup.)*
+  adjustments" below.
+- **Phase 25 — Penalties & discipline.** ✅ DONE. Pre-snap fouls (false start / offside) now occur per
+  snap, driven by team **composure** (Phase 10) + situation (road noise, late-game frustration), with the
+  coach's **"calm them down"** lever (the last piece of AJ's original three-part vision). Pure: `teamComp`
+  (avg starter composure) → `penRate(team, calm, q)`; a flag spends 5 yards + replays the down (capped per
+  drive so it always terminates; deterministic from rng → determinism + watch==commit intact; mostly
+  symmetric → the envelope holds). Per-game tallies surface via `penInto`. The lever rides in the existing
+  Phase 24 adjustment plan (`plan.calm`) — so it replays on commit, **no save bump**. UI: 🚩 flag lines in
+  the play feed, a penalties row in the live matchup panel, and a **"🚩 Calm them down"** toggle in the
+  adjustments sheet. `simlab` → 47 (realistic rate ~7/team; an undisciplined team flags more; calm halves
+  them), `qa` → 241. See "Phase 25 design — penalties & discipline" below.
+- **Phase 26 — Injuries & fatigue (in-game).** ✅ DONE. Depth now matters *within a game*: a small per-snap
+  injury chance (`INJ_RATE`) knocks a player **out for the game** (`injured` set → skipped from selection,
+  so the backup is forced in and his matchup shows — a QB injury presses the backup QB via `qbList`), and a
+  **heavily-used ball-carrier fades late** (pure `fatigueCost(touches, q)` → a bounded OVR cost folded into
+  `bov`/`matchEdge`, rewarding rotation). In-game only — **pure, deterministic (from rng), resets each game,
+  no roster mutation, no save bump**; symmetric → the envelope holds. Surfaced via `injInto` (a 🩹 "Out" line
+  in the matchup panel + injury events in the feed). `simlab` → 52 (injuries occur ~1/game + deterministic;
+  fatigue zero-early / threshold / bounded), `qa` → 241. See "Phase 26 design — injuries & fatigue" below.
+  *(Cross-week injury persistence + a defensive-playcalling/blitz layer + special packages remain the open
+  threads.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1194,6 +1213,74 @@ play-calling (blitz/coverage shells), and **penalties/"talk them down"** + **inj
 own increments (the former needs a discipline model, the latter an attrition model). Adjustments are made
 at your offensive pauses (you set them before your defense's next series); there's no per-defensive-snap
 prompt, by design (advancing stays fast).
+
+---
+
+## Phase 25 design — penalties & discipline
+
+Decided 2026-06-29 with AJ — the last piece of the original three-part play-calling vision ("if my team
+is getting too antsy with penalties, I need to talk them down").
+
+### Model (pure, in the SIM engine)
+Per snap, before the play, a pre-snap foul can fire: `penRate(team, calm, q) = PEN_BASE × composure
+factor × situation`, where the composure factor comes from `teamComp` (avg starter `compVal`, Phase 10 —
+an undisciplined room flags more), and situation = road team (crowd noise) + 4th quarter (frustration).
+One rng draw per snap decides off-foul / def-foul / clean. A flag costs 5 yards and **replays the down**
+(false start backs you up; offside can gift a first down). It's **capped per drive** (each flag also
+charges a little clock) so the loop always terminates. Deterministic from rng; mostly symmetric (both
+teams foul) so the validated scoring envelope holds. Per-game tallies live in a `penInto` object.
+
+### The lever + UI
+"Calm them down" reuses the **Phase 24 adjustment plan** (`plan.calm`) — when set, your team's
+`penRate` is halved for the rest of the game. Because it's in `g.adjusts`, it **replays on commit**
+(watch == commit) with **no save bump**. UI: 🚩 flags appear in the play feed automatically, a penalties
+row shows in the live matchup panel, and the adjustments sheet has a **"🚩 Calm them down"** toggle.
+
+### Validation
+`simlab` → 47 (penalties at a realistic ~7/team/game; a low-composure team commits more; calm cuts a
+team's fouls roughly in half; envelope intact). `qa` → 241 (calm is recorded on the timeline; penalties
+accrue + surface). No save bump (per-game + the lever rides in `g.adjusts`).
+
+### Deliberately out of scope
+Pre-snap fouls only (no holding/PI/post-play flags yet — those negate gains / spot-foul and are a
+follow-up); penalties don't accrue to a season stat (per-game only); no per-player penalty attribution.
+
+---
+
+## Phase 26 design — injuries & fatigue (in-game)
+
+Decided 2026-06-29 with AJ — makes the **bottom of the roster** matter and gives the matchup engine teeth:
+a forced-in backup is exposed at his specific matchup (Phase 23), and a workhorse wears down.
+
+### In-game only (the deliberate scope)
+`simEngine` is **pure** (never mutates its inputs), and league-wide cross-week injury state would mean
+mutating every team's roster + a big save/ratings systemic change. So v1 is **in-game only**: an injury
+knocks a player out **for the current game** via an in-engine `injured` Set (resets next game). This is
+pure, deterministic (from rng), needs **no save bump**, and still delivers the payoff — the backup plays
+*this* game and his lower matchup shows. Cross-week persistence is a noted follow-up.
+
+### Injuries
+A small per-snap chance (`INJ_RATE`, ~0.55% on the ball-carrier + a bit less on the defender in the play)
+adds the player to `injured`; `wpick` and `coverDef` skip injured players (the next man up gets the
+touches / the coverage), and a healthy QB is chosen from `qbList` (a QB injury presses the backup — a big
+swing). Injuries surface via `injInto` (a list of {id, team, pos, name}) → a 🩹 "Out" line in the panel +
+feed events. Symmetric across teams → envelope-neutral-ish.
+
+### Fatigue
+A pure, unit-tested `fatigueCost(touches, q)` — **zero** before the 4th quarter and under an 18-touch
+threshold, then a small bounded OVR cost (≤6) that grows with the workload — folded into the effective
+OVR (`bov`) used by `matchEdge`. A 30-carry back fades down the stretch; rotating avoids it. Mild by
+design so the envelope holds.
+
+### Validation
+`simlab` → 52 (injuries occur at ~1/game and are deterministic; `fatigueCost` is zero-early / under
+threshold / monotonic + bounded; envelope + leaders intact). `qa` → 241. No save bump (in-game only).
+(The "varies by seed" determinism check was strengthened to compare the full box, not just the score —
+with more rng draws in play, two seeds can now collide on the final score while differing in the game.)
+
+### Deliberately out of scope
+No **cross-week** injury persistence (in-game only), no injury severity/types/return-timeline, no
+position-by-position injury rates, fatigue only on ball-carriers (not linemen). These are follow-ups.
 
 ---
 

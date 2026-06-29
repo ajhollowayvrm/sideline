@@ -1112,6 +1112,7 @@ function gamePools(team){
   const byso=c=>(byPos[c]||[]).slice().sort((a,b)=>(a.so||0)-(b.so||0));
   return {
     qb:(byPos.QB||[])[0]||null,
+    qbList:byso('QB'),                                     // Phase 26: depth at QB (the backup if your starter goes down)
     k:(byPos.K||[])[0]||(byPos.QB||[])[0]||null,
     rush, recv,
     tkl:W([['LB',1.0],['S',0.8],['CB',0.7],['DE',0.55],['DT',0.45]],1),
@@ -1126,18 +1127,24 @@ function gamePools(team){
 }
 // The defender matched to a target (Phase 23) — DETERMINISTIC (no rng), by depth, so coverage is a
 // persistent storyline (their WR1 vs your CB1) you can read ("getting cooked") and later adjust.
-function coverDef(rec,dP){
-  if(!rec)return dP.cb[0]||dP.saf[0]||null;
-  if(rec.pos==='WR')return dP.cb[Math.min(rec.so||0,Math.max(0,dP.cb.length-1))]||dP.saf[0]||dP.lbk[0]||null;
-  if(rec.pos==='TE')return dP.saf[0]||dP.lbk[0]||dP.cb[0]||null;
-  return dP.lbk[0]||dP.saf[0]||dP.cb[0]||null;            // RB checkdown → LB/S
+// `skip` (Phase 26) excludes injured players so the next man up covers.
+function coverDef(rec,dP,skip){
+  const ok=arr=>{for(const p of arr)if(p&&(!skip||!skip.has(p.id)))return p;return null;};
+  if(!rec)return ok(dP.cb)||ok(dP.saf)||null;
+  if(rec.pos==='WR'){const i=Math.min(rec.so||0,Math.max(0,dP.cb.length-1));return (dP.cb[i]&&(!skip||!skip.has(dP.cb[i].id))?dP.cb[i]:ok(dP.cb))||ok(dP.saf)||ok(dP.lbk)||null;}
+  if(rec.pos==='TE')return ok(dP.saf)||ok(dP.lbk)||ok(dP.cb)||null;
+  return ok(dP.lbk)||ok(dP.saf)||ok(dP.cb)||null;         // RB checkdown → LB/S
 }
 // Mean-zero matchup edge in rating points: (offensive player vs his group mean) − (defender vs his).
 // Takes effective OVRs (so a Phase 24 pep-talk bump flows through).
 const MATCH_W=0.42;
 function matchEdge(offOv,offAvg,defOv,defAvg){return MATCH_W*((offOv-offAvg)-(defOv-defAvg));}
-function wpick(pool,r){ let tot=0;for(const e of pool)tot+=e[1]; if(tot<=0)return null;
-  let x=r()*tot; for(const e of pool){x-=e[1];if(x<0)return e[0];} return pool[pool.length-1][0]; }
+// Phase 26 fatigue: a heavily-used ball-carrier fades in the 4th quarter. Zero until late + over a
+// workload threshold, then a small bounded OVR cost (rewards rotation). Pure → unit-tested in simlab.
+function fatigueCost(touches,q){ return (q<4||touches<=18)?0:Math.min((touches-18)*0.4,6); }
+function wpick(pool,r,skip){ const pl=(skip&&skip.size)?pool.filter(e=>e[0]&&!skip.has(e[0].id)):pool;
+  let tot=0;for(const e of pl)tot+=e[1]; if(tot<=0)return null;
+  let x=r()*tot; for(const e of pl){x-=e[1];if(x<0)return e[0];} return pl[pl.length-1][0]; }
 
 // opts.log → also return res.log, a flat list of {q,team,kind,text,dd,hs,as,big} events for the
 // watchable viewer. Logging pushes strings only (no rng), so the score + box are identical with
@@ -1173,6 +1180,15 @@ function simEngine(home,away,seed,opts){
   const usage={[home.id]:{run:0,pass:0},[away.id]:{run:0,pass:0}};
   const KEY_THRESH=0.60, RUN_KEY=7.5, PASS_KEY=6.5;
   const keyedPen=(offId,type)=>{const c=usage[offId],tot=c.run+c.pass;return Math.max(0,((c[type]+4)/(tot+8))-KEY_THRESH);};
+  // Phase 25 discipline/penalties: a per-snap pre-snap foul chance from team COMPOSURE (Phase 10) +
+  // situation (road noise, late-game frustration) − a coach "calm them down" lever (plan.calm). Mostly
+  // symmetric (both teams foul) so the scoring envelope holds; per-game tallies surface via penInto.
+  const teamComp=t=>{const s=t.roster.filter(p=>(p.so||0)<=1);return s.length?s.reduce((a,p)=>a+compVal(p),0)/s.length:50;};
+  const disc={[home.id]:teamComp(home),[away.id]:teamComp(away)};
+  const pen=(opts&&opts.penInto)||{};
+  if(!pen[home.id])pen[home.id]={n:0,yds:0}; if(!pen[away.id])pen[away.id]={n:0,yds:0};
+  const PEN_BASE=0.042;
+  const penRate=(t,calm,q)=>{ let p=PEN_BASE*(1+(50-disc[t.id])/120); if(t!==home)p*=1.10; if(q>=4)p*=1.15; if(calm)p*=0.5; return clamp(p,0.01,0.10); };
   const HFA=2.3;                                           // home-field, in rating points
   // per-game "form": each team runs a little hot or cold tonight (std ≈ 4 pts), which lets
   // underdogs steal games and keeps the favorite from winning ~every time.
@@ -1182,6 +1198,13 @@ function simEngine(home,away,seed,opts){
   const fpos=l=>l===50?'midfield':(l<50?'own ':'opp ')+(l<50?l:100-l);
   const L=(team,kind,text,dd,big)=>{ if(log)log.push({q:L._q,team:team?team.id:null,kind,text,dd:dd||'',hs:score[home.id],as:score[away.id],big:!!big}); };
   L._q=1;
+  // Phase 26 injuries + fatigue (IN-GAME only — pure, deterministic, resets each game). An injured
+  // player is skipped from selection (the backup is forced in → his matchup shows); a heavily-used
+  // ball-carrier fades late (fatigueCost). Mean-neutral-ish (symmetric across teams) → envelope holds.
+  const injured=new Set(), touches={}, injOut=(opts&&opts.injInto)||[];
+  const INJ_RATE=0.0055;
+  const fatg=p=>p?fatigueCost(touches[p.id]||0,L._q):0;
+  const hurt=(p,team)=>{ if(!p||injured.has(p.id))return; injured.add(p.id); injOut.push({id:p.id,team:team.id,pos:p.pos,name:nm(p)}); L(team,'play','🩹 '+nm(p)+' ('+p.pos+') injured — out',' ',true); };
 
   // One possession, start at `startLos` (offense's own yard line). Returns the spot the
   // opponent takes over (mutates `score` + `box`); ~drive time charged to the caller's clock.
@@ -1189,7 +1212,7 @@ function simEngine(home,away,seed,opts){
     const oP=pools[off.id], dP=pools[def.id];
     let adv=(off.ratings.off-def.ratings.def)+(off===home?HFA:0)+form[off.id]-form[def.id];
     if(clutch)adv+=compClutch(oP.qb);                   // late & close: the QB's composure shows (Phase 10)
-    let los=startLos, down=1, togo=10, time=0;
+    let los=startLos, down=1, togo=10, time=0, pens=0;
     const mine=decide&&off.id===decideFor;             // only the controlled offense ever prompts the coach
     const clkNow=()=>Math.max(0,(clk0||0)-time);
     L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los));
@@ -1199,8 +1222,15 @@ function simEngine(home,away,seed,opts){
       // pep-talk OVR bumps). `bov` = a player's effective OVR (with any pep-talk boost); 0 for AI.
       const plan=(adjustFor&&(off.id===adjustFor||def.id===adjustFor))?planAt(pno):null;
       const boost=(plan&&plan.boost)||null;
-      const bov=p=>p?(p.ov+((boost&&boost[p.id])||0)):0;
+      const bov=p=>p?(p.ov+((boost&&boost[p.id])||0)-fatg(p)):0;   // effective OVR (pep-talk + fatigue)
+      const qb=(oP.qbList&&(oP.qbList.find(q=>!injured.has(q.id))||oP.qbList[0]))||oP.qb;   // healthy QB (backup if hurt)
       const dd=(down)+' & '+(togo>=(100-los)?'goal':togo);
+      // ---- pre-snap penalty (Phase 25) — capped per drive (each charges a little clock → terminates) ----
+      if(pens<6){
+        const offP=penRate(off,!!(plan&&plan.calm&&off.id===adjustFor),L._q), defP=penRate(def,!!(plan&&plan.calm&&def.id===adjustFor),L._q), rp=r();
+        if(rp<offP){ pen[off.id].n++; pen[off.id].yds+=5; los=clamp(los-5,1,99); togo+=5; pens++; time+=4; L(off,'play','🚩 False start, '+(off.abbr||'OFF')+' — 5 yards',dd); continue; }
+        if(rp<offP+defP){ const fd=togo-5<=0; pen[def.id].n++; pen[def.id].yds+=5; los=clamp(los+5,1,99); togo-=5; if(togo<=0){down=1;togo=10;} pens++; time+=4; L(off,'play','🚩 Offside, '+(def.abbr||'DEF')+' — 5 yards'+(fd?' — 1ST DOWN':''),dd); continue; }
+      }
       // ---- 4th down: kick or go ----
       if(down===4){
         const fgDist=(100-los)+17, inFgRange=fgDist<=57, shortPlus=los>=58&&togo<=2;
@@ -1228,33 +1258,35 @@ function simEngine(home,away,seed,opts){
       let gain=0, turnover=false, scored=false, tackled=true, txt='';
 
       if(wantPass){                                          // dropback (sacks aren't pass attempts)
-        const rec=wpick(oP.recv,r);                          // intended target (pre-snap read)
-        let cov=coverDef(rec,dP);                            // the man on him (deterministic by depth, Phase 23)
+        const rec=wpick(oP.recv,r,injured);                  // intended target (pre-snap read; skip the injured)
+        let cov=coverDef(rec,dP,injured);                    // the man on him (deterministic by depth, Phase 23)
         // Phase 24: a coverage reassignment — you put a specific defender on this receiver slot.
-        if(plan&&plan.shadow&&def.id===adjustFor){const did=plan.shadow[rec.pos+(rec.so||0)];if(did){const d=def.roster.find(p=>p.id===did);if(d)cov=d;}}
+        if(plan&&plan.shadow&&def.id===adjustFor){const did=plan.shadow[rec&&(rec.pos+(rec.so||0))];if(did&&!injured.has(did)){const d=def.roster.find(p=>p.id===did);if(d)cov=d;}}
         const mEdge=matchEdge(bov(rec),oP.recvAvg,bov(cov),dP.covAvg); // mean-zero WR-vs-coverage matchup (pep-talk aware)
         const padv=adv+mEdge;
         if(r()<clamp(0.062-adv*0.0012+ky*0.05,0.02,0.18)){  // sack (trench/team — not the WR matchup)
-          gain=-ri(r,4,9); time+=36; const s=wpick(dP.rush4,r); add(s&&s.id,'sk'); txt=nm(oP.qb)+' sacked by '+nm(s)+' for '+gain;
+          gain=-ri(r,4,9); time+=36; const s=wpick(dP.rush4,r,injured); add(s&&s.id,'sk'); txt=nm(qb)+' sacked by '+nm(s)+' for '+gain;
         } else if(r()<clamp(0.615+padv*0.007-ky*0.22,0.30,0.83)){    // completion (the matchup decides)
           gain=Math.max(-3,Math.round((2.2+compDraw(r,rec)*7.5)+(r()<0.18?compDraw(r,rec)*42:0)+padv*0.06-ky*PASS_KEY));
-          add(oP.qb&&oP.qb.id,'pAtt'); add(oP.qb&&oP.qb.id,'pCmp'); add(oP.qb&&oP.qb.id,'pYds',gain);
-          add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain);
+          add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
+          add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
           add(cov&&cov.id,'cvTgt'); add(cov&&cov.id,'cvCmp'); add(cov&&cov.id,'cvYds',gain);   // coverage targeted / allowed
-          time+=(r()<0.28?14:34); txt=nm(oP.qb)+' pass to '+nm(rec)+' for '+gain+(cov?' (vs '+nm(cov)+')':'');
-          if(los+gain>=100){ scored=true; add(oP.qb&&oP.qb.id,'pTD'); add(rec&&rec.id,'reTD'); add(cov&&cov.id,'cvTD'); }
+          time+=(r()<0.28?14:34); txt=nm(qb)+' pass to '+nm(rec)+' for '+gain+(cov?' (vs '+nm(cov)+')':'');
+          if(los+gain>=100){ scored=true; add(qb&&qb.id,'pTD'); add(rec&&rec.id,'reTD'); add(cov&&cov.id,'cvTD'); }
+          if(r()<INJ_RATE)hurt(rec,off); if(r()<INJ_RATE*0.7)hurt(cov,def);   // injuries on contact (Phase 26)
         } else {                                            // incomplete (maybe picked)
-          time+=6; tackled=false; add(oP.qb&&oP.qb.id,'pAtt'); add(cov&&cov.id,'cvTgt'); txt=nm(oP.qb)+' incomplete';
-          if(r()<clamp(0.030-adv*0.0008,0.008,0.06)){ turnover=true; add(oP.qb&&oP.qb.id,'pInt'); add(cov&&cov.id,'dInt'); txt=nm(oP.qb)+' INTERCEPTED by '+nm(cov); }
+          time+=6; tackled=false; add(qb&&qb.id,'pAtt'); add(cov&&cov.id,'cvTgt'); txt=nm(qb)+' incomplete';
+          if(r()<clamp(0.030-adv*0.0008,0.008,0.06)){ turnover=true; add(qb&&qb.id,'pInt'); add(cov&&cov.id,'dInt'); txt=nm(qb)+' INTERCEPTED by '+nm(cov); }
         }
       } else {                                              // run
-        const rb=wpick(oP.rush,r)||oP.qb;
-        const fr=wpick(dP.front,r);                          // the front defender he meets (Phase 23)
-        const padv=adv+matchEdge(bov(rb),oP.rushAvg,bov(fr),dP.frontAvg);   // RB vs front matchup (mean-zero, pep-talk aware)
+        const rb=wpick(oP.rush,r,injured)||qb;
+        const fr=wpick(dP.front,r,injured);                  // the front defender he meets (Phase 23)
+        const padv=adv+matchEdge(bov(rb),oP.rushAvg,bov(fr),dP.frontAvg);   // RB vs front matchup (mean-zero, pep-talk + fatigue aware)
         gain=Math.max(-4,Math.round((2.7+compDraw(r,rb)*4.1)+(r()<0.11?compDraw(r,rb)*30:0)+padv*0.035-ky*RUN_KEY));
-        time+=36; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); txt=nm(rb)+' run for '+gain;
+        time+=36; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
         if(!scored && r()<0.011){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
+        if(r()<INJ_RATE)hurt(rb,off); if(r()<INJ_RATE*0.7)hurt(fr,def);     // injuries on contact (Phase 26)
       }
 
       // ---- resolve the play ----
@@ -1293,7 +1325,7 @@ function simEngine(home,away,seed,opts){
   }
   L(null,'final','Final',null,true);
 
-  return { hs:score[home.id], as:score[away.id], box, log };
+  return { hs:score[home.id], as:score[away.id], box, log, pen, inj:injOut };
 }
 // === SIM ENGINE (Phase 3) END ===
 
@@ -3290,9 +3322,9 @@ function runInteractive(){
   const G=UI.game; if(!G||!G.interactive)return;
   const g=findAnyGame(G.gameId); if(!g){UI.view='home';render();return;}
   const {home,away}=simSides(g); const seed=gameSeed(g);
-  G.log=[]; G.box={}; G.pending=null; let k=0; const PAUSE={pause:1};
+  G.log=[]; G.box={}; G.pen={}; G.inj=[]; G.pending=null; let k=0; const PAUSE={pause:1};
   try{
-    const res=simEngine(home,away,seed,{logInto:G.log,boxInto:G.box,decideFor:S.teamId,adjustFor:S.teamId,adjusts:G.adjusts||[],decide:ctx=>{
+    const res=simEngine(home,away,seed,{logInto:G.log,boxInto:G.box,penInto:G.pen,injInto:G.inj,decideFor:S.teamId,adjustFor:S.teamId,adjusts:G.adjusts||[],decide:ctx=>{
       if(k<G.decisions.length)return G.decisions[k++];                 // already resolved
       if(!G.simRest&&shouldPromptCtx(ctx,G.mode)){G.pending=ctx;throw PAUSE;}  // your call → pause here
       const def=ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall;G.decisions.push(def);k++;return def;  // OC handles it
@@ -3348,6 +3380,13 @@ function adjustSheet(){
     btn.onclick=()=>{ if(on)delete plan.boost[p.id]; else plan.boost[p.id]=4; adjustSheet(); };
     body.append(btn);
   });
+  body.append(el('h2','sec','Discipline'));
+  const myPen=(G.pen&&G.pen[me])||{n:0,yds:0};
+  body.append(el('div','meta dim',`Your penalties so far: ${myPen.n} for ${myPen.yds} yds.`));
+  const calmOn=!!plan.calm;
+  const cbtn=el('button','btn sm '+(calmOn?'':'ghost'),(calmOn?'✓ ':'')+'🚩 Calm them down (fewer penalties)');
+  cbtn.style.marginTop='6px';cbtn.dataset.tid='adjust-calm';cbtn.onclick=()=>{plan.calm=!plan.calm;adjustSheet();};
+  body.append(cbtn);
   const apply=el('button','btn','Apply adjustments');apply.style.marginTop='14px';apply.dataset.tid='adjust-apply';apply.onclick=recordAdjust;
   body.append(apply);
   openSheet('In-game adjustments',body);
@@ -3379,13 +3418,18 @@ function fieldSVG(offId,defId,ctx){
 // DB is getting cooked). Built from the running box the driver captured via boxInto.
 function matchupPanel(G){
   const box=G.box||{}, t=controlled(); if(!t)return null;
+  const me=t.id, oppId=(G.home===me?G.away:G.home);
+  const myPen=(G.pen&&G.pen[me])||{n:0,yds:0}, oppPen=(G.pen&&G.pen[oppId])||{n:0,yds:0};
   const got=keys=>t.roster.filter(p=>{const b=box[p.id];return b&&keys.some(k=>b[k]);}).map(p=>({p,b:box[p.id]}));
   const recs=got(['rec','reYds']).sort((a,b)=>(b.b.reYds||0)-(a.b.reYds||0)).slice(0,4);
   const cov=got(['cvTgt']).sort((a,b)=>(b.b.cvYds||0)-(a.b.cvYds||0)).slice(0,4);
-  if(!recs.length&&!cov.length)return null;
+  const myInj=((G.inj)||[]).filter(i=>i.team===me);
+  if(!recs.length&&!cov.length&&!myPen.n&&!oppPen.n&&!myInj.length)return null;
   const c=el('div','card');c.dataset.tid='matchups';c.style.padding='10px';
   const nm=p=>`${p.pos} ${p.fn[0]}.${p.ln}`;
   let h='<div class="meta dim" style="margin-bottom:6px">Matchups</div>';
+  if(myPen.n||oppPen.n)h+=`<div class="row spread" style="margin:1px 0"><span class="meta">🚩 Penalties</span><span class="meta ${myPen.n>=7?'bad':''}">you ${myPen.n} (${myPen.yds}) · opp ${oppPen.n} (${oppPen.yds})</span></div>`;
+  if(myInj.length)h+=`<div class="row spread" style="margin:1px 0"><span class="meta">🩹 Out</span><span class="meta bad">${myInj.map(i=>i.pos+' '+i.name).join(', ')}</span></div>`;
   if(recs.length)h+='<div class="meta" style="font-weight:700;margin:2px 0">Your receivers</div>'+recs.map(({p,b})=>
     `<div class="row spread" style="margin:1px 0"><span class="meta">${nm(p)}</span><span class="meta">${b.rec||0} rec · ${b.reYds||0} yd${b.reTD?' · '+b.reTD+' TD':''}</span></div>`).join('');
   if(cov.length)h+='<div class="meta" style="font-weight:700;margin:6px 0 2px">Your coverage</div>'+cov.map(({p,b})=>{
