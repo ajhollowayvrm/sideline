@@ -774,7 +774,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:25,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:26,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -970,6 +970,9 @@ function migrateState(state){
         if(state.coach.defScheme==null)state.coach.defScheme=me.defScheme;}}
     state.version=25;                  // player preferred scheme is innate per-id (no save column needed).
   }
+  if((state.version||1)<26){           // Phase 22: play-calling. A game's optional `g.calls` (the coach's
+    state.version=26;                  // recorded play calls) is absent-safe — absent reads as a pure AI game.
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1120,7 +1123,7 @@ function wpick(pool,r){ let tot=0;for(const e of pool)tot+=e[1]; if(tot<=0)retur
 function simEngine(home,away,seed,opts){
   const r=rng(seed>>>0);
   const box={};
-  const log=opts&&opts.log?[]:null;
+  const log=(opts&&opts.logInto)||(opts&&opts.log?[]:null);  // logInto: a caller-owned array (survives a pause-throw, Phase 22)
   const decide=opts&&opts.decide;                          // the coach's play-call hook (Phase 22)
   const decideFor=opts&&opts.decideFor;                    // which team id it controls (keeps simEngine pure — no global S)
   const add=(id,k,v)=>{ if(!id)return; (box[id]=box[id]||{gp:1})[k]=(box[id][k]||0)+(v==null?1:v); };
@@ -2233,9 +2236,18 @@ function simSides(g){
 // Resolve a game with the drive/play engine. Seeded per game id so outcomes are reproducible
 // regardless of advance order. Sets g.hs/g.as/g.played and RETURNS the per-game box (player
 // id → stat deltas) for stat folding. Pure w.r.t. players/teams — re-simming a clone is safe.
+function gameSeed(g){return (hashStr(g.id)^(S.seed>>>0))>>>0;}
+// Phase 22: if the coach play-called this game, `g.calls` is the ordered list of his controlled-offense
+// decisions. Replaying it (the OC default fills any gap) reproduces the EXACT play-called result on
+// commit + on later replay (watch == commit holds). Absent → a pure AI game, unchanged.
+function gameDecideOpts(g){
+  if(!g||!g.calls||!g.calls.length||!S.teamId||(g.home!==S.teamId&&g.away!==S.teamId))return null;
+  let k=0;const calls=g.calls;
+  return {decideFor:S.teamId, decide:ctx=>{const c=calls[k++];return c!=null?c:(ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall);}};
+}
 function simGame(g){
   const {home,away}=simSides(g);
-  const res=simEngine(home,away,(hashStr(g.id)^(S.seed>>>0))>>>0);
+  const res=simEngine(home,away,gameSeed(g),gameDecideOpts(g)||undefined);
   g.hs=res.hs;g.as=res.as;g.played=true;
   return res.box;
 }
@@ -3163,7 +3175,7 @@ function findAnyGame(id){
 function buildGameLog(gameId){
   const g=findAnyGame(gameId); if(!g)return null;
   const {home,away}=simSides(g);
-  const res=simEngine(home,away,(hashStr(g.id)^(S.seed>>>0))>>>0,{log:true});
+  const res=simEngine(home,away,gameSeed(g),Object.assign({log:true},gameDecideOpts(g)||{}));
   return {gameId,home:g.home,away:g.away,log:res.log,hs:res.hs,as:res.as,idx:0,fast:false,done:false};
 }
 function openGameViewer(g){ UI.game=Object.assign(buildGameLog(g.id)||{},{replay:false,post:!!g.kind,champ:g.kind==='champ'}); UI.view='game'; render(); scheduleGameTick(); }
@@ -3192,17 +3204,130 @@ function scheduleGameTick(){
 }
 function gameDone(){ if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} if(UI.game){UI.game.done=true;render();} }
 function skipGame(){ const G=UI.game; if(!G)return; if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} G.idx=G.log.length; G.done=true; render(); }
+/* ============================================================
+   PLAY-CALLING — the interactive field (Phase 22)
+   The classic viewer animates a pre-baked log; here the COACH calls plays. The pure simEngine is
+   RE-RUN from scratch after each decision (sub-ms), feeding back the recorded calls so it advances
+   to the next decision (or the final). The recorded calls bank onto g.calls at commit, so simGame
+   reproduces the exact play-called result → watch == commit, fully deterministic from seed+calls.
+   ============================================================ */
+function shouldPromptCtx(ctx,mode){
+  if(mode==='full')return true;                       // call every snap
+  if(mode!=='key')return false;                       // 'auto' — let the OC run it
+  if(ctx.phase==='fourth')return true;                // every 4th-down decision
+  if(ctx.los>=80)return true;                         // red zone
+  if(ctx.togo>=100-ctx.los)return true;               // goal-to-go
+  if(ctx.down>=3&&ctx.togo>=7)return true;            // 3rd/4th & long
+  if(ctx.clock<=120&&ctx.clock>0)return true;         // two-minute drill
+  return false;
+}
+// Re-run the pure engine, feeding back the coach's recorded calls; pause (throw) at the first
+// undecided prompt-worthy snap, else resolve to the final. Deterministic from (seed + G.decisions).
+function runInteractive(){
+  const G=UI.game; if(!G||!G.interactive)return;
+  const g=findAnyGame(G.gameId); if(!g){UI.view='home';render();return;}
+  const {home,away}=simSides(g); const seed=gameSeed(g);
+  G.log=[]; G.pending=null; let k=0; const PAUSE={pause:1};
+  try{
+    const res=simEngine(home,away,seed,{logInto:G.log,decideFor:S.teamId,decide:ctx=>{
+      if(k<G.decisions.length)return G.decisions[k++];                 // already resolved
+      if(!G.simRest&&shouldPromptCtx(ctx,G.mode)){G.pending=ctx;throw PAUSE;}  // your call → pause here
+      const def=ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall;G.decisions.push(def);k++;return def;  // OC handles it
+    }});
+    G.hs=res.hs;G.as=res.as;G.done=true;G.pending=null;
+  }catch(e){if(!e||!e.pause)throw e;}                                  // paused awaiting input
+  G.idx=G.log.length; render();
+}
+function enterInteractive(){
+  if(gameTimer){clearTimeout(gameTimer);gameTimer=null;}
+  const G=UI.game; if(!G)return;
+  Object.assign(G,{interactive:true,mode:G.mode||'key',decisions:[],log:[],pending:null,done:false,simRest:false});
+  runInteractive();
+}
+function pickCall(c){const G=UI.game;if(!G||!G.pending)return;G.decisions.push(c);runInteractive();}
+function gameSetMode(m){const G=UI.game;if(!G)return;G.mode=m;G.simRest=false;if(G.done)render();else runInteractive();}
+function interactiveSimRest(){const G=UI.game;if(!G)return;G.simRest=true;runInteractive();}
+// A top-down field, hand-rolled SVG (no deps). Offense attacks → toward the right end zone.
+function fieldSVG(offId,defId,ctx){
+  const off=teamById(offId),def=teamById(defId);
+  const X=p=>8+clamp(p,0,100)/100*84;
+  const hi=hashStr('h'+ctx.los+'_'+ctx.down+'_'+ctx.togo)%3, hy=[18,28,38][hi];
+  let yl='';for(let y=10;y<=90;y+=10){const x=X(y);yl+=`<line x1="${x}" y1="4" x2="${x}" y2="52" stroke="rgba(255,255,255,.15)" stroke-width="0.4"/>`;}
+  let ht='';[13,43].forEach(hyy=>{for(let y=5;y<=95;y+=5){const x=X(y);ht+=`<line x1="${x}" y1="${hyy-1}" x2="${x}" y2="${hyy+1}" stroke="rgba(255,255,255,.22)" stroke-width="0.35"/>`;}});
+  const bx=X(clamp(ctx.los,0,100)),fx=X(clamp(ctx.los+ctx.togo,0,100));
+  return `<svg viewBox="0 0 100 56" width="100%" style="display:block;border-radius:8px;background:#0b2016" aria-hidden="true">
+    <rect x="0" y="4" width="8" height="48" fill="${off.color}" opacity="0.55"/>
+    <rect x="92" y="4" width="8" height="48" fill="${def.color}" opacity="0.55"/>
+    <rect x="8" y="4" width="84" height="48" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="0.5"/>
+    ${yl}${ht}
+    <line x1="${fx}" y1="4" x2="${fx}" y2="52" stroke="#e9c84a" stroke-width="0.9"/>
+    <line x1="${bx}" y1="4" x2="${bx}" y2="52" stroke="rgba(255,255,255,.45)" stroke-width="0.4" stroke-dasharray="1.4 1.4"/>
+    <ellipse cx="${bx}" cy="${hy}" rx="1.9" ry="1.2" fill="#fff" stroke="#7a4a1e" stroke-width="0.4"/>
+    <text x="${bx}" y="${hy-2.6}" fill="var(--accent)" font-size="4.2" font-weight="bold" text-anchor="middle">▸</text>
+    <text x="4" y="28" fill="#fff" font-size="3.2" font-weight="bold" text-anchor="middle" opacity="0.8" transform="rotate(-90 4 28)">${off.abbr}</text>
+    <text x="96" y="28" fill="#fff" font-size="3.2" font-weight="bold" text-anchor="middle" opacity="0.8" transform="rotate(90 96 28)">${def.abbr}</text>
+  </svg>`;
+}
+function renderInteractiveGame(app){
+  const G=UI.game,home=teamById(G.home),away=teamById(G.away),t=controlled();
+  const cur=G.log.length?G.log[G.log.length-1]:null,chs=cur?cur.hs:0,cas=cur?cur.as:0,ctx=G.pending;
+  const v=el('div','view');v.style.paddingBottom='10px';
+  const sb=el('div','card');sb.dataset.tid='game-board';sb.style.cssText='position:sticky;top:0;z-index:5';
+  sb.innerHTML=`<div class="row spread" style="align-items:center">
+      <div class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${home.color};flex:none"></span><div class="nm">${home.abbr}${home.id===t.id?' <span class="cap">YOU</span>':''}</div></div>
+      <div class="cond" style="font-size:30px;font-weight:800;white-space:nowrap">${chs} – ${cas}</div>
+      <div class="row" style="gap:8px;min-width:0;justify-content:flex-end"><div class="nm">${away.abbr}${away.id===t.id?' <span class="cap">YOU</span>':''}</div><span class="dot" style="background:${away.color};flex:none"></span></div></div>
+    <div class="meta dim" style="text-align:center;margin-top:6px">${ctx?qLabel(ctx.q):(G.done?'Final':'Coaching')} · ${home.name} vs ${away.name}</div>`;
+  v.append(sb);
+  if(ctx){
+    const def=teamById(ctx.off===G.home?G.away:G.home);
+    const hi=hashStr('h'+ctx.los+'_'+ctx.down+'_'+ctx.togo)%3,hash=['◧ left hash','◫ middle','◨ right hash'][hi];
+    const fpos=ctx.los===50?'midfield':(ctx.los<50?'own ':'opp ')+(ctx.los<50?ctx.los:100-ctx.los);
+    const ddist=ctx.togo>=100-ctx.los?'goal':ctx.togo, clk=Math.floor(ctx.clock/60)+':'+('0'+Math.floor(ctx.clock%60)).slice(-2);
+    const fld=el('div','card');fld.style.padding='10px';
+    fld.innerHTML=fieldSVG(ctx.off,def.id,ctx)+
+      `<div class="row spread" style="margin-top:8px"><span class="cond" style="font-weight:800;font-size:16px">${ctx.down} &amp; ${ddist}</span><span class="meta">${fpos} · ${hash} · ${clk} ${qLabel(ctx.q)}</span></div>`;
+    v.append(fld);
+    const ocPick=(ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall);
+    v.append(el('div','meta dim',`Your ball at the ${fpos} — ${ctx.phase==='fourth'?'4th down: kick or go?':'call the play.'} OC wants <b>${ocPick.toUpperCase()}</b>.`));
+    const cr=el('div','btn-row');cr.style.marginTop='8px';cr.dataset.tid='game-call';
+    const mk=(lbl,val)=>{const b=el('button','btn '+(ocPick===val?'':'line'),lbl);b.dataset.call=val;b.onclick=()=>pickCall(val);return b;};
+    if(ctx.phase==='fourth'){ if(ctx.inFgRange)cr.append(mk('FG '+ctx.fgDist+'yd','fg')); cr.append(mk('Punt','punt'),mk('Go for it','go')); }
+    else cr.append(mk('Run','run'),mk('Pass','pass'));
+    v.append(cr);
+    const defer=el('button','btn ghost','Defer to OC ('+ocPick+')');defer.style.marginTop='8px';defer.dataset.tid='game-defer';defer.onclick=()=>pickCall(ocPick);
+    v.append(defer);
+  }else if(!G.done){
+    v.append(el('div','card','<div class="hint">Resolving…</div>'));
+  }
+  const feed=el('div');feed.id='g-feed';feed.style.cssText='max-height:'+(ctx?'30vh':'46vh')+';overflow-y:auto;margin-top:12px';
+  G.log.forEach(e=>{const ln=gameEventEl(e);if(ln)feed.append(ln);});
+  v.append(feed);
+  const ctr=el('div');ctr.style.marginTop='12px';
+  if(G.done){
+    const cont=el('button','btn',G.replay?'Done':'Continue → commit week');cont.dataset.tid='game-continue';cont.onclick=finishGame;ctr.append(cont);
+  }else{
+    const seg=el('div','btn-row');
+    [['key','Key moments'],['full','Full control'],['auto','Auto']].forEach(([m,lbl])=>{const b=el('button','btn sm '+(G.mode===m?'':'ghost'),lbl);b.dataset.mode=m;b.onclick=()=>gameSetMode(m);seg.append(b);});
+    ctr.append(seg);
+    const sim=el('button','btn line','Sim the rest →');sim.style.marginTop='8px';sim.dataset.tid='game-simrest';sim.onclick=interactiveSimRest;ctr.append(sim);
+  }
+  v.append(ctr);app.append(v);
+  requestAnimationFrame(()=>{const f=$('#g-feed');if(f)f.scrollTop=f.scrollHeight;});
+}
 function finishGame(){
   if(gameTimer){clearTimeout(gameTimer);gameTimer=null;}
-  const G=UI.game; if(!G)return; const replay=G.replay, gid=G.gameId, post=G.post, champ=G.champ; UI.game=null;
+  const G=UI.game; if(!G)return; const replay=G.replay, gid=G.gameId, post=G.post, champ=G.champ, interactive=G.interactive, calls=G.decisions; UI.game=null;
   if(replay){ UI.view='season'; render(); return; }
+  if(interactive){const g=findAnyGame(gid); if(g)g.calls=(calls||[]).slice();}   // bank the coach's calls → commit reproduces the play-called game
   UI.view='home';
-  if(champ)advanceChampWeek(); else if(post)advancePostseason(); else advanceWeek();   // commit the watched game (re-sims deterministically)
+  if(champ)advanceChampWeek(); else if(post)advancePostseason(); else advanceWeek();   // commit (re-sims deterministically, with g.calls)
   const g=findAnyGame(gid); render();
   if(g){const gv=gameView(g,controlled().id);toast((gv.cls==='good'?'Won ':'Lost ')+gv.res.slice(2)+(gv.home?' vs ':' @ ')+gv.opp.abbr);}
 }
 function renderGame(app){
   const G=UI.game; if(!G){UI.view='home';return renderHome(app);}
+  if(G.interactive)return renderInteractiveGame(app);
   const home=teamById(G.home),away=teamById(G.away),t=controlled(),cs=curGameScore(G);
   const v=el('div','view');v.style.paddingBottom='10px';
   const sb=el('div','card');sb.dataset.tid='game-board';sb.style.cssText='position:sticky;top:0;z-index:5';
@@ -3225,6 +3350,12 @@ function renderGame(app){
     ctr.append(skip,fast);
   }
   v.append(ctr);
+  // Phase 22: jump into play-calling for your own upcoming game (not a replay / already-played game).
+  const me=S.teamId,g0=findAnyGame(G.gameId);
+  if(g0&&!g0.played&&!G.replay&&(G.home===me||G.away===me)){
+    const coach=el('button','btn','🎮 Coach this game');coach.style.marginTop='10px';coach.dataset.tid='game-coach';coach.onclick=enterInteractive;
+    v.append(coach);
+  }
   app.append(v);
   requestAnimationFrame(()=>{const f=$('#g-feed');if(f)f.scrollTop=f.scrollHeight;});
 }

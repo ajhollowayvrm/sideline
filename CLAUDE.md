@@ -282,9 +282,28 @@ plain static files so Pages still serves it with zero config.
   See "Phase 21 design — schemes" below. *(Next: the interactive field + play-calling — the resumable
   seed+decision-log engine, the SVG field, defer-to-OC with a live mode toggle — then special packages +
   in-game adjustments, where scheme tendency folds into `passProb`.)*
+- **Phase 22 — Interactive play-calling (the field).** ✅ DONE (the call-the-game core). You can now
+  **coach your own game** snap by snap. The pure `simEngine` gained an `opts.decide(ctx)` / `opts.decideFor`
+  hook at the **run/pass** and **4th-down** decisions: the OC always draws its own suggestion (so the rng
+  STREAM is stable no matter what you do), then `decide` may override the *choice*, never the randomness — so
+  a game is deterministic from **(seed + your calls)**, and with no `decide` it's **byte-identical** to the
+  pre-Phase-22 engine (simlab proves an always-defer coach reproduces the AI score *and box* over 30 seeds).
+  The UI is an **opt-in** "🎮 Coach this game" on the watch viewer → an interactive **SVG field** (hand-rolled
+  yard lines + hash marks + ball + first-down marker in your accent color; offense attacks →), a play-call
+  prompt (Run / Pass / Defer-to-OC, or FG / Punt / Go-for-it on 4th, OC suggestion highlighted), a live
+  **mode toggle** (`Key moments` / `Full control` / `Auto`, switchable mid-game) and `Sim the rest →`. The
+  driver **re-runs the pure engine from scratch** after each call (sub-ms), feeding back the recorded calls to
+  advance to the next decision or the final — no engine state to serialize. The calls bank onto **`g.calls`**
+  at commit, so `simGame`/`buildGameLog` reproduce the exact play-called game → **watch == commit** and
+  replayable. Non-controlled games + the classic animated watcher are untouched. Save **v26** (optional
+  `g.calls`, absent = AI); `simlab` → 32 (6 Phase 22 checks + envelope intact), `qa` → 236 (watch==commit,
+  override changes the outcome, field + prompt render, leaving Coach mode never commits). See "Phase 22 design
+  — interactive play-calling" below. *(Next on this track: scheme run/pass **tendency** into `passProb`
+  (re-baselines `simlab`), **special packages**, and **in-game adjustments** — move-the-CB on live matchups,
+  pep talks via morale, a penalty/discipline model.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
-  (only the controlled team's game is watchable/replayable, so advancing a week stays fast). This is a
-  design choice, not a backlog.
+  (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
+  a design choice, not a backlog.
 
 ---
 
@@ -981,6 +1000,63 @@ no AI coach scheme identities beyond the id-derived team default.
 
 ---
 
+## Phase 22 design — interactive play-calling (the field)
+
+Decided 2026-06-28 with AJ — the headline of "actually calling a game." This phase delivers the
+**call-the-game core**: see the field, call the play (or defer to your OC), in your own game, live.
+Special packages and in-game adjustments (move-the-CB, pep talks, penalties) are explicitly the
+*next* increments on this track.
+
+### The hard problem & the chosen architecture
+The whole sim rests on `simEngine` being **pure + deterministic** (the determinism gate, the watch
+viewer, greatest-games replay, `simGame` re-sim). Interactivity means your choices change the
+outcome — which naively breaks all of that. The resolution: **`seed + decision-log = deterministic`.**
+- `simEngine` gains `opts.decide(ctx)` + `opts.decideFor` (the team id it controls — passed in, so the
+  engine stays pure, no global `S`). At the run/pass and 4th-down decisions the **OC always draws its
+  own suggestion** (`ocPass`/`ocAct`), so the rng STREAM is identical no matter what the coach does;
+  `decide` may swap the *choice* only. No `decide` → byte-identical to the old engine (`simlab` proves
+  an always-defer coach reproduces the AI score **and box**; the 4th-down restructure preserves the
+  exact lazy rng draws). A game is fully reproducible from (seed + the recorded calls).
+- **No generator / no serialized engine state.** The UI driver (`runInteractive`) **re-runs the pure
+  engine from scratch** after each call (sub-millisecond), feeding back the calls recorded so far via
+  `decide`; it pauses by *throwing* at the first undecided prompt-worthy snap (the partial play log is
+  written into a caller-owned `opts.logInto` array so it survives the throw), else it resolves to the
+  final. Elegant, and it makes watch == commit true by construction.
+
+### Commit-replay (watch == commit)
+On "Continue", the coach's full ordered call list banks onto **`g.calls`**. `simGame` and
+`buildGameLog` both apply `gameDecideOpts(g)` (replay the calls, OC default fills any gap), so the
+committed result and any later replay reproduce the exact play-called game — byte-for-byte. Absent
+`g.calls` = a pure AI game (every non-controlled game, and any week you don't coach).
+
+### UI
+**Opt-in**, so the classic one-tap animated watcher (and qa's watch flow) is untouched: the viewer
+shows a "🎮 Coach this game" button for your own upcoming game. It opens an interactive **SVG field**
+(hand-rolled — no framework: yard lines, hash ticks, the ball, a yellow first-down line, end zones in
+the two teams' colors, offense attacking →), a down/distance + field-position + (cosmetic) hash +
+clock line, a **play-call prompt** (Run / Pass / Defer-to-OC, or FG / Punt / Go-for-it on 4th, with
+the OC's suggestion highlighted), a live **mode toggle** (`Key moments` → prompts on 4th down / red
+zone / 3rd-&-long / 2-minute; `Full control` → every snap; `Auto` → OC runs it), and `Sim the rest →`.
+Leaving Coach mode before "Continue" never commits (the real game is mutated only at commit).
+
+### Save & validation
+Save **v26** (optional `g.calls`; `migrateState` v25→v26 is a no-op — absent reads as AI). `simlab` →
+32 (Phase 22: defer == AI byte-for-byte; the hook fires only for the controlled offense; both
+decisions surface over a season; overrides change the outcome but stay sane; a fixed call set replays
+deterministically). `qa` → 236 (watch == commit on a coached game; calling plays changes the outcome
+vs the OC; the SVG field + prompt render in Full control; making a call advances the drive; leaving
+Coach mode does not commit). **Fourteen gates** (unchanged set — Phase 22 extends `simlab` + `qa`).
+
+### Deliberately out of scope (this increment)
+Scheme run/pass **tendency** (scheme → `passProb`) is still held — it's an in-engine change that
+re-baselines `simlab`, and it belongs with the play menu so the OC's suggestion reflects the scheme.
+No **special packages** (personnel groupings) yet, no **in-game adjustments** (reassign a CB, pep
+talk via morale, calm penalties) — those need a matchup model + a penalty/discipline model and are
+the next increments. Defense is still OC-run (you call your offense's plays); only the controlled
+team's game is coachable (advancing a week stays fast).
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -1406,7 +1482,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **25**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **26**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -1437,7 +1513,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   structural no-op (Phase 20 — absent `p.ego` reads as average 50 like `mot`/`comp`; `p.morale` absent reads
   as neutral 50); v24→v25 backfills each team's `offScheme`/`defScheme` from its id (Phase 21 schemes) and
   adopts them as an existing coach's `S.coach.offScheme`/`defScheme` preference (a player's preferred scheme is
-  innate-per-id → no save column). Each step re-derives ratings/ranks where needed.
+  innate-per-id → no save column); v25→v26 is a no-op (Phase 22 play-calling — a game's optional `g.calls`,
+  the coach's recorded play calls, is absent-safe → absent reads as a pure AI game). Each step re-derives
+  ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -1486,7 +1564,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 //   committed transfer is stripped of those portal fields and pushed onto his new team's roster with
 //   `fromTransfer:true`. Unsigned transfers leave the modeled league.
 
-// Game: { id, week, home: teamId, away: teamId, played, hs, as }   // hs/as = home/away score
+// Game: { id, week, home: teamId, away: teamId, played, hs, as, calls? }   // hs/as = home/away score
+//   calls? = the coach's ordered play calls if he coached it (Phase 22); replayed on commit/replay
+//   (simGame/buildGameLog via gameDecideOpts) so watch == commit. Absent = a pure AI game.
 ```
 
 ### Team object

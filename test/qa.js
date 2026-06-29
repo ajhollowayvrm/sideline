@@ -227,6 +227,46 @@ function startServer() {
   check('Season: slate near 12 games/team (no near-empty schedules)', kicked.min >= 8, 'min ' + kicked.min);
   await shot(page, '13-home-inseason.png');
 
+  // ---------- PHASE 22: interactive play-calling ----------
+  // (a) pure determinism: a coached game commits to EXACTLY the result the driver produced (watch ==
+  // commit), and calling your own plays changes the outcome vs the OC autopilot. No real game mutated.
+  const pc = await page.evaluate(() => {
+    const me = S.teamId, g = S.schedule.games.find(x => !x.played && (x.home === me || x.away === me));
+    if (!g) return { skip: true };
+    const { home, away } = simSides(g), seed = gameSeed(g);
+    const decisions = [];
+    const driven = simEngine(home, away, seed, { decideFor: me, decide: ctx => { const c = ctx.phase === 'fourth' ? ctx.ocAct : 'pass'; decisions.push(c); return c; } });
+    const clone = { id: g.id, home: g.home, away: g.away, calls: decisions.slice() };
+    simGame(clone);                                   // commit-path replay on a CLONE (real game untouched)
+    const ai = simEngine(home, away, seed);           // OC autopilot for comparison
+    return { skip: false, sameAsDriver: clone.hs === driven.hs && clone.as === driven.as, diffFromAI: driven.hs !== ai.hs || driven.as !== ai.as, played: g.played, coached: `${driven.hs}-${driven.as}`, ai: `${ai.hs}-${ai.as}` };
+  });
+  check('Phase 22: a coached game commits to exactly the called result (watch == commit)', pc.skip || pc.sameAsDriver, JSON.stringify(pc));
+  check('Phase 22: calling your own plays changes the outcome vs the OC autopilot', pc.skip || pc.diffFromAI, JSON.stringify(pc));
+  check('Phase 22: the determinism check did not commit the real game', pc.skip || pc.played === false);
+  // (b) UI smoke: open the viewer → Coach this game → Full control surfaces the field + a play call →
+  // make a call → bail without committing (interactive never mutates the game until "Continue").
+  await page.getByRole('button', { name: /Play Week/ }).click();
+  await page.waitForTimeout(120);
+  if ((await screen(page)) === 'game') {
+    check('Phase 22: the viewer offers “Coach this game”', await page.locator('[data-tid="game-coach"]').isVisible());
+    await page.locator('[data-tid="game-coach"]').click();
+    await page.waitForTimeout(60);
+    await page.locator('[data-mode="full"]').click();
+    await page.waitForTimeout(60);
+    const fld = await page.evaluate(() => ({ interactive: !!(UI.game && UI.game.interactive), pending: !!(UI.game && UI.game.pending), hasField: !!document.querySelector('[data-tid="game-board"]') && !!document.querySelector('svg'), hasCall: !!document.querySelector('[data-tid="game-call"] [data-call]') }));
+    check('Phase 22: Coach mode renders the SVG field + a play-call prompt', fld.interactive && fld.pending && fld.hasField && fld.hasCall, JSON.stringify(fld));
+    await shot(page, '19b-coach-field.png');
+    const before = await page.evaluate(() => UI.game.decisions.length);
+    await page.locator('[data-tid="game-call"] [data-call]').first().click();
+    await page.waitForTimeout(60);
+    const after = await page.evaluate(() => UI.game.decisions.length);
+    check('Phase 22: making a call advances the drive (decision recorded)', after > before, `${before}→${after}`);
+    // bail without committing — the upcoming game must stay unplayed
+    const bailed = await page.evaluate(() => { const me = S.teamId, wk = S.week; UI.game = null; UI.view = 'home'; render(); const g = S.schedule.games.find(x => (x.home === me || x.away === me) && x.week === wk); return g ? g.played === false : true; });
+    check('Phase 22: leaving Coach mode does not commit the game', bailed);
+  }
+
   // advancing now opens the watch-then-commit viewer for your game; skip + commit each week.
   // bye weeks advance directly (no viewer). Capture the first watched game to verify its score
   // equals the committed result (the replay is faithful, not a re-roll).
@@ -439,7 +479,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 25 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 26 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -456,7 +496,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v25)', mig.v === 25, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v26)', mig.v === 26, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -880,7 +920,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 25', roPost.version === 25, 'v' + roPost.version);
+  check('Rollover: save version bumped to 26', roPost.version === 26, 'v' + roPost.version);
   check('Phase 8: player honors survive the rollover', roPost.honoredAfter > 0, roPost.honoredAfter + ' still honored');
   check('Phase 8: series + awards history persist across the rollover', roPost.seriesKept > 0 && roPost.awardsKept > 0, `series ${roPost.seriesKept}, awards ${roPost.awardsKept}`);
   check('Phase 11: career totals accrue across the rollover', roPost.careerPlayers > 50, roPost.careerPlayers + ' players carry a career');
