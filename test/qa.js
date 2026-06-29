@@ -236,7 +236,7 @@ function startServer() {
     const { home, away } = simSides(g), seed = gameSeed(g);
     const decisions = [];
     // call offense (always pass) AND defense (always cover) — exercises Phase 28 in the watch==commit path
-    const driven = simEngine(home, away, seed, { decideFor: me, decide: ctx => { const c = ctx.phase === 'def' ? 'cover' : ctx.phase === 'fourth' ? ctx.ocAct : 'pass'; decisions.push(c); return c; } });
+    const driven = simEngine(home, away, seed, { decideFor: me, aiDefVs: me, decide: ctx => { const c = ctx.phase === 'def' ? 'cover' : ctx.phase === 'fourth' ? ctx.ocAct : 'pass'; decisions.push(c); return c; } });
     const clone = { id: g.id, home: g.home, away: g.away, calls: decisions.slice() };
     simGame(clone);                                   // commit-path replay on a CLONE (real game untouched)
     const ai = simEngine(home, away, seed);           // OC/DC autopilot for comparison
@@ -246,6 +246,17 @@ function startServer() {
   check('Phase 22: calling your own plays changes the outcome vs the OC autopilot', pc.skip || pc.diffFromAI, JSON.stringify(pc));
   check('Phase 22: the determinism check did not commit the real game', pc.skip || pc.played === false);
   check('Phase 28: defensive play-calls are part of the deterministic coached game', pc.skip || pc.hasDef);
+  // Phase 29: the AI defensive coordinator makes your (predictable) offense work harder than vs a base D
+  const aidc = await page.evaluate(() => {
+    const me = S.teamId, mine = S.schedule.games.filter(x => x.home === me || x.away === me).slice(0, 6);
+    const allPass = ctx => ctx.phase === 'fourth' ? ctx.ocAct : ctx.phase === 'def' ? 'base' : 'pass';
+    let dc = 0, bs = 0;
+    mine.forEach(g => { const { home, away } = simSides(g), seed = gameSeed(g), my = g.home === me ? 'hs' : 'as';
+      dc += simEngine(home, away, seed, { decideFor: me, aiDefVs: me, decide: allPass })[my];
+      bs += simEngine(home, away, seed, { decideFor: me, decide: allPass })[my]; });
+    return { dc, bs, harder: dc < bs };
+  });
+  check('Phase 29: an AI defensive coordinator makes your predictable offense work harder', aidc.harder, JSON.stringify(aidc));
   // (b) UI smoke: open the viewer → Coach this game → Full control surfaces the field + a play call →
   // make a call → bail without committing (interactive never mutates the game until "Continue").
   await page.getByRole('button', { name: /Play Week/ }).click();

@@ -344,6 +344,24 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Phase 28: but RUN-STOP gives up more through the air (a real trade-off)', runStop.passY > base.passY, `${runStop.passY.toFixed(0)} vs ${base.passY.toFixed(0)}`);
 }());
 
+// Phase 29 — the AI defensive coordinator: situational calls, keys on tendency, and (crucially) is INERT
+// for AI-vs-AI games (only schemes vs the controlled offense), so the league envelope is untouched.
+(function () {
+  const tally = ctx => { const c = { base: 0, blitz: 0, cover: 0, run: 0 }; for (let i = 0; i < 1000; i++) c[aiDefCall(ctx, i / 1000)]++; return c; };
+  const sh = tally({ down: 3, togo: 1, los: 50, runRate: 0.5 }), lo = tally({ down: 3, togo: 10, los: 50, runRate: 0.5 });
+  check('Phase 29: AI DC stacks the box on short yardage (run-stop, no pure cover)', sh.run > sh.base && sh.cover === 0, JSON.stringify(sh));
+  check('Phase 29: AI DC defends the pass on long downs (cover/blitz, never run-stop)', (lo.cover + lo.blitz) > lo.base && lo.run === 0, JSON.stringify(lo));
+  // keys tendency: a predictable all-pass offense fares worse vs the scheming DC than vs a base defense
+  const w = genWorld(707), O = w.teams[3], D = w.teams[8];
+  const allPass = ctx => ctx.phase === 'fourth' ? ctx.ocAct : ctx.phase === 'def' ? 'base' : 'pass';
+  let withDC = 0, noDC = 0, n = 0;
+  for (let s = 0; s < 30; s++) { const seed = (hashStr('aidc' + s) ^ 2) >>> 0; withDC += simEngine(O, D, seed, { decideFor: O.id, aiDefVs: O.id, decide: allPass }).hs; noDC += simEngine(O, D, seed, { decideFor: O.id, decide: allPass }).hs; n++; }
+  check('Phase 29: a scheming AI DC lowers a predictable offense vs no DC', withDC < noDC, `${(withDC / n).toFixed(1)} vs ${(noDC / n).toFixed(1)} pts/g`);
+  // envelope safety: naming a team that isn't on offense is completely inert (AI-vs-AI byte-identical)
+  const h = w.teams[0], a = w.teams[1], sd = 4242, plain = simEngine(h, a, sd), tagged = simEngine(h, a, sd, { aiDefVs: 'zzz_not_playing' });
+  check('Phase 29: aiDefVs is inert when that team is not on offense (AI-vs-AI unaffected)', plain.hs === tagged.hs && plain.as === tagged.as && JSON.stringify(plain.box) === JSON.stringify(tagged.box));
+}());
+
 // statistical realism across a full season
 const R = simSeason(2026);
 const meanPts = avg(R.scores);

@@ -379,7 +379,19 @@ plain static files so Pages still serves it with zero config.
   (cover cuts opponent passing 254→156, run-stop cuts rushing 185→59 but gives up more through the air; base
   == AI byte-for-byte), `qa` → 246 (defensive calls are part of the deterministic coached game; a cover-heavy
   game held the AI to 19-3 vs the autopilot's 27-21). See "Phase 28 design — defensive play-calling" below.
-  *(Open: AI defensive play-calling, blitz/nickel personnel + special packages.)*
+- **Phase 29 — AI defensive coordinator.** ✅ DONE — now on **offense** you face a scheming DC, not a passive
+  base look. The pure `aiDefCall(ctx, rv)` picks base/blitz/cover/run-stop from down & distance + the
+  offense's run/pass **tendency so far** (it keys a one-dimensional attack, reading the `usage` counts) with
+  a seeded roll for disguise. The engine invokes it (consuming one rng draw) **only when `off.id===aiDefVs`
+  and the defense isn't player-controlled** — i.e., only against the controlled team's offense — so **AI-vs-AI
+  games are byte-identical** (the `aiDefVs` opt is inert when that team isn't on offense → the league envelope
+  + `simlab` are untouched). The app passes `aiDefVs:S.teamId` through `simGame`/`buildGameLog`/the interactive
+  driver, so the DC reproduces deterministically (watch == commit) with **no save bump**. Net effect: a
+  predictable offense gets shut down (a scaled sim: an all-pass attack falls 10.6→6.3 pts/g vs the DC), while
+  a balanced attack is barely keyed (standard downs are ~62% base) — you must mix to beat it. `simlab` → 63
+  (situational calls; keys tendency; inert for AI-vs-AI), `qa` → 247 (your predictable offense works harder
+  vs the DC). See "Phase 29 design — AI defensive coordinator" below. *(Open: blitz/nickel personnel +
+  special packages.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1390,9 +1402,42 @@ deterministic coached game; watch == commit holds with defense in the call strea
 no save change.
 
 ### Deliberately out of scope
-The **AI doesn't call defense** yet (it plays base) — so on offense you don't yet face a scheming DC;
-that's the natural follow-up. No blitz/nickel **personnel** packages, no coverage *shells* beyond the
-four calls, no per-defender assignment within a call (that's the Phase 24 coverage-reassignment lever).
+The AI defensive coordinator is **Phase 29** (the AI now calls defense vs your offense). No blitz/nickel
+**personnel** packages, no coverage *shells* beyond the four calls, no per-defender assignment within a
+call (that's the Phase 24 coverage-reassignment lever).
+
+---
+
+## Phase 29 design — AI defensive coordinator
+
+Decided 2026-06-29 with AJ — completes the two-sided chess: on **offense** you now face a scheming DC,
+not a passive base look.
+
+### The brain (pure)
+`aiDefCall(ctx, rv)` returns base/blitz/cover/run-stop from down & distance + the offense's run/pass
+**tendency so far** (`runRate`, read from the engine's `usage` counts), plus a seeded roll `rv` for
+disguise: short yardage / a run-leaning offense → stack the box (run-stop, mix in pressure); long downs /
+a pass-leaning offense → cover or blitz; standard downs → mostly base with some disguise. So it punishes a
+one-dimensional attack (synergizing with the predictability tax) but can't key a balanced one.
+
+### Envelope-safe scoping (the crucial bit)
+The AI DC fires **only when `off.id===aiDefVs` and the defense isn't the player** — i.e., only against the
+*controlled* team's offense. `aiDefVs` is passed by the app (`simGame`/`buildGameLog`/the interactive
+driver) as `S.teamId`, so it's set for every game but **inert** in AI-vs-AI matchups (neither team is on
+offense as `aiDefVs`) → no rng consumed, league results + `simlab` byte-identical. It consumes one `r()`
+draw per controlled-offense snap → deterministic, so watch == commit holds; **no save bump** (nothing
+stored — the DC re-derives from the seed).
+
+### Validation
+`simlab` → 63 (situational distribution — run-stop on short, cover/blitz on long, never the wrong one;
+keys tendency — an all-pass offense drops 10.6→6.3 pts/g vs the DC; `aiDefVs` is inert when that team
+isn't on offense → AI-vs-AI byte-identical). `qa` → 247 (your predictable offense scores fewer points vs
+the DC than vs a base defense, averaged over your slate). **Fourteen gates**; no save change. A normal
+defer-to-OC offense (≈50/50) faces a mostly-base DC, so it isn't oppressive — only spam gets punished.
+
+### Deliberately out of scope
+The AI DC is uniform (not yet scaled by the opponent's DC rating / prestige), there's no AI *offensive*
+coordinator tendency model beyond `passProb`, and still no blitz/nickel **personnel** packages.
 
 ---
 

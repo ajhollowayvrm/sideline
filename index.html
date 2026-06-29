@@ -1151,6 +1151,15 @@ function fatigueCost(touches,q){ return (q<4||touches<=18)?0:Math.min((touches-1
 // Phase 27 injury duration — FUTURE games (weeks) the player misses. Most are day-to-day (0, back next
 // week); a tail are multi-week. Pure (rng). 0 = he finished hurt but is fine next week (no weeks out).
 function injDur(r){ const x=r(); return x<0.45?0 : x<0.75?1 : x<0.90?2 : x<0.97?ri(r,3,4) : ri(r,5,8); }
+// Phase 29 — the AI defensive coordinator. Picks base/blitz/cover/run-stop from down & distance + the
+// offense's run/pass TENDENCY so far (keys on a one-dimensional attack), with a seeded roll for disguise.
+// Pure (rv = one rng draw in [0,1)). Used only vs the CONTROLLED offense, so AI-vs-AI games stay 'base'.
+function aiDefCall(ctx,rv){
+  const shortYd=ctx.togo<=2, longYd=ctx.down>=3&&ctx.togo>=7, leanRun=ctx.runRate>=0.60, leanPass=ctx.runRate<=0.40;
+  if(shortYd||leanRun) return rv<0.55?'run':rv<0.85?'base':'blitz';     // sell out on the run, mix in pressure
+  if(longYd||leanPass) return rv<0.45?'cover':rv<0.80?'blitz':'base';   // defend the pass / bring heat
+  return rv<0.62?'base':rv<0.82?'cover':'blitz';                        // standard down — mostly base, some disguise
+}
 function wpick(pool,r,skip){ const pl=(skip&&skip.size)?pool.filter(e=>e[0]&&!skip.has(e[0].id)):pool;
   let tot=0;for(const e of pl)tot+=e[1]; if(tot<=0)return null;
   let x=r()*tot; for(const e of pl){x-=e[1];if(x<0)return e[0];} return pl[pl.length-1][0]; }
@@ -1173,6 +1182,7 @@ function simEngine(home,away,seed,opts){
   const decide=opts&&opts.decide;                          // the coach's play-call hook (Phase 22)
   const decideFor=opts&&opts.decideFor;                    // which team id it controls (keeps simEngine pure — no global S)
   const benched=(opts&&opts.benched)||null;                // Phase 27: ids unavailable this game (frozen for faithful replay)
+  const aiDefVs=opts&&opts.aiDefVs;                         // Phase 29: the AI DC schemes vs THIS team's offense (the controlled one)
   // Phase 24 in-game adjustments: a timeline [{at:playNo, plan}] of the controlled coach's coverage
   // reassignments + pep-talks. `planAt` returns the plan in effect at a play index (latest at≤pno), so
   // an adjustment applies only GOING FORWARD (the watched score-so-far never changes on re-run) and the
@@ -1264,6 +1274,9 @@ function simEngine(home,away,seed,opts){
       let dcall='base';
       if(decide && def.id===decideFor){ const pick=decide({phase:'def',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,def:def.id});
         if(pick==='blitz'||pick==='cover'||pick==='run')dcall=pick; }
+      else if(aiDefVs && off.id===aiDefVs && def.id!==aiDefVs){   // Phase 29: AI DC schemes vs the controlled offense
+        const u=usage[off.id], tot=u.run+u.pass, runRate=(u.run+2)/(tot+4);
+        dcall=aiDefCall({down,togo,los,runRate},r()); }
       const dSack =dcall==='blitz'?0.05:dcall==='cover'?-0.012:0;   // blitz → pressure; cover (3-man rush) → less
       const dComp =dcall==='cover'?-0.10:dcall==='run'?0.06:dcall==='blitz'?-0.03:0;  // cover takes the pass; stack-box opens it
       const dPassY=dcall==='blitz'?5:dcall==='run'?3:dcall==='cover'?-3:0;            // light coverage → bigger gains
@@ -2380,7 +2393,7 @@ function gameDecideOpts(g){
 function simGame(g){
   const benched=benchedFor(g); if(!g.out)g.out=[...benched];   // Phase 27: freeze who sat (faithful replay later)
   const {home,away}=simSides(g,benched);
-  const res=simEngine(home,away,gameSeed(g),Object.assign({benched},gameDecideOpts(g)||{}));
+  const res=simEngine(home,away,gameSeed(g),Object.assign({benched,aiDefVs:S.teamId},gameDecideOpts(g)||{}));
   g.hs=res.hs;g.as=res.as;g.played=true;
   g._inj=res.inj;     // Phase 27: hurt players — applied ONCE per real game (in the advance), not on determinism re-sims
   return res.box;
@@ -3322,7 +3335,7 @@ function buildGameLog(gameId){
   const g=findAnyGame(gameId); if(!g)return null;
   const benched=benchedFor(g);
   const {home,away}=simSides(g,benched);
-  const res=simEngine(home,away,gameSeed(g),Object.assign({log:true,benched},gameDecideOpts(g)||{}));
+  const res=simEngine(home,away,gameSeed(g),Object.assign({log:true,benched,aiDefVs:S.teamId},gameDecideOpts(g)||{}));
   return {gameId,home:g.home,away:g.away,log:res.log,hs:res.hs,as:res.as,idx:0,fast:false,done:false};
 }
 function openGameViewer(g){ UI.game=Object.assign(buildGameLog(g.id)||{},{replay:false,post:!!g.kind,champ:g.kind==='champ'}); UI.view='game'; render(); scheduleGameTick(); }
@@ -3376,7 +3389,7 @@ function runInteractive(){
   const benched=benchedFor(g); const {home,away}=simSides(g,benched); const seed=gameSeed(g);
   G.log=[]; G.box={}; G.pen={}; G.inj=[]; G.pending=null; let k=0; const PAUSE={pause:1};
   try{
-    const res=simEngine(home,away,seed,{logInto:G.log,boxInto:G.box,penInto:G.pen,injInto:G.inj,benched,decideFor:S.teamId,adjustFor:S.teamId,adjusts:G.adjusts||[],decide:ctx=>{
+    const res=simEngine(home,away,seed,{logInto:G.log,boxInto:G.box,penInto:G.pen,injInto:G.inj,benched,aiDefVs:S.teamId,decideFor:S.teamId,adjustFor:S.teamId,adjusts:G.adjusts||[],decide:ctx=>{
       if(k<G.decisions.length)return G.decisions[k++];                 // already resolved
       if(!G.simRest&&shouldPromptCtx(ctx,G.mode)){G.pending=ctx;throw PAUSE;}  // your call → pause here
       const dflt=ctx.phase==='def'?'base':ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall;G.decisions.push(dflt);k++;return dflt;  // OC/DC handles it
