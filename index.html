@@ -372,6 +372,59 @@ function moraleGameSkew(roster){
 function moralePortalPush(morale){return clamp((50-morale)/50*0.2,0,0.2);}
 // === TRAIT ENGINE (Phase 10) END ===
 
+// === SCHEME ENGINE (Phase 21) START ===
+// Every team runs an offensive + defensive SCHEME; every player innately PREFERS one on his side
+// (which may NOT be what he's rated for — that's the point). Three MEAN-ZERO effects fold into a
+// small rating delta applied OUTSIDE simEngine (in simSides, like coachGameEdges) so the SIM block
+// + determinism gate stay byte-identical and the validated scoring envelope holds on average:
+//   (1) a rock-paper-scissors MATCHUP edge (off scheme vs def scheme),
+//   (2) roster scheme-FIT (players in a scheme they love play up; the swing is small so raw OVR
+//       still dominates — the best players just win),
+//   (3) coach BUY-IN when the team runs the coach's own scheme — controlled-team-specific, so it
+//       lives in the app layer (schemeBuyIn) alongside coachGameEdges, NOT in this pure block.
+// Depends only on hashStr/ri/clamp + POS (no DOM, no S) — test/schemelab.js evals it offline.
+const OFF_SCHEMES=['Air Raid','Spread-Option','Pro Style','Smashmouth','West Coast'];
+const DEF_SCHEMES=['4-3','3-4','Nickel/Cover-3','Bear','Tampa-2'];
+// Matchup edge in rating points, SCHEME_EDGE[offIdx][defIdx]. DOUBLY balanced — every row AND
+// every column sums to 0 — so over uniformly-random matchups the mean edge is exactly 0 (the
+// scoring envelope is preserved by construction), while any single matchup still tilts ±.
+const SCHEME_EDGE=[
+  //  4-3  3-4  Nkl  Bear Tmp2
+  [    1,   1,  -2,   2,  -2 ],   // Air Raid     — beats blitz (Bear); zone (Nickel/Cover-3, Tampa-2) takes the deep ball away
+  [    1,   2,   0,   0,  -3 ],   // Spread-Option— gashes read-and-react 3-4; a disciplined Tampa-2 spies the option
+  [   -1,   0,   1,  -1,   1 ],   // Pro Style    — low-variance, small edges everywhere
+  [    0,  -2,   2,  -2,   2 ],   // Smashmouth   — runs on light boxes (Nickel/Tampa-2); stout fronts (3-4/Bear) stuff it
+  [   -1,  -1,  -1,   1,   2 ],   // West Coast   — quick game beats pressure; tight man underneath disrupts the timing
+];
+const SCHEME_FIT_W=0.9;          // rating pts per unit of roster fit aggregate (small → OVR dominates)
+function offSchemeIdx(s){const i=OFF_SCHEMES.indexOf(s);return i<0?2:i;}   // unknown → Pro Style (neutral)
+function defSchemeIdx(s){const i=DEF_SCHEMES.indexOf(s);return i<0?0:i;}   // unknown → 4-3 (neutral)
+function schemeEdge(off,def){return SCHEME_EDGE[offSchemeIdx(off)][defSchemeIdx(def)];}
+// A team's DEFAULT schemes derive from its id (stable + free → every seed's world stays
+// byte-identical; the player can later install his own). Stored mutably on the team once set.
+function defaultOffScheme(id){return OFF_SCHEMES[hashStr('off'+id)%5];}
+function defaultDefScheme(id){return DEF_SCHEMES[hashStr('def'+id)%5];}
+// A player's preferred scheme (index 0..4 on his side) derives from his id — innate, never changes,
+// no rng-stream consumption, no save column needed. (p.scm honored first if ever set explicitly.)
+function playerSchemeIdx(p){return (p&&p.scm!=null)?p.scm:(hashStr((p&&p.id)||'')%5);}
+function sideOfPos(pos){const e=POS.find(x=>x[0]===pos);return e?e[1]:'off';}
+// fit: +1 in his scheme, -0.25 otherwise → E[fit]=0 under a uniform scheme draw (mean-neutral).
+function schemeFit(p,schemeIdx){return playerSchemeIdx(p)===schemeIdx?1:-0.25;}
+// Average fit over a side's top-11 (starters drive the scheme). Pure on the roster; in [-0.25, 1].
+function rosterSchemeFit(roster,side,schemeIdx){
+  const grp=(roster||[]).filter(p=>sideOfPos(p.pos)===side).sort((a,b)=>(a.so||0)-(b.so||0)).slice(0,11);
+  if(!grp.length)return 0;
+  return grp.reduce((t,p)=>t+schemeFit(p,schemeIdx),0)/grp.length;
+}
+// The mean-zero scheme rating delta for ONE direction (offTeam has the ball vs defTeam): the
+// matchup edge + the offense's roster fit boost off.off; the defense's roster fit boosts def.def.
+// Returns { off, def } rating-point adds. (Coach buy-in is layered on in the app's simSides.)
+function schemeDelta(offTeam,defTeam){
+  return { off: schemeEdge(offTeam.offScheme,defTeam.defScheme) + SCHEME_FIT_W*rosterSchemeFit(offTeam.roster,'off',offSchemeIdx(offTeam.offScheme)),
+           def: SCHEME_FIT_W*rosterSchemeFit(defTeam.roster,'def',defSchemeIdx(defTeam.defScheme)) };
+}
+// === SCHEME ENGINE (Phase 21) END ===
+
 /* ---------- world generation ---------- */
 function genPlayer(r,prestige,posCode){
   const cls=pick(r,CLASSES);
@@ -472,8 +525,10 @@ function genWorld(seed){
     const revenue=Math.round((p4?55:18)*1e6 + prestige*420000 + ri(r,-6,6)*1e6);
     const payroll=staff.reduce((t,s)=>t+s.salary,0);
     const budget=Math.round(revenue*0.18 + ri(r,-3,4)*1e6);
-    return {id:abbr.toLowerCase().replace(/[^a-z0-9]/g,''),name,nick,abbr,conf,div,color,
+    const id=abbr.toLowerCase().replace(/[^a-z0-9]/g,'');
+    return {id,name,nick,abbr,conf,div,color,
       homeState:TEAM_STATE[abbr]||pick(r,STATES),
+      offScheme:defaultOffScheme(id),defScheme:defaultDefScheme(id),    // Phase 21 — mutable; player can re-install
       prestige,roster,ratings,fac,revenue,budget,staff,payroll,legends:[],
       facilityDebt:Math.round(ri(r,0,prestige>70?40:12)*1e6)};
   });
@@ -714,7 +769,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:24,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:25,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -896,6 +951,16 @@ function migrateState(state){
   }
   if((state.version||1)<24){           // Phase 20: the Ego trait + persistent per-player morale. Structural
     state.version=24;                  // no-op — absent p.ego/p.morale read as average (50), like mot/comp.
+  }
+  if((state.version||1)<25){           // Phase 21: schemes. Backfill each team's off/def scheme from its id
+    (state.world&&state.world.teams||[]).forEach(t=>{           // (deterministic default; the player can re-install).
+      if(t.offScheme==null)t.offScheme=defaultOffScheme(t.id);
+      if(t.defScheme==null)t.defScheme=defaultDefScheme(t.id);});
+    if(state.coach){                                            // existing careers adopt their team's schemes (buy-in on; changeable in Program)
+      const me=(state.world&&state.world.teams||[]).find(t=>t.id===state.teamId);
+      if(me){if(state.coach.offScheme==null)state.coach.offScheme=me.offScheme;
+        if(state.coach.defScheme==null)state.coach.defScheme=me.defScheme;}}
+    state.version=25;                  // player preferred scheme is innate per-id (no save column needed).
   }
   return state;
 }
@@ -2092,8 +2157,21 @@ function coachGameEdges(t){
   if(A==='Defensive Genius')z.def+=1.4;
   return z;
 }
-function withCoachEdge(t){const e=coachGameEdges(t);if(!e.off&&!e.def)return t;
-  return Object.assign({},t,{ratings:{off:clamp(t.ratings.off+e.off,40,99),def:clamp(t.ratings.def+e.def,40,99),ovr:t.ratings.ovr}});}
+// Phase 21: coach BUY-IN — the controlled team plays up when it runs the coach's OWN scheme on his
+// side of specialty (an Off/Def Genius amplifies it). S-dependent, so it lives here (not the pure
+// SCHEME block), and is applied OUTSIDE simEngine like coachGameEdges.
+function schemeBuyIn(team,side){
+  if(!S||!S.coach||!team||team.id!==S.teamId)return 0;
+  const pref=side==='off'?S.coach.offScheme:S.coach.defScheme;
+  const cur =side==='off'?team.offScheme:team.defScheme;
+  if(pref==null||cur==null)return 0;
+  const match=side==='off'?offSchemeIdx(pref)===offSchemeIdx(cur):defSchemeIdx(pref)===defSchemeIdx(cur);
+  if(!match)return 0;
+  let b=1.2;
+  if(side==='off'&&S.coach.archetype==='Offensive Genius')b*=1.5;
+  if(side==='def'&&S.coach.archetype==='Defensive Genius')b*=1.5;
+  return b;
+}
 // Phase 20: under the SPOTLIGHT (a ranked/marquee game), the controlled team plays up or down to the moment
 // scaled by its locker-room morale — a small ± rating edge applied OUTSIDE simEngine (like coachGameEdges),
 // so simlab/determinism are untouched and a neutral room (all morale 50) yields exactly 0 (no edge).
@@ -2106,12 +2184,22 @@ function moraleSpotlight(g){
   if(!spot)return 0;
   return moraleGameSkew(mine.roster)*spot;
 }
+// Assemble the two edge-adjusted team copies the pure simEngine plays with. Three OUTSIDE-engine
+// layers fold into effective ratings (so simlab's envelope + determinism stay byte-identical, and a
+// neutral world — no coach, mean-zero schemes, all morale 50 — yields no net edge): coach edges
+// (Phase 7), the Phase 21 SCHEME layer (directional matchup edge + roster fit + coach buy-in), and
+// the Phase 20 morale spotlight. Identical between commit (simGame) and watch (buildGameLog).
 function simSides(g){
-  let home=withCoachEdge(teamById(g.home)), away=withCoachEdge(teamById(g.away));
-  const edge=moraleSpotlight(g);
-  if(edge){const me=S.teamId,apply=t=>Object.assign({},t,{ratings:{off:clamp(t.ratings.off+edge,40,99),def:clamp(t.ratings.def+edge,40,99),ovr:t.ratings.ovr}});
-    if(g.home===me)home=apply(home); else away=apply(away);}
-  return {home,away};
+  const H=teamById(g.home), A=teamById(g.away);
+  const cH=coachGameEdges(H), cA=coachGameEdges(A);
+  const dHA=schemeDelta(H,A);   // H on offense vs A's defense: dHA.off→H.off, dHA.def→A.def
+  const dAH=schemeDelta(A,H);   // A on offense vs H's defense: dAH.off→A.off, dAH.def→H.def
+  const spot=moraleSpotlight(g), me=S&&S.teamId;
+  let hOff=cH.off+dHA.off+schemeBuyIn(H,'off'), hDef=cH.def+dAH.def+schemeBuyIn(H,'def');
+  let aOff=cA.off+dAH.off+schemeBuyIn(A,'off'), aDef=cA.def+dHA.def+schemeBuyIn(A,'def');
+  if(spot){ if(g.home===me){hOff+=spot;hDef+=spot;} else if(g.away===me){aOff+=spot;aDef+=spot;} }
+  const mk=(t,o,d)=>(!o&&!d)?t:Object.assign({},t,{ratings:{off:clamp(t.ratings.off+o,40,99),def:clamp(t.ratings.def+d,40,99),ovr:t.ratings.ovr}});
+  return {home:mk(H,hOff,hDef), away:mk(A,aOff,aDef)};
 }
 // Resolve a game with the drive/play engine. Seeded per game id so outcomes are reproducible
 // regardless of advance order. Sets g.hs/g.as/g.played and RETURNS the per-game box (player
