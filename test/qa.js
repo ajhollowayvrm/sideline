@@ -268,6 +268,16 @@ function startServer() {
     return { oc, bs, harder: oc > bs };
   });
   check('Phase 30: an adaptive AI OC exploits a predictable defense (you give up more)', aioc.harder, JSON.stringify(aioc));
+  // Phase 31: special packages (heavy on short yardage, spread otherwise) are callable + replay on commit
+  const pkg = await page.evaluate(() => {
+    const me = S.teamId, g = S.schedule.games.find(x => !x.played && (x.home === me || x.away === me)); if (!g) return { skip: true };
+    const benched = benchedFor(g), { home, away } = simSides(g, benched), seed = gameSeed(g), calls = [];
+    const dec = ctx => { const c = ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : (ctx.togo <= 2 ? 'heavy' : 'spread'); calls.push(c); return c; };
+    const driven = simEngine(home, away, seed, { benched, aiDefVs: me, aiOffVs: me, decideFor: me, decide: dec });
+    const clone = { id: g.id, home: g.home, away: g.away, calls: calls.slice() }; simGame(clone);
+    return { skip: false, same: clone.hs === driven.hs && clone.as === driven.as, hasSpread: calls.includes('spread'), played: g.played };
+  });
+  check('Phase 31: special packages are callable + reproduce on commit (watch == commit)', pkg.skip || (pkg.same && pkg.hasSpread && pkg.played === false), JSON.stringify(pkg));
   // (b) UI smoke: open the viewer → Coach this game → Full control surfaces the field + a play call →
   // make a call → bail without committing (interactive never mutates the game until "Continue").
   await page.getByRole('button', { name: /Play Week/ }).click();

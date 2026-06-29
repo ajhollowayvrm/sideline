@@ -401,7 +401,21 @@ plain static files so Pages still serves it with zero config.
   pressure the predictability tax + AI DC put on your offense. `simlab` → 68 (`aiOffPassAdj` direction +
   sample gate; the OC throws more on a run-stop-happy D — 249→314 pass yd/g; inert for AI-vs-AI), `qa` → 248
   (a predictable all-run-stop defense gives up more vs the adaptive OC). See "Phase 30 design — adaptive AI
-  offensive coordinator" below. *(Open: blitz/nickel personnel + special packages.)*
+  offensive coordinator" below.
+- **Phase 31 — Special packages.** ✅ DONE — the last item from AJ's original message ("bring in the DT to
+  lead-block on the goal line"). The offensive play-call gains two **personnel packages**: **Heavy**
+  (goal-line power — extra blockers; a power run that crushes short yardage / the goal line via the pure
+  `heavyRunBonus(togo,los)` but is dead weight on long downs) and **Spread** (empty 4-wide — a pass that
+  stresses coverage for +completion/+yards, but with **fewer blockers it's exposed to the blitz** for extra
+  sacks). They're a fourth/fifth value on the offensive `decide` (`heavy`/`spread`), **player-only** (the
+  OC/AI never auto-selects them, so AI-vs-AI + `simlab` are byte-identical), ride in the same `g.calls`
+  stream (replay on commit → watch == commit), and need **no save bump**. UI: Run / Pass / **Heavy** /
+  **Spread** buttons on the offensive play-call with a one-line hint. They mesh with the defensive calls
+  (heavy is stuffed by run-stop, gashes a light box; spread is shredded by the blitz), and a smart short-
+  yardage user of heavy converts more. `simlab` → 72 (`heavyRunBonus` curve; heavy outscores no-package on
+  short yardage; spread gains more pass yards but takes more sacks), `qa` → 249 (packages callable + replay
+  on commit). See "Phase 31 design — special packages" below. *(This closes the original game-day vision;
+  open polish: AI use of packages, defensive nickel/dime personnel, a richer route/play-type palette.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1480,7 +1494,43 @@ than vs a static one). **Fourteen gates**; no save change.
 
 ### Deliberately out of scope
 The AI OC's read is run/pass only (no screen/PA/deep-shot palette yet), it isn't scaled by the opponent's
-OC rating, and there's still no blitz/nickel personnel or special packages.
+OC rating. Special packages are Phase 31.
+
+---
+
+## Phase 31 design — special packages
+
+Decided 2026-06-29 with AJ — the final item from the very first message ("bring in the DT to lead-block on
+a goal-line situation"). Situational **offensive personnel** the coach dials up per play.
+
+### The two packages
+A package is a single extra token on the offensive `decide` (so it fits the `g.calls` stream and replays
+cleanly), resolved as a run or pass with a modifier:
+- **Heavy** — a power run with extra blockers (the DT lead-blocking). `heavyRunBonus(togo,los)` is **+4 on
+  short yardage / at the goal line**, +2 at medium, **−3 on long** (no pass threat, the defense sits on
+  it). The goal-line hammer; useless on 3rd-&-15.
+- **Spread** — empty 4-wide. +0.05 completion and +3 yards (extra receivers stress the coverage), but
+  **fewer blockers → more sacks**, badly so vs a blitz (+0.08 sack). Air it out, but not into pressure.
+
+They mesh with the Phase 28 defensive calls for a deeper chess match: heavy is blunted by run-stop (stacked
+box) and gashes a light box (cover); spread is shredded by the blitz and thrives vs a soft shell.
+
+### Envelope-safe + deterministic
+`heavy`/`spread` are **player-only** — the OC/AI default is always `run`/`pass` (`ocCall`), and the Phase
+30 AI OC only shifts `passProb` (never selects a package). So AI-vs-AI games + `simlab` are byte-identical
+(no package code path is hit without a player call). The calls ride in `g.calls` (replay on commit → watch
+== commit), so **no save bump**.
+
+### Validation
+`simlab` → 72 (`heavyRunBonus` curve; the heavy package on short yardage outscores no package; spread gains
+more passing yards but takes more sacks — the real trade-off). `qa` → 249 (heavy/spread are callable and
+reproduce on commit). **Fourteen gates**; no save change. UI: Run / Pass / Heavy / Spread on the offensive
+play-call, with a one-line "Heavy = goal-line power · Spread = empty 4-wide (watch the blitz)" hint.
+
+### Deliberately out of scope
+Two packages, offense-only (defensive nickel/dime personnel overlap with the cover/run-stop calls already);
+the AI doesn't call packages; no broader formation/route palette (screen, PA, deep shot). This closes the
+original game-day vision — further play-type depth is a future thread, not a gap.
 
 ---
 

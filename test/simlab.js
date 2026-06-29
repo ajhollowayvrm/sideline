@@ -381,6 +381,28 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Phase 30: aiOffVs is inert when that team is not on defense (AI-vs-AI unaffected)', plain.hs === tagged.hs && plain.as === tagged.as && JSON.stringify(plain.box) === JSON.stringify(tagged.box));
 }());
 
+// Phase 31 — special packages (player-only): HEAVY (goal-line power run) + SPREAD (empty 4-wide pass).
+(function () {
+  check('Phase 31: heavyRunBonus — short/goal-line power, long = dead weight', heavyRunBonus(1, 50) === 4 && heavyRunBonus(3, 50) === 2 && heavyRunBonus(10, 50) === -3 && heavyRunBonus(8, 98) === 4);
+  const w = genWorld(909), O = w.teams[2], D = w.teams[5];
+  const oc = ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : ctx.ocCall;
+  // heavy on short yardage converts more → outscores no package
+  const smart = ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : (ctx.togo <= 2 ? 'heavy' : ctx.ocCall);
+  let sP = 0, nP = 0;
+  for (let s = 0; s < 40; s++) { const seed = (hashStr('pkg' + s) ^ 6) >>> 0; sP += simEngine(O, D, seed, { decideFor: O.id, decide: smart }).hs; nP += simEngine(O, D, seed, { decideFor: O.id, decide: oc }).hs; }
+  check('Phase 31: the heavy package on short yardage outscores no package', sP > nP, `${(sP / 40).toFixed(1)} vs ${(nP / 40).toFixed(1)} pts/g`);
+  // spread stresses coverage (more pass yds) but takes more sacks (fewer blockers)
+  const allSpread = ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : 'spread';
+  const allPass = ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : 'pass';
+  let spY = 0, paY = 0, spSk = 0, paSk = 0;
+  for (let s = 0; s < 30; s++) { const seed = (hashStr('spr' + s) ^ 7) >>> 0;
+    const a = simEngine(O, D, seed, { decideFor: O.id, decide: allSpread }), b = simEngine(O, D, seed, { decideFor: O.id, decide: allPass });
+    O.roster.forEach(p => { if (a.box[p.id]) spY += a.box[p.id].pYds || 0; if (b.box[p.id]) paY += b.box[p.id].pYds || 0; });
+    D.roster.forEach(p => { if (a.box[p.id]) spSk += a.box[p.id].sk || 0; if (b.box[p.id]) paSk += b.box[p.id].sk || 0; }); }
+  check('Phase 31: spread (4-wide) gains more passing yards than base pass', spY > paY, `${(spY / 30).toFixed(0)} vs ${(paY / 30).toFixed(0)} pass yd/g`);
+  check('Phase 31: spread takes more sacks (fewer blockers — a real trade-off)', spSk > paSk, `${spSk} vs ${paSk} sacks`);
+}());
+
 // statistical realism across a full season
 const R = simSeason(2026);
 const meanPts = avg(R.scores);

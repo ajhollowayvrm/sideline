@@ -1167,6 +1167,9 @@ function aiOffPassAdj(d){
   const tot=(d.base||0)+(d.blitz||0)+(d.cover||0)+(d.run||0); if(tot<3)return 0;
   return clamp((((d.run||0)-(d.cover||0)-(d.blitz||0))/tot)*0.4,-0.18,0.18);
 }
+// Phase 31 — special packages. The HEAVY package (extra blockers, a DT lead-blocking) is a power run:
+// it crushes short yardage / the goal line but is dead weight on long downs (no pass threat, defense sits).
+function heavyRunBonus(togo,los){ return (togo<=2||los>=97)?4 : togo<=4?2 : togo>=8?-3 : 0; }
 function wpick(pool,r,skip){ const pl=(skip&&skip.size)?pool.filter(e=>e[0]&&!skip.has(e[0].id)):pool;
   let tot=0;for(const e of pl)tot+=e[1]; if(tot<=0)return null;
   let x=r()*tot; for(const e of pl){x-=e[1];if(x<0)return e[0];} return pl[pl.length-1][0]; }
@@ -1297,9 +1300,11 @@ function simEngine(home,away,seed,opts){
       if(aiOffVs && def.id===aiOffVs && off.id!==aiOffVs) passProb=clamp(passProb+aiOffPassAdj(dusage[def.id]),0.12,0.92);
       dusage[def.id][dcall]++;                              // record this snap's defensive call (for the NEXT one's read)
       const ocPass=r()<passProb;                            // OC's call (always drawn → rng stream stays stable)
-      let wantPass=ocPass;
+      let wantPass=ocPass, pkg='normal';                    // Phase 31: special personnel package (player-only)
       if(mine){const pick=decide({phase:'play',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,ocPass,ocCall:ocPass?'pass':'run'});
-        if(pick==='pass')wantPass=true; else if(pick==='run')wantPass=false;}
+        if(pick==='pass')wantPass=true; else if(pick==='run')wantPass=false;
+        else if(pick==='heavy'){wantPass=false;pkg='heavy';}        // goal-line power run
+        else if(pick==='spread'){wantPass=true;pkg='spread';}}      // empty 4-wide pass
       const ky=keyedPen(off.id,wantPass?'pass':'run'); usage[off.id][wantPass?'pass':'run']++;   // predictability tax (Phase 22)
       let gain=0, turnover=false, scored=false, tackled=true, txt='';
 
@@ -1310,10 +1315,10 @@ function simEngine(home,away,seed,opts){
         if(plan&&plan.shadow&&def.id===adjustFor){const did=plan.shadow[rec&&(rec.pos+(rec.so||0))];if(did&&!injured.has(did)){const d=def.roster.find(p=>p.id===did);if(d)cov=d;}}
         const mEdge=matchEdge(bov(rec),oP.recvAvg,bov(cov),dP.covAvg); // mean-zero WR-vs-coverage matchup (pep-talk aware)
         const padv=adv+mEdge;
-        if(r()<clamp(0.062-adv*0.0012+ky*0.05+dSack,0.02,0.22)){  // sack (trench/team + your defensive call)
+        if(r()<clamp(0.062-adv*0.0012+ky*0.05+dSack+(pkg==='spread'?(dcall==='blitz'?0.08:0.02):0),0.02,0.25)){  // sack (+ spread = fewer blockers, exposed to the blitz)
           gain=-ri(r,4,9); time+=36; const s=wpick(dP.rush4,r,injured); add(s&&s.id,'sk'); txt=nm(qb)+' sacked by '+nm(s)+' for '+gain;
-        } else if(r()<clamp(0.615+padv*0.007-ky*0.22+dComp,0.28,0.85)){    // completion (the matchup + the call)
-          gain=Math.max(-3,Math.round((2.2+compDraw(r,rec)*7.5)+(r()<0.18?compDraw(r,rec)*42:0)+padv*0.06-ky*PASS_KEY+dPassY));
+        } else if(r()<clamp(0.615+padv*0.007-ky*0.22+dComp+(pkg==='spread'?0.05:0),0.28,0.88)){    // completion (+ spread stresses coverage)
+          gain=Math.max(-3,Math.round((2.2+compDraw(r,rec)*7.5)+(r()<0.18?compDraw(r,rec)*42:0)+padv*0.06-ky*PASS_KEY+dPassY+(pkg==='spread'?3:0)));
           add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
           add(cov&&cov.id,'cvTgt'); add(cov&&cov.id,'cvCmp'); add(cov&&cov.id,'cvYds',gain);   // coverage targeted / allowed
@@ -1328,7 +1333,7 @@ function simEngine(home,away,seed,opts){
         const rb=wpick(oP.rush,r,injured)||qb;
         const fr=wpick(dP.front,r,injured);                  // the front defender he meets (Phase 23)
         const padv=adv+matchEdge(bov(rb),oP.rushAvg,bov(fr),dP.frontAvg);   // RB vs front matchup (mean-zero, pep-talk + fatigue aware)
-        gain=Math.max(-4,Math.round((2.7+compDraw(r,rb)*4.1)+(r()<0.11?compDraw(r,rb)*30:0)+padv*0.035-ky*RUN_KEY+dRunY));
+        gain=Math.max(-4,Math.round((2.7+compDraw(r,rb)*4.1)+(r()<0.11?compDraw(r,rb)*30:0)+padv*0.035-ky*RUN_KEY+dRunY+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
         time+=36; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
         if(!scored && r()<0.011){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
@@ -3556,8 +3561,9 @@ function renderInteractiveGame(app){
       v.append(el('div','meta dim',`Your ball at the ${fpos} — ${ctx.phase==='fourth'?'4th down: kick or go?':'call the play.'} OC wants <b>${ocPick.toUpperCase()}</b>.`));
       const mk=(lbl,val)=>{const b=el('button','btn '+(ocPick===val?'':'line'),lbl);b.dataset.call=val;b.onclick=()=>pickCall(val);return b;};
       if(ctx.phase==='fourth'){ if(ctx.inFgRange)cr.append(mk('FG '+ctx.fgDist+'yd','fg')); cr.append(mk('Punt','punt'),mk('Go for it','go')); }
-      else cr.append(mk('Run','run'),mk('Pass','pass'));
+      else cr.append(mk('Run','run'),mk('Pass','pass'),mk('Heavy','heavy'),mk('Spread','spread'));   // Phase 31 packages
       v.append(cr);
+      if(ctx.phase==='play')v.append(el('div','meta dim','Heavy = goal-line power · Spread = empty 4-wide (watch the blitz)'));
       const defer=el('button','btn ghost','Defer to OC ('+ocPick+')');defer.style.marginTop='8px';defer.dataset.tid='game-defer';defer.onclick=()=>pickCall(ocPick);
       v.append(defer);
     }
