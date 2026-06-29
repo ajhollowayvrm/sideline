@@ -33,6 +33,12 @@ if (i0 < 0 || i1 < 0) { console.error('Could not find SIM ENGINE markers in inde
 const T0 = html.indexOf('// === TRAIT ENGINE (Phase 10) START ==='), T1 = html.indexOf('// === TRAIT ENGINE (Phase 10) END ===');
 if (T0 < 0 || T1 < 0) { console.error('Could not find TRAIT ENGINE markers in index.html'); process.exit(2); }
 eval(html.slice(T0, T1));
+// The sim now also folds scheme run/pass tendency into passProb (Phase 22), so pull in the SCHEME
+// block too. Synthetic teams below carry no offScheme → schemeTendency returns 0 → the envelopes
+// are unchanged; the predictability tax keys on the call mix (also 0 for a balanced AI).
+const C0 = html.indexOf('// === SCHEME ENGINE (Phase 21) START ==='), C1 = html.indexOf('// === SCHEME ENGINE (Phase 21) END ===');
+if (C0 < 0 || C1 < 0) { console.error('Could not find SCHEME ENGINE markers in index.html'); process.exit(2); }
+eval(html.slice(C0, C1));
 const engineSrc = html.slice(i0, i1);
 // eval into this scope so simEngine + helpers (gamePersonnel, etc.) become available
 eval(engineSrc);
@@ -165,13 +171,13 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
     if (d2.hs !== plain.hs || d2.as !== plain.as) deferAway = false;
     // the decider is only consulted for the team it controls, and sees both phases over a season
     simEngine(h, a, seed, { decideFor: h.id, decide: ctx => { if (ctx.off !== h.id) wrongTeam = true; if (ctx.phase === 'play') sawPlay = true; if (ctx.phase === 'fourth') sawFourth = true; return defer(ctx); } });
-    // an aggressive coach (always pass, always go for it) changes the result deterministically + stays sane
-    const aggro = ctx => ctx.phase === 'fourth' ? 'go' : 'pass';
+    // a one-sided coach (always pass, OC handles 4th) changes the result deterministically + stays sane
+    const aggro = ctx => ctx.phase === 'fourth' ? ctx.ocAct : 'pass';
     const g1 = simEngine(h, a, seed, { decide: aggro, decideFor: h.id });
     const g2 = simEngine(h, a, seed, { decide: aggro, decideFor: h.id });
     if (g1.hs !== g2.hs || g1.as !== g2.as || JSON.stringify(g1.box) !== JSON.stringify(g2.box)) goDet = false;
     if (g1.hs !== plain.hs || g1.as !== plain.as) overrideDiff = true;   // at least sometimes differs
-    if (g1.hs < 0 || g1.hs > 90 || g1.as < 0 || g1.as > 90) sane = false;
+    if (g1.hs < 0 || g1.hs > 99 || g1.as < 0 || g1.as > 99) sane = false;
     // a recorded run/pass override list reproduces exactly
     const calls = []; simEngine(h, a, seed, { decideFor: h.id, decide: ctx => { const c = ctx.phase === 'fourth' ? ctx.ocAct : (ctx.ocPass ? 'run' : 'pass'); calls.push(c); return c; } });
     let i = 0; const rp = simEngine(h, a, seed, { decideFor: h.id, decide: () => calls[i++] });
@@ -182,8 +188,26 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Phase 22: the OC draws its suggestion regardless of who is controlled (defer-as-away == AI)', deferAway);
   check('Phase 22: the decision hook fires only for the controlled offense', !wrongTeam && sawPlay);
   check('Phase 22: both run/pass and 4th-down decisions are surfaced over a season', sawPlay && sawFourth);
-  check('Phase 22: overrides change the outcome but stay football-sane (0–90)', overrideDiff && sane);
+  check('Phase 22: overrides change the outcome but stay football-sane (0–99)', overrideDiff && sane);
   check('Phase 22: a fixed override set is fully deterministic (replay matches)', goDet && repro);
+})();
+
+// Phase 22 BALANCE — the predictability tax: a defense keys on a one-dimensional offense, so spamming
+// a single play type no longer dominates the balanced (AI) attack. (Calling a smart MIX should win.)
+(function () {
+  const w = genWorld(55), N = w.teams.length;
+  let runP = 0, passP = 0, defP = 0, n = 0;
+  for (let s = 0; s < 60; s++) {
+    const h = w.teams[s % N], a = w.teams[(s + 5) % N]; if (h === a) continue;
+    const seed = (hashStr('bal' + s) ^ 0x13579) >>> 0;
+    const oc = ctx => ctx.phase === 'fourth' ? ctx.ocAct : ctx.ocCall;
+    const allRun = simEngine(h, a, seed, { decideFor: h.id, decide: ctx => ctx.phase === 'fourth' ? ctx.ocAct : 'run' });
+    const allPass = simEngine(h, a, seed, { decideFor: h.id, decide: ctx => ctx.phase === 'fourth' ? ctx.ocAct : 'pass' });
+    const balanced = simEngine(h, a, seed, { decideFor: h.id, decide: oc });
+    runP += allRun.hs; passP += allPass.hs; defP += balanced.hs; n++;
+  }
+  check('Phase 22 balance: spamming RUN does not beat a balanced attack', runP / n < defP / n, `run ${(runP / n).toFixed(1)} vs balanced ${(defP / n).toFixed(1)}`);
+  check('Phase 22 balance: spamming PASS does not beat a balanced attack', passP / n < defP / n, `pass ${(passP / n).toFixed(1)} vs balanced ${(defP / n).toFixed(1)}`);
 })();
 
 // statistical realism across a full season

@@ -397,6 +397,11 @@ const SCHEME_EDGE=[
   [   -1,  -1,  -1,   1,   2 ],   // West Coast   — quick game beats pressure; tight man underneath disrupts the timing
 ];
 const SCHEME_FIT_W=0.9;          // rating pts per unit of roster fit aggregate (small → OVR dominates)
+// Run/pass IDENTITY (Phase 22): a bias the offense's scheme adds to the OC's pass probability. The
+// five values average ~0, so this shifts play SELECTION (Air Raid airs it out, Smashmouth grinds),
+// not the league scoring envelope; folded into passProb in simEngine. Unknown scheme → 0 (neutral).
+const SCHEME_TENDENCY={'Air Raid':0.18,'Spread-Option':-0.02,'Pro Style':0,'Smashmouth':-0.16,'West Coast':0.06};
+function schemeTendency(s){return SCHEME_TENDENCY[s]||0;}
 function offSchemeIdx(s){const i=OFF_SCHEMES.indexOf(s);return i<0?2:i;}   // unknown → Pro Style (neutral)
 function defSchemeIdx(s){const i=DEF_SCHEMES.indexOf(s);return i<0?0:i;}   // unknown → 4-3 (neutral)
 function schemeEdge(off,def){return SCHEME_EDGE[offSchemeIdx(off)][defSchemeIdx(def)];}
@@ -1129,6 +1134,13 @@ function simEngine(home,away,seed,opts){
   const add=(id,k,v)=>{ if(!id)return; (box[id]=box[id]||{gp:1})[k]=(box[id][k]||0)+(v==null?1:v); };
   const pools={[home.id]:gamePools(home),[away.id]:gamePools(away)};
   const score={[home.id]:0,[away.id]:0};
+  // Phase 22 balance: a defense keys on a one-dimensional offense. Track each team's run/pass mix
+  // (smoothed toward 50/50) and tax OVER-reliance on a play type — a balanced / AI attack stays under
+  // the threshold and pays ~nothing (so the validated envelope holds), but spamming run OR pass gets
+  // stuffed. Deterministic from the call history → no new rng draw, so determinism/replay are intact.
+  const usage={[home.id]:{run:0,pass:0},[away.id]:{run:0,pass:0}};
+  const KEY_THRESH=0.60, RUN_KEY=7.5, PASS_KEY=6.5;
+  const keyedPen=(offId,type)=>{const c=usage[offId],tot=c.run+c.pass;return Math.max(0,((c[type]+4)/(tot+8))-KEY_THRESH);};
   const HFA=2.3;                                           // home-field, in rating points
   // per-game "form": each team runs a little hot or cold tonight (std ≈ 4 pts), which lets
   // underdogs steal games and keeps the favorite from winning ~every time.
@@ -1169,19 +1181,20 @@ function simEngine(home,away,seed,opts){
       }
 
       // ---- run / pass ----
-      const passProb=clamp(0.45+(togo>7?0.18:togo<3?-0.18:0)+(down>=3?0.17:0)+adv*0.003,0.12,0.92);
+      const passProb=clamp(0.45+(togo>7?0.18:togo<3?-0.18:0)+(down>=3?0.17:0)+adv*0.003+schemeTendency(off.offScheme),0.12,0.92);
       const ocPass=r()<passProb;                            // OC's call (always drawn → rng stream stays stable)
       let wantPass=ocPass;
       if(mine){const pick=decide({phase:'play',q:L._q,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,ocPass,ocCall:ocPass?'pass':'run'});
         if(pick==='pass')wantPass=true; else if(pick==='run')wantPass=false;}
+      const ky=keyedPen(off.id,wantPass?'pass':'run'); usage[off.id][wantPass?'pass':'run']++;   // predictability tax (Phase 22)
       let gain=0, turnover=false, scored=false, tackled=true, txt='';
 
       if(wantPass){                                          // dropback (sacks aren't pass attempts)
-        if(r()<clamp(0.062-adv*0.0012,0.02,0.11)){          // sack
+        if(r()<clamp(0.062-adv*0.0012+ky*0.05,0.02,0.18)){  // sack (predictable pass → more pressure)
           gain=-ri(r,4,9); time+=36; const s=wpick(dP.rush4,r); add(s&&s.id,'sk'); txt=nm(oP.qb)+' sacked by '+nm(s)+' for '+gain;
-        } else if(r()<clamp(0.615+adv*0.007,0.32,0.83)){    // completion
+        } else if(r()<clamp(0.615+adv*0.007-ky*0.22,0.30,0.83)){    // completion (keyed defense breaks on it)
           const rec=wpick(oP.recv,r);
-          gain=Math.max(-3,Math.round((2.2+compDraw(r,rec)*7.5)+(r()<0.18?compDraw(r,rec)*42:0)+adv*0.06));
+          gain=Math.max(-3,Math.round((2.2+compDraw(r,rec)*7.5)+(r()<0.18?compDraw(r,rec)*42:0)+adv*0.06-ky*PASS_KEY));
           add(oP.qb&&oP.qb.id,'pAtt'); add(oP.qb&&oP.qb.id,'pCmp'); add(oP.qb&&oP.qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain);
           time+=(r()<0.28?14:34); txt=nm(oP.qb)+' pass to '+nm(rec)+' for '+gain;
@@ -1192,7 +1205,7 @@ function simEngine(home,away,seed,opts){
         }
       } else {                                              // run
         const rb=wpick(oP.rush,r)||oP.qb;
-        gain=Math.max(-4,Math.round((2.7+compDraw(r,rb)*4.1)+(r()<0.11?compDraw(r,rb)*30:0)+adv*0.035));
+        gain=Math.max(-4,Math.round((2.7+compDraw(r,rb)*4.1)+(r()<0.11?compDraw(r,rb)*30:0)+adv*0.035-ky*RUN_KEY));
         time+=36; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); txt=nm(rb)+' run for '+gain;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
         if(!scored && r()<0.011){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }

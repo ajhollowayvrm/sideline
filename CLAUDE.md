@@ -295,12 +295,18 @@ plain static files so Pages still serves it with zero config.
   driver **re-runs the pure engine from scratch** after each call (sub-ms), feeding back the recorded calls to
   advance to the next decision or the final — no engine state to serialize. The calls bank onto **`g.calls`**
   at commit, so `simGame`/`buildGameLog` reproduce the exact play-called game → **watch == commit** and
-  replayable. Non-controlled games + the classic animated watcher are untouched. Save **v26** (optional
-  `g.calls`, absent = AI); `simlab` → 32 (6 Phase 22 checks + envelope intact), `qa` → 236 (watch==commit,
-  override changes the outcome, field + prompt render, leaving Coach mode never commits). See "Phase 22 design
-  — interactive play-calling" below. *(Next on this track: scheme run/pass **tendency** into `passProb`
-  (re-baselines `simlab`), **special packages**, and **in-game adjustments** — move-the-CB on live matchups,
-  pep talks via morale, a penalty/discipline model.)*
+  replayable. Non-controlled games + the classic animated watcher are untouched. Two engine refinements
+  shipped with it: **scheme run/pass tendency** now folds into the OC's `passProb` (`schemeTendency` — Air
+  Raid airs it out, Smashmouth grinds; the five values average ~0 so it shifts play *selection*, not the
+  league envelope), and a **predictability tax** (`keyedPen`) — a defense keys on a one-dimensional
+  offense, so over-relying on run OR pass gets stuffed (a balanced/AI mix stays under the threshold and pays
+  ~nothing → the validated envelope holds; both are rng-free, so determinism/replay are intact). Together
+  they make a **smart mix beat spamming one play** (a scaled sim: run-spam fell from 39→11 pts/g and a 95%→27%
+  win rate, while a smart mix tops the table). Save **v26** (optional `g.calls`, absent = AI); `simlab` → 34
+  (Phase 22 hook + the predictability balance), `qa` → 236, plus an offline play-calling sim (1,000 games:
+  defer==AI byte-exact, 6,000 call-replays byte-exact, strategies diverge sanely). See "Phase 22 design —
+  interactive play-calling" below. *(Next on this track: **special packages** (situational personnel) and
+  **in-game adjustments** — move-the-CB on live matchups, pep talks via morale, a penalty/discipline model.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1039,21 +1045,35 @@ the OC's suggestion highlighted), a live **mode toggle** (`Key moments` → prom
 zone / 3rd-&-long / 2-minute; `Full control` → every snap; `Auto` → OC runs it), and `Sim the rest →`.
 Leaving Coach mode before "Continue" never commits (the real game is mutated only at commit).
 
+### Balance + scheme tendency (shipped with this phase)
+Letting a human force play calls exposed that the pre-existing engine made **runs too efficient/safe**
+(designed runs rarely turn it over), so once you *could* spam, "always run" dominated (a scaled sim:
+39 pts/g, 95% win). Rather than globally nerf the run (which would punish the balanced AI and move the
+validated envelope), the fix is a **predictability tax** (`keyedPen`): the engine tracks each team's
+run/pass mix (smoothed toward 50/50) and taxes **over-reliance** on a play type — a balanced/AI attack
+stays under the `KEY_THRESH` (0.60) and pays ~nothing (envelope preserved), but spamming run *or* pass
+gets stuffed (lower yards, more sacks/incompletions). It's deterministic from the call history (no new
+rng draw), so determinism/replay are intact. Result: run-spam → 11 pts/g (27% win), pass-spam → 11
+(17%), a **smart mix tops the table** (~29, 64%), and the AI envelope is unchanged. Shipped alongside:
+**scheme run/pass tendency** (`schemeTendency`) folded into `passProb` (Air Raid airs it out, Smashmouth
+grinds; the five values average ~0 → shifts play *selection*, not the envelope). Both live in the
+fenced engines (`schemeTendency` in SCHEME; the tax in SIM), so `simlab` extracts the SCHEME block too.
+
 ### Save & validation
 Save **v26** (optional `g.calls`; `migrateState` v25→v26 is a no-op — absent reads as AI). `simlab` →
-32 (Phase 22: defer == AI byte-for-byte; the hook fires only for the controlled offense; both
-decisions surface over a season; overrides change the outcome but stay sane; a fixed call set replays
-deterministically). `qa` → 236 (watch == commit on a coached game; calling plays changes the outcome
-vs the OC; the SVG field + prompt render in Full control; making a call advances the drive; leaving
-Coach mode does not commit). **Fourteen gates** (unchanged set — Phase 22 extends `simlab` + `qa`).
+34 (Phase 22: defer == AI byte-for-byte; the hook fires only for the controlled offense; both decisions
+surface; overrides change the outcome but stay sane; a fixed call set replays deterministically; **the
+predictability tax — spamming run OR pass does not beat a balanced attack**). `qa` → 236 (watch == commit
+on a coached game; calling plays changes the outcome vs the OC; the SVG field + prompt render in Full
+control; making a call advances the drive; leaving Coach mode does not commit). Plus an offline
+play-calling sim harness (1,000 games: parity/replay byte-exact, strategies diverge sanely, full coached
+seasons commit-match). **Fourteen gates** (unchanged set — Phase 22 extends `simlab` + `qa`).
 
 ### Deliberately out of scope (this increment)
-Scheme run/pass **tendency** (scheme → `passProb`) is still held — it's an in-engine change that
-re-baselines `simlab`, and it belongs with the play menu so the OC's suggestion reflects the scheme.
-No **special packages** (personnel groupings) yet, no **in-game adjustments** (reassign a CB, pep
-talk via morale, calm penalties) — those need a matchup model + a penalty/discipline model and are
-the next increments. Defense is still OC-run (you call your offense's plays); only the controlled
-team's game is coachable (advancing a week stays fast).
+No **special packages** (situational personnel groupings) yet, no **in-game adjustments** (reassign a
+CB on a live matchup, pep talk via morale, calm penalties) — those need a per-matchup model + a
+penalty/discipline model and are the next increments. Defense is still OC-run (you call your offense's
+plays); only the controlled team's game is coachable (advancing a week stays fast).
 
 ---
 
