@@ -305,8 +305,21 @@ plain static files so Pages still serves it with zero config.
   win rate, while a smart mix tops the table). Save **v26** (optional `g.calls`, absent = AI); `simlab` → 34
   (Phase 22 hook + the predictability balance), `qa` → 236, plus an offline play-calling sim (1,000 games:
   defer==AI byte-exact, 6,000 call-replays byte-exact, strategies diverge sanely). See "Phase 22 design —
-  interactive play-calling" below. *(Next on this track: **special packages** (situational personnel) and
-  **in-game adjustments** — move-the-CB on live matchups, pep talks via morale, a penalty/discipline model.)*
+  interactive play-calling" below.
+- **Phase 23 — Per-matchup resolution.** ✅ DONE (the keystone that makes the roster feel alive). A play
+  no longer resolves off one team rating — it keys off the **specific matchup**: the targeted receiver is
+  covered by a defender assigned **by depth** (their WR1 vs your CB1, deterministic → a persistent
+  storyline), and a run meets a **front** defender; each is measured as a **mean-zero deviation** from his
+  side's weighted-mean (`matchEdge`, `MATCH_W=0.42`), so a stud-on-scrub mismatch tilts the play while the
+  league envelope is preserved by construction (`simlab`: mean 23.7, all leaders in range, INTs balance).
+  New **coverage box stats** (`cvTgt`/`cvCmp`/`cvYds`/`cvTD`, plus the INT now credited to the man in
+  coverage) ride in `p.gs` (no save bump — sparse/absent-safe), and pair exactly with the offense
+  (league-wide `cvCmp==rec`, `cvYds==reYds`, `cvTgt==pAtt`). UI: the play feed names the matchup
+  (`pass to WR (vs CB)`), and the **coach view shows a live matchup panel** — your receivers' production +
+  your coverage with a 🔥 **"cooked"** flag (built from a `boxInto` the driver captures live, surviving the
+  pause). `simlab` → 39, `qa` → 237. Determinism + watch==commit unchanged (the matchup math is
+  rng-deterministic). See "Phase 23 design — per-matchup resolution" below. *(Foundation for **in-game
+  adjustments** — reassign your CB onto their WR1 — and for injuries mattering, both next on the track.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1077,6 +1090,51 @@ plays); only the controlled team's game is coachable (advancing a week stays fas
 
 ---
 
+## Phase 23 design — per-matchup resolution
+
+Decided 2026-06-29 with AJ — the first of the "deepen the sim" threads, and the keystone that makes
+the roster feel alive: a play resolves off the **specific players involved**, not one team rating.
+This is what makes "my CB is getting **cooked**" literally true, and it's the foundation for in-game
+adjustments (reassign your CB onto their WR1) and for injuries-mattering (a backup gets exposed).
+
+### The mean-neutral construction (so the envelope holds)
+The risk: keying plays off individuals could shift the validated scoring envelope. The fix is to make
+the matchup a **mean-zero deviation layer** on top of the existing team `adv`. On a pass, the targeted
+receiver (`wpick(oP.recv)`) draws a coverage defender assigned **deterministically by depth**
+(`coverDef`: WR1→CB1, WR2→CB2, slot/TE→S, RB→LB — so coverage is a persistent, readable storyline, and
+no rng is consumed assigning it). The play's effective adv becomes `adv + matchEdge`, where
+`matchEdge = MATCH_W * ((recv.ov − recvWeightedMean) − (cov.ov − covWeightedMean))`. Because each side
+is a deviation from its own **weighted** group mean (the same weights `wpick` selects by), the expected
+matchEdge over plays is ~0 → the league envelope is preserved by construction, while a stud-on-scrub
+mismatch tilts the individual play. Runs work the same way (ball-carrier vs a `front` defender). The
+trench/sack stays on the team rating (a follow-up can split OL↔DL). `MATCH_W=0.42` keeps the swing
+small enough that raw OVR still dominates ("the best players win") — validated, not asserted.
+
+### Coverage stats (the 'cooked' readout)
+On a completion the covering defender is charged `cvTgt`/`cvCmp`/`cvYds` (and `cvTD`); on a pick he's
+credited the `dInt` (the man in coverage made the play). These ride in `p.gs` (sparse extras in the
+columnar codec → **no save bump**, absent-safe on old saves) and pair **exactly** with the offense —
+league-wide `cvCmp==rec`, `cvYds==reYds`, `cvTgt==pAtt` (asserted in `simlab`).
+
+### Determinism & the live panel
+The matchup math is pure/rng-deterministic, so determinism + watch==commit (Phase 22) are unchanged.
+For the UI, `simEngine` gained an optional `opts.boxInto` (a caller-owned box, mirroring `logInto`) so
+the play-calling driver captures the **running** box even across a pause-throw; the coach view renders
+a live **matchup panel** — your receivers' production + your coverage with a 🔥 "cooked" flag — and the
+play feed names the matchup (`pass to WR (vs CB)`).
+
+### Validation
+`simlab` → 39 (a stud WR torches weak coverage and barely dents strong; the beaten corner's coverage
+yards spike; the three coverage invariants; envelope + leaders intact). `qa` → 237 (the live matchup
+panel renders from the running box). No save change. **Fourteen gates** (Phase 23 extends `simlab` + `qa`).
+
+### Deliberately out of scope (this increment)
+The defender assignment is fixed-by-depth — **reassigning** coverage (put your CB1 on their WR1, bracket
+a star) is the **in-game adjustments** increment. No OL↔DL trench split yet (sacks/run still use team
+adv); no double-teams/safety help, no route concepts. Defense remains OC-run.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -1785,7 +1843,8 @@ underdogs can steal games. Validated in `test/simlab.js` across many seasons: **
 score spread ≈ 6–45 (p05–p95), **~54% home** wins, **~77% favorite** win rate, no ties.
 
 **Per-player stats.** The box maps `playerId → { gp, pAtt,pCmp,pYds,pTD,pInt, rAtt,rYds,rTD,
-rec,reYds,reTD, tkl,sk,dInt, fga,fgm,xpa,xpm }` (only nonzero keys). Touches are drawn from
+rec,reYds,reTD, tkl,sk,dInt, cvTgt,cvCmp,cvYds,cvTD, fga,fgm,xpa,xpm }` (only nonzero keys; the
+`cv*` coverage-allowed keys are Phase 23 — charged to the defender matched to the target). Touches are drawn from
 depth-weighted pools (`gamePools`) so starters dominate; QB→passing, RB→rushing,
 WR/TE/RB→receiving, LB/S/CB/DE/DT→tackles, etc. Season totals live on the Player object as
 `p.gs` (game stats), accumulated for **every** team's players, so league stat leaders are

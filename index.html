@@ -1101,16 +1101,37 @@ function gamePools(team){
   for(const k in byPos) byPos[k].sort((a,b)=>a.so-b.so);
   const dep=p=>1/Math.pow((p.so||0)+1,1.35);              // so 0 ≫ so 1 ≫ deep backups
   const W=(codes,base)=>{const out=[];codes.forEach(([c,m])=>(byPos[c]||[]).forEach(p=>out.push([p,base*m*dep(p)])));return out;};
+  const wavg=pool=>{let t=0,w=0;pool.forEach(([p,wt])=>{t+=p.ov*wt;w+=wt;});return w?t/w:60;}; // weighted mean (Phase 23)
+  const recv=W([['WR',1.15],['TE',0.75],['RB',0.55]],1);
+  const rush=W([['RB',1.0]],1);
+  const cover=W([['CB',1.15],['S',0.75],['LB',0.4]],1);   // who covers the pass (weights mirror `recv`)
+  const front=W([['DT',1.0],['DE',0.9],['LB',0.7]],1);    // who meets the run
+  const byso=c=>(byPos[c]||[]).slice().sort((a,b)=>(a.so||0)-(b.so||0));
   return {
     qb:(byPos.QB||[])[0]||null,
     k:(byPos.K||[])[0]||(byPos.QB||[])[0]||null,
-    rush:W([['RB',1.0]],1),                                // designed runs go to RBs
-    recv:W([['WR',1.15],['TE',0.75],['RB',0.55]],1),       // targets: WR > TE > checkdown RB
+    rush, recv,
     tkl:W([['LB',1.0],['S',0.8],['CB',0.7],['DE',0.55],['DT',0.45]],1),
     rush4:W([['DE',1.0],['DT',0.7],['LB',0.5]],1),         // pass rush (sacks)
-    hawk:W([['CB',1.0],['S',0.85],['LB',0.4]],1)           // ball-hawks (INTs)
+    hawk:W([['CB',1.0],['S',0.85],['LB',0.4]],1),          // ball-hawks (INTs)
+    // Phase 23 per-matchup resolution: assign a coverage man (by depth) to the targeted receiver, a
+    // front defender to the run, and measure each as a deviation from his side's WEIGHTED mean — so the
+    // matchup edge is mean-zero (the envelope holds) but a stud-on-scrub mismatch tilts the play.
+    cover, front, cb:byso('CB'), saf:byso('S'), lbk:byso('LB'),
+    recvAvg:wavg(recv), rushAvg:wavg(rush), covAvg:wavg(cover), frontAvg:wavg(front)
   };
 }
+// The defender matched to a target (Phase 23) — DETERMINISTIC (no rng), by depth, so coverage is a
+// persistent storyline (their WR1 vs your CB1) you can read ("getting cooked") and later adjust.
+function coverDef(rec,dP){
+  if(!rec)return dP.cb[0]||dP.saf[0]||null;
+  if(rec.pos==='WR')return dP.cb[Math.min(rec.so||0,Math.max(0,dP.cb.length-1))]||dP.saf[0]||dP.lbk[0]||null;
+  if(rec.pos==='TE')return dP.saf[0]||dP.lbk[0]||dP.cb[0]||null;
+  return dP.lbk[0]||dP.saf[0]||dP.cb[0]||null;            // RB checkdown → LB/S
+}
+// Mean-zero matchup edge in rating points: (offensive player vs his group mean) − (defender vs his).
+const MATCH_W=0.42;
+function matchEdge(offP,offAvg,defP,defAvg){return MATCH_W*(((offP?offP.ov:offAvg)-offAvg)-((defP?defP.ov:defAvg)-defAvg));}
 function wpick(pool,r){ let tot=0;for(const e of pool)tot+=e[1]; if(tot<=0)return null;
   let x=r()*tot; for(const e of pool){x-=e[1];if(x<0)return e[0];} return pool[pool.length-1][0]; }
 
@@ -1127,7 +1148,7 @@ function wpick(pool,r){ let tot=0;for(const e of pool)tot+=e[1]; if(tot<=0)retur
 // re-runs the pure engine after each override to advance one decision at a time.
 function simEngine(home,away,seed,opts){
   const r=rng(seed>>>0);
-  const box={};
+  const box=(opts&&opts.boxInto)||{};                     // boxInto: caller-owned box (live matchup panel, survives a pause-throw — Phase 23)
   const log=(opts&&opts.logInto)||(opts&&opts.log?[]:null);  // logInto: a caller-owned array (survives a pause-throw, Phase 22)
   const decide=opts&&opts.decide;                          // the coach's play-call hook (Phase 22)
   const decideFor=opts&&opts.decideFor;                    // which team id it controls (keeps simEngine pure — no global S)
@@ -1190,22 +1211,28 @@ function simEngine(home,away,seed,opts){
       let gain=0, turnover=false, scored=false, tackled=true, txt='';
 
       if(wantPass){                                          // dropback (sacks aren't pass attempts)
-        if(r()<clamp(0.062-adv*0.0012+ky*0.05,0.02,0.18)){  // sack (predictable pass → more pressure)
+        const rec=wpick(oP.recv,r);                          // intended target (pre-snap read)
+        const cov=coverDef(rec,dP);                          // the man on him (deterministic by depth, Phase 23)
+        const mEdge=matchEdge(rec,oP.recvAvg,cov,dP.covAvg); // mean-zero WR-vs-coverage matchup
+        const padv=adv+mEdge;
+        if(r()<clamp(0.062-adv*0.0012+ky*0.05,0.02,0.18)){  // sack (trench/team — not the WR matchup)
           gain=-ri(r,4,9); time+=36; const s=wpick(dP.rush4,r); add(s&&s.id,'sk'); txt=nm(oP.qb)+' sacked by '+nm(s)+' for '+gain;
-        } else if(r()<clamp(0.615+adv*0.007-ky*0.22,0.30,0.83)){    // completion (keyed defense breaks on it)
-          const rec=wpick(oP.recv,r);
-          gain=Math.max(-3,Math.round((2.2+compDraw(r,rec)*7.5)+(r()<0.18?compDraw(r,rec)*42:0)+adv*0.06-ky*PASS_KEY));
+        } else if(r()<clamp(0.615+padv*0.007-ky*0.22,0.30,0.83)){    // completion (the matchup decides)
+          gain=Math.max(-3,Math.round((2.2+compDraw(r,rec)*7.5)+(r()<0.18?compDraw(r,rec)*42:0)+padv*0.06-ky*PASS_KEY));
           add(oP.qb&&oP.qb.id,'pAtt'); add(oP.qb&&oP.qb.id,'pCmp'); add(oP.qb&&oP.qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain);
-          time+=(r()<0.28?14:34); txt=nm(oP.qb)+' pass to '+nm(rec)+' for '+gain;
-          if(los+gain>=100){ scored=true; add(oP.qb&&oP.qb.id,'pTD'); add(rec&&rec.id,'reTD'); }
+          add(cov&&cov.id,'cvTgt'); add(cov&&cov.id,'cvCmp'); add(cov&&cov.id,'cvYds',gain);   // coverage targeted / allowed
+          time+=(r()<0.28?14:34); txt=nm(oP.qb)+' pass to '+nm(rec)+' for '+gain+(cov?' (vs '+nm(cov)+')':'');
+          if(los+gain>=100){ scored=true; add(oP.qb&&oP.qb.id,'pTD'); add(rec&&rec.id,'reTD'); add(cov&&cov.id,'cvTD'); }
         } else {                                            // incomplete (maybe picked)
-          time+=6; tackled=false; add(oP.qb&&oP.qb.id,'pAtt'); txt=nm(oP.qb)+' incomplete';
-          if(r()<clamp(0.030-adv*0.0008,0.008,0.06)){ turnover=true; add(oP.qb&&oP.qb.id,'pInt'); const h=wpick(dP.hawk,r); add(h&&h.id,'dInt'); txt=nm(oP.qb)+' INTERCEPTED by '+nm(h); }
+          time+=6; tackled=false; add(oP.qb&&oP.qb.id,'pAtt'); add(cov&&cov.id,'cvTgt'); txt=nm(oP.qb)+' incomplete';
+          if(r()<clamp(0.030-adv*0.0008,0.008,0.06)){ turnover=true; add(oP.qb&&oP.qb.id,'pInt'); add(cov&&cov.id,'dInt'); txt=nm(oP.qb)+' INTERCEPTED by '+nm(cov); }
         }
       } else {                                              // run
         const rb=wpick(oP.rush,r)||oP.qb;
-        gain=Math.max(-4,Math.round((2.7+compDraw(r,rb)*4.1)+(r()<0.11?compDraw(r,rb)*30:0)+adv*0.035-ky*RUN_KEY));
+        const fr=wpick(dP.front,r);                          // the front defender he meets (Phase 23)
+        const padv=adv+matchEdge(rb,oP.rushAvg,fr,dP.frontAvg);   // RB vs front matchup (mean-zero)
+        gain=Math.max(-4,Math.round((2.7+compDraw(r,rb)*4.1)+(r()<0.11?compDraw(r,rb)*30:0)+padv*0.035-ky*RUN_KEY));
         time+=36; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); txt=nm(rb)+' run for '+gain;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
         if(!scored && r()<0.011){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
@@ -3240,9 +3267,9 @@ function runInteractive(){
   const G=UI.game; if(!G||!G.interactive)return;
   const g=findAnyGame(G.gameId); if(!g){UI.view='home';render();return;}
   const {home,away}=simSides(g); const seed=gameSeed(g);
-  G.log=[]; G.pending=null; let k=0; const PAUSE={pause:1};
+  G.log=[]; G.box={}; G.pending=null; let k=0; const PAUSE={pause:1};
   try{
-    const res=simEngine(home,away,seed,{logInto:G.log,decideFor:S.teamId,decide:ctx=>{
+    const res=simEngine(home,away,seed,{logInto:G.log,boxInto:G.box,decideFor:S.teamId,decide:ctx=>{
       if(k<G.decisions.length)return G.decisions[k++];                 // already resolved
       if(!G.simRest&&shouldPromptCtx(ctx,G.mode)){G.pending=ctx;throw PAUSE;}  // your call → pause here
       const def=ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall;G.decisions.push(def);k++;return def;  // OC handles it
@@ -3281,6 +3308,24 @@ function fieldSVG(offId,defId,ctx){
     <text x="96" y="28" fill="#fff" font-size="3.2" font-weight="bold" text-anchor="middle" opacity="0.8" transform="rotate(90 96 28)">${def.abbr}</text>
   </svg>`;
 }
+// Phase 23: the live matchup readout — your receivers' production + your coverage (with a 🔥 when a
+// DB is getting cooked). Built from the running box the driver captured via boxInto.
+function matchupPanel(G){
+  const box=G.box||{}, t=controlled(); if(!t)return null;
+  const got=keys=>t.roster.filter(p=>{const b=box[p.id];return b&&keys.some(k=>b[k]);}).map(p=>({p,b:box[p.id]}));
+  const recs=got(['rec','reYds']).sort((a,b)=>(b.b.reYds||0)-(a.b.reYds||0)).slice(0,4);
+  const cov=got(['cvTgt']).sort((a,b)=>(b.b.cvYds||0)-(a.b.cvYds||0)).slice(0,4);
+  if(!recs.length&&!cov.length)return null;
+  const c=el('div','card');c.dataset.tid='matchups';c.style.padding='10px';
+  const nm=p=>`${p.pos} ${p.fn[0]}.${p.ln}`;
+  let h='<div class="meta dim" style="margin-bottom:6px">Matchups</div>';
+  if(recs.length)h+='<div class="meta" style="font-weight:700;margin:2px 0">Your receivers</div>'+recs.map(({p,b})=>
+    `<div class="row spread" style="margin:1px 0"><span class="meta">${nm(p)}</span><span class="meta">${b.rec||0} rec · ${b.reYds||0} yd${b.reTD?' · '+b.reTD+' TD':''}</span></div>`).join('');
+  if(cov.length)h+='<div class="meta" style="font-weight:700;margin:6px 0 2px">Your coverage</div>'+cov.map(({p,b})=>{
+    const cooked=(b.cvYds||0)>=80||(b.cvTD||0)>0;
+    return `<div class="row spread" style="margin:1px 0"><span class="meta">${nm(p)}</span><span class="meta ${cooked?'bad':''}">${b.cvCmp||0}/${b.cvTgt||0} · ${b.cvYds||0} yd${b.cvTD?' · '+b.cvTD+' TD':''}${cooked?' 🔥 cooked':''}</span></div>`;}).join('');
+  c.innerHTML=h;return c;
+}
 function renderInteractiveGame(app){
   const G=UI.game,home=teamById(G.home),away=teamById(G.away),t=controlled();
   const cur=G.log.length?G.log[G.log.length-1]:null,chs=cur?cur.hs:0,cas=cur?cur.as:0,ctx=G.pending;
@@ -3313,7 +3358,8 @@ function renderInteractiveGame(app){
   }else if(!G.done){
     v.append(el('div','card','<div class="hint">Resolving…</div>'));
   }
-  const feed=el('div');feed.id='g-feed';feed.style.cssText='max-height:'+(ctx?'30vh':'46vh')+';overflow-y:auto;margin-top:12px';
+  const mp=matchupPanel(G); if(mp)v.append(mp);
+  const feed=el('div');feed.id='g-feed';feed.style.cssText='max-height:'+(ctx?'26vh':'40vh')+';overflow-y:auto;margin-top:12px';
   G.log.forEach(e=>{const ln=gameEventEl(e);if(ln)feed.append(ln);});
   v.append(feed);
   const ctr=el('div');ctr.style.marginTop='12px';

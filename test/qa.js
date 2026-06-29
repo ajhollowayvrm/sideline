@@ -262,6 +262,12 @@ function startServer() {
     await page.waitForTimeout(60);
     const after = await page.evaluate(() => UI.game.decisions.length);
     check('Phase 22: making a call advances the drive (decision recorded)', after > before, `${before}→${after}`);
+    // resolve the rest (Auto) → the live matchup / coverage panel populates from the running box
+    await page.locator('[data-mode="auto"]').click();
+    await page.waitForTimeout(90);
+    const panel = await page.evaluate(() => ({ done: !!(UI.game && UI.game.done), matchups: !!document.querySelector('[data-tid="matchups"]'), boxCov: !!(UI.game && UI.game.box && Object.values(UI.game.box).some(b => b && b.cvYds)) }));
+    check('Phase 23: the coach view shows a live matchup / coverage panel', panel.matchups && panel.boxCov, JSON.stringify(panel));
+    await shot(page, '19c-coach-matchups.png');
     // bail without committing — the upcoming game must stay unplayed
     const bailed = await page.evaluate(() => { const me = S.teamId, wk = S.week; UI.game = null; UI.view = 'home'; render(); const g = S.schedule.games.find(x => (x.home === me || x.away === me) && x.week === wk); return g ? g.played === false : true; });
     check('Phase 22: leaving Coach mode does not commit the game', bailed);

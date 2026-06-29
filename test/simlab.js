@@ -210,6 +210,23 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Phase 22 balance: spamming PASS does not beat a balanced attack', passP / n < defP / n, `pass ${(passP / n).toFixed(1)} vs balanced ${(defP / n).toFixed(1)}`);
 })();
 
+// Phase 23 — per-matchup resolution: a play keys off the SPECIFIC WR↔CB matchup (mean-zero vs the
+// team baseline). A stud receiver should torch a weak corner and barely dent a great one, and the
+// beaten corner's "coverage yards allowed" should spike (the 'getting cooked' readout).
+(function () {
+  const w = genWorld(321);
+  const O = JSON.parse(JSON.stringify(w.teams[0]));
+  const wr1 = O.roster.filter(p => p.pos === 'WR').sort((a, b) => a.so - b.so)[0]; wr1.ov = 95;
+  O.ratings = teamRatings(O.roster);
+  const mkDef = cbOv => { const D = JSON.parse(JSON.stringify(w.teams[1])); const cb1 = D.roster.filter(p => p.pos === 'CB').sort((a, b) => a.so - b.so)[0]; cb1.ov = cbOv; D.ratings = teamRatings(D.roster); return { D, cbId: cb1.id }; };
+  const weak = mkDef(55), strong = mkDef(95), seed = 4242;
+  const rw = simEngine(O, weak.D, seed), rs = simEngine(O, strong.D, seed);
+  const wrW = (rw.box[wr1.id] || {}).reYds || 0, wrS = (rs.box[wr1.id] || {}).reYds || 0;
+  check('Phase 23: a stud WR torches weak coverage more than strong', wrW > wrS, `${wrW} vs ${wrS} rec yds`);
+  const cbW = (rw.box[weak.cbId] || {}).cvYds || 0, cbS = (rs.box[strong.cbId] || {}).cvYds || 0;
+  check('Phase 23: the beaten corner gets cooked (more coverage yds allowed)', cbW > cbS, `${cbW} vs ${cbS} cv yds`);
+})();
+
 // statistical realism across a full season
 const R = simSeason(2026);
 const meanPts = avg(R.scores);
@@ -246,6 +263,14 @@ check('Sack leader realistic (7–22 / 12g)', sk[0].v >= 7 && sk[0].v <= 22, `${
   let pInt = 0, dInt = 0;
   R.teams.forEach(t => { const s = R.season[t.id]; for (const pid in s) { pInt += s[pid].pInt || 0; dInt += s[pid].dInt || 0; } });
   check('Box balances: league INTs thrown == league INTs caught', pInt === dInt && pInt > 0, `pInt ${pInt} / dInt ${dInt}`);
+})();
+// Phase 23 coverage stats pair exactly with the offense: every catch has a defender on it.
+(function () {
+  let rec = 0, cvCmp = 0, reY = 0, cvY = 0, pAtt = 0, cvTgt = 0;
+  R.teams.forEach(t => { const s = R.season[t.id]; for (const pid in s) { const x = s[pid]; rec += x.rec || 0; cvCmp += x.cvCmp || 0; reY += x.reYds || 0; cvY += x.cvYds || 0; pAtt += x.pAtt || 0; cvTgt += x.cvTgt || 0; } });
+  check('Phase 23: coverage completions allowed == receptions league-wide', cvCmp === rec && rec > 0, `cvCmp ${cvCmp} / rec ${rec}`);
+  check('Phase 23: coverage yards allowed == receiving yards league-wide', cvY === reY, `cvY ${cvY} / reY ${reY}`);
+  check('Phase 23: coverage targets == pass attempts league-wide', cvTgt === pAtt, `cvTgt ${cvTgt} / pAtt ${pAtt}`);
 })();
 
 // Player of the Week scorer (formula must mirror computeWeeklyHonors in index.html): the best
