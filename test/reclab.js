@@ -78,13 +78,14 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   const five = pool.filter(r => r.stars === 5).length;
   const four = pool.filter(r => r.stars === 4).length;
   const three = pool.filter(r => r.stars === 3).length;
-  check('Pool ~300 prospects', pool.length >= 280 && pool.length <= 320, pool.length + ' prospects');
-  check('Star mix is top-heavy (5★ < 4★ < 3★)', five < four && four < three, `${five}/${four}/${three}`);
-  check('A handful of 5★, most are 3★', five >= 4 && five <= 14 && three > pool.length * 0.6, `${five} 5★, ${three} 3★`);
+  const two = pool.filter(r => r.stars === 2).length;
+  check('Pool is the full national class (~3,400)', pool.length >= 3200 && pool.length <= 3600, pool.length + ' prospects');
+  check('Star mix is top-heavy (5★ < 4★ < 3★, with a deep 2★ tail)', five < four && four < three && two > four, `${five}/${four}/${three}/${two}`);
+  check('A handful of 5★, the vast majority are 3★ or below', five >= 18 && five <= 50 && (three + two) > pool.length * 0.7, `${five} 5★, ${three + two} 3★/2★`);
   // every prospect has at least one suitor, fewer suitors are not absurd
   const sui = pool.map(r => Object.keys(r.iv).length);
   check('Every prospect has 2–6 suitors', Math.min(...sui) >= 2 && Math.max(...sui) <= 6, `${Math.min(...sui)}–${Math.max(...sui)}`);
-  check('Prospect ratings are recruit-shaped (ov 60–99, pot ≥ ov)', pool.every(r => r.ov >= 60 && r.ov <= 99 && r.pot >= r.ov));
+  check('Prospect ratings are recruit-shaped (ov 58–99, pot ≥ ov)', pool.every(r => r.ov >= 58 && r.ov <= 99 && r.pot >= r.ov));
 })();
 
 /* 2) convergence: nearly everyone signs by Signing Day */
@@ -92,11 +93,18 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   const { pool } = runCycle(2026);
   const haveSuitor = pool.filter(r => Object.keys(r.iv).length > 0);
   const signed = pool.filter(r => r.committedTo && r.signed);
-  check('Cycle converges: ≥95% of prospects sign by Signing Day', signed.length / haveSuitor.length >= 0.95, `${signed.length}/${haveSuitor.length}`);
+  // Full national pool ≈ FBS capacity, so a small tail goes unsigned (those land via walk-on backfill at
+  // rollover) — the cycle still resolves deterministically with the vast majority signed.
+  check('Cycle converges: the vast majority sign by Signing Day (≥88%)', signed.length / haveSuitor.length >= 0.88, `${signed.length}/${haveSuitor.length}`);
   check('All commits go to an actual suitor', pool.every(r => !r.committedTo || r.iv[r.committedTo] != null));
   // no class exceeds the cap
   const counts = {}; pool.forEach(r => { if (r.committedTo) counts[r.committedTo] = (counts[r.committedTo] || 0) + 1; });
   check('No team signs more than the class cap (25)', Math.max(...Object.values(counts)) <= 25, 'max class ' + Math.max(...Object.values(counts)));
+  // every program builds a real, substantial class from the modeled national board (Phase 17)
+  const classSizes = teamsList => teamsList.map(t => counts[t.id] || 0);
+  const sizes = classSizes(genWorld(2026));
+  const filled = sizes.filter(n => n >= 18).length;
+  check('Most programs land a substantial class (≥100 of 134 fill ≥18)', filled >= 100, `${filled}/134 teams filled ≥18`);
 })();
 
 /* 3) prestige sensitivity: better programs sign better classes, top prospects go to powers */

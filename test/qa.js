@@ -439,7 +439,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 18 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 19 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -456,7 +456,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v18)', mig.v === 18, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v19)', mig.v === 19, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -586,7 +586,7 @@ function startServer() {
   await page.locator('[data-tid="rtab-class"]').click();
   await page.waitForTimeout(150);
   const classTxt = await page.evaluate(() => document.querySelector('.view').innerText);
-  check('Recruiting cycle: Class tab shows the class + grade', /class rank/i.test(classTxt) && /projected/i.test(classTxt));
+  check('Recruiting cycle: Class tab shows the class + grade', /class rank/i.test(classTxt) && /spots filled/i.test(classTxt));
   check('Phase 14: in-season class reads as VERBAL commits (signing is in the offseason)', /verbal/i.test(classTxt), 'has "verbal" copy');
   await shot(page, '25-recruiting-class.png');
 
@@ -660,7 +660,7 @@ function startServer() {
   check('Phase 14: National Signing Day closes the class (all commits signed)', nsd.stage === 'closed' && nsd.signed && nsd.unsigned === 0, `stage ${nsd.stage}, unsigned ${nsd.unsigned}`);
   check('Phase 14: the Early Signing Period inked the firm verbal commits', esp.earlySigned > 40, esp.earlySigned + ' signed early');
   check('Phase 14: National Signing Day resolves the contested remainder', nsd.totalSigned - esp.earlySigned > 0, `+${nsd.totalSigned - esp.earlySigned} on Signing Day`);
-  check('Phase 14: nearly all prospects sign by the close of Signing Day', nsd.totalSigned / nsd.haveSuitor >= 0.9, `${nsd.totalSigned}/${nsd.haveSuitor}`);
+  check('Phase 14: the vast majority sign by the close of Signing Day (full national pool)', nsd.totalSigned / nsd.haveSuitor >= 0.80, `${nsd.totalSigned}/${nsd.haveSuitor}`);
   check('Phase 14: still in the Offseason — rollover comes next', nsd.phase === 'Offseason');
   check('Phase 14: the controlled team’s class is fully signed', nsd.classSigned && nsd.myClass > 0, nsd.myClass + ' signed');
   await shot(page, '25c-signing-day.png');
@@ -769,7 +769,7 @@ function startServer() {
   check('Rollover: advances to the next calendar year', roPost.year === roPre.year + 1, `${roPre.year} → ${roPost.year}`);
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
-  check('Rollover: save version bumped to 18', roPost.version === 18, 'v' + roPost.version);
+  check('Rollover: save version bumped to 19', roPost.version === 19, 'v' + roPost.version);
   check('Phase 8: player honors survive the rollover', roPost.honoredAfter > 0, roPost.honoredAfter + ' still honored');
   check('Phase 8: series + awards history persist across the rollover', roPost.seriesKept > 0 && roPost.awardsKept > 0, `series ${roPost.seriesKept}, awards ${roPost.awardsKept}`);
   check('Phase 11: career totals accrue across the rollover', roPost.careerPlayers > 50, roPost.careerPlayers + ' players carry a career');
@@ -929,9 +929,16 @@ function startServer() {
     let ok = true, np = 0;
     S.world.teams.forEach((t, i) => { const d = dec.world.teams[i]; if (!d || t.roster.length !== d.roster.length) { ok = false; return; } t.roster.forEach((p, j) => { np++; if (!eq(p, d.roster[j])) ok = false; }); });
     const topOk = dec.seed === S.seed && dec.year === S.year && dec.teamId === S.teamId && dec.version === S.version && dec.awards.length === S.awards.length;
-    return { full, encLen, ok, np, topOk, encMarker: !!enc._sv, decClean: dec._sv === undefined };
+    // Phase 17: the (large) recruit pool round-trips through the columnar codec exactly
+    let poolOk = null, poolN = 0;
+    if (S.recruiting && S.recruiting.pool) {
+      const a = S.recruiting.pool, b = dec.recruiting && dec.recruiting.pool; poolN = a.length;
+      poolOk = !!b && a.length === b.length && a.every((r, k) => { const { _flipped, ...rr } = r; return b[k] && eq(rr, b[k]); });
+    }
+    return { full, encLen, ok, np, topOk, poolOk, poolN, encMarker: !!enc._sv, decClean: dec._sv === undefined };
   });
   check('Phase 9: columnar codec round-trips every roster exactly', codec.ok && codec.np > 10000, codec.np + ' players checked');
+  check('Phase 17: columnar codec round-trips the full recruit pool exactly', codec.poolOk !== false && codec.poolN > 3000, codec.poolN + ' recruits checked');
   check('Phase 9: codec preserves top-level state (seed/year/awards/…)', codec.topOk);
   check('Phase 9: encoded save is meaningfully smaller', codec.encLen < codec.full * 0.78, `${(codec.full / 1024 | 0)}KB → ${(codec.encLen / 1024 | 0)}KB`);
   check('Phase 9: encode tags the blob, decode strips the tag', codec.encMarker && codec.decClean);

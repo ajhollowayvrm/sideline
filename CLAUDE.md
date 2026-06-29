@@ -191,10 +191,22 @@ plain static files so Pages still serves it with zero config.
   `rec._flipped={from,to}` for the toasts. Save **v18** (behaviour-only, no-op migration); `reclab` grew to
   26 (flip happens / signed-locked / finalize-locked / determinism), `qa` to 199. See "Phase 16 design —
   decommits" below.
+- **Phase 17 — Full national recruit board (~3,400).** ✅ DONE. The board is no longer top-300 — `genRecruits`
+  now builds the **whole national class** (`REC.POOL=3400` ≈ 134 teams × a ~25-man class): a handful of 5★,
+  a few hundred 4★, then a deep 3★/2★ tail (a new 2★ tier, `recruitFit`/suitor `target`s span the prestige
+  range, suitor spread widened so every program has a reachable pool). The faked prestige baseline in
+  `classScore` is gone — class scores are the real sum of landed value. The pool serializes **columnar**
+  (`RECRUIT_PKEYS`/`encPool`/`decPool`, wired into `encodeState`/`decodeState` under the `_sv` envelope) so
+  a mid-season save stays ~2.5 MB (well under the ~5 MB cap; decode reads both the old plain pool and the
+  new `_cp` form). `rolloverRoster` gained a **scholarship cap** (trims the weakest depth beyond each
+  position's target down to ~85) so a full class can't balloon a roster. The board UI got **filters**
+  (position / star / **home state** / availability incl. flippable verbals) + **pagination** (Load more).
+  ~90% of the national pool signs (the capacity-limited tail backfills as walk-ons at rollover, as before).
+  Save **v19**; `reclab` grew to 27 (full pool, star mix, substantial classes, convergence), `qa` to 200
+  (columnar pool round-trip). See "Phase 17 design — full national board" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
-  (only the controlled team's game is watchable/replayable, so advancing a week stays fast); and
-  the recruit board stays **top-300 only** (the long 2–3★ tail is approximated, never individually
-  modeled — slated to be reversed in Phase 17). These are design choices, not a backlog.
+  (only the controlled team's game is watchable/replayable, so advancing a week stays fast). This is a
+  design choice, not a backlog.
 
 ---
 
@@ -642,6 +654,47 @@ out-recruiting), no decommit of your *own* signed class.
 
 ---
 
+## Phase 17 design — full national recruit board (~3,400)
+
+Decided 2026-06-28 with AJ (Phases 15–18 batch). The Phase 4 board was deliberately **top-300 only** (the
+2–3★ tail faked by a `classScore` prestige baseline + generated filler freshmen at rollover). Phase 17
+reverses that: the **entire national class is individually modeled**, so every program signs a real class
+from a real board.
+
+### Generation (`genRecruits`, RECRUIT ENGINE)
+`REC.POOL=3400` (≈ 134 teams × a ~25-man class). Star mix is top-heavy: ~30 5★, ~350 4★, ~1,520 3★, then a
+new **2★ tier** (~1,500) filling the tail. `ovBase`/`target` extend to 2★ (`recruitFit` + the suitor
+`target` both span the prestige range: 5★→88, 4★→70, 3★→50, 2★→32). Suitor counts widened (every recruit
+draws 4–6 suitors) and the suitor score carries **more noise** (`r()*1.1`) so no tier of programs is wildly
+over- or under-subscribed — each program needs a reachable pool to fill its class. The per-recruit id keying
+for traits/rebel is unchanged. ~90% of the pool signs by Signing Day; the capacity-limited tail backfills as
+walk-ons at rollover (the bottom ~20 programs lean on that, which is realistic).
+
+### Knock-on changes
+- `classScore` drops the faked prestige baseline (kept only as a tiny tiebreaker) — class scores are now the
+  real sum of landed value.
+- `rolloverRoster` gains a **scholarship cap** (`ROSTER_CAP=85`): a full class would otherwise balloon a
+  roster, so it trims the weakest **depth beyond each position's target** (lowest ov first, never a captain)
+  down toward 85. Every position stays ≥ its target (rolllab's depth check holds). `genFreshman` backfill
+  still serves programs that under-sign.
+- **Columnar pool codec:** `RECRUIT_PKEYS` + `encPool`/`decPool` mirror the roster codec; `encodeState`/
+  `decodeState` encode `recruiting.pool` as `_cp` under the existing `_sv` envelope (the transient
+  `_flipped` is dropped). A mid-season save stays ~2.5 MB. Decode reads both the old plain pool and the new
+  `_cp` form (back-compat).
+- **Board UI:** `recruitProspects` gains home-state + availability filters (incl. "verbals — flippable")
+  and **pagination** (Load more, 80/page) so 3,400 rows stay usable; the Class view's old "+N projected
+  depth" line becomes a real "X of 25 class spots filled" note.
+
+### Save & validation
+Save **v19** (no-op migration — pool recreated at kickoff; codec is back-compatible). `reclab` (27) updated
+for the full pool: ~3,400 size, top-heavy mix with a 2★ tail, the cycle converges (≥88% sign), most programs
+land a substantial class (≥100 of 134 fill ≥18), class cap respected. `qa` (200) adds a **columnar
+recruit-pool round-trip** (all ~3,400 recruits byte-exact). **No new gate** (reclab + qa cover it).
+**Deliberately out of scope:** still no sub-2★ / preferred-walk-on individuals (the genFreshman backfill
+stands in for the deepest tail), no JUCO/FCS recruiting, no early-enrollee timing.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -710,6 +763,9 @@ broken). Until then the payoff is a **class ranking + grade** — honest, like t
 deferral. No faked single-season roster injection.
 
 ### The prospect pool (lean, top-heavy)
+> **Superseded by Phase 17:** the board is now the **full national class (~3,400)**, columnar-saved — the
+> top-300 limit + faked tail below are historical. See "Phase 17 design — full national board."
+
 `genRecruits(seed, teams)` builds **~300 contested blue-chip prospects** (≈ a top-300 board),
 deterministic from the world seed. We deliberately do *not* model all ~3000 national recruits:
 storing them would bloat the save, and only the contested ones create gameplay. Each prospect
@@ -1064,7 +1120,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **18**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **19**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -1083,7 +1139,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   `p.career`/`p.peakOv` absent read as zero/none, honors already persist); v16→v17 backfills
   `S.champWeek=null` (Phase 15 — Championship Week is created after the regular season, like the postseason)
   + per-team `confTitles=[]` (conference-title years); v17→v18 is a structural no-op (Phase 16 decommits —
-  a transient `rec._flipped` is recomputed each week, nothing to backfill). Each step re-derives
+  a transient `rec._flipped` is recomputed each week, nothing to backfill); v18→v19 is a structural no-op
+  (Phase 17 full recruit board — the pool is recreated at kickoff, and the columnar pool codec decodes both
+  the old plain pool and the new `_cp` form). Each step re-derives
   ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
@@ -1253,8 +1311,8 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
-### Phases 6–16 landed — what used to be stubbed now works
-Phases 1–16 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
+### Phases 6–17 landed — what used to be stubbed now works
+Phases 1–17 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
 loop** + **facility upgrades** (Phase 6), **side-specific development** + **in-game coach effects** +
 **coach-responsive scouting fog** (Phase 7), **AI geography** + **season awards/All-America/Coach of
 the Year/Week** + **non-conference series** (Phase 8), the **columnar save codec** (Phase 9), **fogged
@@ -1265,8 +1323,10 @@ graduates get drafted, repeated high picks build a positional reputation that pu
 rebels) (Phase 13), the **recruiting calendar** — verbal commits all fall, then the Early Signing
 Period + National Signing Day close the class in the offseason (Phase 14), and **conference
 championships** — a Championship Week of title games that feed the playoff with real CFP auto-bids +
-byes (Phase 15), and **decommits** — a verbal pledge can flip to a surging rival before Signing Day
-(Phase 16). The full career loop — recruit (verbal, flippable) → season → **conf championships** → awards →
+byes (Phase 15), **decommits** — a verbal pledge can flip to a surging rival before Signing Day
+(Phase 16), and the **full national recruit board** — the whole ~3,400-prospect class is individually
+modeled (columnar-saved, filtered + paginated), retiring the old top-300 board (Phase 17). The full
+career loop — recruit (verbal, flippable) → season → **conf championships** → awards →
 **postseason** → **Early Signing → National Signing Day** → rollover (graduate/enshrine/**draft**/develop/
 enroll) → finances settle → carousel → facilities/series — closes across multiple years, and your stars
 leave a permanent mark on the program both on its Ring of Honor and on its pro-pipeline reputation.
@@ -1279,8 +1339,6 @@ leave a permanent mark on the program both on its Ring of Honor and on its pro-p
 - Non-controlled games are resolved instantly by `simEngine`; only the controlled team's game
   is watchable (watch-then-commit) or replayable (greatest games). There's no live viewer for
   arbitrary other games — by design, so advancing a week stays fast.
-- The recruit board stays **top-300 only** (the 2–3★ tail is approximated by a prestige baseline +
-  generated filler freshmen at rollover, never individually modeled).
 - The **module/build split** and the **seed+diff** save variant were deliberately skipped (see
   Phase 9) — the columnar codec gets most of the size win deploy-safely.
 

@@ -482,18 +482,42 @@ function encRoster(roster){
 function decRoster(enc){
   return (enc||[]).map(e=>{const p={};SAVE_PKEYS.forEach((k,i)=>p[k]=e[0][i]);if(e[1])Object.assign(p,e[1]);return p;});
 }
+// Phase 17: the recruit pool is now the full national class (~3,400), so it serializes columnar too —
+// scalar fields become a flat tuple, the sparse extras (prefs[], iv{}, promise, alumni) ride in a side
+// object (the transient _flipped tag is dropped). Mirrors encRoster/decRoster exactly.
+const RECRUIT_PKEYS=['id','fn','ln','pos','st','stars','ov','pot','spd','str','awr','mot','comp','rebel','scout','committedTo','signed','offered','visited'];
+function encPool(pool){
+  return pool.map(p=>{
+    const core=RECRUIT_PKEYS.map(k=>p[k]);
+    let ext=null;for(const k in p){if(k==='_flipped')continue;if(RECRUIT_PKEYS.indexOf(k)<0){(ext=ext||{})[k]=p[k];}}
+    return ext?[core,ext]:[core];
+  });
+}
+function decPool(enc){
+  return (enc||[]).map(e=>{const p={};RECRUIT_PKEYS.forEach((k,i)=>p[k]=e[0][i]);if(e[1])Object.assign(p,e[1]);return p;});
+}
 // Encode a live state for storage (compact). Never mutates the live state (shallow copies + new
 // arrays). Falls back to the full state if anything unexpected happens, so a save is never lost.
 function encodeState(state){
   try{
     const teams=state.world.teams.map(t=>{const o=Object.assign({},t);o._cr=encRoster(t.roster);delete o.roster;return o;});
-    return Object.assign({},state,{world:{teams},_sv:1});
+    const out=Object.assign({},state,{world:{teams},_sv:1});
+    if(state.recruiting&&state.recruiting.pool){      // Phase 17: columnar-encode the (large) recruit pool
+      out.recruiting=Object.assign({},state.recruiting,{_cp:encPool(state.recruiting.pool)});
+      delete out.recruiting.pool;
+    }
+    return out;
   }catch(e){return state;}
 }
 function decodeState(s){
   if(!s||!s._sv)return s;            // old/full save → use as-is
   const teams=s.world.teams.map(t=>{const o=Object.assign({},t);o.roster=decRoster(t._cr);delete o._cr;return o;});
-  const out=Object.assign({},s,{world:{teams}});delete out._sv;return out;
+  const out=Object.assign({},s,{world:{teams}});delete out._sv;
+  if(out.recruiting&&out.recruiting._cp){             // decode the columnar recruit pool (older saves stored pool plainly)
+    out.recruiting=Object.assign({},out.recruiting,{pool:decPool(out.recruiting._cp)});
+    delete out.recruiting._cp;
+  }
+  return out;
 }
 function readSlot(n){try{const raw=localStorage.getItem(slotKey(n));return raw?JSON.parse(raw):null;}catch(e){return null;}}
 function writeSlot(n,state){
@@ -662,7 +686,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:18,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:19,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -818,6 +842,9 @@ function migrateState(state){
   if((state.version||1)<18){           // Phase 16: decommits (verbal flips). Behaviour-only — a transient
     state.version=18;                  // rec._flipped is recomputed each week, so there is nothing to backfill.
   }
+  if((state.version||1)<19){           // Phase 17: full national recruit board (~3,400) + columnar pool codec.
+    state.version=19;                  // Structural no-op — the pool is recreated at the next kickoff; the codec
+  }                                    // decodes both the old plain pool and the new columnar (_cp) form.
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1080,7 +1107,7 @@ const PITCH_ANGLES=[
   ['home','Stay Home','Play close to family and friends.'],
   ['academics','Academics','A degree that sets up life after ball.']];
 // Tuning — tweaked in test/reclab.js.
-const REC={POOL:300,COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:12,SLOTS:16,DECOMMIT_GAP:18};
+const REC={POOL:3400,COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:12,SLOTS:16,DECOMMIT_GAP:18};
 
 // Coach archetype/history effects — Phase 4 is the first system to apply them. Returns a bag of
 // multipliers/bonuses used by the weekly economy + the player's recruiting actions.
@@ -1103,7 +1130,7 @@ function coachMods(coach){
 // How well a team fits a prospect (0..~1.1): prestige proximity to the recruit's tier, with a
 // floor for programs above the tier (they can always take down-tier talent), plus a needs nudge.
 function recruitFit(team,rec){
-  const target=rec.stars===5?88:rec.stars===4?72:56;
+  const target=rec.stars>=5?88:rec.stars===4?70:rec.stars===3?50:32;
   let prox=clamp(1-Math.abs(team.prestige-target)/50,0,1);
   if(team.prestige>=target)prox=Math.max(prox,0.72+Math.min(team.prestige-target,22)/110);
   const need=(team.needs&&team.needs[rec.pos])?0.12:0;
@@ -1127,29 +1154,34 @@ function recruitFit(team,rec){
   if(team.factory)fac+=factoryPull(team,rec);
   return clamp(prox+need+fac,0,1.2);
 }
-// Class-ranking value of a landed prospect, and a team's total class score (landed value + a
-// prestige baseline standing in for the ~20 unmodeled 2–3★ depth signees every program lands).
+// Class-ranking value of a landed prospect, and a team's total class score. Phase 17: the whole national
+// class is now modeled, so the score is the real sum of landed value (a small prestige term is kept only
+// as a tiebreaker so equal classes order deterministically — it no longer stands in for a faked tail).
 function recruitValue(rec){return rec.stars*rec.stars*2+Math.max(0,rec.ov-70);}
 function classScore(team,pool){
-  let s=team.prestige*0.8;
+  let s=(team.prestige||50)*0.1;
   for(const r of pool)if(r.committedTo===team.id)s+=recruitValue(r);
   return Math.round(s);
 }
-// Build the contested national board (~300 blue-chips), deterministic from the world seed.
+// Build the FULL national recruiting class (~3,400 — roughly 134 teams × a 25-man class), deterministic
+// from the world seed (Phase 17). Star mix is top-heavy: a handful of 5★, a few hundred 4★, then a long
+// 3★/2★ tail that fills out every program's board.
 function genRecruits(seed,teams){
   const r=rng((seed^0x2ec54172)>>>0);
   const posPool=[];POS.forEach(([c,,n])=>{for(let i=0;i<n;i++)posPool.push(c);});
   const pool=[];
   for(let i=0;i<REC.POOL;i++){
-    const stars=i<8?5:i<78?4:3;
-    const ovBase=stars===5?92:stars===4?85:77;
-    const ov=clamp(ovBase+ri(r,-4,5),60,99);
+    const stars=i<30?5:i<380?4:i<1900?3:2;
+    const ovBase=stars===5?92:stars===4?85:stars===3?77:68;
+    const ov=clamp(ovBase+ri(r,-4,5),58,99);
     const pot=clamp(ov+ri(r,3,13),ov,99);
     const pos=pick(r,posPool), st=pick(r,STATES);
     const p1=pick(r,PREFS); let p2=pick(r,PREFS),guard=0; while(p2===p1&&guard++<6)p2=pick(r,PREFS);
-    const target=stars===5?88:stars===4?72:56;
-    const nSuit=stars===5?ri(r,4,6):stars===4?ri(r,3,5):ri(r,2,4);
-    const ranked=teams.map(t=>({t,s:(1-Math.abs(t.prestige-target)/50)+r()*0.6+((t.homeState&&t.homeState===st)?0.3:0)}))
+    const target=stars===5?88:stars===4?70:stars===3?50:32;
+    const nSuit=stars===5?ri(r,4,6):stars===4?ri(r,4,6):ri(r,4,6);
+    // Spread suitors across the prestige band (more noise) so no tier of programs is wildly over- or
+    // under-subscribed — every program needs a reachable pool to fill its ~25-man class (Phase 17).
+    const ranked=teams.map(t=>({t,s:(1-Math.abs(t.prestige-target)/50)+r()*1.1+((t.homeState&&t.homeState===st)?0.3:0)}))
       .sort((a,b)=>b.s-a.s).slice(0,nSuit);
     const iv={};
     ranked.forEach((e,k)=>{const fit=recruitFit(e.t,{stars,pos,st});
@@ -1317,12 +1349,26 @@ function rolloverRoster(roster,signees,prestige,r,opts){
     cont.push(p);
   });
   const freshmen=(signees||[]).map(s=>recruitToFreshman(s,r));
-  const out=cont.concat(freshmen);
+  let out=cont.concat(freshmen);
   // backfill each position toward its target depth with generated 2–3★ freshmen
   POS.forEach(([code,,n])=>{
     let have=out.filter(p=>p.pos===code).length;
     while(have<n){out.push(genFreshman(r,prestige,code));have++;}
   });
+  // Scholarship cap (Phase 17): a full national recruiting class can push a roster well past the limit,
+  // so trim the weakest DEPTH — only players beyond their position's target (lowest ov first), never a
+  // captain — down toward ROSTER_CAP. Every position stays at least target-deep.
+  const ROSTER_CAP=85;
+  if(out.length>ROSTER_CAP){
+    const byPosX={};out.forEach(p=>(byPosX[p.pos]=byPosX[p.pos]||[]).push(p));
+    const excess=[];
+    POS.forEach(([code,,n])=>{const a=(byPosX[code]||[]).slice().sort((x,y)=>y.ov-x.ov);
+      for(let i=n;i<a.length;i++)excess.push(a[i]);});   // depth beyond this position's target
+    excess.sort((a,b)=>a.ov-b.ov);                        // cut the weakest first
+    const cut=new Set();let over=out.length-ROSTER_CAP;
+    for(const p of excess){if(over<=0)break;if(p.cap)continue;cut.add(p);over--;}
+    if(cut.size)out=out.filter(p=>!cut.has(p));
+  }
   // depth order: best-by-ov per position gets so=0 (no rating taper — returning ratings stand)
   const byPos={};out.forEach(p=>{(byPos[p.pos]=byPos[p.pos]||[]).push(p);});
   Object.values(byPos).forEach(arr=>{arr.sort((a,b)=>b.ov-a.ov);arr.forEach((p,i)=>p.so=i);});
@@ -3338,27 +3384,46 @@ function recruitProspects(v){
   const R=S.recruiting, t=controlled();
   const wrap=el('div');
   const search=el('input','search');search.placeholder='Search prospects…';search.dataset.tid='rec-search';
-  const fbar=el('div','row');fbar.style.cssText='gap:8px;margin-bottom:10px';
+  const fbar=el('div','row');fbar.style.cssText='gap:8px;margin-bottom:10px;flex-wrap:wrap';
   const posSel=el('select');posSel.dataset.tid='rec-pos';
   [['','All pos'],...POS.map(([c])=>[c,c])].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l+((val&&t.needs&&t.needs[val])?' ●':'');o.selected=false;posSel.append(o);});
-  const starSel=el('select');[['','All ★'],['5','5★'],['4','4★ +'],['3','3★ +']].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;starSel.append(o);});
-  fbar.append(posSel,starSel);
+  const starSel=el('select');[['','All ★'],['5','5★'],['4','4★ +'],['3','3★ +'],['2','2★ +']].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;starSel.append(o);});
+  // Phase 17: with the full national class, a home-state + an availability filter keep the board usable.
+  const stSel=el('select');stSel.dataset.tid='rec-state';
+  [['','All states'],...STATES.map(s=>[s,s])].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;stSel.append(o);});
+  const availSel=el('select');availSel.dataset.tid='rec-avail';
+  [['','Available + mine'],['open','Uncommitted only'],['verbal','Verbals (flippable)'],['mine','My commits'],['board','My board']].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;availSel.append(o);});
+  fbar.append(posSel,starSel,stSel,availSel);
   const list=el('div');list.dataset.tid='rec-list';
   const cnt=el('div','hint center');
+  const PAGE=80; let shown=PAGE;
+  const moreBtn=el('button','btn line','Load more');moreBtn.style.marginTop='10px';
+  moreBtn.onclick=()=>{shown+=PAGE;draw();};
+  function avail(r){
+    const v=availSel.value, mine=r.committedTo===S.teamId;
+    if(v==='open')return !r.committedTo;
+    if(v==='verbal')return r.committedTo&&!r.signed&&!mine;
+    if(v==='mine')return mine;
+    if(v==='board')return onBoard(r);
+    return !r.signed||mine;            // default: anything still gettable (incl. flippable verbals) + my commits
+  }
   function draw(){
     list.innerHTML='';
-    let arr=R.pool.filter(r=>!r.signed||r.committedTo===S.teamId);   // Phase 16: verbals elsewhere stay listed (flippable until they sign)
+    let arr=R.pool.filter(avail);
     const q=search.value.toLowerCase().trim();
     if(q)arr=arr.filter(r=>(r.fn+' '+r.ln+' '+r.pos+' '+r.st).toLowerCase().includes(q));
     if(posSel.value)arr=arr.filter(r=>r.pos===posSel.value);
     if(starSel.value)arr=arr.filter(r=>r.stars>=+starSel.value);
+    if(stSel.value)arr=arr.filter(r=>r.st===stSel.value);
     arr.sort((a,b)=>b.stars-a.stars||myInterest(b)-myInterest(a)||a.ln.localeCompare(b.ln));
-    arr.slice(0,120).forEach(r=>list.append(recruitRow(r)));
+    arr.slice(0,shown).forEach(r=>list.append(recruitRow(r)));
     if(!arr.length)list.append(el('div','empty','No prospects match.'));
-    cnt.textContent=arr.length+' prospects';
+    moreBtn.style.display=arr.length>shown?'':'none';
+    cnt.textContent=Math.min(shown,arr.length)+' of '+arr.length+' prospects';
   }
-  search.oninput=draw;posSel.onchange=draw;starSel.onchange=draw;
-  wrap.append(search,fbar,list,cnt);v.append(wrap);draw();
+  const reset=()=>{shown=PAGE;draw();};
+  search.oninput=reset;posSel.onchange=reset;starSel.onchange=reset;stSel.onchange=reset;availSel.onchange=reset;
+  wrap.append(search,fbar,list,moreBtn,cnt);v.append(wrap);draw();
 }
 function recruitClass(v,rank,grade){
   const cls=myClass();
@@ -3375,7 +3440,7 @@ function recruitClass(v,rank,grade){
     v.append(el('h2','sec',posName(code)+' ('+g.length+')'));
     g.sort((a,b)=>b.stars-a.stars).forEach(r=>v.append(recruitRow(r)));
   });
-  v.append(el('div','hint center','Plus ~'+Math.max(0,22-cls.length)+' projected 2–3★ depth signees (not individually tracked).\nSignees become freshmen at the offseason rollover (Phase 5).'));
+  v.append(el('div','hint center',cls.length+' of '+REC.CLASS_CAP+' class spots filled (the full national board is modeled now).\nSignees become freshmen at the offseason rollover.'));
 }
 function recruitSheet(rec){
   const body=el('div'), R=S.recruiting, sc=recScouted(rec), mi=myInterest(rec), rank=myRank(rec), suit=suitorList(rec);
