@@ -779,7 +779,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:26,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:27,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -978,6 +978,9 @@ function migrateState(state){
   if((state.version||1)<26){           // Phase 22: play-calling. A game's optional `g.calls` (the coach's
     state.version=26;                  // recorded play calls) is absent-safe — absent reads as a pure AI game.
   }
+  if((state.version||1)<27){           // Phase 24: in-game adjustments. A game's optional `g.adjusts` (the
+    state.version=27;                  // coach's coverage reassignments + pep-talks) is absent-safe → no-op.
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1130,8 +1133,9 @@ function coverDef(rec,dP){
   return dP.lbk[0]||dP.saf[0]||dP.cb[0]||null;            // RB checkdown → LB/S
 }
 // Mean-zero matchup edge in rating points: (offensive player vs his group mean) − (defender vs his).
+// Takes effective OVRs (so a Phase 24 pep-talk bump flows through).
 const MATCH_W=0.42;
-function matchEdge(offP,offAvg,defP,defAvg){return MATCH_W*(((offP?offP.ov:offAvg)-offAvg)-((defP?defP.ov:defAvg)-defAvg));}
+function matchEdge(offOv,offAvg,defOv,defAvg){return MATCH_W*((offOv-offAvg)-(defOv-defAvg));}
 function wpick(pool,r){ let tot=0;for(const e of pool)tot+=e[1]; if(tot<=0)return null;
   let x=r()*tot; for(const e of pool){x-=e[1];if(x<0)return e[0];} return pool[pool.length-1][0]; }
 
@@ -1152,6 +1156,13 @@ function simEngine(home,away,seed,opts){
   const log=(opts&&opts.logInto)||(opts&&opts.log?[]:null);  // logInto: a caller-owned array (survives a pause-throw, Phase 22)
   const decide=opts&&opts.decide;                          // the coach's play-call hook (Phase 22)
   const decideFor=opts&&opts.decideFor;                    // which team id it controls (keeps simEngine pure — no global S)
+  // Phase 24 in-game adjustments: a timeline [{at:playNo, plan}] of the controlled coach's coverage
+  // reassignments + pep-talks. `planAt` returns the plan in effect at a play index (latest at≤pno), so
+  // an adjustment applies only GOING FORWARD (the watched score-so-far never changes on re-run) and the
+  // commit/replay reproduce it exactly. Deterministic (no rng) → determinism + watch==commit intact.
+  const adjusts=(opts&&opts.adjusts)||null, adjustFor=opts&&opts.adjustFor;
+  const planAt=pno=>{ if(!adjusts||!adjusts.length)return null; let pl=null; for(const a of adjusts){ if(a.at<=pno)pl=a.plan; else break; } return pl; };
+  let playNo=0;
   const add=(id,k,v)=>{ if(!id)return; (box[id]=box[id]||{gp:1})[k]=(box[id][k]||0)+(v==null?1:v); };
   const pools={[home.id]:gamePools(home),[away.id]:gamePools(away)};
   const score={[home.id]:0,[away.id]:0};
@@ -1183,13 +1194,19 @@ function simEngine(home,away,seed,opts){
     const clkNow=()=>Math.max(0,(clk0||0)-time);
     L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los));
     while(true){
+      const pno=++playNo;
+      // Phase 24: the controlled coach's adjustments in effect for THIS play (coverage reassignment +
+      // pep-talk OVR bumps). `bov` = a player's effective OVR (with any pep-talk boost); 0 for AI.
+      const plan=(adjustFor&&(off.id===adjustFor||def.id===adjustFor))?planAt(pno):null;
+      const boost=(plan&&plan.boost)||null;
+      const bov=p=>p?(p.ov+((boost&&boost[p.id])||0)):0;
       const dd=(down)+' & '+(togo>=(100-los)?'goal':togo);
       // ---- 4th down: kick or go ----
       if(down===4){
         const fgDist=(100-los)+17, inFgRange=fgDist<=57, shortPlus=los>=58&&togo<=2;
         // OC's call — the EXACT lazy rng draws as before (so an AI game is byte-identical), then an override.
         let act; if(inFgRange && !(shortPlus && r()<0.45)) act='fg'; else if(!(shortPlus && r()<0.55)) act='punt'; else act='go';
-        if(mine){const pick=decide({phase:'fourth',q:L._q,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,fgDist,inFgRange,ocAct:act});
+        if(mine){const pick=decide({phase:'fourth',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,fgDist,inFgRange,ocAct:act});
           if(pick==='fg'||pick==='punt'||pick==='go')act=pick;}
         if(act==='fg'&&!inFgRange)act='punt';               // illegal FG (out of range) → fall back to a punt
         if(act==='fg'){                                      // field-goal attempt
@@ -1205,15 +1222,17 @@ function simEngine(home,away,seed,opts){
       const passProb=clamp(0.45+(togo>7?0.18:togo<3?-0.18:0)+(down>=3?0.17:0)+adv*0.003+schemeTendency(off.offScheme),0.12,0.92);
       const ocPass=r()<passProb;                            // OC's call (always drawn → rng stream stays stable)
       let wantPass=ocPass;
-      if(mine){const pick=decide({phase:'play',q:L._q,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,ocPass,ocCall:ocPass?'pass':'run'});
+      if(mine){const pick=decide({phase:'play',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,ocPass,ocCall:ocPass?'pass':'run'});
         if(pick==='pass')wantPass=true; else if(pick==='run')wantPass=false;}
       const ky=keyedPen(off.id,wantPass?'pass':'run'); usage[off.id][wantPass?'pass':'run']++;   // predictability tax (Phase 22)
       let gain=0, turnover=false, scored=false, tackled=true, txt='';
 
       if(wantPass){                                          // dropback (sacks aren't pass attempts)
         const rec=wpick(oP.recv,r);                          // intended target (pre-snap read)
-        const cov=coverDef(rec,dP);                          // the man on him (deterministic by depth, Phase 23)
-        const mEdge=matchEdge(rec,oP.recvAvg,cov,dP.covAvg); // mean-zero WR-vs-coverage matchup
+        let cov=coverDef(rec,dP);                            // the man on him (deterministic by depth, Phase 23)
+        // Phase 24: a coverage reassignment — you put a specific defender on this receiver slot.
+        if(plan&&plan.shadow&&def.id===adjustFor){const did=plan.shadow[rec.pos+(rec.so||0)];if(did){const d=def.roster.find(p=>p.id===did);if(d)cov=d;}}
+        const mEdge=matchEdge(bov(rec),oP.recvAvg,bov(cov),dP.covAvg); // mean-zero WR-vs-coverage matchup (pep-talk aware)
         const padv=adv+mEdge;
         if(r()<clamp(0.062-adv*0.0012+ky*0.05,0.02,0.18)){  // sack (trench/team — not the WR matchup)
           gain=-ri(r,4,9); time+=36; const s=wpick(dP.rush4,r); add(s&&s.id,'sk'); txt=nm(oP.qb)+' sacked by '+nm(s)+' for '+gain;
@@ -1231,7 +1250,7 @@ function simEngine(home,away,seed,opts){
       } else {                                              // run
         const rb=wpick(oP.rush,r)||oP.qb;
         const fr=wpick(dP.front,r);                          // the front defender he meets (Phase 23)
-        const padv=adv+matchEdge(rb,oP.rushAvg,fr,dP.frontAvg);   // RB vs front matchup (mean-zero)
+        const padv=adv+matchEdge(bov(rb),oP.rushAvg,bov(fr),dP.frontAvg);   // RB vs front matchup (mean-zero, pep-talk aware)
         gain=Math.max(-4,Math.round((2.7+compDraw(r,rb)*4.1)+(r()<0.11?compDraw(r,rb)*30:0)+padv*0.035-ky*RUN_KEY));
         time+=36; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); txt=nm(rb)+' run for '+gain;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
@@ -2281,9 +2300,13 @@ function gameSeed(g){return (hashStr(g.id)^(S.seed>>>0))>>>0;}
 // decisions. Replaying it (the OC default fills any gap) reproduces the EXACT play-called result on
 // commit + on later replay (watch == commit holds). Absent → a pure AI game, unchanged.
 function gameDecideOpts(g){
-  if(!g||!g.calls||!g.calls.length||!S.teamId||(g.home!==S.teamId&&g.away!==S.teamId))return null;
-  let k=0;const calls=g.calls;
-  return {decideFor:S.teamId, decide:ctx=>{const c=calls[k++];return c!=null?c:(ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall);}};
+  if(!g||!S.teamId||(g.home!==S.teamId&&g.away!==S.teamId))return null;
+  const hasCalls=g.calls&&g.calls.length, hasAdj=g.adjusts&&g.adjusts.length;
+  if(!hasCalls&&!hasAdj)return null;
+  const o={decideFor:S.teamId};
+  if(hasCalls){let k=0;const calls=g.calls;o.decide=ctx=>{const c=calls[k++];return c!=null?c:(ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall);};}
+  if(hasAdj){o.adjustFor=S.teamId;o.adjusts=g.adjusts;}   // Phase 24: replay coverage reassignments + pep-talks
+  return o;
 }
 function simGame(g){
   const {home,away}=simSides(g);
@@ -3269,7 +3292,7 @@ function runInteractive(){
   const {home,away}=simSides(g); const seed=gameSeed(g);
   G.log=[]; G.box={}; G.pending=null; let k=0; const PAUSE={pause:1};
   try{
-    const res=simEngine(home,away,seed,{logInto:G.log,boxInto:G.box,decideFor:S.teamId,decide:ctx=>{
+    const res=simEngine(home,away,seed,{logInto:G.log,boxInto:G.box,decideFor:S.teamId,adjustFor:S.teamId,adjusts:G.adjusts||[],decide:ctx=>{
       if(k<G.decisions.length)return G.decisions[k++];                 // already resolved
       if(!G.simRest&&shouldPromptCtx(ctx,G.mode)){G.pending=ctx;throw PAUSE;}  // your call → pause here
       const def=ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall;G.decisions.push(def);k++;return def;  // OC handles it
@@ -3281,10 +3304,54 @@ function runInteractive(){
 function enterInteractive(){
   if(gameTimer){clearTimeout(gameTimer);gameTimer=null;}
   const G=UI.game; if(!G)return;
-  Object.assign(G,{interactive:true,mode:G.mode||'key',decisions:[],log:[],pending:null,done:false,simRest:false});
+  Object.assign(G,{interactive:true,mode:G.mode||'key',decisions:[],log:[],pending:null,done:false,simRest:false,plan:{shadow:{},boost:{}},adjusts:[]});
   runInteractive();
 }
 function pickCall(c){const G=UI.game;if(!G||!G.pending)return;G.decisions.push(c);runInteractive();}
+// Phase 24: bank the current adjustment plan onto the timeline at the current play index (so it applies
+// forward + replays on commit), then re-run. Cumulative snapshots — planAt() reads the latest.
+function recordAdjust(){
+  const G=UI.game; if(!G||!G.pending)return;
+  const at=G.pending.play||0, snap=JSON.parse(JSON.stringify(G.plan||{shadow:{},boost:{}}));
+  G.adjusts=G.adjusts||[];
+  const last=G.adjusts[G.adjusts.length-1];
+  if(last&&last.at===at)last.plan=snap; else G.adjusts.push({at,plan:snap});
+  closeSheet(); runInteractive();
+}
+// The in-game adjustments sheet (Phase 24): reassign coverage onto the opponent's receivers + settle
+// your players. Edits the live G.plan buffer; "Apply" banks it onto the timeline (recordAdjust).
+function adjustSheet(){
+  const G=UI.game; if(!G||!G.pending)return;
+  const me=S.teamId, opp=teamById(G.home===me?G.away:G.home), t=controlled();
+  const plan=G.plan=G.plan||{shadow:{},boost:{}};
+  const oppRecv=opp.roster.filter(p=>['WR','TE','RB'].includes(p.pos)).sort((a,b)=>(a.so||0)-(b.so||0)).slice(0,5);
+  const myDB=t.roster.filter(p=>['CB','S'].includes(p.pos)).sort((a,b)=>(a.so||0)-(b.so||0));
+  const lab=p=>`${p.pos}${(p.so||0)+1} ${p.fn[0]}.${p.ln} (${p.ov})`;
+  const idByLab={}; myDB.forEach(d=>idByLab[lab(d)]=d.id);
+  const body=el('div');
+  body.append(el('div','hint','Put your best cover man on their best receiver, and settle a rattled player. Changes apply from here on and stick for the rest of the game.'));
+  body.append(el('h2','sec','Coverage matchups'));
+  oppRecv.forEach(rc=>{
+    const slot=rc.pos+(rc.so||0), cur=plan.shadow[slot], curLab=cur?(myDB.find(d=>d.id===cur)?lab(myDB.find(d=>d.id===cur)):'Default'):'Default';
+    const opts=['Default'].concat(myDB.map(lab));
+    const sel=selectEl(opts,curLab,v=>{ if(v==='Default')delete plan.shadow[slot]; else plan.shadow[slot]=idByLab[v]; });
+    body.append(fld(`${rc.pos}${(rc.so||0)+1} ${rc.fn[0]}.${rc.ln} (${rc.ov})`,sel));
+  });
+  body.append(el('h2','sec','Settle a player down'));
+  const cand=t.roster.filter(p=>{const b=G.box&&G.box[p.id];return b&&(b.cvTgt||b.rec||b.rAtt);})
+    .sort((a,b)=>((G.box[b.id].cvYds||0)+(G.box[b.id].reYds||0))-((G.box[a.id].cvYds||0)+(G.box[a.id].reYds||0))).slice(0,6);
+  if(!cand.length)body.append(el('div','hint','No standout performers yet — check back after a few drives.'));
+  cand.forEach(p=>{const on=(plan.boost[p.id]||0)>0,b=G.box[p.id];
+    const cooked=(b.cvYds||0)>=80||(b.cvTD||0)>0;
+    const btn=el('button','btn sm '+(on?'':'ghost'),(on?'✓ pep ':'')+lab(p)+(cooked?' 🔥':''));
+    btn.style.marginRight='6px';btn.style.marginTop='6px';
+    btn.onclick=()=>{ if(on)delete plan.boost[p.id]; else plan.boost[p.id]=4; adjustSheet(); };
+    body.append(btn);
+  });
+  const apply=el('button','btn','Apply adjustments');apply.style.marginTop='14px';apply.dataset.tid='adjust-apply';apply.onclick=recordAdjust;
+  body.append(apply);
+  openSheet('In-game adjustments',body);
+}
 function gameSetMode(m){const G=UI.game;if(!G)return;G.mode=m;G.simRest=false;if(G.done)render();else runInteractive();}
 function interactiveSimRest(){const G=UI.game;if(!G)return;G.simRest=true;runInteractive();}
 // A top-down field, hand-rolled SVG (no deps). Offense attacks → toward the right end zone.
@@ -3355,6 +3422,9 @@ function renderInteractiveGame(app){
     v.append(cr);
     const defer=el('button','btn ghost','Defer to OC ('+ocPick+')');defer.style.marginTop='8px';defer.dataset.tid='game-defer';defer.onclick=()=>pickCall(ocPick);
     v.append(defer);
+    const adj=el('button','btn line','🛡 In-game adjustments');adj.style.marginTop='8px';adj.dataset.tid='game-adjust';adj.onclick=adjustSheet;
+    const nAdj=(G.adjusts||[]).length; if(nAdj)adj.textContent='🛡 In-game adjustments ('+nAdj+')';
+    v.append(adj);
   }else if(!G.done){
     v.append(el('div','card','<div class="hint">Resolving…</div>'));
   }
@@ -3376,9 +3446,9 @@ function renderInteractiveGame(app){
 }
 function finishGame(){
   if(gameTimer){clearTimeout(gameTimer);gameTimer=null;}
-  const G=UI.game; if(!G)return; const replay=G.replay, gid=G.gameId, post=G.post, champ=G.champ, interactive=G.interactive, calls=G.decisions; UI.game=null;
+  const G=UI.game; if(!G)return; const replay=G.replay, gid=G.gameId, post=G.post, champ=G.champ, interactive=G.interactive, calls=G.decisions, adjusts=G.adjusts; UI.game=null;
   if(replay){ UI.view='season'; render(); return; }
-  if(interactive){const g=findAnyGame(gid); if(g)g.calls=(calls||[]).slice();}   // bank the coach's calls → commit reproduces the play-called game
+  if(interactive){const g=findAnyGame(gid); if(g){g.calls=(calls||[]).slice(); if(adjusts&&adjusts.length)g.adjusts=adjusts.slice();}}   // bank calls + adjustments → commit reproduces the coached game
   UI.view='home';
   if(champ)advanceChampWeek(); else if(post)advancePostseason(); else advanceWeek();   // commit (re-sims deterministically, with g.calls)
   const g=findAnyGame(gid); render();

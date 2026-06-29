@@ -318,8 +318,21 @@ plain static files so Pages still serves it with zero config.
   (`pass to WR (vs CB)`), and the **coach view shows a live matchup panel** — your receivers' production +
   your coverage with a 🔥 **"cooked"** flag (built from a `boxInto` the driver captures live, surviving the
   pause). `simlab` → 39, `qa` → 237. Determinism + watch==commit unchanged (the matchup math is
-  rng-deterministic). See "Phase 23 design — per-matchup resolution" below. *(Foundation for **in-game
-  adjustments** — reassign your CB onto their WR1 — and for injuries mattering, both next on the track.)*
+  rng-deterministic). See "Phase 23 design — per-matchup resolution" below.
+- **Phase 24 — In-game adjustments.** ✅ DONE (coverage + pep-talk). Mid-game, the coach can now **react**:
+  reassign coverage (put your shutdown corner/safety on their WR1) and **settle a rattled player** (a small
+  effective-rating bump). Both are recorded on a deterministic **timeline** (`g.adjusts = [{at:playNo, plan}]`)
+  read by `planAt(pno)` — an adjustment applies only **going forward** (the watched score never rewrites on
+  re-run) and **replays on commit** (`gameDecideOpts` passes `adjusts`/`adjustFor` to `simGame`/`buildGameLog`),
+  so watch==commit holds. The engine consults the plan when the controlled team is on **defense** (`coverDef`
+  override → a specific defender shadows a receiver **slot**) and folds pep-talk bumps through a boosted
+  effective OVR (`bov`) into `matchEdge`; an empty timeline is **byte-identical** to the AI game (validated).
+  UI: a **🛡 In-game adjustments** sheet on the coach view (at any pause) — per-opponent-receiver coverage
+  pickers + a "settle a player down" toggle, with the live 🔥-cooked panel right there to inform it. Save
+  **v27** (optional `g.adjusts`, absent-safe); `simlab` → 44 (shadowing a stud WR cuts him 117→52 yds;
+  pep-talk helps; deterministic; forward-only; AI-inert), `qa` → 239. See "Phase 24 design — in-game
+  adjustments" below. *(Next on this track: **special packages**, **penalties/discipline** ("talk them down"),
+  and **injuries/fatigue** — now that a forced-in backup is exposed at his specific matchup.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1135,6 +1148,55 @@ adv); no double-teams/safety help, no route concepts. Defense remains OC-run.
 
 ---
 
+## Phase 24 design — in-game adjustments
+
+Decided 2026-06-29 with AJ — the direct payoff of Phase 23's matchups, and the "live sideline" half of
+the play-calling vision: react to what you see (your CB getting cooked) by **reassigning coverage** and
+**settling a rattled player**. Penalties/"talk them down" need a penalty model and are a later increment.
+
+### The determinism problem (and the timeline)
+Adjustments are *persistent* settings that affect many future plays — but the Phase 22 driver only pauses
+on your **offensive** decisions, and a naive "apply the current plan to the whole game" would rewrite the
+*past* on every re-run (the score you watched would change). Solution: a **timeline** —
+`g.adjusts = [{at: playNo, plan}]`. The engine keeps a global `playNo` (incremented per play) and
+`planAt(pno)` returns the latest plan with `at ≤ pno`, so an adjustment applies **only going forward**.
+The driver tags each edit with `ctx.play` (the index at the current pause) and **re-runs** — past plays
+(index < at) keep the old plan, so the watched score-so-far is preserved. The same timeline replays on
+commit (`gameDecideOpts` → `simGame`/`buildGameLog`), so **watch == commit** holds. All deterministic
+(no rng), and an empty timeline is byte-identical to the AI game (so `simlab`'s envelope is untouched).
+
+### The two levers (pure engine)
+- **Coverage reassignment** — `plan.shadow[slot] = defenderId` (slot = the opponent receiver's `pos+so`,
+  e.g. `WR0` = their WR1). When that receiver is targeted and the controlled team is on **defense**, the
+  engine overrides `coverDef` to the assigned man → the matchup (and `cvYds`) shift. Put your shutdown
+  safety on their stud and watch his yards fall.
+- **Pep-talk / settle** — `plan.boost[playerId] = +N` (a small effective-OVR bump for the rest of the
+  game), folded through a boosted-OVR helper (`bov`) into `matchEdge` (works whether he's your WR on
+  offense or your CB on defense). It's a deliberate controlled-team coach effect (like `coachGameEdges`),
+  small, and inert for everyone else.
+
+### UI
+A **🛡 In-game adjustments** sheet on the coach view (available at any pause): per-opponent-receiver
+coverage pickers (your DBs, by name + OVR) and a "settle a player down" toggle that surfaces your
+most-targeted men — with the live 🔥-cooked matchup panel right above it to inform the call. "Apply"
+banks the plan onto the timeline and re-runs.
+
+### Save & validation
+Save **v27** (optional `g.adjusts`; `migrateState` v26→v27 is a no-op — absent reads as the AI game).
+`simlab` → 44 (shadowing a stud WR with a better defender cuts his production 117→52; a pep-talk to the
+beaten corner helps; an empty timeline == the un-adjusted game byte-for-byte; deterministic replay; an
+adjustment set "in the future" never changes the past). `qa` → 239 (the sheet opens; applying records a
+coverage + pep-talk on the timeline). **Fourteen gates** (Phase 24 extends `simlab` + `qa`).
+
+### Deliberately out of scope (this increment)
+No **double-team/bracket** (one defender per slot), no offensive adjustments (hot routes), no defensive
+play-calling (blitz/coverage shells), and **penalties/"talk them down"** + **injuries/fatigue** are their
+own increments (the former needs a discipline model, the latter an attrition model). Adjustments are made
+at your offensive pauses (you set them before your defense's next series); there's no per-defensive-snap
+prompt, by design (advancing stays fast).
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -1560,7 +1622,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **26**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **27**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -1642,9 +1704,10 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 //   committed transfer is stripped of those portal fields and pushed onto his new team's roster with
 //   `fromTransfer:true`. Unsigned transfers leave the modeled league.
 
-// Game: { id, week, home: teamId, away: teamId, played, hs, as, calls? }   // hs/as = home/away score
-//   calls? = the coach's ordered play calls if he coached it (Phase 22); replayed on commit/replay
-//   (simGame/buildGameLog via gameDecideOpts) so watch == commit. Absent = a pure AI game.
+// Game: { id, week, home: teamId, away: teamId, played, hs, as, calls?, adjusts? }   // hs/as = home/away score
+//   calls? = the coach's ordered play calls if he coached it (Phase 22); adjusts? = his in-game
+//   adjustment timeline [{at:playNo, plan:{shadow,boost}}] (Phase 24, coverage reassignment + pep-talks).
+//   Both replay on commit/replay (simGame/buildGameLog via gameDecideOpts) so watch == commit. Absent = a pure AI game.
 ```
 
 ### Team object

@@ -227,6 +227,38 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Phase 23: the beaten corner gets cooked (more coverage yds allowed)', cbW > cbS, `${cbW} vs ${cbS} cv yds`);
 })();
 
+// Phase 24 — in-game adjustments: reassign coverage (shadow your stud onto their stud) + pep-talk
+// (a rating bump). Recorded on a timeline by play index → deterministic, applies forward, AI-inert.
+(function () {
+  const w = genWorld(321);
+  const O = JSON.parse(JSON.stringify(w.teams[0]));
+  const wr1 = O.roster.filter(p => p.pos === 'WR').sort((a, b) => a.so - b.so)[0]; wr1.ov = 95; O.ratings = teamRatings(O.roster);
+  const D = JSON.parse(JSON.stringify(w.teams[1]));
+  const cb1 = D.roster.filter(p => p.pos === 'CB').sort((a, b) => a.so - b.so)[0]; cb1.ov = 55;   // weak default corner on WR1
+  const sft = D.roster.filter(p => p.pos === 'S').sort((a, b) => a.so - b.so)[0]; sft.ov = 92;    // your shutdown safety
+  D.ratings = teamRatings(D.roster);
+  const seed = 4242, wrY = res => (res.box[wr1.id] || {}).reYds || 0;
+  const base = simEngine(O, D, seed);
+  // an empty timeline must be byte-identical to the un-adjusted game (AI-inert)
+  const none = simEngine(O, D, seed, { adjustFor: D.id, adjusts: [] });
+  check('Phase 24: an empty adjustment timeline == the un-adjusted game', none.hs === base.hs && none.as === base.as && JSON.stringify(none.box) === JSON.stringify(base.box));
+  // shadow the safety onto WR1 (slot 'WR0') from the opening snap → his production should drop
+  const shadow = [{ at: 0, plan: { shadow: { 'WR0': sft.id }, boost: {} } }];
+  const shad = simEngine(O, D, seed, { adjustFor: D.id, adjusts: shadow });
+  check('Phase 24: shadowing a stud WR with a better defender cuts his production', wrY(shad) < wrY(base), `${wrY(shad)} vs ${wrY(base)} rec yds`);
+  // pep-talk / settle the beaten corner (+18 effective) → he covers better, WR1 dips
+  const pep = [{ at: 0, plan: { shadow: {}, boost: { [cb1.id]: 18 } } }];
+  const pr = simEngine(O, D, seed, { adjustFor: D.id, adjusts: pep });
+  check('Phase 24: a pep-talk (rating bump) to the beaten corner helps the defense', wrY(pr) < wrY(base), `${wrY(pr)} vs ${wrY(base)} rec yds`);
+  // determinism: same timeline → byte-identical
+  const a = simEngine(O, D, seed, { adjustFor: D.id, adjusts: shadow }), b = simEngine(O, D, seed, { adjustFor: D.id, adjusts: shadow });
+  check('Phase 24: adjustments are deterministic (replay matches)', a.hs === b.hs && a.as === b.as && JSON.stringify(a.box) === JSON.stringify(b.box));
+  // an adjustment applies only FORWARD: set at a late play index, early plays match the un-adjusted game
+  const late = [{ at: 9999, plan: { shadow: { 'WR0': sft.id }, boost: {} } }];
+  const lr = simEngine(O, D, seed, { adjustFor: D.id, adjusts: late });
+  check('Phase 24: an adjustment set in the future does not change the past', lr.hs === base.hs && lr.as === base.as, `${lr.hs}-${lr.as} vs ${base.hs}-${base.as}`);
+})();
+
 // statistical realism across a full season
 const R = simSeason(2026);
 const meanPts = avg(R.scores);
