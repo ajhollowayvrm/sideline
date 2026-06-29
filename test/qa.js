@@ -235,15 +235,17 @@ function startServer() {
     if (!g) return { skip: true };
     const { home, away } = simSides(g), seed = gameSeed(g);
     const decisions = [];
-    const driven = simEngine(home, away, seed, { decideFor: me, decide: ctx => { const c = ctx.phase === 'fourth' ? ctx.ocAct : 'pass'; decisions.push(c); return c; } });
+    // call offense (always pass) AND defense (always cover) — exercises Phase 28 in the watch==commit path
+    const driven = simEngine(home, away, seed, { decideFor: me, decide: ctx => { const c = ctx.phase === 'def' ? 'cover' : ctx.phase === 'fourth' ? ctx.ocAct : 'pass'; decisions.push(c); return c; } });
     const clone = { id: g.id, home: g.home, away: g.away, calls: decisions.slice() };
     simGame(clone);                                   // commit-path replay on a CLONE (real game untouched)
-    const ai = simEngine(home, away, seed);           // OC autopilot for comparison
-    return { skip: false, sameAsDriver: clone.hs === driven.hs && clone.as === driven.as, diffFromAI: driven.hs !== ai.hs || driven.as !== ai.as, played: g.played, coached: `${driven.hs}-${driven.as}`, ai: `${ai.hs}-${ai.as}` };
+    const ai = simEngine(home, away, seed);           // OC/DC autopilot for comparison
+    return { skip: false, sameAsDriver: clone.hs === driven.hs && clone.as === driven.as, diffFromAI: driven.hs !== ai.hs || driven.as !== ai.as, played: g.played, hasDef: decisions.includes('cover'), coached: `${driven.hs}-${driven.as}`, ai: `${ai.hs}-${ai.as}` };
   });
   check('Phase 22: a coached game commits to exactly the called result (watch == commit)', pc.skip || pc.sameAsDriver, JSON.stringify(pc));
   check('Phase 22: calling your own plays changes the outcome vs the OC autopilot', pc.skip || pc.diffFromAI, JSON.stringify(pc));
   check('Phase 22: the determinism check did not commit the real game', pc.skip || pc.played === false);
+  check('Phase 28: defensive play-calls are part of the deterministic coached game', pc.skip || pc.hasDef);
   // (b) UI smoke: open the viewer → Coach this game → Full control surfaces the field + a play call →
   // make a call → bail without committing (interactive never mutates the game until "Continue").
   await page.getByRole('button', { name: /Play Week/ }).click();

@@ -1259,6 +1259,16 @@ function simEngine(home,away,seed,opts){
         } // else: go for it → fall through and run a normal play
       }
 
+      // ---- defensive play-call (Phase 28) — the controlled team, on D, calls the front/coverage as a
+      // PRE-SNAP guess (it doesn't see run/pass). Rock-paper-scissors vs the play; AI defense = 'base' (no-op).
+      let dcall='base';
+      if(decide && def.id===decideFor){ const pick=decide({phase:'def',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,def:def.id});
+        if(pick==='blitz'||pick==='cover'||pick==='run')dcall=pick; }
+      const dSack =dcall==='blitz'?0.05:dcall==='cover'?-0.012:0;   // blitz → pressure; cover (3-man rush) → less
+      const dComp =dcall==='cover'?-0.10:dcall==='run'?0.06:dcall==='blitz'?-0.03:0;  // cover takes the pass; stack-box opens it
+      const dPassY=dcall==='blitz'?5:dcall==='run'?3:dcall==='cover'?-3:0;            // light coverage → bigger gains
+      const dRunY =dcall==='blitz'?3:dcall==='cover'?1:dcall==='run'?-4:0;            // stack the box stuffs the run; blitz is gashed
+
       // ---- run / pass ----
       const passProb=clamp(0.45+(togo>7?0.18:togo<3?-0.18:0)+(down>=3?0.17:0)+adv*0.003+schemeTendency(off.offScheme),0.12,0.92);
       const ocPass=r()<passProb;                            // OC's call (always drawn → rng stream stays stable)
@@ -1275,10 +1285,10 @@ function simEngine(home,away,seed,opts){
         if(plan&&plan.shadow&&def.id===adjustFor){const did=plan.shadow[rec&&(rec.pos+(rec.so||0))];if(did&&!injured.has(did)){const d=def.roster.find(p=>p.id===did);if(d)cov=d;}}
         const mEdge=matchEdge(bov(rec),oP.recvAvg,bov(cov),dP.covAvg); // mean-zero WR-vs-coverage matchup (pep-talk aware)
         const padv=adv+mEdge;
-        if(r()<clamp(0.062-adv*0.0012+ky*0.05,0.02,0.18)){  // sack (trench/team — not the WR matchup)
+        if(r()<clamp(0.062-adv*0.0012+ky*0.05+dSack,0.02,0.22)){  // sack (trench/team + your defensive call)
           gain=-ri(r,4,9); time+=36; const s=wpick(dP.rush4,r,injured); add(s&&s.id,'sk'); txt=nm(qb)+' sacked by '+nm(s)+' for '+gain;
-        } else if(r()<clamp(0.615+padv*0.007-ky*0.22,0.30,0.83)){    // completion (the matchup decides)
-          gain=Math.max(-3,Math.round((2.2+compDraw(r,rec)*7.5)+(r()<0.18?compDraw(r,rec)*42:0)+padv*0.06-ky*PASS_KEY));
+        } else if(r()<clamp(0.615+padv*0.007-ky*0.22+dComp,0.28,0.85)){    // completion (the matchup + the call)
+          gain=Math.max(-3,Math.round((2.2+compDraw(r,rec)*7.5)+(r()<0.18?compDraw(r,rec)*42:0)+padv*0.06-ky*PASS_KEY+dPassY));
           add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
           add(cov&&cov.id,'cvTgt'); add(cov&&cov.id,'cvCmp'); add(cov&&cov.id,'cvYds',gain);   // coverage targeted / allowed
@@ -1293,7 +1303,7 @@ function simEngine(home,away,seed,opts){
         const rb=wpick(oP.rush,r,injured)||qb;
         const fr=wpick(dP.front,r,injured);                  // the front defender he meets (Phase 23)
         const padv=adv+matchEdge(bov(rb),oP.rushAvg,bov(fr),dP.frontAvg);   // RB vs front matchup (mean-zero, pep-talk + fatigue aware)
-        gain=Math.max(-4,Math.round((2.7+compDraw(r,rb)*4.1)+(r()<0.11?compDraw(r,rb)*30:0)+padv*0.035-ky*RUN_KEY));
+        gain=Math.max(-4,Math.round((2.7+compDraw(r,rb)*4.1)+(r()<0.11?compDraw(r,rb)*30:0)+padv*0.035-ky*RUN_KEY+dRunY));
         time+=36; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
         if(!scored && r()<0.011){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
@@ -2363,7 +2373,7 @@ function gameDecideOpts(g){
   const hasCalls=g.calls&&g.calls.length, hasAdj=g.adjusts&&g.adjusts.length;
   if(!hasCalls&&!hasAdj)return null;
   const o={decideFor:S.teamId};
-  if(hasCalls){let k=0;const calls=g.calls;o.decide=ctx=>{const c=calls[k++];return c!=null?c:(ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall);};}
+  if(hasCalls){let k=0;const calls=g.calls;o.decide=ctx=>{const c=calls[k++];return c!=null?c:(ctx.phase==='def'?'base':ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall);};}
   if(hasAdj){o.adjustFor=S.teamId;o.adjusts=g.adjusts;}   // Phase 24: replay coverage reassignments + pep-talks
   return o;
 }
@@ -3369,7 +3379,7 @@ function runInteractive(){
     const res=simEngine(home,away,seed,{logInto:G.log,boxInto:G.box,penInto:G.pen,injInto:G.inj,benched,decideFor:S.teamId,adjustFor:S.teamId,adjusts:G.adjusts||[],decide:ctx=>{
       if(k<G.decisions.length)return G.decisions[k++];                 // already resolved
       if(!G.simRest&&shouldPromptCtx(ctx,G.mode)){G.pending=ctx;throw PAUSE;}  // your call → pause here
-      const def=ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall;G.decisions.push(def);k++;return def;  // OC handles it
+      const dflt=ctx.phase==='def'?'base':ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall;G.decisions.push(dflt);k++;return dflt;  // OC/DC handles it
     }});
     G.hs=res.hs;G.as=res.as;G.done=true;G.pending=null;
   }catch(e){if(!e||!e.pause)throw e;}                                  // paused awaiting input
@@ -3509,15 +3519,23 @@ function renderInteractiveGame(app){
     fld.innerHTML=fieldSVG(ctx.off,def.id,ctx)+
       `<div class="row spread" style="margin-top:8px"><span class="cond" style="font-weight:800;font-size:16px">${ctx.down} &amp; ${ddist}</span><span class="meta">${fpos} · ${hash} · ${clk} ${qLabel(ctx.q)}</span></div>`;
     v.append(fld);
-    const ocPick=(ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall);
-    v.append(el('div','meta dim',`Your ball at the ${fpos} — ${ctx.phase==='fourth'?'4th down: kick or go?':'call the play.'} OC wants <b>${ocPick.toUpperCase()}</b>.`));
     const cr=el('div','btn-row');cr.style.marginTop='8px';cr.dataset.tid='game-call';
-    const mk=(lbl,val)=>{const b=el('button','btn '+(ocPick===val?'':'line'),lbl);b.dataset.call=val;b.onclick=()=>pickCall(val);return b;};
-    if(ctx.phase==='fourth'){ if(ctx.inFgRange)cr.append(mk('FG '+ctx.fgDist+'yd','fg')); cr.append(mk('Punt','punt'),mk('Go for it','go')); }
-    else cr.append(mk('Run','run'),mk('Pass','pass'));
-    v.append(cr);
-    const defer=el('button','btn ghost','Defer to OC ('+ocPick+')');defer.style.marginTop='8px';defer.dataset.tid='game-defer';defer.onclick=()=>pickCall(ocPick);
-    v.append(defer);
+    if(ctx.phase==='def'){                                  // Phase 28: their ball — call your defense
+      v.append(el('div','meta dim',`${teamById(ctx.off).abbr} ball at the ${fpos} — call your defense (a pre-snap read on run/pass).`));
+      [['base','Base'],['blitz','Blitz'],['cover','Cover'],['run','Run stop']].forEach(([val,lbl])=>{const b=el('button','btn line',lbl);b.dataset.call=val;b.onclick=()=>pickCall(val);cr.append(b);});
+      v.append(cr);
+      const defer=el('button','btn ghost','Defer to DC');defer.style.marginTop='8px';defer.dataset.tid='game-defer';defer.onclick=()=>pickCall('base');
+      v.append(defer);
+    }else{
+      const ocPick=(ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall);
+      v.append(el('div','meta dim',`Your ball at the ${fpos} — ${ctx.phase==='fourth'?'4th down: kick or go?':'call the play.'} OC wants <b>${ocPick.toUpperCase()}</b>.`));
+      const mk=(lbl,val)=>{const b=el('button','btn '+(ocPick===val?'':'line'),lbl);b.dataset.call=val;b.onclick=()=>pickCall(val);return b;};
+      if(ctx.phase==='fourth'){ if(ctx.inFgRange)cr.append(mk('FG '+ctx.fgDist+'yd','fg')); cr.append(mk('Punt','punt'),mk('Go for it','go')); }
+      else cr.append(mk('Run','run'),mk('Pass','pass'));
+      v.append(cr);
+      const defer=el('button','btn ghost','Defer to OC ('+ocPick+')');defer.style.marginTop='8px';defer.dataset.tid='game-defer';defer.onclick=()=>pickCall(ocPick);
+      v.append(defer);
+    }
     const adj=el('button','btn line','🛡 In-game adjustments');adj.style.marginTop='8px';adj.dataset.tid='game-adjust';adj.onclick=adjustSheet;
     const nAdj=(G.adjusts||[]).length; if(nAdj)adj.textContent='🛡 In-game adjustments ('+nAdj+')';
     v.append(adj);

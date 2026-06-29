@@ -170,7 +170,7 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
     const d2 = simEngine(h, a, seed, { decide: defer, decideFor: a.id });
     if (d2.hs !== plain.hs || d2.as !== plain.as) deferAway = false;
     // the decider is only consulted for the team it controls, and sees both phases over a season
-    simEngine(h, a, seed, { decideFor: h.id, decide: ctx => { if (ctx.off !== h.id) wrongTeam = true; if (ctx.phase === 'play') sawPlay = true; if (ctx.phase === 'fourth') sawFourth = true; return defer(ctx); } });
+    simEngine(h, a, seed, { decideFor: h.id, decide: ctx => { const inv = ctx.phase === 'def' ? ctx.def === h.id : ctx.off === h.id; if (!inv) wrongTeam = true; if (ctx.phase === 'play') sawPlay = true; if (ctx.phase === 'fourth') sawFourth = true; return defer(ctx); } });
     // a one-sided coach (always pass, OC handles 4th) changes the result deterministically + stays sane
     const aggro = ctx => ctx.phase === 'fourth' ? ctx.ocAct : 'pass';
     const g1 = simEngine(h, a, seed, { decide: aggro, decideFor: h.id });
@@ -186,7 +186,7 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   }
   check('Phase 22: a coach who DEFERS reproduces the AI result byte-for-byte (score + box)', parity);
   check('Phase 22: the OC draws its suggestion regardless of who is controlled (defer-as-away == AI)', deferAway);
-  check('Phase 22: the decision hook fires only for the controlled offense', !wrongTeam && sawPlay);
+  check('Phase 22: the decision hook fires only for the controlled team', !wrongTeam && sawPlay);
   check('Phase 22: both run/pass and 4th-down decisions are surfaced over a season', sawPlay && sawFourth);
   check('Phase 22: overrides change the outcome but stay football-sane (0–99)', overrideDiff && sane);
   check('Phase 22: a fixed override set is fully deterministic (replay matches)', goDet && repro);
@@ -324,6 +324,24 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   const w = genWorld(2200), N = w.teams.length; let multi = 0;
   for (let s = 0; s < 80; s++) { const h = w.teams[s % N], a = w.teams[(s + 4) % N]; if (h === a) continue; simEngine(h, a, (hashStr('mw' + s) ^ 5) >>> 0).inj.forEach(i => { if (i.out >= 1) multi++; }); }
   check('Phase 27: multi-week injuries occur over a season', multi > 0, multi + ' multi-week injuries');
+}());
+
+// Phase 28 — defensive play-calling: the controlled team (on D) calls base/blitz/cover/run as a pre-snap
+// guess. Cover takes away the pass; run-stop stuffs the run; AI/base is a no-op (envelope untouched).
+(function () {
+  const w = genWorld(606), N = w.teams.length;
+  // YOU are the defense (team a). Force the offense to PASS (offense = team h, you don't control it),
+  // and you call your defense. Compare opponent passing yards under base vs cover vs run-stop.
+  const callD = dc => { const h = w.teams[2], a = w.teams[7]; let passY = 0, runY = 0, n = 0;
+    for (let s = 0; s < 40; s++) { const seed = (hashStr('d' + dc + s) ^ 3) >>> 0;
+      const res = simEngine(h, a, seed, { decideFor: a.id, decide: ctx => ctx.phase === 'def' ? dc : (ctx.phase === 'fourth' ? ctx.ocAct : ctx.ocCall) });
+      h.roster.forEach(p => { const b = res.box[p.id]; if (b) { passY += b.pYds || 0; runY += b.rYds || 0; } }); n++; }
+    return { passY: passY / n, runY: runY / n }; };
+  const base = callD('base'), cover = callD('cover'), runStop = callD('run');
+  check('Phase 28: an empty/base defensive call == the AI game (no-op)', (() => { const h = w.teams[2], a = w.teams[7], seed = 909; const ai = simEngine(h, a, seed), bd = simEngine(h, a, seed, { decideFor: a.id, decide: ctx => 'base' }); return ai.hs === bd.hs && ai.as === bd.as && JSON.stringify(ai.box) === JSON.stringify(bd.box); })());
+  check('Phase 28: calling COVER cuts the opponent’s passing yards', cover.passY < base.passY, `${cover.passY.toFixed(0)} vs ${base.passY.toFixed(0)}`);
+  check('Phase 28: calling RUN-STOP cuts the opponent’s rushing yards', runStop.runY < base.runY, `${runStop.runY.toFixed(0)} vs ${base.runY.toFixed(0)}`);
+  check('Phase 28: but RUN-STOP gives up more through the air (a real trade-off)', runStop.passY > base.passY, `${runStop.passY.toFixed(0)} vs ${base.passY.toFixed(0)}`);
 }());
 
 // statistical realism across a full season

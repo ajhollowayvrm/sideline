@@ -365,7 +365,21 @@ plain static files so Pages still serves it with zero config.
   **v28** (sparse `p.inj`, absent = healthy; `g.out` rides on the schedule). `simlab` → 55 (duration mix +
   bounded; an injured starter is benched, backup plays; multi-week injuries occur), `qa` → 245 (rating
   drop, held out, heals weekly, report renders; replay stays faithful). See "Phase 27 design — week-to-week
-  injuries" below. *(Open: a defensive-playcalling/blitz layer + special packages.)*
+  injuries" below. *(Open: defensive play-calling + special packages.)*
+- **Phase 28 — Defensive play-calling.** ✅ DONE — the other half of the chess match. When the controlled
+  team is on **defense**, the coach calls the front/coverage as a **pre-snap guess** (it doesn't see the
+  play): **Base / Blitz / Cover / Run-stop**, rock-paper-scissors with the offense's run/pass. The `decide`
+  hook now also fires when `def.id===decideFor` (`phase:'def'`), and the call shifts the play — blitz → more
+  sacks but boom plays + gashed by the run; cover → takes the pass, soft vs the run; run-stop → stuffs the
+  run, opens the pass; base → neutral. **AI defense is always 'base' (a true no-op)** so the league envelope
+  is untouched and only the player's calls swing it (a good read = edge, a bad guess = burned). Defensive
+  calls record into the SAME `g.calls` stream as offensive ones (consumed in play order) → they **replay on
+  commit** (watch == commit) with **no save bump**. UI: the coach view shows Base/Blitz/Cover/Run-stop (+
+  "Defer to DC") whenever you're on defense, gated by the same Key/Full/Auto mode toggle. `simlab` → 59
+  (cover cuts opponent passing 254→156, run-stop cuts rushing 185→59 but gives up more through the air; base
+  == AI byte-for-byte), `qa` → 246 (defensive calls are part of the deterministic coached game; a cover-heavy
+  game held the AI to 19-3 vs the autopilot's 27-21). See "Phase 28 design — defensive play-calling" below.
+  *(Open: AI defensive play-calling, blitz/nickel personnel + special packages.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1335,6 +1349,50 @@ available rating; a player is held out; injuries heal a week at a time; the Home
 No injury *types*/severity beyond a duration, no return-to-play ramp (a returning player is at full
 strength), no IR/roster-replacement management, no in-UI "rest a banged-up starter" toggle (injuries are
 engine-driven). These are follow-ups.
+
+---
+
+## Phase 28 design — defensive play-calling
+
+Decided 2026-06-29 with AJ — the other half of "calling a game": you now coach your **defense** too, a
+pre-snap chess match against the offense's run/pass.
+
+### The call (a pre-snap guess)
+When the controlled team is on defense, the `decide` hook fires with `phase:'def'` (gated by the same
+Key/Full/Auto mode + `shouldPromptCtx`), returning **base / blitz / cover / run-stop**. The call is made
+*before* the play is revealed (a read on tendency), and it shifts the play's resolution in
+rock-paper-scissors:
+- **blitz** → more sacks (`+dSack`) but completions that beat it go big (`+dPassY`), and it's **gashed by
+  the run** (`+dRunY`). High variance.
+- **cover** (2-high) → fewer completions + shorter (`−dComp`, `−dPassY`); slightly soft vs the run.
+- **run-stop** (stack the box) → **stuffs the run** (`−dRunY`) but **opens the pass** (`+dComp`, `+dPassY`).
+- **base** → neutral.
+A coach who reads "3rd & long → pass → cover/blitz" and "3rd & short → run → run-stop" gains an edge; a
+wrong guess gets burned. (`simlab`: cover 254→156 pass yds; run-stop 185→59 rush but 254→393 pass.)
+
+### Envelope-safe by construction
+**The AI defense always calls 'base' (a literal no-op)** — no rng, no modifier — so AI-vs-AI games are
+byte-identical to pre-Phase-28 and the validated envelope is untouched. Only the *player's* defensive
+calls move anything. Defensive calls record into the **same `g.calls` stream** as offensive calls
+(`decide` fires once per controlled-team play, offense or defense, in play order), so they **replay on
+commit** (watch == commit) and **need no save bump**. The OC/DC default + the replay fallback resolve a
+`phase:'def'` decision to `'base'`.
+
+### UI
+The coach view, on a defensive snap, swaps the Run/Pass buttons for **Base / Blitz / Cover / Run-stop**
+(+ "Defer to DC"); the field shows the opponent driving. Everything else (the matchup panel, in-game
+adjustments — coverage reassignment is especially handy here — penalties, mode toggle) is unchanged.
+
+### Validation
+`simlab` → 59 (cover/run-stop cut the matching attack and trade off the other; base == AI byte-for-byte;
+the hook fires for the controlled team on both sides). `qa` → 246 (defensive calls are part of the
+deterministic coached game; watch == commit holds with defense in the call stream). **Fourteen gates**;
+no save change.
+
+### Deliberately out of scope
+The **AI doesn't call defense** yet (it plays base) — so on offense you don't yet face a scheming DC;
+that's the natural follow-up. No blitz/nickel **personnel** packages, no coverage *shells* beyond the
+four calls, no per-defender assignment within a call (that's the Phase 24 coverage-reassignment lever).
 
 ---
 
