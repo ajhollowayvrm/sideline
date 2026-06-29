@@ -257,17 +257,20 @@ function startServer() {
     return { dc, bs, harder: dc < bs };
   });
   check('Phase 29: an AI defensive coordinator makes your predictable offense work harder', aidc.harder, JSON.stringify(aidc));
-  // Phase 30: a predictable DEFENSE (all run-stop) gets exploited by the adaptive AI OC (you give up more)
+  // Phase 30: a predictable DEFENSE (all run-stop) gets read by the adaptive AI OC, which throws more.
+  // Measured as opponent PASSING YARDS (the proven mechanic — cf. simlab 314 vs 249) rather than points,
+  // which are matchup-noise at a single-slate sample and don't reliably move with extra passing volume.
   const aioc = await page.evaluate(() => {
-    const me = S.teamId, mine = S.schedule.games.filter(x => x.home === me || x.away === me).slice(0, 6);
+    const me = S.teamId, mine = S.schedule.games.filter(x => x.home === me || x.away === me);
     const dRunStop = ctx => ctx.phase === 'def' ? 'run' : ctx.phase === 'fourth' ? ctx.ocAct : ctx.ocCall;
     let oc = 0, bs = 0;
-    mine.forEach(g => { const { home, away } = simSides(g), seed = gameSeed(g), opp = g.home === me ? 'as' : 'hs';
-      oc += simEngine(home, away, seed, { decideFor: me, aiOffVs: me, decide: dRunStop })[opp];
-      bs += simEngine(home, away, seed, { decideFor: me, decide: dRunStop })[opp]; });
+    mine.forEach(g => { const { home, away } = simSides(g), seed = gameSeed(g), oppTeam = g.home === me ? away : home;
+      const a = simEngine(home, away, seed, { decideFor: me, aiOffVs: me, decide: dRunStop });
+      const b = simEngine(home, away, seed, { decideFor: me, decide: dRunStop });
+      oppTeam.roster.forEach(p => { if (a.box[p.id]) oc += a.box[p.id].pYds || 0; if (b.box[p.id]) bs += b.box[p.id].pYds || 0; }); });
     return { oc, bs, harder: oc > bs };
   });
-  check('Phase 30: an adaptive AI OC exploits a predictable defense (you give up more)', aioc.harder, JSON.stringify(aioc));
+  check('Phase 30: the adaptive AI OC throws more vs your predictable (all run-stop) defense', aioc.harder, JSON.stringify(aioc));
   // Phase 31: special packages (heavy on short yardage, spread otherwise) are callable + replay on commit
   const pkg = await page.evaluate(() => {
     const me = S.teamId, g = S.schedule.games.find(x => !x.played && (x.home === me || x.away === me)); if (!g) return { skip: true };

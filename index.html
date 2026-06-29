@@ -383,38 +383,45 @@ function moralePortalPush(morale){return clamp((50-morale)/50*0.2,0,0.2);}
 //   (3) coach BUY-IN when the team runs the coach's own scheme — controlled-team-specific, so it
 //       lives in the app layer (schemeBuyIn) alongside coachGameEdges, NOT in this pure block.
 // Depends only on hashStr/ri/clamp + POS (no DOM, no S) — test/schemelab.js evals it offline.
-const OFF_SCHEMES=['Air Raid','Spread-Option','Pro Style','Smashmouth','West Coast'];
+const OFF_SCHEMES=['Air Raid','Spread','Spread-Option','Pro Style','Smashmouth','West Coast','Multiple'];
 const DEF_SCHEMES=['4-3','3-4','Nickel/Cover-3','Bear','Tampa-2'];
-// Matchup edge in rating points, SCHEME_EDGE[offIdx][defIdx]. DOUBLY balanced — every row AND
-// every column sums to 0 — so over uniformly-random matchups the mean edge is exactly 0 (the
-// scoring envelope is preserved by construction), while any single matchup still tilts ±.
+// Matchup edge in rating points, SCHEME_EDGE[offIdx][defIdx] (7 offenses × 5 defenses). DOUBLY
+// balanced — every row AND every column sums to 0 — so over uniformly-random matchups the mean
+// edge is exactly 0 (the scoring envelope is preserved by construction), while any single matchup
+// still tilts ±.
 const SCHEME_EDGE=[
   //  4-3  3-4  Nkl  Bear Tmp2
-  [    1,   1,  -2,   2,  -2 ],   // Air Raid     — beats blitz (Bear); zone (Nickel/Cover-3, Tampa-2) takes the deep ball away
-  [    1,   2,   0,   0,  -3 ],   // Spread-Option— gashes read-and-react 3-4; a disciplined Tampa-2 spies the option
-  [   -1,   0,   1,  -1,   1 ],   // Pro Style    — low-variance, small edges everywhere
-  [    0,  -2,   2,  -2,   2 ],   // Smashmouth   — runs on light boxes (Nickel/Tampa-2); stout fronts (3-4/Bear) stuff it
-  [   -1,  -1,  -1,   1,   2 ],   // West Coast   — quick game beats pressure; tight man underneath disrupts the timing
+  [    1,   1,  -2,   2,  -2 ],   // Air Raid     — pass-heavy; beats blitz (Bear), zone (Nickel/Cover-3, Tampa-2) takes the deep ball away
+  [    1,   0,  -1,   1,  -1 ],   // Spread       — balanced (pistol run + RPO); few weaknesses, punishes aggression (4-3/Bear), soft vs zone
+  [    1,   2,   0,  -1,  -2 ],   // Spread-Option— run-first option; gashes read-and-react 3-4/4-3, blitz blows up the mesh (Bear), Tampa-2 spies it
+  [   -1,   1,   1,  -1,   0 ],   // Pro Style    — low-variance, small edges everywhere; slightly worse vs base/pressure
+  [   -1,  -2,   2,  -2,   3 ],   // Smashmouth   — power run; gashes light boxes (Nickel/Tampa-2), stout fronts (3-4/Bear) stuff it
+  [   -1,  -2,   0,   1,   2 ],   // West Coast   — quick timing game beats pressure (Bear) + soft zone underneath (Tampa-2); tight man disrupts it
+  [    0,   0,   0,   0,   0 ],   // Multiple     — true neutral; no matchup weakness or strength, leans on talent + roster fit
 ];
 const SCHEME_FIT_W=0.9;          // rating pts per unit of roster fit aggregate (small → OVR dominates)
 // Run/pass IDENTITY (Phase 22): a bias the offense's scheme adds to the OC's pass probability. The
-// five values average ~0, so this shifts play SELECTION (Air Raid airs it out, Smashmouth grinds),
-// not the league scoring envelope; folded into passProb in simEngine. Unknown scheme → 0 (neutral).
-const SCHEME_TENDENCY={'Air Raid':0.18,'Spread-Option':-0.02,'Pro Style':0,'Smashmouth':-0.16,'West Coast':0.06};
+// values average ~0, so this shifts play SELECTION (Air Raid airs it out, Smashmouth grinds, Spread
+// runs from pistol, Multiple is balanced), not the league scoring envelope; folded into passProb in
+// simEngine. Unknown scheme → 0 (neutral).
+const SCHEME_TENDENCY={'Air Raid':0.18,'Spread':0.04,'Spread-Option':-0.14,'Pro Style':0,'Smashmouth':-0.16,'West Coast':0.06,'Multiple':0};
 function schemeTendency(s){return SCHEME_TENDENCY[s]||0;}
-function offSchemeIdx(s){const i=OFF_SCHEMES.indexOf(s);return i<0?2:i;}   // unknown → Pro Style (neutral)
+function schemeCount(side){return side==='def'?DEF_SCHEMES.length:OFF_SCHEMES.length;}
+function offSchemeIdx(s){const i=OFF_SCHEMES.indexOf(s);return i<0?OFF_SCHEMES.length-1:i;}   // unknown → Multiple (neutral)
 function defSchemeIdx(s){const i=DEF_SCHEMES.indexOf(s);return i<0?0:i;}   // unknown → 4-3 (neutral)
 function schemeEdge(off,def){return SCHEME_EDGE[offSchemeIdx(off)][defSchemeIdx(def)];}
 // A team's DEFAULT schemes derive from its id (stable + free → every seed's world stays
 // byte-identical; the player can later install his own). Stored mutably on the team once set.
-function defaultOffScheme(id){return OFF_SCHEMES[hashStr('off'+id)%5];}
-function defaultDefScheme(id){return DEF_SCHEMES[hashStr('def'+id)%5];}
-// A player's preferred scheme (index 0..4 on his side) derives from his id — innate, never changes,
-// no rng-stream consumption, no save column needed. (p.scm honored first if ever set explicitly.)
-function playerSchemeIdx(p){return (p&&p.scm!=null)?p.scm:(hashStr((p&&p.id)||'')%5);}
+function defaultOffScheme(id){return OFF_SCHEMES[hashStr('off'+id)%OFF_SCHEMES.length];}
+function defaultDefScheme(id){return DEF_SCHEMES[hashStr('def'+id)%DEF_SCHEMES.length];}
+// A player's preferred scheme (index on his side: 0..6 offense, 0..4 defense) derives from his id —
+// innate, never changes, no rng-stream consumption, no save column needed. (p.scm honored first if
+// ever set explicitly.)
+function playerSchemeIdx(p){return (p&&p.scm!=null)?p.scm:(hashStr((p&&p.id)||'')%schemeCount(sideOfPos((p&&p.pos)||'')));}
 function sideOfPos(pos){const e=POS.find(x=>x[0]===pos);return e?e[1]:'off';}
-// fit: +1 in his scheme, -0.25 otherwise → E[fit]=0 under a uniform scheme draw (mean-neutral).
-function schemeFit(p,schemeIdx){return playerSchemeIdx(p)===schemeIdx?1:-0.25;}
+// fit: +1 in his scheme, -1/(n-1) otherwise → E[fit]=0 under a uniform scheme draw (mean-neutral on
+// each side; n = the side's scheme count, so offense's deeper menu doesn't tilt the average).
+function schemeFit(p,schemeIdx){const n=schemeCount(sideOfPos((p&&p.pos)||''));return playerSchemeIdx(p)===schemeIdx?1:-1/(n-1);}
 // Average fit over a side's top-11 (starters drive the scheme). Pure on the roster; in [-0.25, 1].
 function rosterSchemeFit(roster,side,schemeIdx){
   const grp=(roster||[]).filter(p=>sideOfPos(p.pos)===side).sort((a,b)=>(a.so||0)-(b.so||0)).slice(0,11);

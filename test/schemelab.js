@@ -56,25 +56,27 @@ function mkTeam(id, offS, defS, offIdx, defIdx, ov) {
 console.log('SCHEME LAB');
 
 /* ---- 1. scheme catalogs ---- */
-ok('5 offensive schemes', OFF_SCHEMES.length === 5, OFF_SCHEMES.length);
-ok('5 defensive schemes', DEF_SCHEMES.length === 5, DEF_SCHEMES.length);
+const NO = OFF_SCHEMES.length, ND = DEF_SCHEMES.length;
+ok('7 offensive schemes', NO === 7, NO);
+ok('5 defensive schemes', ND === 5, ND);
 
-/* ---- 2. matchup table shape + double balance ---- */
-ok('edge table is 5x5', SCHEME_EDGE.length === 5 && SCHEME_EDGE.every(row => row.length === 5));
+/* ---- 2. matchup table shape + double balance (7 offenses × 5 defenses) ---- */
+ok('edge table is 7x5', SCHEME_EDGE.length === NO && SCHEME_EDGE.every(row => row.length === ND));
 let rowsOk = true, colsOk = true, grand = 0;
-for (let i = 0; i < 5; i++) {
-  let rs = 0; for (let j = 0; j < 5; j++) { rs += SCHEME_EDGE[i][j]; grand += SCHEME_EDGE[i][j]; }
+for (let i = 0; i < NO; i++) {
+  let rs = 0; for (let j = 0; j < ND; j++) { rs += SCHEME_EDGE[i][j]; grand += SCHEME_EDGE[i][j]; }
   if (rs !== 0) rowsOk = false;
 }
-for (let j = 0; j < 5; j++) { let cs = 0; for (let i = 0; i < 5; i++) cs += SCHEME_EDGE[i][j]; if (cs !== 0) colsOk = false; }
+for (let j = 0; j < ND; j++) { let cs = 0; for (let i = 0; i < NO; i++) cs += SCHEME_EDGE[i][j]; if (cs !== 0) colsOk = false; }
 ok('every row of the edge table sums to 0', rowsOk);
 ok('every column of the edge table sums to 0', colsOk);
 ok('grand total of the edge table is 0', grand === 0, grand);
+ok('Multiple is the true-neutral row (all zeros)', SCHEME_EDGE[NO - 1].every(v => v === 0));
 
 /* ---- 3. schemeEdge lookup + defaults ---- */
 ok('schemeEdge reads the table', schemeEdge('Air Raid', '4-3') === SCHEME_EDGE[0][0]);
-ok('unknown off scheme defaults to Pro Style (neutral row)', schemeEdge('???', 'Bear') === SCHEME_EDGE[2][3]);
-ok('unknown def scheme defaults to 4-3', schemeEdge('Smashmouth', '???') === SCHEME_EDGE[3][0]);
+ok('unknown off scheme defaults to Multiple (neutral row)', schemeEdge('???', 'Bear') === SCHEME_EDGE[NO - 1][3]);
+ok('unknown def scheme defaults to 4-3', schemeEdge('Smashmouth', '???') === SCHEME_EDGE[OFF_SCHEMES.indexOf('Smashmouth')][0]);
 
 /* ---- 4. footbally sanity (the matchups read like the chalk) ---- */
 ok('Air Raid beats Bear (blitz exposed by spread)', schemeEdge('Air Raid', 'Bear') > 0);
@@ -83,32 +85,40 @@ ok('Smashmouth runs on Nickel (light box)', schemeEdge('Smashmouth', 'Nickel/Cov
 ok('Smashmouth stalls vs Bear (loaded front)', schemeEdge('Smashmouth', 'Bear') < 0);
 ok('Spread-Option gashes the 3-4', schemeEdge('Spread-Option', '3-4') > 0);
 
-/* ---- 5. player fit values + mean-neutrality ---- */
-ok('fit is +1 in the player\'s scheme', schemeFit({ scm: 2 }, 2) === 1);
-ok('fit is -0.25 out of scheme', schemeFit({ scm: 2 }, 0) === -0.25);
-{ // E[fit] over many random players ≈ 0 (uniform scheme draw)
+/* ---- 5. player fit values + mean-neutrality (side-aware: offense has 7 schemes, defense 5) ---- */
+const OFF_PEN = -1 / (NO - 1), DEF_PEN = -1 / (ND - 1);   // mean-zero out-of-scheme penalty per side
+ok('fit is +1 in the player\'s scheme', schemeFit({ scm: 2, pos: 'WR' }, 2) === 1);
+ok('offense out-of-scheme fit is -1/6 (7 schemes)', schemeFit({ scm: 2, pos: 'WR' }, 0) === OFF_PEN);
+ok('defense out-of-scheme fit is -0.25 (5 schemes)', schemeFit({ scm: 2, pos: 'CB' }, 0) === DEF_PEN);
+{ // E[fit] over many random offensive players ≈ 0 (uniform scheme draw over 0..6)
   let s = 0, N = 20000; const r = rng(101);
-  for (let i = 0; i < N; i++) { const idx = ri(r, 0, 4); s += schemeFit({ id: 'x' + i }, idx); }
-  ok('E[schemeFit] ≈ 0 over random players (mean-neutral)', approx(s / N, 0, 0.02), (s / N).toFixed(4));
+  for (let i = 0; i < N; i++) { const idx = ri(r, 0, NO - 1); s += schemeFit({ id: 'x' + i, pos: 'WR' }, idx); }
+  ok('E[schemeFit] ≈ 0 over random offensive players (mean-neutral)', approx(s / N, 0, 0.02), (s / N).toFixed(4));
 }
-ok('playerSchemeIdx is in 0..4', (() => { for (let i = 0; i < 500; i++) { const v = playerSchemeIdx({ id: 'q' + i }); if (v < 0 || v > 4) return false; } return true; })());
+{ // E[fit] over many random defensive players ≈ 0 (uniform scheme draw over 0..4)
+  let s = 0, N = 20000; const r = rng(102);
+  for (let i = 0; i < N; i++) { const idx = ri(r, 0, ND - 1); s += schemeFit({ id: 'y' + i, pos: 'CB' }, idx); }
+  ok('E[schemeFit] ≈ 0 over random defensive players (mean-neutral)', approx(s / N, 0, 0.02), (s / N).toFixed(4));
+}
+ok('playerSchemeIdx (offense) is in 0..6', (() => { for (let i = 0; i < 500; i++) { const v = playerSchemeIdx({ id: 'q' + i, pos: 'WR' }); if (v < 0 || v > NO - 1) return false; } return true; })());
+ok('playerSchemeIdx (defense) is in 0..4', (() => { for (let i = 0; i < 500; i++) { const v = playerSchemeIdx({ id: 'q' + i, pos: 'CB' }); if (v < 0 || v > ND - 1) return false; } return true; })());
 
 /* ---- 6. rosterSchemeFit bounds + neutrality ---- */
 ok('all-matching offense roster fit == 1', approx(rosterSchemeFit(mkRoster(0, 0), 'off', 0), 1, 1e-9));
-ok('all-mismatching offense roster fit == -0.25', approx(rosterSchemeFit(mkRoster(1, 1), 'off', 0), -0.25, 1e-9));
-{ // a roster of random preferences averages ≈ 0 fit
+ok('all-mismatching offense roster fit == -1/6', approx(rosterSchemeFit(mkRoster(1, 1), 'off', 0), OFF_PEN, 1e-9));
+{ // a roster of random preferences averages ≈ 0 fit (offense draws over 0..6)
   let s = 0, N = 4000; const r = rng(202);
-  for (let i = 0; i < N; i++) { const ros = []; for (let k = 0; k < 11; k++) ros.push(mkPlayer('WR', ri(r, 0, 4), 75, k < 2 ? k : 1)); s += rosterSchemeFit(ros, 'off', ri(r, 0, 4)); }
+  for (let i = 0; i < N; i++) { const ros = []; for (let k = 0; k < 11; k++) ros.push(mkPlayer('WR', ri(r, 0, NO - 1), 75, k < 2 ? k : 1)); s += rosterSchemeFit(ros, 'off', ri(r, 0, NO - 1)); }
   ok('random-roster fit averages ≈ 0', approx(s / N, 0, 0.03), (s / N).toFixed(4));
 }
-ok('rosterSchemeFit always within [-0.25, 1]', (() => { const r = rng(303); for (let i = 0; i < 2000; i++) { const ros = []; for (let k = 0; k < 11; k++) ros.push(mkPlayer('WR', ri(r, 0, 4), 75, 1)); const f = rosterSchemeFit(ros, 'off', ri(r, 0, 4)); if (f < -0.2500001 || f > 1.0000001) return false; } return true; })());
+ok('rosterSchemeFit always within [-1/6, 1]', (() => { const r = rng(303); for (let i = 0; i < 2000; i++) { const ros = []; for (let k = 0; k < 11; k++) ros.push(mkPlayer('WR', ri(r, 0, NO - 1), 75, 1)); const f = rosterSchemeFit(ros, 'off', ri(r, 0, NO - 1)); if (f < OFF_PEN - 1e-6 || f > 1.0000001) return false; } return true; })());
 
 /* ---- 7. schemeDelta: mean-zero across random matchups + bounded ---- */
 {
   let so = 0, sd = 0, N = 6000; const r = rng(404); let maxAbs = 0;
   for (let i = 0; i < N; i++) {
-    const A = mkTeam('A' + i, OFF_SCHEMES[ri(r, 0, 4)], DEF_SCHEMES[ri(r, 0, 4)], ri(r, 0, 4), ri(r, 0, 4));
-    const B = mkTeam('B' + i, OFF_SCHEMES[ri(r, 0, 4)], DEF_SCHEMES[ri(r, 0, 4)], ri(r, 0, 4), ri(r, 0, 4));
+    const A = mkTeam('A' + i, OFF_SCHEMES[ri(r, 0, NO - 1)], DEF_SCHEMES[ri(r, 0, ND - 1)], ri(r, 0, NO - 1), ri(r, 0, ND - 1));
+    const B = mkTeam('B' + i, OFF_SCHEMES[ri(r, 0, NO - 1)], DEF_SCHEMES[ri(r, 0, ND - 1)], ri(r, 0, NO - 1), ri(r, 0, ND - 1));
     const d = schemeDelta(A, B);
     so += d.off; sd += d.def; maxAbs = Math.max(maxAbs, Math.abs(d.off), Math.abs(d.def));
   }

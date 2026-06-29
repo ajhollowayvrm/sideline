@@ -262,10 +262,13 @@ plain static files so Pages still serves it with zero config.
 - **Phase 21 — Schemes (identity, matchups & fit).** ✅ DONE. Every team runs an offensive + defensive
   **scheme**, every player innately **prefers** one on his side (which may *not* be what he's rated for),
   and your **coach** brings a scheme he loves. Pure fenced **`SCHEME ENGINE`** (depends only on
-  `hashStr`/`POS`): 5 offensive schemes (Air Raid · Spread-Option · Pro Style · Smashmouth · West Coast)
-  × 5 defensive (4-3 · 3-4 · Nickel/Cover-3 · Bear · Tampa-2); `SCHEME_EDGE` is a **doubly-balanced** 5×5
-  rock-paper-scissors matchup table (every row AND column sums to 0); `schemeFit` (+1 in his scheme,
-  −0.25 out → E[fit]=0) aggregates over the top-11 into `rosterSchemeFit`; `schemeDelta(off,def)` returns
+  `hashStr`/`POS`): 7 offensive schemes (Air Raid · Spread · Spread-Option · Pro Style · Smashmouth · West
+  Coast · Multiple — *expanded 2026-06-29*: Spread (balanced, pistol run + RPO) split from the run-first
+  Spread-Option, plus a true-neutral **Multiple**) × 5 defensive (4-3 · 3-4 · Nickel/Cover-3 · Bear ·
+  Tampa-2); `SCHEME_EDGE` is a **doubly-balanced** 7×5 rock-paper-scissors matchup table (every row AND
+  column sums to 0; Multiple is the all-zero neutral row); `schemeFit` (+1 in his scheme, −1/(n−1) out,
+  side-aware so offense's deeper 7-scheme menu still gives E[fit]=0 — defense stays −0.25) aggregates over
+  the top-11 into `rosterSchemeFit`; `schemeDelta(off,def)` returns
   the mean-zero rating delta (matchup edge + roster fit). All three effects — matchup, fit, and a coach
   **buy-in** (`schemeBuyIn`, app layer, when the team runs the coach's own scheme; Off/Def Genius amplifies)
   — fold into effective ratings **OUTSIDE** `simEngine` in `simSides` (like `coachGameEdges`/`moraleSpotlight`),
@@ -278,7 +281,7 @@ plain static files so Pages still serves it with zero config.
   a **fogged** scheme read on the roster row / player sheet / recruit sheet (??? → "likely X" → the name,
   sharpening with tenure/scouting like the traits), and a weekly **matchup preview** on the Home card. Save
   **v25** (per-team `offScheme`/`defScheme`, `S.coach.offScheme`/`defScheme`; migration backfills team schemes
-  from id + adopts them as an existing coach's preference). New gate `npm run schemelab` (31 checks); `qa` → 229.
+  from id + adopts them as an existing coach's preference). New gate `npm run schemelab` (35 checks); `qa` → 249.
   See "Phase 21 design — schemes" below. *(Next: the interactive field + play-calling — the resumable
   seed+decision-log engine, the SVG field, defer-to-OC with a live mode toggle — then special packages +
   in-game adjustments, where scheme tendency folds into `passProb`.)*
@@ -1073,14 +1076,20 @@ hashes (the same trick recruit traits use via `hashStr(rec.id)`).
 
 ### Pure `SCHEME ENGINE` (fenced, lab before UI)
 `// === SCHEME ENGINE (Phase 21) START/END ===` (depends only on `hashStr`/`POS`):
-- `OFF_SCHEMES` (Air Raid · Spread-Option · Pro Style · Smashmouth · West Coast), `DEF_SCHEMES`
-  (4-3 · 3-4 · Nickel/Cover-3 · Bear · Tampa-2).
-- `SCHEME_EDGE` — a 5×5 matchup table in rating points, **doubly balanced** (every row and column sums to 0),
-  so over uniformly-random matchups the mean edge is exactly 0 (the envelope is preserved by construction)
-  while any single matchup still tilts ±. Reads like the chalk (Air Raid beats Bear blitz, dies to Tampa-2
-  zone; Smashmouth runs on light boxes, stalls vs 3-4/Bear; Spread-Option gashes read-and-react 3-4; …).
-- `schemeFit(p, idx)` = +1 in his scheme, −0.25 otherwise → **E[fit]=0** under a uniform draw (mean-neutral).
-  `rosterSchemeFit` averages it over a side's top-11. `playerSchemeIdx(p)` derives from `hashStr(p.id)`.
+- `OFF_SCHEMES` (Air Raid · Spread · Spread-Option · Pro Style · Smashmouth · West Coast · Multiple),
+  `DEF_SCHEMES` (4-3 · 3-4 · Nickel/Cover-3 · Bear · Tampa-2). *Expanded 2026-06-29:* **Spread** (balanced —
+  pistol run game + RPO, few weaknesses) is split out from the run-first **Spread-Option** (option/QB-run),
+  and **Multiple** is a true-neutral "mix of everything" (all-zero matchup row, balanced tendency, no
+  weakness or strength — leans on talent + roster fit).
+- `SCHEME_EDGE` — a 7×5 matchup table in rating points, **doubly balanced** (every row and every column
+  sums to 0; Multiple is the all-zero row), so over uniformly-random matchups the mean edge is exactly 0
+  (the envelope is preserved by construction) while any single matchup still tilts ±. Reads like the chalk
+  (Air Raid beats Bear blitz, dies to Tampa-2 zone; Smashmouth runs on light boxes, stalls vs 3-4/Bear;
+  Spread-Option gashes read-and-react 3-4, blitz blows up the mesh; …).
+- `schemeFit(p, idx)` = +1 in his scheme, −1/(n−1) otherwise (n = the side's scheme count) → **E[fit]=0**
+  under a uniform draw (mean-neutral on each side, so offense's 7-scheme menu doesn't tilt the average vs
+  defense's 5). `rosterSchemeFit` averages it over a side's top-11. `playerSchemeIdx(p)` derives from
+  `hashStr(p.id) % schemeCount(side)` (side from the player's position).
 - `schemeDelta(offTeam, defTeam)` → `{off, def}` rating adds (matchup edge + each side's roster fit). The
   total swing is ≤ ~4 rating pts, far under a typical OVR gap → **raw OVR still decides games**.
 
@@ -1101,8 +1110,8 @@ gated on `rosterTraitConf`/`rec.scout` like the traits); a weekly **matchup prev
 ### Save & validation
 Save **v25** (per-team `offScheme`/`defScheme`, `S.coach.offScheme`/`defScheme`); `migrateState` v24→v25
 backfills team schemes from id and adopts them as an existing coach's preference (a player's preferred scheme
-is innate-per-id, so **no save column**). New gate `npm run schemelab` (31 checks: table double-balance, fit
-& delta mean-zero over random worlds, swing small enough that OVR dominates, footbally matchups, determinism).
+is innate-per-id, so **no save column**). New gate `npm run schemelab` (35 checks: table double-balance, fit
+& delta mean-zero over random worlds — side-aware, swing small enough that OVR dominates, footbally matchups, determinism).
 `qa` → 229 (your program runs your schemes, buy-in active both sides, delta deterministic+bounded, scheme
 fogged, roster chip + Program card render, a non-preferred install drops buy-in). **Fourteen gates** now
 (adds `schemelab`).
