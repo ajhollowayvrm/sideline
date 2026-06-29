@@ -243,6 +243,22 @@ plain static files so Pages still serves it with zero config.
   banks the stint on **`S.coach.career`**, and resets approval/tenure, or `retireCoach` ends the run with a
   **career retrospective**. Save **v23** (`S.coachSearch`, `phase:'Retired'`; `medialab` → 46). The **AP poll
   stays cosmetic** (the playoff seeds off `rankScore`/conf champions). See "Phase 19 design — media suite" below.
+- **Phase 20 — Player personality drives reactions (Ego + morale).** ✅ DONE. The media (and the surrounding
+  narrative) now lands **differently on each player** by personality. A **third fogged trait — Ego** joins
+  Motor/Composure in the `TRAIT ENGINE` (`genTraits` now returns `{mot,comp,ego}`; `ego` is a core column in
+  `SAVE_PKEYS`, appended for back-compat) — media-receptiveness: high feeds on hype + is rattled by criticism,
+  low tunes out the noise. A **persistent per-player morale** (`p.morale`, sparse, **controlled team only**)
+  is moved by media events scaled by `egoWeight(ego)` and decays toward neutral. All movers are **mean-neutral
+  at the average** (`moraleUpdate`/`moraleDecay`/`moraleDevMult`/`moraleGameSkew`/`moralePortalPush`), so an
+  untouched roster reproduces the pre-Phase-20 dev/sim/portal envelopes exactly. **Four wirings:** press
+  conferences (a `mood` valence per choice moves each player's morale × ego, in `answerPress`), results + decay
+  (in `updateMedia`), **development** (`moraleDevMult` folds into `devRateFor`), the **in-game spotlight** (a
+  small ± edge in `simSides`/`moraleSpotlight`, scaled by roster morale and whether it's a ranked/marquee game —
+  outside the pure `simEngine`), and the **transfer portal** (`moralePortalPush` raises `portalLeaveProb` for
+  your soured players). Morale resets to neutral each kickoff; Ego persists for a career. UI: an **Ego** fog chip
+  (roster/player/recruit sheets) + an **open morale** mood chip on your roster + a Locker-room read on the
+  approval strip. Save **v24** (structural no-op migration); `traitlab` → 30. See "Phase 20 design —
+  personality reactions" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable, so advancing a week stays fast). This is a
   design choice, not a backlog.
@@ -269,7 +285,8 @@ Stored as small integers (~0–100, default-absent = "average, unscouted"), seri
 present** — same sparse-extra treatment the columnar codec (`encRoster`) already gives `gs`/`dev`/
 `honors`. A roster with no traits scouted yet costs ~zero extra bytes. Generated deterministically
 from the world seed in `genRoster` (a third trait is intentionally left out — keep the factory lean;
-revisit only if two prove too thin).
+revisit only if two prove too thin). *(Revisited in **Phase 20**: a third trait, **Ego**, + a persistent
+**morale** were added to make the media land per-player — see "Phase 20 design".)*
 
 ### Fog — reuse the ceiling pattern exactly (do NOT invent a new fog)
 Traits are **never shown raw**; they render as a banded read, mirroring `scoutedCeiling(p)` /
@@ -835,6 +852,52 @@ poll never feeds the bracket; no booster-donation economy beyond the existing fi
 
 ---
 
+## Phase 20 design — personality reactions (Ego + morale)
+
+Decided 2026-06-28 with AJ. Phase 10 capped personality at **two** mean-neutral traits ("a factory, not The
+Sims"); Phase 19's media effects landed **team-wide**. Phase 20 makes the narrative land **per player** by
+personality — one player feeds on the hype and is rattled by criticism, another tunes it out — by adding a
+third trait + a persistent morale, wired into four existing moments. Same discipline: pure fenced engine +
+lab before UI, a save bump, all gates green, and **mean-neutral at the average** so an untouched roster is
+byte-identical to pre-Phase-20.
+
+### Engine (extends the `TRAIT ENGINE` block — pure)
+- **Ego** (`p.ego`): a third gently bell-shaped `genTraits` roll; `egoVal(p)` (absent → 50). A **core column**
+  in `SAVE_PKEYS` (appended last → old columnar tuples decode `ego=undefined → 50`); also appended to
+  `RECRUIT_PKEYS`. `egoWeight(ego)` → 0.2..1.5 (how hard the narrative hits him).
+- **Morale** (`p.morale`, sparse, **controlled team only**, `MORALE_DEF=50`): `moraleUpdate(morale, valence,
+  ego)` (signed event × ego, bounded), `moraleDecay` (ease toward 50), `moraleDevMult` (0.9..1.1, 1.0 at 50),
+  `moraleGameSkew(roster)` (±2 team edge from avg morale, 0 when neutral), `moralePortalPush(morale)` (extra
+  leave prob when bleak, 0 at ≥50). Every mover is identity/zero at the average.
+
+### Wiring (four moments)
+1. **Press** — a `mood` valence on each `PRESS_EFFECTS` choice; `answerPress` moves each controlled player's
+   morale by `moraleUpdate(p.morale, mood, ego)` (divas swing, monks don't).
+2. **Results + decay** — `updateMedia` nudges the roster's morale by the game result (win/loss × upset/blowout)
+   then decays the whole room (shedding ~neutral values to stay sparse).
+3. **Development** — `devRateFor` folds `moraleDevMult(p.morale)` for the controlled team (next to the Phase
+   19b `pressDev` term) — a buzzing room develops its ego players faster. (Applies at rollover dev, using the
+   season's end-of-year morale; reset to neutral at the next kickoff.)
+4. **In-game spotlight** — `moraleSpotlight(g)` (in `simSides`) adds a small ± edge to the controlled team in a
+   ranked/marquee game, scaled by `moraleGameSkew(roster)`; **outside** `simEngine`, like `coachGameEdges`.
+5. **Transfer portal** — `openPortal` adds `moralePortalPush(p.morale)` to `portalLeaveProb` for your players.
+- Morale resets each kickoff (`startSeason`); Ego persists for a career.
+
+### Save & validation
+Save **v24** (structural no-op migration — absent ego/morale read as 50). `traitlab` → 30 (ego centered/
+bell/deterministic; `egoWeight` bounded+monotonic; the morale movers ego-scaled, bounded, signed, and
+**identity/zero at the average**). `qa` (222) drives a press choice moving a high-ego player's morale far
+more than a low-ego one, the Ego fog chip + open morale chip, and the v24 columnar round-trip (ego core +
+morale sparse). UI: Ego joins the fogged trait reads (roster/player/recruit); morale shows **openly** as a
+mood chip on your roster + a Locker-room line on the approval strip.
+
+### Deliberately out of scope (still a factory)
+Morale is **controlled-team only** (no 11k-player league-wide morale sim — AI portal churn keeps the Phase 18
+signals); no relationships/chemistry graph, no off-field events, no per-player interviews. Ego is one trait
+with the four hooks above; anything not touching press / in-game / dev / portal is flavor and isn't stored.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -1260,7 +1323,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **23**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **24**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -1287,8 +1350,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   nulled at rollover); v21→v22 backfills coach `approval`(55)/`tenure`(0)/`approvalHistory`([])/`career`([])
   on `S.coach` (Phase 19b — these persist across seasons; `team.mediaBuzz`/`S.media.pressDev` absent → no
   effect); v22→v23 backfills `S.coachSearch=null` (Phase 19c — the coaching search, created on firing,
-  cleared on taking a job / retiring; `phase:'Retired'` is reached via the career retrospective). Each step
-  re-derives ratings/ranks where needed.
+  cleared on taking a job / retiring; `phase:'Retired'` is reached via the career retrospective); v23→v24 is a
+  structural no-op (Phase 20 — absent `p.ego` reads as average 50 like `mot`/`comp`; `p.morale` absent reads
+  as neutral 50). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -1370,12 +1434,14 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 ### Player object (kept lean for storage)
 ```
 { id, fn, ln, pos, yr, age, st, stars, ov, pot, cap, spd, str, awr, so,
-  mot?, comp?, gs?, dev?, honors?, career?, peakOv? }   // trailing fields are sparse (absent = default)
+  mot?, comp?, ego?, morale?, gs?, dev?, honors?, career?, peakOv? }   // trailing fields are sparse (absent = default)
 //   so = depth order within position (0 = starter); cap = captain
 //   pot = TRUE ceiling (0..99). The UI never shows it raw — `scoutedCeiling(p)` renders a
 //   fuzzy tier/band whose uncertainty shrinks with scouting confidence (age/experience now;
 //   real scouting in Phase 4). `devStage(p)` buckets the ov→pot gap (Raw…Maxed).
-//   mot/comp = fogged temperament traits (Phase 10); gs = season box; dev = last offseason OVR gain.
+//   mot/comp/ego = fogged temperament traits (Phase 10 + Ego, Phase 20); morale = persistent per-player
+//   locker-room mood (Phase 20, controlled team only, in-season; absent = neutral 50); gs = season box;
+//   dev = last offseason OVR gain.
 //   career = cumulative milestone totals + peakOv = max OVR ever (Phase 11; summed/updated at rollover
 //   right before gs is wiped, for EVERY player on EVERY team — they feed legendStature on graduation).
 ```
@@ -1465,8 +1531,8 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
-### Phases 6–19 landed — what used to be stubbed now works
-Phases 1–19 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
+### Phases 6–20 landed — what used to be stubbed now works
+Phases 1–20 are all **DONE**. The former dead ends are live: the **coaching carousel** + **finances
 loop** + **facility upgrades** (Phase 6), **side-specific development** + **in-game coach effects** +
 **coach-responsive scouting fog** (Phase 7), **AI geography** + **season awards/All-America/Coach of
 the Year/Week** + **non-conference series** (Phase 8), the **columnar save codec** (Phase 9), **fogged
@@ -1483,8 +1549,10 @@ modeled (columnar-saved, filtered + paginated), retiring the old top-300 board (
 **transfer portal** — players leave (buried depth / broken promises), you sign incoming transfers, AI
 churns, all in the offseason after Signing Day (Phase 18), and a **full media suite** — an AP poll + news
 feed, interactive press conferences, and a coach **approval rating + hot seat** that can get you fired (then
-a **job carousel or retirement**) (Phase 19). The full career loop — recruit (verbal, flippable) → season
-(work the **media** + **press**) → **conf championships** → awards → **postseason** → **Early Signing →
+a **job carousel or retirement**) (Phase 19), and **personality-driven reactions** — a third fogged **Ego**
+trait + persistent **morale**, so the media lands differently on each player (Phase 20). The full career loop
+— recruit (verbal, flippable) → season (work the **media** + **press**, manage the **locker room**) → **conf
+championships** → awards → **postseason** → **Early Signing →
 National Signing Day → transfer portal** → rollover (graduate/enshrine/**draft**/develop/enroll) → finances
 settle → carousel → facilities/series — closes across multiple years, and the **hot seat** means a sustained
 slump can end your tenure; your stars leave a permanent mark on the program both on its Ring of Honor and on

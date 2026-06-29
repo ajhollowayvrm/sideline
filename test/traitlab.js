@@ -141,6 +141,35 @@ const vari = a => { const m = avg(a); return avg(a.map(x => (x - m) * (x - m)));
   check('Clutch stays small (|nudge| < 2 rating pts)', Math.abs(lo) < 2 && Math.abs(hi) < 2, `${lo.toFixed(2)}..${hi.toFixed(2)}`);
 })();
 
+/* 9) ego (Phase 20): centered, bell-shaped, deterministic, + a bounded/monotonic susceptibility */
+(function () {
+  const r = rng(5050), ego = [];
+  for (let i = 0; i < 20000; i++) ego.push(genTraits(r).ego);
+  check('genTraits ego is centered + bell-shaped', Math.abs(avg(ego) - 50) < 1.5 && ego.filter(v => v <= 15 || v >= 85).length / ego.length < 0.13, `mean ${avg(ego).toFixed(1)}`);
+  const a = rng(9), b = rng(9); let same = true;
+  for (let i = 0; i < 400; i++) if (genTraits(a).ego !== genTraits(b).ego) same = false;
+  check('genTraits ego is deterministic by seed', same);
+  const lo = egoWeight(0), mid = egoWeight(50), hi = egoWeight(100);
+  let mono = true; for (let e = 0; e < 100; e += 5) if (egoWeight(e) > egoWeight(e + 5)) mono = false;
+  check('egoWeight is bounded (0.2..1.5) + monotonic in ego', lo >= 0.2 && hi <= 1.5 && lo < mid && mid < hi && mono, `${lo.toFixed(2)}..${hi.toFixed(2)}`);
+})();
+
+/* 10) morale movers (Phase 20): ego-scaled, bounded, mean-neutral at the average (envelope-preserving) */
+(function () {
+  check('moraleUpdate scales an event harder for a high-ego player', moraleUpdate(50, 8, 95) - 50 > moraleUpdate(50, 8, 5) - 50 && moraleUpdate(50, 8, 5) > 50, `+${(moraleUpdate(50, 8, 95) - 50).toFixed(1)} vs +${(moraleUpdate(50, 8, 5) - 50).toFixed(1)}`);
+  check('moraleUpdate is bounded 0..100', moraleUpdate(98, 40, 99) <= 100 && moraleUpdate(3, -40, 99) >= 0);
+  check('moraleUpdate is signed (a negative event drops morale)', moraleUpdate(50, -6, 80) < 50);
+  check('moraleDecay eases toward 50 (never past it)', moraleDecay(90) < 90 && moraleDecay(90) > 50 && moraleDecay(10) > 10 && moraleDecay(10) < 50);
+  check('moraleDecay is the identity at 50', Math.abs(moraleDecay(50) - 50) < 1e-9);
+  check('moraleDevMult is 1.0 at neutral + bounded 0.9..1.1 + monotonic', Math.abs(moraleDevMult(50) - 1) < 1e-9 && moraleDevMult(0) >= 0.9 && moraleDevMult(100) <= 1.1 && moraleDevMult(90) > moraleDevMult(10));
+  const neutral = [{ morale: 50, so: 0 }, { morale: 50, so: 1 }], hot = [{ morale: 90, so: 0 }, { morale: 85, so: 1 }], cold = [{ morale: 10, so: 0 }, { morale: 15, so: 1 }];
+  check('moraleGameSkew is zero on a neutral room', Math.abs(moraleGameSkew(neutral)) < 1e-9);
+  check('moraleGameSkew is signed + bounded (±2)', moraleGameSkew(hot) > 0 && moraleGameSkew(cold) < 0 && Math.abs(moraleGameSkew(hot)) <= 2 && Math.abs(moraleGameSkew(cold)) <= 2);
+  check('moraleGameSkew ignores absent morale (all-default room = 0)', Math.abs(moraleGameSkew([{ so: 0 }, { so: 1 }, { so: 0 }])) < 1e-9);
+  check('moralePortalPush is 0 at neutral/high morale', moralePortalPush(50) === 0 && moralePortalPush(80) === 0);
+  check('moralePortalPush rises as morale sinks (bounded ≤0.2)', moralePortalPush(10) > moralePortalPush(40) && moralePortalPush(0) <= 0.2 && moralePortalPush(0) > 0);
+})();
+
 /* ---------- summary ---------- */
 const passed = results.filter(r => r.pass).length;
 console.log(`\n${passed}/${results.length} checks passed`);

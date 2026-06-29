@@ -325,11 +325,13 @@ UTEP:'TX',WKU:'KY',ND:'IN',CONN:'CT'};
 //   comp (Composure)          → biases IN-GAME yardage variance via compExp()/compDraw() + clutch
 // The UI never shows the raw number — it renders a fogged band (see traitBand, Phase 10 UI).
 const TRAIT_DEF=50;                                       // an absent trait reads as league-average
-// A fresh pair, gently bell-shaped (mean of two rolls) so most players are average and the tails
-// — true grinders / head-cases, ice-veined / streaky — stay rare. Deterministic from `r`.
-function genTraits(r){const bell=()=>clamp(Math.round((ri(r,0,100)+ri(r,0,100))/2),0,100);return {mot:bell(),comp:bell()};}
+// A fresh trait set, each gently bell-shaped (mean of two rolls) so most players are average and the tails
+// — true grinders / head-cases, ice-veined / streaky, divas / monks — stay rare. Deterministic from `r`.
+//   ego (Phase 20) → MEDIA-receptiveness: how hard the narrative (press, results, the spotlight) hits him.
+function genTraits(r){const bell=()=>clamp(Math.round((ri(r,0,100)+ri(r,0,100))/2),0,100);return {mot:bell(),comp:bell(),ego:bell()};}
 function motVal(p){return (p&&p.mot!=null)?p.mot:TRAIT_DEF;}
 function compVal(p){return (p&&p.comp!=null)?p.comp:TRAIT_DEF;}
+function egoVal(p){return (p&&p.ego!=null)?p.ego:TRAIT_DEF;}
 // Motor → offseason development multiplier (~0.85..1.15, average 1.0). A grinder squeezes more
 // ov→pot out of every offseason; a coaster leaves growth on the table. Folded into devRateFor.
 function motorMult(p){return clamp(1+(motVal(p)-50)/333,0.85,1.15);}
@@ -345,6 +347,29 @@ function compDraw(r,p){return compReshape(r(),compExp(p));}           // one rng
 // close". High composure tightens up, low composure wobbles. Small by design (±~1.6 pts) so it
 // sways tight games without moving the season-long favorite/home win envelopes.
 function compClutch(p){return (compVal(p)-50)/31;}                    // ≈ -1.6 .. +1.6 rating pts
+
+// --- Ego + persistent morale (Phase 20) — pure, lab-tested, MEAN-NEUTRAL at the average so an
+// untouched roster (every ego/morale == 50) reproduces the pre-Phase-20 dev/sim/portal envelopes.
+const MORALE_DEF=50;                                                  // absent morale reads as neutral
+function moraleVal(p){return (p&&p.morale!=null)?p.morale:MORALE_DEF;}
+// How hard the narrative hits a player (0.2 unflappable … 1.5 diva). Monotonic in ego, bounded.
+function egoWeight(ego){return clamp(0.2+(ego/100)*1.3,0.2,1.5);}
+// Move a player's morale by a signed event, scaled by his ego susceptibility. Bounded 0..100.
+function moraleUpdate(morale,valence,ego){return clamp(morale+valence*egoWeight(ego),0,100);}
+// Weekly ease back toward neutral — a bad (or great) week fades over a few weeks.
+function moraleDecay(morale){return morale+(50-morale)*0.25;}
+// Morale → offseason/weekly development multiplier (0.9..1.1, exactly 1.0 at 50). Folded into devRateFor.
+function moraleDevMult(morale){return clamp(1+(morale-50)/250,0.9,1.1);}
+// Roster's collective morale → a small ± team rating shift (≤ ~2 pts), 0 when the room is neutral. Applied
+// OUTSIDE simEngine (the controlled-team edge layer), so simlab envelopes + determinism are untouched.
+function moraleGameSkew(roster){
+  if(!roster||!roster.length)return 0;
+  let s=0,n=0;roster.forEach(p=>{if(p.so==null||p.so<=2){s+=moraleVal(p)-50;n++;}});
+  if(!n)return 0;
+  return clamp((s/n)/50*2,-2,2);
+}
+// Low morale pushes a player toward the portal (0 at neutral/high; up to +0.2 leave probability when bleak).
+function moralePortalPush(morale){return clamp((50-morale)/50*0.2,0,0.2);}
 // === TRAIT ENGINE (Phase 10) END ===
 
 /* ---------- world generation ---------- */
@@ -361,7 +386,7 @@ function genPlayer(r,prestige,posCode){
     fn:pick(r,FN),ln:pick(r,LN),pos:posCode,yr:cls,age:ageBase+ri(r,0,1),
     st:pick(r,STATES),stars,ov,pot,cap:false,
     spd:clamp(ov+ri(r,-12,12),40,99),str:clamp(ov+ri(r,-12,12),40,99),awr:clamp(ov+ri(r,-14,10),40,99),
-    mot:tr.mot,comp:tr.comp};
+    mot:tr.mot,comp:tr.comp,ego:tr.ego};
 }
 function genRoster(r,prestige){
   const out=[];
@@ -471,7 +496,7 @@ function genWorld(seed){
    saves (no `_sv` tag) decode as themselves. Cuts a fresh save ~40%. */
 const SLOTS=[1,2,3];
 const slotKey=n=>'sideline_slot_'+n;
-const SAVE_PKEYS=['id','fn','ln','pos','yr','age','st','stars','ov','pot','cap','spd','str','awr','so','mot','comp'];
+const SAVE_PKEYS=['id','fn','ln','pos','yr','age','st','stars','ov','pot','cap','spd','str','awr','so','mot','comp','ego'];
 function encRoster(roster){
   return roster.map(p=>{
     const core=SAVE_PKEYS.map(k=>p[k]);
@@ -485,7 +510,7 @@ function decRoster(enc){
 // Phase 17: the recruit pool is now the full national class (~3,400), so it serializes columnar too —
 // scalar fields become a flat tuple, the sparse extras (prefs[], iv{}, promise, alumni) ride in a side
 // object (the transient _flipped tag is dropped). Mirrors encRoster/decRoster exactly.
-const RECRUIT_PKEYS=['id','fn','ln','pos','st','stars','ov','pot','spd','str','awr','mot','comp','rebel','scout','committedTo','signed','offered','visited'];
+const RECRUIT_PKEYS=['id','fn','ln','pos','st','stars','ov','pot','spd','str','awr','mot','comp','rebel','scout','committedTo','signed','offered','visited','ego'];
 function encPool(pool){
   return pool.map(p=>{
     const core=RECRUIT_PKEYS.map(k=>p[k]);
@@ -689,7 +714,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:23,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:24,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -869,6 +894,9 @@ function migrateState(state){
     if(!('coachSearch' in state))state.coachSearch=null;   // created on firing, cleared on taking a job / retiring
     state.version=23;
   }
+  if((state.version||1)<24){           // Phase 20: the Ego trait + persistent per-player morale. Structural
+    state.version=24;                  // no-op — absent p.ego/p.morale read as average (50), like mot/comp.
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -968,6 +996,7 @@ function startSeason(){
   S.world.teams.forEach(t=>(t.legends||[]).forEach(l=>l.app=LEGEND_APPS));   // refresh alumni appearances
   initRecruiting();
   S.world.teams.forEach(t=>{t.mediaBuzz=0;});   // Phase 19b: press-conference recruiting buzz resets each year
+  controlled().roster.forEach(p=>{delete p.morale;});   // Phase 20: a fresh, neutral locker room each season
   recomputeRanks(S.world);
   initMedia();                 // Phase 19: a fresh preseason AP poll + an empty news feed
   setWeeklyTask();
@@ -1225,7 +1254,7 @@ function genRecruits(seed,teams){
     pool.push({id:rid,
       fn:pick(r,FN),ln:pick(r,LN),pos,st,stars,ov,pot,
       spd:clamp(ov+ri(r,-10,12),40,99),str:clamp(ov+ri(r,-10,12),40,99),awr:clamp(ov+ri(r,-12,10),40,99),
-      mot:tr.mot,comp:tr.comp,rebel,
+      mot:tr.mot,comp:tr.comp,ego:tr.ego,rebel,
       scout:0,prefs:[p1,p2],iv,committedTo:null,signed:false,offered:false,visited:false,promise:null});
   }
   return pool;
@@ -1338,7 +1367,7 @@ function genFreshman(r,prestige,posCode){
   return {id:'p'+Math.floor(r()*1e9).toString(36),fn:pick(r,FN),ln:pick(r,LN),pos:posCode,
     yr:'FR',age:18+ri(r,0,1),st:pick(r,STATES),stars:ov>=82?4:ov>=72?3:ov>=62?2:1,
     ov,pot,cap:false,spd:clamp(ov+ri(r,-12,12),40,99),str:clamp(ov+ri(r,-12,12),40,99),
-    awr:clamp(ov+ri(r,-14,10),40,99),so:0,mot:tr.mot,comp:tr.comp};
+    awr:clamp(ov+ri(r,-14,10),40,99),so:0,mot:tr.mot,comp:tr.comp,ego:tr.ego};
 }
 // Convert a signed recruit into a true-freshman Player. Blue-chips enter "raw" (ov discounted by
 // pedigree) with the recruit's pot as their ceiling, so development carries them up over a career —
@@ -1348,11 +1377,11 @@ function recruitToFreshman(rec,r){
   const ov=clamp(rec.ov-disc+ri(r,-2,2),44,96);
   const pot=clamp(Math.max(rec.pot||rec.ov,rec.ov),ov,99);
   // Carry the temperament you scouted on the trail (else generate) so the fogged read pays off.
-  const tr=(rec.mot!=null&&rec.comp!=null)?{mot:rec.mot,comp:rec.comp}:genTraits(r);
+  const tr=(rec.mot!=null&&rec.comp!=null)?{mot:rec.mot,comp:rec.comp,ego:rec.ego}:genTraits(r);
   return {id:'p'+Math.floor(r()*1e9).toString(36),fn:rec.fn,ln:rec.ln,pos:rec.pos,
     yr:'FR',age:18,st:rec.st,stars:rec.stars,ov,pot,cap:false,
     spd:clamp(rec.spd||ov,40,99),str:clamp(rec.str||ov,40,99),awr:clamp(rec.awr||ov,40,99),
-    so:0,promise:rec.promise||null,fromRecruit:true,mot:tr.mot,comp:tr.comp};
+    so:0,promise:rec.promise||null,fromRecruit:true,mot:tr.mot,comp:tr.comp,ego:tr.ego};
 }
 // Roll one team's roster into the next season. `signees` = the prospects that committed to this
 // team. Returns the rebuilt roster + a summary (graduated/developed/freshmen). Mutates nothing it
@@ -2014,11 +2043,12 @@ const PRESS_BANK=[
   {when:'any',q:'Recruiting is heating up. A message to prospects?',choices:[
     ['pitch','“Come build something special with us.”'],
     ['culture','“We develop players for the next level.”']]}];
+// `mood` (Phase 20) = how the locker room reacts; applied per player scaled by his ego.
 const PRESS_EFFECTS={
-  rally:{approval:2,buzz:0.01,dev:0}, accountability:{approval:3,buzz:0,dev:0.02}, deflect:{approval:-3,buzz:0,dev:0},
-  humble:{approval:2,buzz:0,dev:0.02}, hype:{approval:1,buzz:0.03,dev:-0.01},
-  respect:{approval:2,buzz:0,dev:0}, confident:{approval:1,buzz:0.02,dev:0}, bulletin:{approval:0,buzz:0.05,dev:0},
-  pitch:{approval:0,buzz:0.03,dev:0}, culture:{approval:1,buzz:0.02,dev:0.02}};
+  rally:{approval:2,buzz:0.01,dev:0,mood:3}, accountability:{approval:3,buzz:0,dev:0.02,mood:4}, deflect:{approval:-3,buzz:0,dev:0,mood:-4},
+  humble:{approval:2,buzz:0,dev:0.02,mood:2}, hype:{approval:1,buzz:0.03,dev:-0.01,mood:5},
+  respect:{approval:2,buzz:0,dev:0,mood:1}, confident:{approval:1,buzz:0.02,dev:0,mood:3}, bulletin:{approval:0,buzz:0.05,dev:0,mood:5},
+  pitch:{approval:0,buzz:0.03,dev:0,mood:1}, culture:{approval:1,buzz:0.02,dev:0.02,mood:3}};
 function pressPrompt(ctx,seed){
   const r=rng((seed||0)>>>0);
   let pool=PRESS_BANK.filter(p=>p.when==='any'||(ctx&&ctx[p.when]));
@@ -2064,7 +2094,25 @@ function coachGameEdges(t){
 }
 function withCoachEdge(t){const e=coachGameEdges(t);if(!e.off&&!e.def)return t;
   return Object.assign({},t,{ratings:{off:clamp(t.ratings.off+e.off,40,99),def:clamp(t.ratings.def+e.def,40,99),ovr:t.ratings.ovr}});}
-function simSides(g){return {home:withCoachEdge(teamById(g.home)),away:withCoachEdge(teamById(g.away))};}
+// Phase 20: under the SPOTLIGHT (a ranked/marquee game), the controlled team plays up or down to the moment
+// scaled by its locker-room morale — a small ± rating edge applied OUTSIDE simEngine (like coachGameEdges),
+// so simlab/determinism are untouched and a neutral room (all morale 50) yields exactly 0 (no edge).
+function moraleSpotlight(g){
+  const me=S&&S.teamId; if(!me||!g||(g.home!==me&&g.away!==me))return 0;
+  const mine=teamById(me), opp=teamById(g.home===me?g.away:g.home); if(!mine||!opp)return 0;
+  let spot=0;
+  if(pollRankOf(mine.id)||pollRankOf(opp.id))spot=1;                      // a ranked game is the big stage
+  else if(Math.abs(mine.ratings.ovr-opp.ratings.ovr)<=3)spot=0.5;         // a tight matchup still draws eyes
+  if(!spot)return 0;
+  return moraleGameSkew(mine.roster)*spot;
+}
+function simSides(g){
+  let home=withCoachEdge(teamById(g.home)), away=withCoachEdge(teamById(g.away));
+  const edge=moraleSpotlight(g);
+  if(edge){const me=S.teamId,apply=t=>Object.assign({},t,{ratings:{off:clamp(t.ratings.off+edge,40,99),def:clamp(t.ratings.def+edge,40,99),ovr:t.ratings.ovr}});
+    if(g.home===me)home=apply(home); else away=apply(away);}
+  return {home,away};
+}
 // Resolve a game with the drive/play engine. Seeded per game id so outcomes are reproducible
 // regardless of advance order. Sets g.hs/g.as/g.played and RETURNS the per-game box (player
 // id → stat deltas) for stat folding. Pure w.r.t. players/teams — re-simming a clone is safe.
@@ -2191,14 +2239,28 @@ function updateMedia(wk,boxes,recOut){
   const stories=buildWeekStories(wk,boxes,recOut,prevPoll,S.media.poll);
   S.media.feed=stories.reverse().concat(S.media.feed||[]).slice(0,MEDIA_FEED_CAP);
   // Phase 19b: this week's result moves the controlled coach's approval; a crater makes the news.
-  const me=S.teamId, mg=(boxes||[]).find(({g})=>g.home===me||g.away===me);
+  const me=S.teamId, mg=(boxes||[]).find(({g})=>g.home===me||g.away===me), mine=teamById(me);
   if(mg&&S.coach){
-    const g=mg.g, mine=teamById(me), opp=teamById(g.home===me?g.away:g.home);
+    const g=mg.g, opp=teamById(g.home===me?g.away:g.home);
     const myPts=g.home===me?g.hs:g.as, oppPts=g.home===me?g.as:g.hs, won=myPts>oppPts;
     const before=hotSeatTier(S.coach.approval||50,mine.prestige,S.coach.tenure||0).tier;
     S.coach.approval=clamp((S.coach.approval||50)+gameApprovalDelta({won,myOvr:mine.ratings.ovr,oppOvr:opp.ratings.ovr,oppRanked:!!pollRankOf(opp.id)}),3,99);
     const after=hotSeatTier(S.coach.approval,mine.prestige,S.coach.tenure||0).tier;
     if(after==='hot'&&before!=='hot')mediaEvent(wk,'milestone','Pressure mounts on '+mine.abbr,'The seat is heating up after the latest result — approval has slipped to '+Math.round(S.coach.approval)+'%.',{color:mine.color,teams:[me],mine:true});
+  }
+  // Phase 20: the result moves the controlled roster's morale (high-ego players swing hardest), then the
+  // whole locker room eases back toward neutral (a bad week fades). Stored sparsely — neutral is shed.
+  if(mine){
+    if(mg){
+      const g=mg.g, opp=teamById(g.home===me?g.away:g.home);
+      const myPts=g.home===me?g.hs:g.as, oppPts=g.home===me?g.as:g.hs, won=myPts>oppPts, gap=opp.ratings.ovr-mine.ratings.ovr;
+      let val=won?3:-3;
+      if(won&&(gap>=3||pollRankOf(opp.id)))val+=2;        // a signature win lifts the room
+      if(won&&(myPts-oppPts)>=24)val+=1;                  // a statement blowout
+      if(!won&&gap<=-4)val-=3;                            // a humiliating loss to a weaker team
+      mine.roster.forEach(p=>{p.morale=Math.round(moraleUpdate(moraleVal(p),val,egoVal(p)));});
+    }
+    mine.roster.forEach(p=>{const m=Math.round(moraleDecay(moraleVal(p)));if(Math.abs(m-MORALE_DEF)<1)delete p.morale;else p.morale=m;});
   }
 }
 // Push a one-off story (awards/titles/portal) the app supplies copy for, newest-first.
@@ -2450,7 +2512,9 @@ function openPortal(){
     const leaving=t.roster.filter(p=>{
       if(NEXT_CLASS[p.yr]===null)return false;            // graduating seniors leave via graduation, not the portal
       const broken=!!(p.promise&&p.promise.type==='playingTime'&&!((p.so!=null&&p.so<=1)||(p.gs&&p.gs.gp)));
-      return r()<portalLeaveProb(p,{brokenPromise:broken,winPct,retention});
+      let prob=portalLeaveProb(p,{brokenPromise:broken,winPct,retention});
+      if(t.id===me)prob+=moralePortalPush(moraleVal(p));   // Phase 20: your soured players are likelier to bolt
+      return r()<prob;
     });
     if(!leaving.length)return;
     t.roster=t.roster.filter(p=>leaving.indexOf(p)<0);
@@ -2552,6 +2616,7 @@ function devRateFor(team,p){
   }
   rate*=motorMult(p);                      // the player's own work ethic (Phase 10 trait)
   if(team.id===S.teamId&&S.media&&S.media.pressDev)rate*=1+clamp(S.media.pressDev,0,0.08);   // Phase 19b: press "culture" focus
+  if(team.id===S.teamId&&p.morale!=null)rate*=moraleDevMult(p.morale);                       // Phase 20: a buzzing locker room develops faster
   return clamp(rate,0.6,1.6);
 }
 // Clear out the controlled team's recruiting promises at rollover. Departures are now modeled by the
@@ -3442,16 +3507,22 @@ function answerPress(key){
   if(S.coach)S.coach.approval=clamp((S.coach.approval==null?50:S.coach.approval)+(e.approval||0),3,99);
   t.mediaBuzz=clamp((t.mediaBuzz||0)+(e.buzz||0),0,0.1);
   S.media.pressDev=clamp((S.media.pressDev||0)+(e.dev||0),0,0.08);
+  // Phase 20: the locker room reacts — each player's morale moves by the choice's mood, scaled by his ego.
+  if(e.mood)t.roster.forEach(p=>{p.morale=Math.round(moraleUpdate(moraleVal(p),e.mood,egoVal(p)));});
   S.media.pressWeek=S.week;autosave();
 }
 // Coach approval + hot-seat strip (Home + Program).
+function teamMorale(){const r=controlled().roster;if(!r.length)return 50;
+  return Math.round(r.reduce((s,p)=>s+moraleVal(p),0)/r.length);}
 function approvalStrip(v){
   if(!S.coach||S.coach.approval==null)return;
   const t=controlled(), a=Math.round(S.coach.approval), hs=hotSeatTier(S.coach.approval,t.prestige,S.coach.tenure||0);
   const col=hs.tier==='hot'?'#e0573e':hs.tier==='warm'?'#c9a227':'#2a9d4a';
+  const mor=teamMorale();   // Phase 20: locker-room read alongside the coach's standing
   const c=el('div','card');c.dataset.tid='approval-strip';
   c.innerHTML=`<div class="row spread"><span class="meta dim">Approval · ${hs.label}</span><span class="cond" style="font-weight:800;color:${col}">${a}%${hs.tier==='hot'?' 🔥':''}</span></div>
-    <div class="bar" style="margin-top:6px"><i style="width:${a}%;background:${col}"></i></div>`;
+    <div class="bar" style="margin-top:6px"><i style="width:${a}%;background:${col}"></i></div>
+    <div class="row spread" style="margin-top:8px"><span class="meta dim">Locker room</span><span class="meta">${moraleMood(mor)} ${mor>=58?'buzzing':mor>=42?'steady':'restless'} (${mor})</span></div>`;
   v.append(c);
 }
 function pressHomeCard(v){
@@ -3462,7 +3533,7 @@ function pressHomeCard(v){
   p.choices.forEach(ch=>{const b=el('button','btn line',ch.label);
     b.style.cssText='margin-top:7px;text-align:left;white-space:normal;height:auto;padding:10px 12px;line-height:1.3';
     b.dataset.tid='press-'+ch.key;
-    b.onclick=()=>{answerPress(ch.key);render();toast('You addressed the media');};c.append(b);});
+    b.onclick=()=>{const e=pressEffect(ch.key);answerPress(ch.key);render();toast((e.mood||0)>=4?'The locker room loved that':(e.mood||0)<0?'That one didn’t land in the locker room':'You addressed the media');};c.append(b);});
   v.append(c);
 }
 // Phase 19c: the coaching-search screen (shown when fired) — take a new job or retire.
@@ -4120,6 +4191,7 @@ function recruitSheet(rec){
     <div class="kv"><span class="k">Speed / Strength / Awareness</span><span>${rec.spd} · ${rec.str} · ${rec.awr}</span></div>
     <div class="kv"><span class="k">Work ethic</span><span>${traitRead('mot',rec.id,motVal(rec),rec.scout).text}</span></div>
     <div class="kv"><span class="k">Composure</span><span>${traitRead('comp',rec.id,compVal(rec),rec.scout).text}</span></div>
+    <div class="kv"><span class="k">Ego (media)</span><span>${traitRead('ego',rec.id,egoVal(rec),rec.scout).text}</span></div>
     <div class="kv"><span class="k">Priorities</span><span>${sc.revealed?rec.prefs.map(prefLabel).join(', '):'— scout 50% to reveal —'}</span></div>
     ${(sc.revealed&&rec.rebel)?'<div class="kv"><span class="k">Mindset</span><span class="accent">Wants to be THE guy — wary of position factories</span></div>':''}`;
   // Phase 13: surface how the controlled team's positional reputation plays with this recruit
@@ -4284,7 +4356,8 @@ function ceilingChip(p){const sc=scoutedCeiling(p);return `<span class="tag ${sc
 // your roster; scouting confidence for recruits). Hidden as '???' until you know them at all.
 const TRAIT_TIERS={
   mot:['Lazy','Inconsistent','Steady','Hard Worker','Relentless'],          // work ethic
-  comp:['Volatile','Streaky','Even-Keel','Composed','Ice-Veined']           // composure / poise
+  comp:['Volatile','Streaky','Even-Keel','Composed','Ice-Veined'],          // composure / poise
+  ego:['Unflappable','Grounded','Tuned-In','Spotlight','Diva']              // ego / media-receptiveness (Phase 20)
 };
 function traitTier(v){return v>=82?4:v>=64?3:v>=46?2:v>=30?1:0;}
 function traitRead(kind,id,value,conf){
@@ -4300,12 +4373,22 @@ function rosterTraitConf(p){
   const tenure={'FR':18,'RS-FR':30,'SO':46,'RS-SO':54,'JR':66,'RS-JR':72,'SR':85,'RS-SR':90}[p.yr];
   return clamp((tenure!=null?tenure:50)+scoutSharpen()*7,0,100);
 }
-// Two compact chips for the roster row / sheet (Motor = work ethic, Poise = composure).
+// Compact fogged trait chips for the roster row / sheet (Motor, Poise, Ego).
 function traitChips(p){
   const conf=rosterTraitConf(p);
-  const m=traitRead('mot',p.id,motVal(p),conf), c=traitRead('comp',p.id,compVal(p),conf);
+  const m=traitRead('mot',p.id,motVal(p),conf), c=traitRead('comp',p.id,compVal(p),conf), e=traitRead('ego',p.id,egoVal(p),conf);
   return `<span class="tag ${m.hot?'accent':''}" style="font-size:10px">Motor: ${m.text}</span> `
-        +`<span class="tag ${c.hot?'accent':''}" style="font-size:10px">Poise: ${c.text}</span>`;
+        +`<span class="tag ${c.hot?'accent':''}" style="font-size:10px">Poise: ${c.text}</span> `
+        +`<span class="tag ${e.hot?'accent':''}" style="font-size:10px">Ego: ${e.text}</span>`;
+}
+// Phase 20: morale shows OPENLY (your locker room, not scouted) — a mood chip, only when it's moved off
+// neutral. Absent (AI players / a fresh season) → no chip, so rows stay clean.
+function moraleMood(m){return m>=66?'😀':m>=58?'🙂':m>=42?'😐':m>=34?'😕':'😟';}
+function moraleChip(p){
+  if(p.morale==null)return '';
+  const m=p.morale, lbl=m>=60?'buzzing':m>=46?'good':m>=34?'low':'unhappy';
+  const acc=m>=60||m<34;
+  return ` <span class="tag ${acc?'accent':''}" style="font-size:10px">${moraleMood(m)} ${lbl}</span>`;
 }
 // Recruit ceiling fog: like scoutedCeiling, but the band is driven by YOUR scouting confidence
 // (rec.scout 0→100) instead of age/class. Prefs unlock once you've scouted past halfway.
@@ -4347,7 +4430,7 @@ function playerRow(p,isStarter,t){
       <div class="nm">${p.fn} ${p.ln} ${p.cap?'<span class="cap">© CAPTAIN</span>':''}</div>
       <div class="meta">${p.yr} · ${p.age}y · ${p.st} · ${'★'.repeat(p.stars)}${'☆'.repeat(5-p.stars)}</div>
       <div class="meta" style="margin-top:3px">${ceilingChip(p)} <span class="dim">${devStage(p)}</span>${growthChip(p)}</div>
-      <div class="meta" style="margin-top:3px">${traitChips(p)}</div>
+      <div class="meta" style="margin-top:3px">${traitChips(p)}${moraleChip(p)}</div>
     </div>
     <div style="text-align:right">
       ${isStarter?'<span class="tag accent" style="font-size:10px">ST</span>':'<span class="tag" style="font-size:10px">#'+(p.so+1)+'</span>'}
@@ -4366,6 +4449,8 @@ function playerSheet(p,t){
     <div class="kv"><span class="k">Development</span><span>${devStage(p)}${sc.uncertain?' · projection':''}</span></div>
     <div class="kv"><span class="k">Work ethic</span><span>${traitRead('mot',p.id,motVal(p),rosterTraitConf(p)).text}</span></div>
     <div class="kv"><span class="k">Composure</span><span>${traitRead('comp',p.id,compVal(p),rosterTraitConf(p)).text}</span></div>
+    <div class="kv"><span class="k">Ego (media)</span><span>${traitRead('ego',p.id,egoVal(p),rosterTraitConf(p)).text}</span></div>
+    ${p.morale!=null?`<div class="kv"><span class="k">Locker room</span><span>${moraleMood(p.morale)} ${p.morale>=60?'buzzing':p.morale>=46?'good':p.morale>=34?'low':'unhappy'} (${p.morale})</span></div>`:''}
     <div class="kv"><span class="k">Speed / Strength / Awareness</span><span>${p.spd} · ${p.str} · ${p.awr}</span></div>
     ${p.dev>0?`<div class="kv"><span class="k">Developed (last offseason)</span><span class="good">▲ +${p.dev} OVR</span></div>`:''}
     ${(p.honors&&p.honors.length)?`<div class="kv"><span class="k">Honors</span><span>${p.honors.map(h=>h.year+' '+h.award).join('; ')}</span></div>`:''}

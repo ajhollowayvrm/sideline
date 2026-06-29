@@ -439,7 +439,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 23 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 24 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -456,7 +456,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v23)', mig.v === 23, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v24)', mig.v === 24, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -512,6 +512,26 @@ function startServer() {
   check('Phase 19b: Home shows the approval / hot-seat strip', press.strip && press.hasApproval);
   check('Phase 19b: a weekly press conference is offered (once per week)', press.pressCard && press.offered);
   check('Phase 19b: a press choice raises recruiting buzz + closes the week’s presser', press.buzzRose && press.pressClosed && press.gone);
+  // ---------- PHASE 20: Ego trait + per-player morale (the 'hype' presser just moved the locker room) ----------
+  const ego = await page.evaluate(() => {
+    const t = S.world.teams.find(x => x.id === S.teamId);
+    const hi = t.roster.reduce((b, p) => (!b || (p.ego || 50) > (b.ego || 50)) ? p : b, null);
+    const lo = t.roster.reduce((b, p) => (!b || (p.ego || 50) < (b.ego || 50)) ? p : b, null);
+    const rec = S.recruiting.pool[0];
+    const cold = traitRead('ego', rec.id, egoVal(rec), 0), warm = traitRead('ego', rec.id, egoVal(rec), 80);
+    UI.view = 'team'; UI.tab = 'roster'; render();
+    const txt = document.querySelector('.view').innerText;
+    return {
+      hiEgo: hi.ego, loEgo: lo.ego,
+      hiMove: (hi.morale != null ? hi.morale : 50) - 50, loMove: (lo.morale != null ? lo.morale : 50) - 50,
+      egoFogged: cold.text === '???' && warm.text !== '???', egoChip: /ego:/i.test(txt),
+      teamMorale: (() => { const v = t.roster.map(p => p.morale != null ? p.morale : 50); return v.reduce((s, x) => s + x, 0) / v.length; })()
+    };
+  });
+  check('Phase 20: a press choice moves morale more for a high-ego player than a low-ego one', ego.hiMove > ego.loMove, `hi +${ego.hiMove} (ego ${ego.hiEgo}) vs lo +${ego.loMove} (ego ${ego.loEgo})`);
+  check('Phase 20: the “hype” presser lifted the locker room overall', ego.teamMorale > 50, `avg ${ego.teamMorale.toFixed(1)}`);
+  check('Phase 20: the Ego trait is fogged like the others (hidden until scouted)', ego.egoFogged);
+  check('Phase 20: the roster surfaces the Ego trait chip', ego.egoChip);
   const cycle = await page.evaluate(() => {
     const me = S.teamId;
     const tgt = S.recruiting.pool.find(r => r.stars === 4 && r.iv[me] == null);
@@ -834,7 +854,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 23', roPost.version === 23, 'v' + roPost.version);
+  check('Rollover: save version bumped to 24', roPost.version === 24, 'v' + roPost.version);
   check('Phase 8: player honors survive the rollover', roPost.honoredAfter > 0, roPost.honoredAfter + ' still honored');
   check('Phase 8: series + awards history persist across the rollover', roPost.seriesKept > 0 && roPost.awardsKept > 0, `series ${roPost.seriesKept}, awards ${roPost.awardsKept}`);
   check('Phase 11: career totals accrue across the rollover', roPost.careerPlayers > 50, roPost.careerPlayers + ' players carry a career');
