@@ -147,6 +147,45 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Play log: running score is monotonic non-decreasing', mono);
 })();
 
+// Phase 22 — the play-calling decision hook. The OC always draws its own suggestion, so a coach
+// who DEFERS reproduces the no-decide (AI) result byte-for-byte; overrides change the choice (and
+// thus the outcome) but never the rng stream, so a game is deterministic from (seed + overrides).
+(function () {
+  const w = genWorld(13), h = w.teams[1], a = w.teams[8];
+  const defer = ctx => ctx.phase === 'fourth' ? ctx.ocAct : ctx.ocCall;   // "go with the coordinator"
+  let parity = true, deferAway = true, sawPlay = false, sawFourth = false, wrongTeam = false, overrideDiff = false, repro = true, goDet = true, sane = true;
+  for (let s = 0; s < 30; s++) {
+    const seed = (hashStr('pc' + s) ^ 0xabcdef) >>> 0;
+    const plain = simEngine(h, a, seed);
+    // always-defer (controlling home) == no-decide, score + box
+    const d1 = simEngine(h, a, seed, { decide: defer, decideFor: h.id });
+    if (d1.hs !== plain.hs || d1.as !== plain.as || JSON.stringify(d1.box) !== JSON.stringify(plain.box)) parity = false;
+    // deferring as the AWAY coach is also byte-identical
+    const d2 = simEngine(h, a, seed, { decide: defer, decideFor: a.id });
+    if (d2.hs !== plain.hs || d2.as !== plain.as) deferAway = false;
+    // the decider is only consulted for the team it controls, and sees both phases over a season
+    simEngine(h, a, seed, { decideFor: h.id, decide: ctx => { if (ctx.off !== h.id) wrongTeam = true; if (ctx.phase === 'play') sawPlay = true; if (ctx.phase === 'fourth') sawFourth = true; return defer(ctx); } });
+    // an aggressive coach (always pass, always go for it) changes the result deterministically + stays sane
+    const aggro = ctx => ctx.phase === 'fourth' ? 'go' : 'pass';
+    const g1 = simEngine(h, a, seed, { decide: aggro, decideFor: h.id });
+    const g2 = simEngine(h, a, seed, { decide: aggro, decideFor: h.id });
+    if (g1.hs !== g2.hs || g1.as !== g2.as || JSON.stringify(g1.box) !== JSON.stringify(g2.box)) goDet = false;
+    if (g1.hs !== plain.hs || g1.as !== plain.as) overrideDiff = true;   // at least sometimes differs
+    if (g1.hs < 0 || g1.hs > 90 || g1.as < 0 || g1.as > 90) sane = false;
+    // a recorded run/pass override list reproduces exactly
+    const calls = []; simEngine(h, a, seed, { decideFor: h.id, decide: ctx => { const c = ctx.phase === 'fourth' ? ctx.ocAct : (ctx.ocPass ? 'run' : 'pass'); calls.push(c); return c; } });
+    let i = 0; const rp = simEngine(h, a, seed, { decideFor: h.id, decide: () => calls[i++] });
+    const i2 = (() => { let k = 0; return simEngine(h, a, seed, { decideFor: h.id, decide: () => calls[k++] }); })();
+    if (rp.hs !== i2.hs || rp.as !== i2.as) repro = false;
+  }
+  check('Phase 22: a coach who DEFERS reproduces the AI result byte-for-byte (score + box)', parity);
+  check('Phase 22: the OC draws its suggestion regardless of who is controlled (defer-as-away == AI)', deferAway);
+  check('Phase 22: the decision hook fires only for the controlled offense', !wrongTeam && sawPlay);
+  check('Phase 22: both run/pass and 4th-down decisions are surfaced over a season', sawPlay && sawFourth);
+  check('Phase 22: overrides change the outcome but stay football-sane (0–90)', overrideDiff && sane);
+  check('Phase 22: a fixed override set is fully deterministic (replay matches)', goDet && repro);
+})();
+
 // statistical realism across a full season
 const R = simSeason(2026);
 const meanPts = avg(R.scores);

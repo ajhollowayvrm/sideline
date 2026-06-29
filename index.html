@@ -1109,10 +1109,20 @@ function wpick(pool,r){ let tot=0;for(const e of pool)tot+=e[1]; if(tot<=0)retur
 // opts.log → also return res.log, a flat list of {q,team,kind,text,dd,hs,as,big} events for the
 // watchable viewer. Logging pushes strings only (no rng), so the score + box are identical with
 // it on or off — a "watch" is a faithful replay of the committed result, never a re-roll.
+//
+// opts.decide (Phase 22 — play-calling) → a hook the COACH plugs into. At each call the OC always
+// makes its own suggestion first (drawing its rng exactly as before, so the rng STREAM is stable no
+// matter what the coach does), then `decide(ctx)` may OVERRIDE the *choice* (never the rng). With no
+// decide the OC's suggestion stands → byte-identical to the pre-Phase-22 engine (simlab asserts an
+// "always-defer" decider reproduces the no-decide result exactly). So a game is fully deterministic
+// from (seed + the coach's overrides); an empty override set is the old AI game. The driver (UI)
+// re-runs the pure engine after each override to advance one decision at a time.
 function simEngine(home,away,seed,opts){
   const r=rng(seed>>>0);
   const box={};
   const log=opts&&opts.log?[]:null;
+  const decide=opts&&opts.decide;                          // the coach's play-call hook (Phase 22)
+  const decideFor=opts&&opts.decideFor;                    // which team id it controls (keeps simEngine pure — no global S)
   const add=(id,k,v)=>{ if(!id)return; (box[id]=box[id]||{gp:1})[k]=(box[id][k]||0)+(v==null?1:v); };
   const pools={[home.id]:gamePools(home),[away.id]:gamePools(away)};
   const score={[home.id]:0,[away.id]:0};
@@ -1128,31 +1138,42 @@ function simEngine(home,away,seed,opts){
 
   // One possession, start at `startLos` (offense's own yard line). Returns the spot the
   // opponent takes over (mutates `score` + `box`); ~drive time charged to the caller's clock.
-  function playDrive(off,def,startLos,clutch){
+  function playDrive(off,def,startLos,clutch,clk0){
     const oP=pools[off.id], dP=pools[def.id];
     let adv=(off.ratings.off-def.ratings.def)+(off===home?HFA:0)+form[off.id]-form[def.id];
     if(clutch)adv+=compClutch(oP.qb);                   // late & close: the QB's composure shows (Phase 10)
     let los=startLos, down=1, togo=10, time=0;
+    const mine=decide&&off.id===decideFor;             // only the controlled offense ever prompts the coach
+    const clkNow=()=>Math.max(0,(clk0||0)-time);
     L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los));
     while(true){
       const dd=(down)+' & '+(togo>=(100-los)?'goal':togo);
       // ---- 4th down: kick or go ----
       if(down===4){
         const fgDist=(100-los)+17, inFgRange=fgDist<=57, shortPlus=los>=58&&togo<=2;
-        if(inFgRange && !(shortPlus && r()<0.45)){          // field-goal attempt
+        // OC's call — the EXACT lazy rng draws as before (so an AI game is byte-identical), then an override.
+        let act; if(inFgRange && !(shortPlus && r()<0.45)) act='fg'; else if(!(shortPlus && r()<0.55)) act='punt'; else act='go';
+        if(mine){const pick=decide({phase:'fourth',q:L._q,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,fgDist,inFgRange,ocAct:act});
+          if(pick==='fg'||pick==='punt'||pick==='go')act=pick;}
+        if(act==='fg'&&!inFgRange)act='punt';               // illegal FG (out of range) → fall back to a punt
+        if(act==='fg'){                                      // field-goal attempt
           time+=8; add(oP.k&&oP.k.id,'fga');
           if(r()<clamp(0.965-(fgDist-20)*0.013,0.40,0.985)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; L(off,'score',nm(oP.k)+' '+fgDist+'-yd field goal is GOOD',dd,true); return {nextLos:25,time}; }
           L(off,'play',nm(oP.k)+' '+fgDist+'-yd field goal MISSED',dd); return {nextLos:flipTo(los),time};
-        } else if(!(shortPlus && r()<0.55)){                // punt (net ~42; into EZ → touchback @20)
+        } else if(act==='punt'){                             // punt (net ~42; into EZ → touchback @20)
           time+=10; L(off,'play','Punt',dd); return {nextLos:clamp(flipTo(los+ri(r,38,46)),20,99),time};
         } // else: go for it → fall through and run a normal play
       }
 
       // ---- run / pass ----
       const passProb=clamp(0.45+(togo>7?0.18:togo<3?-0.18:0)+(down>=3?0.17:0)+adv*0.003,0.12,0.92);
+      const ocPass=r()<passProb;                            // OC's call (always drawn → rng stream stays stable)
+      let wantPass=ocPass;
+      if(mine){const pick=decide({phase:'play',q:L._q,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,ocPass,ocCall:ocPass?'pass':'run'});
+        if(pick==='pass')wantPass=true; else if(pick==='run')wantPass=false;}
       let gain=0, turnover=false, scored=false, tackled=true, txt='';
 
-      if(r()<passProb){                                     // dropback (sacks aren't pass attempts)
+      if(wantPass){                                          // dropback (sacks aren't pass attempts)
         if(r()<clamp(0.062-adv*0.0012,0.02,0.11)){          // sack
           gain=-ri(r,4,9); time+=36; const s=wpick(dP.rush4,r); add(s&&s.id,'sk'); txt=nm(oP.qb)+' sacked by '+nm(s)+' for '+gain;
         } else if(r()<clamp(0.615+adv*0.007,0.32,0.83)){    // completion
@@ -1198,7 +1219,7 @@ function simEngine(home,away,seed,opts){
   while(clock>0){
     L._q=clamp(Math.floor((3600-clock)/900)+1,1,4);
     const clutch=clock<600&&Math.abs(score[home.id]-score[away.id])<=8;   // late & close (Phase 10)
-    const d=playDrive(off,def,startLos,clutch);
+    const d=playDrive(off,def,startLos,clutch,clock);
     clock-=Math.max(d.time,12); startLos=d.nextLos;
     const swap=off; off=def; def=swap;
   }
@@ -1206,7 +1227,7 @@ function simEngine(home,away,seed,opts){
   let ot=0;
   while(score[home.id]===score[away.id] && ot++<25){
     L._q='OT'+ot;
-    playDrive(home,away,75,true); playDrive(away,home,75,true);   // OT is always late & close
+    playDrive(home,away,75,true,0); playDrive(away,home,75,true,0);   // OT is always late & close
   }
   L(null,'final','Final',null,true);
 
