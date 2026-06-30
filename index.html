@@ -788,7 +788,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:32,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:33,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -1012,6 +1012,10 @@ function migrateState(state){
   if((state.version||1)<32){           // Phase 36: AI recruiting depth + finalist lists. `rec.finalists` (the
     state.version=32;                  // shortlist) rides sparsely on recruits — absent reads as "no shortlist
   }                                    // yet" → structural no-op (momentum/visits are derived, nothing to store).
+  if((state.version||1)<33){           // Phase 37: AI ripple + NIL bidding + official-visit calendar. Backfill
+    if(state.recruiting&&state.recruiting.visitsLeft==null)state.recruiting.visitsLeft=12;   // the season visit budget;
+    state.version=33;                  // NIL bids ride on intents (absent-safe), AI ripple/NIL are behavior-only.
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1565,6 +1569,9 @@ function gameRecruitVibe(my,opp,myRank,oppRank){
 // Phase 35 — diminishing returns: repeating the SAME action on the same recruit pays less, so it's better to
 // vary your approach than to spam one pitch. Pure: a falloff multiplier for the (n)th prior use of an action.
 function repeatFalloff(n){return clamp(1/(1+0.35*(n||0)),0.4,1);}
+// Phase 37 — NIL bid: money buys interest, more for a recruit who values NIL. Pure money→interest curve;
+// the app applies the recruit's NIL preference (nilWeight) and the program's collective facility. amountM = $M.
+function nilGain(amountM,nilWeight){return clamp(amountM,0,8)*3.2*clamp(nilWeight,0.2,1.6);}
 // Priority: concentrate where the team fits well AND already has traction (and on positions it needs).
 function aiPriority(team,rec){const need=(team.needs&&team.needs[rec.pos])?6:0;
   return recruitFit(team,rec)*12+(rec.iv[team.id]||0)*0.12+need;}
@@ -3411,7 +3418,13 @@ function declineSeriesOffer(offerId){S.seriesOffers=(S.seriesOffers||[]).filter(
    The pure engine (genRecruits/advanceRecruiting/coachMods/…) lives in the RECRUIT ENGINE
    block above; this layer owns S.recruiting, the points economy, and the five player actions.
    ============================================================ */
-const RECRUIT_COSTS={scout:2,pitch:3,visit:5,promise:4,alumni:4};   // offer is free (uses a board slot)
+const RECRUIT_COSTS={scout:2,pitch:3,visit:5,promise:4,alumni:4,nil:0};   // offer is free (uses a board slot); NIL pays $ not points (Phase 37)
+// Phase 37 — NIL bid tiers (money → interest). [key, label, $amount]. A bid pays from team.budget, not points.
+const NIL_TIERS=[['modest','Modest',0.6e6],['strong','Strong',1.8e6],['blockbuster','Blockbuster',4.5e6]];
+const SEASON_VISITS=12;   // Phase 37: official-visit calendar — a season-long budget on top of the weekly cap
+// How much a recruit values NIL → the multiplier on a NIL bid (top priority → big, otherwise modest).
+function nilWeightOf(rec){return rec.prefs&&rec.prefs[0]==='nil'?1.5:rec.prefs&&rec.prefs[1]==='nil'?1.0:0.45;}
+function nilFacMult(team){return 0.7+((team&&team.fac&&team.fac.nil||5)/10)*0.6;}   // a strong collective amplifies
 function myMods(){return coachMods(S.coach);}
 // Phase 33: the weekly budget is driven by the SCOUTING facility (with a small base + coach-archetype
 // term, so Recruiter still matters) — not prestige. Better scouting → more weekly actions.
@@ -3423,8 +3436,11 @@ function initRecruiting(){
   // stage: 'open' (in-season, taking verbals) → 'national' (offseason, ESP done, NSD pending) → 'closed'
   // intents = the week's queued actions, keyed by recruit id → an ARRAY of ≤2 actions (Phase 35 double-down).
   // doubles = this week's double-down tokens (Phase 35) that let one recruit hold a 2nd action.
-  S.recruiting={cycle:1,points:weeklyPoints(),pool:genRecruits(S.seed,S.world.teams),board:[],signed:false,stage:'open',intents:{},doubles:doublesPerWeek(),report:null};
+  // visitsLeft = the season-long official-visit budget (Phase 37 calendar), on top of the weekly cap.
+  S.recruiting={cycle:1,points:weeklyPoints(),pool:genRecruits(S.seed,S.world.teams),board:[],signed:false,stage:'open',intents:{},doubles:doublesPerWeek(),visitsLeft:SEASON_VISITS,report:null};
 }
+// Official visits remaining this season (Phase 37) — minus any already queued this week.
+function visitsLeft(){const R=S.recruiting;return (R&&R.visitsLeft==null?SEASON_VISITS:R.visitsLeft);}
 function grantRecruitPoints(){if(S.recruiting&&!S.recruiting.signed){S.recruiting.points=weeklyPoints();S.recruiting.doubles=doublesPerWeek();}}
 // Phase 35 — weekly scarcity caps. A Recruiter brings more (official visits are limited; double-downs let you
 // stack a 2nd action on one recruit). These make the weekly choice a real tradeoff, not "spend till broke".
@@ -3480,7 +3496,8 @@ function resolveRecruitingWeek(week){
   const actedOn=new Set();for(const id in (S.recruiting.intents||{}))actedOn.add(id);   // who you worked this week
   applyPlayerIntents();   // Phase 33: your queued actions land first, then the AI brain's, then commitments
   decayNeglect(actedOn);            // Phase 35: board recruits you ignored cool on you (upkeep matters)
-  const rippleNote=applyGameRipple(week);   // Phase 35: your Saturday result energizes/cools your board
+  const rippleNote=applyLeagueRipple(week); // Phase 35/37: every team's Saturday result moves its board (note=yours)
+  applyAINil(week);                 // Phase 37: AI programs place NIL bids on the recruits they're chasing
   // in-season: verbal commitments only (finalize=false) — binding signatures wait for the offseason
   const out=advanceRecruiting(S.recruiting.pool,S.world.teams,week,S.schedule.weeks,S.seed,false,undefined,undefined,S.teamId);
   buildRecruitReport(snaps,week,rippleNote);   // Phase 34/35: diff into a readable board report (+ ripple note)
@@ -3520,6 +3537,7 @@ function hasIntent(rec,action){return intentsFor(rec).some(x=>x.action===action)
 // Remove one queued action (refund its points + give back a double-down if it was the stacked 2nd action).
 function removeIntentAt(rec,idx){const I=recIntents(),arr=I[rec.id];if(!arr||!arr[idx])return;
   const it=arr[idx];S.recruiting.points+=it.cost;if(it.isDouble)S.recruiting.doubles=(S.recruiting.doubles||0)+1;
+  if(it.nilSpend)controlled().budget=(controlled().budget||0)+it.nilSpend;   // Phase 37: refund a reserved NIL bid
   arr.splice(idx,1);if(!arr.length)delete I[rec.id];autosave();}
 function clearRecIntent(rec){const arr=intentsFor(rec).slice();
   for(let i=arr.length-1;i>=0;i--)removeIntentAt(rec,i);}
@@ -3540,6 +3558,8 @@ function buildIntent(rec,action,opt){
     it.gain=gain;it.promiseType=opt.type||'playingTime';it.label='Promise';}
   else if(action==='alumni'){const lg=opt.legend; if(!lg||(lg.app||0)<=0){toast('No appearances left for that alum');return null;}
     it.legendId=lg.id;it.gain=alumniBoost(lg,rec,alumniCoachMod(lg))*sm;it.label='Alumni · '+lg.name.split(' ').slice(-1);}
+  else if(action==='nil'){const tier=NIL_TIERS.find(t=>t[0]===opt.tier)||NIL_TIERS[0], amt=tier[2];   // Phase 37: pays $ not points
+    it.nilSpend=amt;it.gain=nilGain(amt/1e6,nilWeightOf(rec))*nilFacMult(controlled());it.label='NIL · '+tier[1];}
   else return null;
   return it;
 }
@@ -3557,6 +3577,11 @@ function setRecIntent(rec,action,opt){
   if(action==='promise'&&rec.promise){toast('Already made a promise');return false;}
   if(action==='alumni'&&rec.alumni){toast('An alum already hosted this recruit');return false;}
   if(action==='visit'&&queuedVisits()>=visitCap()){toast('Only '+visitCap()+' official visit'+(visitCap()===1?'':'s')+' per week');return false;}
+  if(action==='visit'&&queuedVisits()>=visitsLeft()){toast('Out of official visits for the season ('+SEASON_VISITS+' total)');return false;}   // Phase 37 calendar
+  // Phase 37: a NIL bid pays from team.budget (not recruiting points).
+  let nilAmt=0;
+  if(action==='nil'){const tier=NIL_TIERS.find(t=>t[0]===opt.tier)||NIL_TIERS[0];nilAmt=tier[2];
+    if((controlled().budget||0)<nilAmt){toast('Not enough budget for that NIL offer');return false;}}
   let isDouble=false, replaceIdx=-1;
   if(arr.length>=2){toast('Two actions max on one recruit — clear one first');return false;}
   if(arr.length===1){ if((R.doubles||0)>0)isDouble=true; else replaceIdx=0; }   // 2nd action needs a double, else swap
@@ -3566,7 +3591,7 @@ function setRecIntent(rec,action,opt){
   const it=buildIntent(rec,action,opt); if(!it)return false;
   it.isDouble=isDouble;
   const I=recIntents(); (I[rec.id]||(I[rec.id]=[])).push(it);
-  R.points-=cost; if(isDouble)R.doubles--; autosave(); return true;
+  R.points-=cost; if(isDouble)R.doubles--; if(nilAmt)controlled().budget-=nilAmt; autosave(); return true;
 }
 // Resolve every queued action (in-season week change + National Signing Day), then clear the queue.
 function applyPlayerIntents(){
@@ -3578,7 +3603,7 @@ function applyPlayerIntents(){
       else{
         if(it.scoutDelta!=null)rec.scout=clamp(rec.scout+it.scoutDelta,0,100);
         if(it.gain)bumpInterest(rec,it.gain);
-        if(it.action==='visit')rec.visited=true;
+        if(it.action==='visit'){rec.visited=true;R.visitsLeft=Math.max(0,(R.visitsLeft==null?SEASON_VISITS:R.visitsLeft)-1);}   // Phase 37: spend a season visit
         if(it.action==='promise')rec.promise={type:it.promiseType};
       }
       rec.hits=rec.hits||{};rec.hits[it.action]=(rec.hits[it.action]||0)+1;   // Phase 35: track action repeats
@@ -3597,24 +3622,53 @@ function decayNeglect(actedOn){
     rec.iv[me]=clamp(rec.iv[me]-REC.NEGLECT_DECAY,0,100);
   });
 }
-// Phase 35 — season ripple: your Saturday result energizes (or cools) your board, in-state recruits most.
-// Player-only. Returns a one-line note for the weekly report, or null if no game / no effect.
-function applyGameRipple(week){
-  const me=S.teamId, R=S.recruiting, g=teamGame(me,week);
-  if(!g||!g.played)return null;
-  const home=g.home===me, my=home?g.hs:g.as, opp=home?g.as:g.hs;
-  const meT=controlled(), oppT=teamById(home?g.away:g.home);
-  const vibe=gameRecruitVibe(my,opp,meT.natRank,oppT&&oppT.natRank);
-  if(!vibe)return null;
-  let n=0;
-  R.board.forEach(id=>{const rec=recById(id);if(!rec||rec.signed||rec.iv[me]==null)return;
-    if(rec.committedTo&&rec.committedTo!==me)return;
-    const inState=meT.homeState&&rec.st===meT.homeState;
-    rec.iv[me]=clamp(rec.iv[me]+vibe*(inState?0.6:0.3),0,100);n++;
+// Phase 35/37 — season ripple, now LEAGUE-WIDE: every team's Saturday result energizes (or cools) the recruits
+// it's chasing, in-state most (Phase 37 — the AI reacts to its own results like the player). App-layer (the
+// engine has no game data); respects finalists + skips recruits committed elsewhere. Returns the player's note.
+function applyLeagueRipple(week){
+  const me=S.teamId;
+  // each team's game vibe this week
+  const vibe={};
+  S.world.teams.forEach(t=>{const g=teamGame(t.id,week);if(!g||!g.played)return;
+    const home=g.home===t.id, my=home?g.hs:g.as, opp=home?g.as:g.hs, oppT=teamById(home?g.away:g.home);
+    const v=gameRecruitVibe(my,opp,t.natRank,oppT&&oppT.natRank);
+    if(v)vibe[t.id]={v,oppAbbr:oppT?oppT.abbr:'them',win:my>opp};});
+  // apply to each suitor's interest on the recruits they chase
+  S.recruiting.pool.forEach(rec=>{if(rec.signed)return;
+    for(const tid in rec.iv){const vb=vibe[tid];if(!vb)continue;
+      if(rec.committedTo&&rec.committedTo!==tid)continue;
+      if(rec.finalists&&rec.finalists.indexOf(tid)<0)continue;
+      if((rec.iv[tid]||0)<30&&tid!==me)continue;   // only ripple genuine battles (protect the marginal tail → convergence)
+      const t=teamById(tid), inState=t&&t.homeState&&rec.st===t.homeState, isMe=tid===me;
+      // A win ENERGIZES the board (in-state most). For the player, a loss also COOLS (his drama, the Phase 35
+      // feel). League-wide (AI teams), the ripple is POSITIVE-ONLY — a loss just gives no boost rather than
+      // cooling — so it never compounds negatively across the league and drops the tail below the sign bar.
+      const scale=vb.v>0?(inState?0.5:0.25):(isMe?(inState?0.4:0.2):0);
+      if(scale)rec.iv[tid]=clamp((rec.iv[tid]||0)+vb.v*scale,0,100);}
   });
-  if(!n)return null;
-  const win=my>opp;
-  return (win?'📈 ':'📉 ')+'Your '+(win?'win over ':'loss to ')+(oppT?oppT.abbr:'them')+' '+(vibe>=4?'energized':vibe>0?'helped':'cooled')+' your board';
+  const mv=vibe[me];
+  if(!mv||!S.recruiting.board.length)return null;
+  return (mv.win?'📈 ':'📉 ')+'Your '+(mv.win?'win over ':'loss to ')+mv.oppAbbr+' '+(mv.v>=4?'energized':mv.v>0?'helped':'cooled')+' your board';
+}
+// Phase 37 — AI NIL bids: rival programs spend real budget on the recruits who VALUE NIL, so the player must
+// out-bid them on those kids. App-layer (so the engine/reclab is untouched); a bid is a small, bounded slice of
+// the team's budget (rich collectives bid more), seeded by week. Skips the player + budget-less lab teams.
+function applyAINil(week){
+  const me=S.teamId, r=rng((S.seed^hashStr('ainil'+week))>>>0);
+  S.recruiting.pool.forEach(rec=>{
+    if(rec.signed||nilWeightOf(rec)<1)return;              // only recruits whose TOP priority is NIL
+    if(r()>0.2)return;                                     // not every NIL recruit, every week
+    let best=null,bestV=-1;                                // the strongest non-player suitor bids
+    for(const tid in rec.iv){if(tid===me)continue;
+      if(rec.finalists&&rec.finalists.indexOf(tid)<0)continue;
+      if(rec.committedTo&&rec.committedTo!==tid)continue;
+      if(rec.iv[tid]>bestV){bestV=rec.iv[tid];best=tid;}}
+    if(!best)return;
+    const t=teamById(best); if(!t||(t.budget||0)<0.5e6)return;
+    const amt=Math.min((t.budget||0)*0.04,2.5e6)*(0.7+r()*0.6);
+    t.budget-=amt;
+    rec.iv[best]=clamp((rec.iv[best]||0)+nilGain(amt/1e6,nilWeightOf(rec))*nilFacMult(t),0,100);
+  });
 }
 /* ---- actions ---- */
 function offerRecruit(rec){
@@ -5056,7 +5110,7 @@ function planCard(v){
   const c=el('div','card');c.dataset.tid='rec-plan';c.style.marginTop='10px';
   const total=intentCount();
   // Phase 35: weekly scarcity — points, double-down tokens, and official-visit cap on one line.
-  const caps=`<span class="meta dim">${R.points||0} pts · ⚡${R.doubles||0} double${(R.doubles||0)===1?'':'s'} · 🏟️ ${visitCap()-queuedVisits()}/${visitCap()} visits</span>`;
+  const caps=`<span class="meta dim">${R.points||0} pts · ⚡${R.doubles||0} double${(R.doubles||0)===1?'':'s'} · 🏟️ ${visitsLeft()} visits left</span>`;
   if(!total){c.innerHTML=`<div class="row spread"><span class="meta dim">This week’s plan</span>${caps}</div>
     <div class="meta" style="margin-top:4px">No actions queued — open a target and set one. They resolve when you advance.</div>`;
     v.append(c);return;}
@@ -5259,7 +5313,8 @@ function recruitSheet(rec){
       g1.append(
         mk('scout','Scout · '+RECRUIT_COSTS.scout,'rec-scout',false,()=>setI('scout',null,sel('scout')?'Scout removed':'Queued: Scout')),
         mk('pitch','Pitch · '+RECRUIT_COSTS.pitch,'rec-pitch',false,()=>sel('pitch')?setI('pitch',null,'Pitch removed'):pitchSheet(rec)));
-      const visitBlocked=!sel('visit')&&queuedVisits()>=visitCap();
+      // Phase 37: visits are weekly-capped AND season-budgeted (the official-visit calendar).
+      const visitBlocked=!sel('visit')&&(queuedVisits()>=visitCap()||queuedVisits()>=visitsLeft());
       const g2=el('div','btn-row');
       g2.append(
         mk('visit',rec.visited?'Visited ✓':'Visit · '+RECRUIT_COSTS.visit+(isGameDayVisit()?' (GD!)':''),'rec-visit',!!rec.visited||visitBlocked,()=>setI('visit',null,sel('visit')?'Visit removed':'Queued: Visit')),
@@ -5267,18 +5322,20 @@ function recruitSheet(rec){
       body.append(g1,g2);
       // Phase 11: alumni visit — deploy a program legend (limited appearances) to recruit this prospect.
       const avail=availableLegends(rec);
-      if(rec.alumni||avail.length){
-        const al=mk('alumni',rec.alumni?'Alum hosted ✓':'Alumni visit · '+RECRUIT_COSTS.alumni,'rec-alumni',!!rec.alumni||(!avail.length&&!sel('alumni')),()=>sel('alumni')?setI('alumni',null,'Alumni removed'):alumniSheet(rec));
-        al.style.marginTop='9px';body.append(al);
-      }
-      // Phase 35: scarcity readout — double-downs let you stack a 2nd action; visits are weekly-capped.
+      const g3=el('div','btn-row');g3.style.marginTop='9px';
+      if(rec.alumni||avail.length)
+        g3.append(mk('alumni',rec.alumni?'Alum hosted ✓':'Alumni · '+RECRUIT_COSTS.alumni,'rec-alumni',!!rec.alumni||(!avail.length&&!sel('alumni')),()=>sel('alumni')?setI('alumni',null,'Alumni removed'):alumniSheet(rec)));
+      // Phase 37: NIL bid — spend program money (not points), best on a recruit who values NIL.
+      g3.append(mk('nil',sel('nil')?'NIL bid':'💰 NIL offer','rec-nil',false,()=>sel('nil')?setI('nil',null,'NIL bid removed'):nilSheet(rec)));
+      body.append(g3);
+      // Phase 35/37: scarcity readout — double-downs stack a 2nd action; visits are weekly-capped + season-budgeted.
       let sc2;
       if(arr.length>=2)sc2='Two actions set (double-down used).';
       else if(arr.length===1)sc2=(R.doubles>0?'Tap a 2nd action to stack it (uses a ⚡ double-down).':'A 2nd action will replace the first — no ⚡ left.');
       else sc2='One action/week; stack a 2nd with a ⚡ double-down.';
       const drop=el('button','btn sm line','Drop from board');drop.style.marginTop='9px';drop.dataset.tid='rec-drop';
       drop.onclick=()=>{dropRecruit(rec);closeSheet();render();toast('Dropped from board');};
-      body.append(drop,el('div','hint center',sc2+'\n'+(R.points||0)+' pts · ⚡'+(R.doubles||0)+' · 🏟️ '+(visitCap()-queuedVisits())+'/'+visitCap()+' visits'));
+      body.append(drop,el('div','hint center',sc2+'\n'+(R.points||0)+' pts · ⚡'+(R.doubles||0)+' · 🏟️ '+(visitCap()-queuedVisits())+'/'+visitCap()+' wk · '+visitsLeft()+' visits left this season'));
     }
   }else if(R.signed&&!committed){
     body.append(el('div','hint center','Signing Day has passed — this prospect went unsigned.'));
@@ -5317,6 +5374,24 @@ function alumniSheet(rec){
   if(!avail.length)body.append(el('div','empty','No legends with appearances left.'));
   body.append(choice);
   openSheet('Alumni visit — '+rec.ln,body);
+}
+// Phase 37: NIL bid picker — spend program money for an interest boost, biggest on a recruit who values NIL.
+function nilSheet(rec){
+  const body=el('div'), t=controlled(), sc=recScouted(rec);
+  const valuesNil=sc.revealed&&(rec.prefs[0]==='nil'||rec.prefs[1]==='nil');
+  body.append(el('div','hint','Spend collective money (not recruiting points) for an interest boost.'+(valuesNil?' 💰 He values NIL — bids land hard.':sc.revealed?' He doesn’t prioritize NIL — modest effect.':'')));
+  body.append(el('div','hint center','Budget: '+money(t.budget||0)+' · NIL collective '+((t.fac&&t.fac.nil)||5)+'/10'));
+  const choice=el('div','choice');choice.style.marginTop='10px';
+  NIL_TIERS.forEach(([key,label,amt])=>{
+    const gain=Math.round(nilGain(amt/1e6,nilWeightOf(rec))*nilFacMult(t));
+    const afford=(t.budget||0)>=amt;
+    const b=el('button','opt'+(afford?'':' '));b.dataset.tid='nil-'+key;b.disabled=!afford;
+    b.innerHTML=`<div class="t">${label} · ${money(amt)} ${afford?'':'<span class="cap">CAN’T AFFORD</span>'}</div><div class="d">≈ +${gain} interest</div>`;
+    b.onclick=()=>{if(setRecIntent(rec,'nil',{tier:key})){closeSheet();render();recruitSheet(rec);toast('Queued NIL offer: '+label);}};
+    choice.append(b);
+  });
+  body.append(choice);
+  openSheet('NIL offer — '+rec.ln,body);
 }
 
 /* ============================================================

@@ -529,8 +529,29 @@ plain static files so Pages still serves it with zero config.
   the columnar side-object → no-op migration). `reclab` → 60 (finalists set/respected + cut suitors freeze + a
   meaningful share get a shortlist + still converge; the AI visit produces an outsized push; momentum responds to
   the record + is rec-less-neutral), `qa` → 264 (recruits narrow to a shortlist over a season; a cut recruit
-  can't be offered). See "Phase 36 design — AI recruiting depth + finalists" below. *(Open polish: an AI that
-  reacts to *individual* game results like the player's ripple; NIL bidding; an official-visit calendar.)*
+  can't be offered). See "Phase 36 design — AI recruiting depth + finalists" below.
+- **Phase 37 — Recruiting polish (AI ripple · NIL bidding · visit calendar).** ✅ DONE. The three loose ends
+  from the Phase 36 note. **(1) AI reacts to individual results** — `applyGameRipple` is now LEAGUE-WIDE
+  (`applyLeagueRipple`): every team's Saturday result nudges the interest of the recruits it's chasing
+  (in-state most), so a rival on a hot streak really does push harder. A **win energizes**; for the **player** a
+  loss also **cools his board** (the Phase 35 feel), but the league-wide AI ripple is **positive-only + skips
+  marginal (<30) suitor relationships**, so it never compounds negatively across the league and drops the tail
+  below the Signing-Day bar. **(2) NIL bidding** — a new **money** action (`nil`, pays from `team.budget`, not
+  recruiting points): a tiered bid (`NIL_TIERS` Modest/Strong/Blockbuster) buys interest via the pure
+  `nilGain($M, nilWeight)`, biggest on a recruit whose **top priority is NIL** and amplified by your **NIL
+  collective** (`fac.nil`); **AI programs bid too** (`applyAINil`, app-layer, budget-scaled), so the player must
+  out-bid rivals on NIL-valuing kids. **(3) Official-visit calendar** — a **season-long** official-visit budget
+  (`S.recruiting.visitsLeft`, `SEASON_VISITS`=12) on top of the weekly cap, decremented when a visit resolves, so
+  visits are a resource you plan across the year. All three are **app-layer** (the fenced engine + `reclab`
+  envelope are untouched). UI: a 💰 **NIL offer** button + tier picker on the action rail (shows budget + the est.
+  boost), the visit readout shows weekly **and** season-remaining, the report still carries the ripple note. Save
+  **v33** (`S.recruiting.visitsLeft` + NIL `nilSpend` on intents; `migrateState` v32→v33 backfills the visit
+  budget). `reclab` → 63 (`nilGain` monotonic-in-$ / NIL-pref-weighted / saturating), `qa` → 267 (a NIL bid
+  reserves budget + raises interest; the season visit budget spends down; a team's result ripples to its board).
+  Tuning note: the league ripple + NIL wars make recruiting **more contested** — the full-pool sign rate settles
+  ~80% (the larger tail backfills as walk-ons at rollover, as designed). See "Phase 37 design — recruiting
+  polish" below. *(This closes the recruiting-depth thread (Phases 33–37). Open, if ever: an in-engine NIL economy
+  + collective management; a true official-visit weekend scheduler.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1965,7 +1986,60 @@ cut suitors dropped convergence 90→82% until the finalize pass was made to **i
 ### Deliberately out of scope (this phase)
 The AI still doesn't react to *individual* game results the way the player's `applyGameRipple` does (its momentum
 is season-record-level, to avoid a per-game league-wide ripple the lab can't validate). No **NIL bidding**, no
-**official-visit calendar** beyond the weekly cap, no recruit **re-opening** a closed shortlist.
+**official-visit calendar** beyond the weekly cap, no recruit **re-opening** a closed shortlist. *(The first
+three landed in Phase 37 below.)*
+
+---
+
+## Phase 37 design — recruiting polish (AI ripple · NIL bidding · visit calendar)
+
+Decided 2026-06-30 with AJ — the three loose ends noted at the end of Phase 36, closing the recruiting-depth
+thread (Phases 33–37). All three are **app-layer**: the fenced RECRUIT ENGINE + `reclab` envelope are untouched
+(the only engine addition is the pure `nilGain` helper), so the validated convergence cycle is byte-identical.
+
+### (1) AI reacts to individual game results — league-wide ripple
+The player's Phase 35 `applyGameRipple` is generalized to **`applyLeagueRipple(week)`**: it computes every team's
+`gameRecruitVibe` for the week and nudges the interest of the recruits each team is chasing (in-state most,
+respecting finalists, skipping recruits committed elsewhere). It returns the **player's** note for the weekly
+report. The asymmetry that keeps convergence: a **win energizes** every team's board, but a **loss only cools the
+PLAYER's** board (his drama) — the **league-wide AI ripple is positive-only** and **skips marginal (<30) suitor
+relationships**, so it never compounds negatively across the league and pushes the long tail below the
+Signing-Day bar. Kept light (a board nudge, not a deciding factor).
+
+### (2) NIL bidding — a money lever (ties to the finances loop)
+A new **`nil`** action that pays from **`team.budget`** (not recruiting points): `NIL_TIERS`
+(Modest $0.6M / Strong $1.8M / Blockbuster $4.5M) → interest via the pure **`nilGain(amountM, nilWeight)`**
+(a saturating money curve), where `nilWeight` = how much the recruit values NIL (`nilWeightOf`: top priority →
+1.5, secondary → 1.0, else 0.45) and the program's **NIL collective** amplifies (`nilFacMult` off `fac.nil`). It
+rides in the Phase 35 intent array (reserve on set, refund on clear via `it.nilSpend`; a 2nd action still needs a
+double-down). **AI programs bid too** (`applyAINil`, app-layer, in `resolveRecruitingWeek`): the strongest
+non-player suitor of a NIL-valuing recruit spends a small, bounded slice of its budget (rich collectives bid
+more), so the player must **out-bid rivals** on NIL kids — and it's reclab-safe (lab teams have no budget → it's
+a no-op). UI: a 💰 **NIL offer** button + a tier picker showing your budget, collective level, and the est. boost.
+
+### (3) Official-visit calendar — a season visit budget
+`S.recruiting.visitsLeft` (`SEASON_VISITS`=12), decremented when a **visit resolves** (`applyPlayerIntents`), on
+top of the existing weekly `visitCap` — so official visits are a resource you ration across the whole cycle, not
+just per week. The action rail + plan card show **weekly and season** remaining; a visit is blocked when either
+is exhausted. Granted fresh at kickoff (recruiting is recreated each cycle), backfilled by migration for in-flight
+saves.
+
+### Save & validation
+Save **v33** — `S.recruiting.visitsLeft` (migration v32→v33 backfills it) + the NIL `nilSpend` field on intents
+(absent-safe). `reclab` → 63 (the pure `nilGain`: monotonic in $, lands harder on a NIL-valuing recruit,
+saturates at a huge bid). `qa` → 267 (a NIL bid reserves budget + raises interest; the season-visit budget spends
+down; a team's game result ripples to the board it recruits). **Fifteen gates** (Phase 37 extends `reclab` +
+`qa`). Tuning note: the league ripple + NIL wars make recruiting **more contested** (more recruits stay in play
+to Signing Day), so the full-pool sign rate settles **~80%** — the larger uncommitted tail backfills as walk-ons
+at rollover, exactly as the capacity-limited pool always has. The cycle's "aggressive push lands the target" qa
+check was re-pointed at a recruit the program **fits** (a 3★ it already recruits) and now accepts "you lead him
+into Signing Day," since the supercharged winning rivals can keep a *poached* 4★ contested all the way to NSD.
+
+### Deliberately out of scope
+No in-engine NIL **economy** (collective fundraising/management, a per-recruit bidding *war* resolved at NSD) —
+NIL here is a money→interest lever, not an auction. No true **official-visit weekend scheduler** (the calendar is
+a season count, not dated slots). The AI's per-game ripple is positive-only by design (the negative side is a
+player-only feel). This closes the recruiting-depth thread.
 
 ---
 
@@ -2434,7 +2508,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   from single objects to **arrays** (≤2 actions/recruit via the Phase 35 double-down) + backfills
   `S.recruiting.doubles` (sparse `rec.decideWeek`/`rec.hits` ride in the columnar pool side-object, absent-safe);
   v31→v32 is a structural no-op (Phase 36 — `rec.finalists` rides sparsely in the pool side-object, absent = no
-  shortlist yet; AI visits/momentum are derived). Each step re-derives ratings/ranks where needed.
+  shortlist yet; AI visits/momentum are derived); v32→v33 backfills `S.recruiting.visitsLeft` (Phase 37 official-
+  visit calendar; NIL `nilSpend` rides on intents, AI ripple/NIL are behavior-only). Each step re-derives
+  ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -2464,7 +2540,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
   weeklyHonors: [ ... ],         // Player-of-the-Week log (Phase 3.5)
-  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage, intents, doubles, report } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14); intents = {recruitId:[{action,...,cost,label,isDouble?}]} = this week's QUEUED actions (≤2/recruit), resolved at the week change (Phase 33/35); doubles = weekly double-down tokens (Phase 35); report = {week, reactions:[…], note} = last week's board report, transient/rebuilt each week (Phase 34/35)
+  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage, intents, doubles, visitsLeft, report } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14); intents = {recruitId:[{action,...,cost,label,isDouble?,nilSpend?}]} = this week's QUEUED actions (≤2/recruit; a 'nil' action pays nilSpend $ from budget — Phase 37), resolved at the week change (Phase 33/35); doubles = weekly double-down tokens (Phase 35); visitsLeft = season official-visit budget (Phase 37); report = {week, reactions:[…], note} = last week's board report, transient/rebuilt each week (Phase 34/35)
   offseasonReport: { year, graduated, tracked, freshmen, departed } | undefined,  // last rollover recap (Phase 5)
   world: { teams: [ Team, ... ] }
 }

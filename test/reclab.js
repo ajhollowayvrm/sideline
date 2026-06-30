@@ -338,6 +338,13 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('Momentum: a rec-less team is unaffected (neutral, between hot and cold)', bNeutral > bCold && bNeutral < bHot, bNeutral.toFixed(1));
 })();
 
+/* 14) Phase 37 — NIL bid curve (pure). Money buys interest, more for a recruit who values NIL, bounded. */
+(function () {
+  check('NIL: a bigger bid buys more interest (monotonic in $)', nilGain(1, 1) < nilGain(3, 1) && nilGain(3, 1) < nilGain(6, 1), `${nilGain(1, 1).toFixed(1)}/${nilGain(3, 1).toFixed(1)}/${nilGain(6, 1).toFixed(1)}`);
+  check('NIL: the same bid lands harder on a recruit who values NIL', nilGain(2, 1.5) > nilGain(2, 0.45), `${nilGain(2, 1.5).toFixed(1)} vs ${nilGain(2, 0.45).toFixed(1)}`);
+  check('NIL: the money curve saturates (a huge bid is capped)', nilGain(20, 1) === nilGain(8, 1));
+})();
+
 const passed = results.filter(r => r.pass).length;
 const summary = runCycle(2026);
 const signedPct = (100 * summary.pool.filter(r => r.signed).length / summary.pool.length).toFixed(0);

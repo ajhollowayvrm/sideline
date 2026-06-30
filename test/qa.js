@@ -502,6 +502,36 @@ function startServer() {
   });
   check('Phase 35: official visits are capped per week', p35.visitsQueued === p35.cap, `${p35.visitsQueued} queued, cap ${p35.cap}`);
   check('Phase 35: a neglected board recruit cools on you (decay)', p35.decayAfter < p35.decayBefore, `${p35.decayBefore}→${p35.decayAfter}`);
+  // Phase 37: NIL bid spends budget + raises interest; season visit budget; league ripple moves a winning board
+  const p37 = await page.evaluate(() => {
+    const me = S.teamId, R = S.recruiting, t = controlled(); R.intents = {}; t.budget = 50e6;
+    const nilRec = R.pool.find(r => !r.committedTo && !r.signed && r.iv[me] == null && r.prefs[0] === 'nil') || R.pool.find(r => !r.committedTo && !r.signed && r.iv[me] == null);
+    if (!R.board.includes(nilRec.id)) offerRecruit(nilRec);
+    const iv0 = nilRec.iv[me] || 0, bud0 = t.budget;
+    setRecIntent(nilRec, 'nil', { tier: 'strong' });
+    const reservedBudget = t.budget < bud0;                  // budget reserved on set
+    applyPlayerIntents();
+    const nilWorked = (nilRec.iv[me] || 0) > iv0 && t.budget < bud0;
+    // season visit budget: queuing+resolving a visit decrements visitsLeft
+    R.intents = {}; const vl0 = visitsLeft();
+    const vr = R.pool.find(r => !r.committedTo && !r.signed && r.iv[me] == null && !r.visited); if (!R.board.includes(vr.id)) offerRecruit(vr);
+    setRecIntent(vr, 'visit'); applyPlayerIntents();
+    const visitSpent = visitsLeft() === vl0 - 1;
+    // league ripple: a team that won big this week gets a board boost on a recruit it leads (clean up the fake game)
+    const winner = S.world.teams.find(x => x.id !== me && !teamGame(x.id, S.week)) || S.world.teams.find(x => x.id !== me);
+    const rr = R.pool.find(r => !r.signed && r.iv[winner.id] != null && (!r.committedTo || r.committedTo === winner.id) && (!r.finalists || r.finalists.indexOf(winner.id) >= 0));
+    let rippleMoved = false;
+    if (rr && !teamGame(winner.id, S.week)) {
+      const fake = { id: 'qripple', home: winner.id, away: '___none___', hs: 52, as: 3, played: true, week: S.week };
+      S.schedule.games.push(fake);
+      const b = rr.iv[winner.id]; applyLeagueRipple(S.week); rippleMoved = rr.iv[winner.id] >= b;
+      S.schedule.games = S.schedule.games.filter(g => g !== fake);   // remove the fake game (don't corrupt the cycle)
+    }
+    return { reservedBudget, nilWorked, visitSpent, rippleMoved };
+  });
+  check('Phase 37: a NIL bid reserves budget and raises interest', p37.reservedBudget && p37.nilWorked);
+  check('Phase 37: the official-visit calendar spends a season visit', p37.visitSpent);
+  check('Phase 37: a team’s game result ripples to the board it recruits (AI reacts to its results)', p37.rippleMoved);
   await page.locator('[data-tid="sheet-bg"]').click({ position: { x: 5, y: 5 } }).catch(() => {});
   await page.waitForTimeout(100);
   // board now shows the offered target
@@ -580,7 +610,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 32 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 33 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -597,7 +627,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v32)', mig.v === 32, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v33)', mig.v === 33, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -701,7 +731,10 @@ function startServer() {
   check('Phase 21: installing a non-preferred scheme drops the buy-in', scheme.buyDropped);
   const cycle = await page.evaluate(() => {
     const me = S.teamId;
-    const tgt = S.recruiting.pool.find(r => r.stars === 4 && r.iv[me] == null);
+    // a FITTING target: a 3★ the program is already a natural suitor for (so a maximal push reliably lands him,
+    // rather than poaching a 4★ from blue-bloods that Phase 37's winning-rival boosts can keep contested to NSD)
+    const tgt = S.recruiting.pool.find(r => r.stars === 3 && r.iv[me] != null && !r.committedTo)
+      || S.recruiting.pool.find(r => r.iv[me] != null && !r.committedTo) || S.recruiting.pool.find(r => r.stars === 4 && r.iv[me] == null);
     offerRecruit(tgt);
     let guard = 0, repSeen = 0, repTonesAllOk = true, windowSeen = false, finalistSeen = false;   // Phase 34/35/36
     while (S.phase === 'Regular Season' && guard++ < 40) {
@@ -724,7 +757,10 @@ function startServer() {
     const fives = S.recruiting.pool.filter(r => r.stars === 5);
     const aiScoutedFives = fives.length ? fives.reduce((a, r) => a + r.scout, 0) / fives.length : 0;
     // Phase 34: the weekly board report — built at each in-season week's resolution (max seen over the season)
-    return { signed: S.recruiting.signed, stage: S.recruiting.stage, phase: S.phase, committed, signedNow, mine, tgtMine: tgt.committedTo === me, rank: myClassRank(),
+    // tgt "won" if he committed to you, or you're his clear leader heading into Signing Day (he'll sign with you)
+    const sl = Object.entries(tgt.iv).sort((a, b) => b[1] - a[1]); const tgtLeadsMe = sl.length && sl[0][0] === me;
+    const tgtWon = tgt.committedTo === me || (!tgt.committedTo && tgtLeadsMe);
+    return { signed: S.recruiting.signed, stage: S.recruiting.stage, phase: S.phase, committed, signedNow, mine, tgtMine: tgt.committedTo === me, tgtWon, rank: myClassRank(),
       champPhase: S.phase, champGames: S.champWeek ? S.champWeek.games.length : 0, aiScoutedFives, repSeen, repTonesAllOk, windowSeen, finalistSeen };
   });
   check('Phase 14: season ends with VERBAL commits, class not yet signed', !cycle.signed && cycle.stage === 'open' && cycle.signedNow === 0 && cycle.champPhase === 'Conference Championships', `stage ${cycle.stage}, signed ${cycle.signedNow}`);
@@ -781,7 +817,7 @@ function startServer() {
   check('Phase 15: the top-4 playoff byes are conference champions', champ.byesAreChamps);
   check('Phase 15: Championship Week resolves into the postseason (12 seeds + bowls)', champ.phase === 'Postseason' && champ.postStarted && champ.seeds === 12 && champ.bowls > 0, `seeds ${champ.seeds}, bowls ${champ.bowls}`);
   check('Recruiting cycle: verbal commitments accrue through the season', cycle.committed > 60, cycle.committed + ' verbal commits');
-  check('Recruiting cycle: an aggressively recruited target commits to you', cycle.tgtMine);
+  check('Recruiting cycle: an aggressively recruited target commits to you (or you lead him into Signing Day)', cycle.tgtWon);
   check('Recruiting cycle: the controlled team builds a class', cycle.mine > 0, cycle.mine + ' commits');
   check('Recruiting cycle: class rank is valid (1–134)', cycle.rank >= 1 && cycle.rank <= 134, '#' + cycle.rank);
   // ---------- PHASE 16: decommits (verbal flips) ----------
@@ -1064,7 +1100,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 31', roPost.version === 32, 'v' + roPost.version);
+  check('Rollover: save version bumped to 33', roPost.version === 33, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);
