@@ -550,8 +550,26 @@ plain static files so Pages still serves it with zero config.
   reserves budget + raises interest; the season visit budget spends down; a team's result ripples to its board).
   Tuning note: the league ripple + NIL wars make recruiting **more contested** — the full-pool sign rate settles
   ~80% (the larger tail backfills as walk-ons at rollover, as designed). See "Phase 37 design — recruiting
-  polish" below. *(This closes the recruiting-depth thread (Phases 33–37). Open, if ever: an in-engine NIL economy
-  + collective management; a true official-visit weekend scheduler.)*
+  polish" below. *(One loose end remained — a true official-visit weekend scheduler — landed in Phase 38.)*
+- **Phase 38 — Official-visit weekend scheduler.** ✅ DONE. The last recruiting loose end from Phase 37:
+  official visits are now a **calendar tied to home-game weekends**, not an abstract season count + per-week
+  intent. A new pure fenced **`VISIT ENGINE`** (`weekendQuality({myRank,oppRank,oppPrestige})` → a multiplier
+  **centered ≈ 1.0**, bounded [0.6, 1.7], rising with opponent rank/prestige + my form + a **marquee** both-
+  ranked clash; `weekendTier` → Quiet/Solid/Big/Marquee) **replaces** the old flat ×1.5 game-day bonus with a
+  mean-~1.0 quality multiplier (so the visit-interest envelope is preserved). App layer: `S.recruiting.visitPlan
+  = {week:[recruitId]}` — you **book** recruits onto upcoming home weekends (`bookVisit`/`unbookVisit`, reserving
+  a `visitsLeft` season slot, capped at `weekendCap` (2, or 3 for a Recruiter) per weekend); on advancing
+  through that week `applyWeekendVisits` (in `resolveRecruitingWeek`) boosts each booked recruit by `20 ×
+  weekendQuality × visit-mods`, marks `visited`, and notes it on the board report. The old visit path is gone
+  (`'visit'` dropped from `RECRUIT_COSTS`/`buildIntent`/`applyPlayerIntents`/`setRecIntent`; `isGameDayVisit`/
+  `queuedVisits` removed; `visitCap`→`weekendCap`). UI: a new recruiting **Visits** tab (a home-weekend calendar
+  with tier badges + booked recruits + a per-weekend booking picker), a **"🏟️ Schedule visit"** weekend-picker
+  on the recruit sheet, and visit counts on the plan/Home cards. Save **v34** (`S.recruiting.visitPlan`;
+  `migrateState` v33→v34 backfills `{}` — recreated at kickoff, so it only patches an in-flight save). New gate
+  `npm run visitlab` (20 checks: quality monotonic in opponent/form/marquee, bounded, neutral≈1.0, mean over a
+  representative slate≈1.0, tier ladder, determinism); `qa` → 273 (book onto a home weekend, the weekend cap +
+  season budget hold, a non-home week can't host, resolving raises interest + marks visited + clears the plan,
+  the Visits tab renders, v34 + a `visitPlan` codec round-trip). See "Phase 38 design — visit scheduler" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -2037,9 +2055,70 @@ into Signing Day," since the supercharged winning rivals can keep a *poached* 4�
 
 ### Deliberately out of scope
 No in-engine NIL **economy** (collective fundraising/management, a per-recruit bidding *war* resolved at NSD) —
-NIL here is a money→interest lever, not an auction. No true **official-visit weekend scheduler** (the calendar is
-a season count, not dated slots). The AI's per-game ripple is positive-only by design (the negative side is a
-player-only feel). This closes the recruiting-depth thread.
+NIL here is a money→interest lever, not an auction. The AI's per-game ripple is positive-only by design (the
+negative side is a player-only feel). *(The "no official-visit weekend scheduler" limit here was reversed in
+Phase 38 below.)*
+
+---
+
+## Phase 38 design — official-visit weekend scheduler
+
+Decided 2026-06-30 with AJ — the deferred Phase 37 loose end. Official visits move from an abstract
+**season count** (`visitsLeft`, 12) + a per-week **intent** (with a flat ×1.5 if you happened to host a home
+game) to a real **calendar**: home-game weekends are the visit slots, and a marquee weekend is worth planning
+around. AJ's three scoping calls: the scheduler **replaces** the per-week visit action; visits are **home-
+weekends only** (the stadium-atmosphere hook); a weekend's boost scales with **opponent quality + my form +
+rivalry/marquee** (no rivalry data in `TEAMS`, so "marquee" is rank-based — both teams ranked). House
+discipline: a pure fenced engine + node lab before UI, a save bump, all gates green.
+
+### Pure `VISIT ENGINE` (fenced, lab before UI)
+`// === VISIT ENGINE (Phase 38) START/END ===` (depends only on `clamp` — no rng/DOM/S, so `test/visitlab.js`
+extracts + evals it like camplab):
+- `weekendQuality({myRank, oppRank, oppPrestige})` → a multiplier **centered ≈ 1.0**, bounded **[0.6, 1.7]**:
+  base 1.0 + opponent **stage** (`rankPull(oppRank)` up to +0.45 at #1, fading out past ~25; + an `oppPrestige`
+  term ±0.15 around ~60) + my **form** (`rankPull(myRank)` up to +0.2) + a **marquee** bump (+0.25 when both
+  teams are top-15). The neutral case (unranked opp, mid prestige, unranked me) is exactly 1.0, and the **mean
+  over a representative home slate ≈ 1.0** — so it *replaces* the old flat ×1.5 game-day bonus without moving
+  the visit-interest envelope (lab-asserted, not hand-waved).
+- `weekendTier(q)` → `VISIT_TIERS` (Quiet · Solid · Big · Marquee) for the UI.
+The interest gain itself stays app-side: `20 × weekendQuality × m.visit × recScoutMult × homeStateBonus` — a
+marquee weekend (~1.6) ≈ 32 vs a quiet home game (~0.8) ≈ 16, a real spread.
+
+### App layer
+- `S.recruiting.visitPlan = {week:[recruitId]}` — recruits booked per home weekend; `visitsLeft` (the season
+  budget, still 12) is **reserved at booking** and refunded on unbooking (the points-reservation pattern).
+- `homeWeekends()` / `weekendInfo(week)` (live quality/tier/slots) / `weekendCap()` (per-weekend host cap — 2,
+  or 3 for a Recruiter; the repurposed `visitCap`) / `bookVisit`/`unbookVisit`/`canBookVisit`.
+- `applyWeekendVisits(week)` — in `resolveRecruitingWeek` (the existing week-change resolver): boosts each
+  booked recruit by the gain above, sets `visited`, bumps `rec.hits.visit`, clears `visitPlan[week]`, and
+  returns a one-line note woven into the weekly board report (the per-recruit interest jump also shows as the
+  report's `myDelta`). A booked recruit is added to `actedOn` so the Phase 35 neglect-decay skips him.
+- The **old visit path is removed**: `'visit'` dropped from `RECRUIT_COSTS`; the `visit` branch deleted from
+  `buildIntent`/`applyPlayerIntents`/`setRecIntent`; `isGameDayVisit`/`queuedVisits` removed.
+- **AI is unchanged** — AI "visits" stay the engine's Phase 36 concentrated push (no AI weekend calendar), so
+  the fenced engine + `reclab` envelope are untouched.
+
+### UI
+A new recruiting **Visits** tab (`recruitVisits`): a header (visits-left + per-weekend cap), then one card per
+upcoming home weekend — week + "vs OPP", a colored **tier badge** + the multiplier, booked recruits (removable),
+and "+ Book a recruit" → a per-weekend picker (`visitBookSheet`). The recruit sheet's old Visit button becomes
+**"🏟️ Schedule visit"** → a weekend-picker (`visitSheet`, each option showing tier + est. boost + slots). Visit
+counts surface on the plan card + the Home recruiting card.
+
+### Save & validation
+Save **v34** (`S.recruiting.visitPlan`; `migrateState` v33→v34 backfills `{}` — recruiting is recreated at
+kickoff, so this only patches an in-flight in-season save). `visitPlan` rides plainly on `S.recruiting` (only
+`recruiting.pool` is columnar), so it round-trips with no codec change. New gate **`npm run visitlab`** (20
+checks: quality monotonic in opponent/prestige/form, marquee needs both top-15, bounded across a grid,
+neutral≈1.0, **mean over a representative slate≈1.0**, tier ladder ordered, `rankPull` saturation, determinism +
+no input mutation). `qa` → **273** (book onto a home weekend with the cap held, a season slot reserved, a non-
+home week blocked, a weekend has a tier, resolving raises interest + marks visited + clears the plan, an
+exhausted budget blocks booking, the Visits tab renders, v34 migration + a `visitPlan` codec round-trip).
+**Sixteen gates** now (adds `visitlab`).
+
+### Deliberately out of scope
+No **AI weekend calendar** (AI visits stay the Phase 36 concentrated push); no off-season/road/bye visits (home
+weekends only); no dated multi-day visit *slots* (a weekend hosts up to `weekendCap` recruits, not timed).
 
 ---
 
@@ -2468,7 +2547,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **29**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **34**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -2509,8 +2588,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   `S.recruiting.doubles` (sparse `rec.decideWeek`/`rec.hits` ride in the columnar pool side-object, absent-safe);
   v31→v32 is a structural no-op (Phase 36 — `rec.finalists` rides sparsely in the pool side-object, absent = no
   shortlist yet; AI visits/momentum are derived); v32→v33 backfills `S.recruiting.visitsLeft` (Phase 37 official-
-  visit calendar; NIL `nilSpend` rides on intents, AI ripple/NIL are behavior-only). Each step re-derives
-  ratings/ranks where needed.
+  visit calendar; NIL `nilSpend` rides on intents, AI ripple/NIL are behavior-only); v33→v34 backfills
+  `S.recruiting.visitPlan={}` (Phase 38 visit-weekend scheduler — the booked-visit calendar; recreated at
+  kickoff, so it only patches an in-flight in-season save). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -2540,7 +2620,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
   weeklyHonors: [ ... ],         // Player-of-the-Week log (Phase 3.5)
-  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage, intents, doubles, visitsLeft, report } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14); intents = {recruitId:[{action,...,cost,label,isDouble?,nilSpend?}]} = this week's QUEUED actions (≤2/recruit; a 'nil' action pays nilSpend $ from budget — Phase 37), resolved at the week change (Phase 33/35); doubles = weekly double-down tokens (Phase 35); visitsLeft = season official-visit budget (Phase 37); report = {week, reactions:[…], note} = last week's board report, transient/rebuilt each week (Phase 34/35)
+  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage, intents, doubles, visitsLeft, visitPlan, report } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14); intents = {recruitId:[{action,...,cost,label,isDouble?,nilSpend?}]} = this week's QUEUED actions (≤2/recruit; a 'nil' action pays nilSpend $ from budget — Phase 37), resolved at the week change (Phase 33/35); doubles = weekly double-down tokens (Phase 35); visitsLeft = season official-visit budget (Phase 37); visitPlan = {week:[recruitId]} = recruits booked onto home-game weekends (Phase 38 visit scheduler, reserved against visitsLeft); report = {week, reactions:[…], note} = last week's board report, transient/rebuilt each week (Phase 34/35)
   offseasonReport: { year, graduated, tracked, freshmen, departed } | undefined,  // last rollover recap (Phase 5)
   world: { teams: [ Team, ... ] }
 }
@@ -2724,9 +2804,9 @@ National Signing Day → transfer portal** → rollover (graduate/enshrine/**dra
 settle → carousel → facilities/series — closes across multiple years, and the **hot seat** means a sustained
 slump can end your tenure; your stars leave a permanent mark on the program both on its Ring of Honor and on
 its pro-pipeline reputation.
-**Fifteen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
+**Sixteen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
 `traitlab` / `schemelab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `medialab` /
-`camplab` / `qa`.
+`camplab` / `visitlab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during

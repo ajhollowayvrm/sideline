@@ -489,19 +489,51 @@ function startServer() {
   // resolving the week applies BOTH queued actions (interest rises, scouting sharpens) and clears the queue
   const resolved = await page.evaluate(id => { const r0 = S.recruiting.pool.find(x => x.id === id); const iv0 = r0.iv[S.teamId] || 0, sc0 = r0.scout; applyPlayerIntents(); const r = S.recruiting.pool.find(x => x.id === id); return { iv0, iv1: r.iv[S.teamId] || 0, sc0, sc1: r.scout, cleared: Object.keys(S.recruiting.intents).length }; }, tgt.id);
   check('Recruiting: resolving applies the queued actions (interest + scouting rise, queue clears)', resolved.iv1 > resolved.iv0 && resolved.sc1 > resolved.sc0 && resolved.cleared === 0, JSON.stringify(resolved));
-  // Phase 35: weekly scarcity (official-visit cap) + decay-on-neglect
+  // Phase 35: decay-on-neglect (the official-visit cap moved to the Phase 38 weekend calendar below)
   const p35 = await page.evaluate(() => {
-    const me = S.teamId, R = S.recruiting; R.intents = {}; R.points = 99; R.doubles = 0;
-    const cands = R.pool.filter(r => !r.committedTo && !r.signed && r.iv[me] == null && !r.visited).slice(0, 4);
-    cands.forEach(r => { if (!R.board.includes(r.id)) offerRecruit(r); });
-    cands.forEach(r => setRecIntent(r, 'visit'));            // try to queue more visits than the weekly cap
-    const cap = visitCap(), visitsQueued = queuedVisits();
-    R.intents = {};                                          // now test decay on a neglected board recruit
-    const nr = cands[0]; nr.iv[me] = 50; const before = nr.iv[me]; decayNeglect(new Set()); const after = nr.iv[me];
-    return { cap, visitsQueued, decayBefore: before, decayAfter: after };
+    const me = S.teamId, R = S.recruiting; R.intents = {};
+    const nr = R.pool.find(r => !r.committedTo && !r.signed && r.iv[me] == null);
+    if (!R.board.includes(nr.id)) offerRecruit(nr);
+    nr.iv[me] = 50; const before = nr.iv[me]; decayNeglect(new Set()); const after = nr.iv[me];
+    return { decayBefore: before, decayAfter: after };
   });
-  check('Phase 35: official visits are capped per week', p35.visitsQueued === p35.cap, `${p35.visitsQueued} queued, cap ${p35.cap}`);
   check('Phase 35: a neglected board recruit cools on you (decay)', p35.decayAfter < p35.decayBefore, `${p35.decayBefore}→${p35.decayAfter}`);
+  // Phase 38: official-visit WEEKEND scheduler — book onto a home weekend, weekend cap + season budget, resolve.
+  const p38 = await page.evaluate(() => {
+    const me = S.teamId, R = S.recruiting; R.intents = {}; R.visitPlan = {}; R.visitsLeft = 12;
+    // find/inject a future HOME weekend for me (a week with no existing game of mine)
+    let wk = null; for (let w = Math.max(1, S.week); w <= 15; w++) { if (!teamGame(me, w)) { wk = w; break; } }
+    const opp = S.world.teams.find(x => x.id !== me);
+    const injected = { id: 'qvisit', home: me, away: opp.id, played: false, week: wk };
+    S.schedule.games.push(injected);
+    const cap = weekendCap();
+    // try to book cap+1 distinct recruits onto the one weekend — only `cap` should land
+    const cands = R.pool.filter(r => !r.committedTo && !r.signed && r.iv[me] == null && !r.visited).slice(0, cap + 1);
+    cands.forEach(r => { if (!R.board.includes(r.id)) offerRecruit(r); });
+    const vl0 = visitsLeft(); const results = cands.map(r => bookVisit(r, wk));
+    const booked = (R.visitPlan[wk] || []).length, capHeld = booked === cap && results.filter(Boolean).length === cap;
+    const budgetSpent = visitsLeft() === vl0 - cap;          // a season slot reserved per booking
+    // a non-home week (my away/bye) can't host
+    const away = S.schedule.games.find(g => g.away === me && !g.played && g.week >= S.week);
+    const lone = R.pool.find(r => !r.committedTo && !r.signed && r.iv[me] == null && !r.visited && !R.visitPlan[wk]?.includes(r.id));
+    if (lone && !R.board.includes(lone.id)) offerRecruit(lone);
+    const awayBlocked = away ? bookVisit(lone, away.week) === false : true;
+    // resolving the weekend raises interest, marks visited, clears the plan
+    const vrec = recById(R.visitPlan[wk][0]); const iv0 = vrec.iv[me] || 0;
+    const info = weekendInfo(wk), tier = info && info.tier, q = info && info.q;
+    applyWeekendVisits(wk);
+    const resolved = (vrec.iv[me] || 0) > iv0 && vrec.visited === true && !R.visitPlan[wk];
+    // season budget exhausted blocks booking
+    R.visitsLeft = 0; const exhausted = canBookVisit(cands[0]) === false;
+    S.schedule.games = S.schedule.games.filter(g => g !== injected); R.visitPlan = {}; R.visitsLeft = 12;
+    return { capHeld, cap, booked, budgetSpent, awayBlocked, resolved, tier, q, exhausted };
+  });
+  check('Phase 38: a home weekend hosts at most weekendCap recruits', p38.capHeld, `${p38.booked} booked, cap ${p38.cap}`);
+  check('Phase 38: booking a visit reserves a season-budget slot', p38.budgetSpent);
+  check('Phase 38: a non-home (away/bye) week can’t host a visit', p38.awayBlocked);
+  check('Phase 38: a weekend has a quality tier', !!p38.tier && p38.q > 0, `${p38.tier} ×${p38.q && p38.q.toFixed(2)}`);
+  check('Phase 38: resolving the weekend raises interest + marks visited + clears the plan', p38.resolved);
+  check('Phase 38: an exhausted season visit budget blocks booking', p38.exhausted);
   // Phase 37: NIL bid spends budget + raises interest; season visit budget; league ripple moves a winning board
   const p37 = await page.evaluate(() => {
     const me = S.teamId, R = S.recruiting, t = controlled(); R.intents = {}; t.budget = 50e6;
@@ -512,11 +544,7 @@ function startServer() {
     const reservedBudget = t.budget < bud0;                  // budget reserved on set
     applyPlayerIntents();
     const nilWorked = (nilRec.iv[me] || 0) > iv0 && t.budget < bud0;
-    // season visit budget: queuing+resolving a visit decrements visitsLeft
-    R.intents = {}; const vl0 = visitsLeft();
-    const vr = R.pool.find(r => !r.committedTo && !r.signed && r.iv[me] == null && !r.visited); if (!R.board.includes(vr.id)) offerRecruit(vr);
-    setRecIntent(vr, 'visit'); applyPlayerIntents();
-    const visitSpent = visitsLeft() === vl0 - 1;
+    R.intents = {};
     // league ripple: a team that won big this week gets a board boost on a recruit it leads (clean up the fake game)
     const winner = S.world.teams.find(x => x.id !== me && !teamGame(x.id, S.week)) || S.world.teams.find(x => x.id !== me);
     const rr = R.pool.find(r => !r.signed && r.iv[winner.id] != null && (!r.committedTo || r.committedTo === winner.id) && (!r.finalists || r.finalists.indexOf(winner.id) >= 0));
@@ -527,10 +555,9 @@ function startServer() {
       const b = rr.iv[winner.id]; applyLeagueRipple(S.week); rippleMoved = rr.iv[winner.id] >= b;
       S.schedule.games = S.schedule.games.filter(g => g !== fake);   // remove the fake game (don't corrupt the cycle)
     }
-    return { reservedBudget, nilWorked, visitSpent, rippleMoved };
+    return { reservedBudget, nilWorked, rippleMoved };
   });
   check('Phase 37: a NIL bid reserves budget and raises interest', p37.reservedBudget && p37.nilWorked);
-  check('Phase 37: the official-visit calendar spends a season visit', p37.visitSpent);
   check('Phase 37: a team’s game result ripples to the board it recruits (AI reacts to its results)', p37.rippleMoved);
   await page.locator('[data-tid="sheet-bg"]').click({ position: { x: 5, y: 5 } }).catch(() => {});
   await page.waitForTimeout(100);
@@ -538,6 +565,10 @@ function startServer() {
   await page.locator('[data-tid="rtab-board"]').click();
   await page.waitForTimeout(150);
   check('Recruiting: board shows the offered target', await page.locator(`[data-id="${tgt.id}"]`).first().isVisible());
+  // Phase 38: the Visits tab renders the official-visit weekend calendar
+  await page.locator('[data-tid="rtab-visits"]').click();
+  await page.waitForTimeout(150);
+  check('Phase 38: the Visits tab renders the official-visit calendar', await page.locator('[data-tid="rec-visits-head"]').isVisible());
   // class tab renders a rank + grade even before any commit
   await page.locator('[data-tid="rtab-class"]').click();
   await page.waitForTimeout(150);
@@ -610,7 +641,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 33 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 34 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -627,7 +658,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v33)', mig.v === 33, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v34)', mig.v === 34, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -741,8 +772,7 @@ function startServer() {
       // Phase 33: queue one action per week on the target — it resolves on advance (maximal push)
       if (tgt.committedTo !== me) {
         if (!tgt.promise) setRecIntent(tgt, 'promise', { type: 'playingTime' });
-        else if (!tgt.visited) setRecIntent(tgt, 'visit');
-        else setRecIntent(tgt, 'pitch', { angle: tgt.prefs[0] });
+        else setRecIntent(tgt, 'pitch', { angle: tgt.prefs[0] });   // Phase 38: visits are now a weekend calendar, not an intent
       }
       advanceWeek();
       const rr = S.recruiting && S.recruiting.report && S.recruiting.report.reactions;
@@ -1100,7 +1130,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 33', roPost.version === 33, 'v' + roPost.version);
+  check('Rollover: save version bumped to 34', roPost.version === 34, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);
@@ -1262,8 +1292,12 @@ function startServer() {
   const codec = await page.evaluate(() => {
     const eq = (a, b) => { const ka = Object.keys(a), kb = Object.keys(b); if (ka.length !== kb.length) return false; return ka.every(k => JSON.stringify(a[k]) === JSON.stringify(b[k])); };
     const full = JSON.stringify(S).length;
+    // Phase 38: a booked visit calendar rides on S.recruiting (plain-serialized) → must round-trip
+    let vpRestore; if (S.recruiting) { vpRestore = S.recruiting.visitPlan; S.recruiting.visitPlan = { 4: ['va', 'vb'], 7: ['vc'] }; }
     const enc = encodeState(S); const encLen = JSON.stringify(enc).length;
     const dec = decodeState(JSON.parse(JSON.stringify(enc)));   // simulate a storage round-trip
+    const vpOk = !S.recruiting || JSON.stringify(dec.recruiting.visitPlan) === JSON.stringify(S.recruiting.visitPlan);
+    if (S.recruiting) S.recruiting.visitPlan = vpRestore;
     let ok = true, np = 0;
     S.world.teams.forEach((t, i) => { const d = dec.world.teams[i]; if (!d || t.roster.length !== d.roster.length) { ok = false; return; } t.roster.forEach((p, j) => { np++; if (!eq(p, d.roster[j])) ok = false; }); });
     const topOk = dec.seed === S.seed && dec.year === S.year && dec.teamId === S.teamId && dec.version === S.version && dec.awards.length === S.awards.length;
@@ -1273,9 +1307,10 @@ function startServer() {
       const a = S.recruiting.pool, b = dec.recruiting && dec.recruiting.pool; poolN = a.length;
       poolOk = !!b && a.length === b.length && a.every((r, k) => { const { _flipped, ...rr } = r; return b[k] && eq(rr, b[k]); });
     }
-    return { full, encLen, ok, np, topOk, poolOk, poolN, encMarker: !!enc._sv, decClean: dec._sv === undefined };
+    return { full, encLen, ok, np, topOk, poolOk, poolN, vpOk, encMarker: !!enc._sv, decClean: dec._sv === undefined };
   });
   check('Phase 9: columnar codec round-trips every roster exactly', codec.ok && codec.np > 10000, codec.np + ' players checked');
+  check('Phase 38: the visit calendar round-trips through the codec', codec.vpOk);
   check('Phase 17: columnar codec round-trips the full recruit pool exactly', codec.poolOk !== false && codec.poolN > 3000, codec.poolN + ' recruits checked');
   check('Phase 9: codec preserves top-level state (seed/year/awards/…)', codec.topOk);
   check('Phase 9: encoded save is meaningfully smaller', codec.encLen < codec.full * 0.78, `${(codec.full / 1024 | 0)}KB → ${(codec.encLen / 1024 | 0)}KB`);

@@ -18,7 +18,8 @@
     "champlab": "node test/champlab.js",
     "portallab": "node test/portallab.js",
     "medialab": "node test/medialab.js",
-    "camplab": "node test/camplab.js"
+    "camplab": "node test/camplab.js",
+    "visitlab": "node test/visitlab.js"
   },
   "devDependencies": {
     "playwright": "^1.61.1"
