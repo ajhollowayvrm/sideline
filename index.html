@@ -1629,6 +1629,34 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
   if(last)pool.forEach(rec=>{if(rec.committedTo)rec.signed=true;});   // every verbal becomes a signature
   return out;
 }
+// Phase 34 (legibility): turn a board recruit's week — what you did + how interest moved + who's pushing —
+// into a readable one-line reaction. Pure + deterministic (no rng, no DOM, no S): the app computes the diff
+// `c` and this returns `{text, tone}` (tone ∈ 'good'|'bad'|'warn'|'neutral'). The headline ladder puts the
+// urgent/decisive events (commits, decommits, a rival pulling ahead) above your action's result.
+function recruitReaction(c){
+  if(c.committedMine)return {text:'💚 Committed to you!',tone:'good'};
+  if(c.flippedToMe)return {text:'🔁 Flipped his commitment to you!',tone:'good'};
+  if(c.flippedAway)return {text:'💔 Decommitted — flipped to '+(c.rivalAbbr||'a rival'),tone:'bad'};
+  // a rival making a hard push and sitting ahead of you is the key "cooling" signal
+  if(c.rivalDelta>=10&&c.rivalLeads&&c.myDelta<c.rivalDelta)
+    return {text:'⚠️ Cooling — '+(c.rivalAbbr||'a rival')+' is pushing hard',tone:'warn'};
+  // your action this week landed (or didn't)
+  if(c.action==='visit')return c.myDelta>=14?{text:'🔥 The official visit made a big impression',tone:'good'}:{text:'The visit went all right',tone:'neutral'};
+  if(c.action==='promise')return {text:'🤝 Your promise resonated',tone:'good'};
+  if(c.action==='alumni')return {text:'⭐ The alumni visit landed',tone:'good'};
+  if(c.action==='pitch'){
+    const a=c.angleLabel||'pitch';
+    if(c.prefMatch===0)return c.myDelta>=9?{text:'🔥 Loved your '+a+' pitch — exactly what he wants',tone:'good'}:{text:'Your '+a+' pitch landed',tone:'good'};
+    if(c.prefMatch===1)return {text:'Your '+a+' pitch got through',tone:'good'};
+    return {text:'The '+a+' pitch didn’t move the needle — not his priority',tone:'neutral'};
+  }
+  if(c.action==='scout')return {text:'🔎 You sharpened your read — your pitches land harder now',tone:'neutral'};
+  // no action from you this week — report drift
+  if(c.rankNow===1&&c.rankPrev>1)return {text:'📈 You climbed to his #1',tone:'good'};
+  if(c.rankNow>c.rankPrev)return {text:'📉 Slipped to #'+c.rankNow+' — rivals are gaining',tone:'warn'};
+  if(c.myDelta>=6)return {text:'Trending up — interest is growing',tone:'good'};
+  return {text:'Quiet week — no contact made',tone:'neutral'};
+}
 // === RECRUIT ENGINE (Phase 4) END ===
 
 // === ROLLOVER ENGINE (Phase 5) START ===
@@ -3340,14 +3368,49 @@ function boardSlots(){return Math.max(6,REC.SLOTS+myMods().slots);}
 function initRecruiting(){
   // stage: 'open' (in-season, taking verbals) → 'national' (offseason, ESP done, NSD pending) → 'closed'
   // intents = the week's queued actions (Phase 33), keyed by recruit id; resolved at the week change.
-  S.recruiting={cycle:1,points:weeklyPoints(),pool:genRecruits(S.seed,S.world.teams),board:[],signed:false,stage:'open',intents:{}};
+  S.recruiting={cycle:1,points:weeklyPoints(),pool:genRecruits(S.seed,S.world.teams),board:[],signed:false,stage:'open',intents:{},report:null};
 }
 function grantRecruitPoints(){if(S.recruiting&&!S.recruiting.signed)S.recruiting.points=weeklyPoints();}
+// Phase 34 (legibility): snapshot each board recruit's pre-resolution state (my interest/rank, the full
+// suitor interest map, and my queued intent) so the post-week report can diff what actually moved + why.
+function recruitPreSnaps(){
+  const me=S.teamId, R=S.recruiting, I=R.intents||{};
+  return R.board.map(recById).filter(Boolean).map(rec=>({
+    id:rec.id, myIv:rec.iv[me]||0, rank:myRank(rec)||(suitorList(rec).length+1),
+    committedToMe:rec.committedTo===me, iv:Object.assign({},rec.iv),
+    intent:I[rec.id]?{action:I[rec.id].action,angle:I[rec.id].angle}:null}));
+}
+// Diff the snapshots against the resolved board into a readable weekly report (S.recruiting.report).
+function buildRecruitReport(snaps,week){
+  const me=S.teamId, rows=[];
+  snaps.forEach(s=>{
+    const rec=recById(s.id); if(!rec)return;
+    const sl=suitorList(rec), myNow=rec.iv[me]||0, myDelta=Math.round(myNow-s.myIv);
+    const rankNow=myRank(rec)||(sl.length+1);
+    let rivalAbbr=null,rivalDelta=0;                        // the biggest rival mover this week
+    for(const su of sl){if(su.id===me)continue;const d=su.v-(s.iv[su.id]||0);if(d>rivalDelta){rivalDelta=Math.round(d);rivalAbbr=su.team.abbr;}}
+    const leader=sl[0], rivalLeads=!!(leader&&leader.id!==me);
+    const committedMine=rec.committedTo===me&&!s.committedToMe;
+    const flippedAway=s.committedToMe&&rec.committedTo!==me;
+    const flippedToMe=!!(rec._flipped&&rec._flipped.to===me);
+    const it=s.intent, prefMatch=it&&it.action==='pitch'?(rec.prefs[0]===it.angle?0:rec.prefs[1]===it.angle?1:2):null;
+    const r=recruitReaction({action:it?it.action:null,angle:it&&it.angle,angleLabel:it&&it.angle?prefLabel(it.angle):'',
+      prefMatch,myDelta,rivalAbbr,rivalDelta,rivalLeads,rankNow,rankPrev:s.rank,nSuitors:sl.length,committedMine,flippedToMe,flippedAway});
+    // surface a row if you acted on him, or something notable happened
+    if(!(it||committedMine||flippedAway||flippedToMe||rivalDelta>=10||Math.abs(myDelta)>=6))return;
+    const pri=(committedMine||flippedToMe)?0:flippedAway?0:r.tone==='warn'?1:r.tone==='good'?2:3;
+    rows.push({id:rec.id,name:rec.fn+' '+rec.ln,pos:rec.pos,stars:rec.stars,text:r.text,tone:r.tone,myDelta,pri});
+  });
+  rows.sort((a,b)=>a.pri-b.pri||b.stars-a.stars||Math.abs(b.myDelta)-Math.abs(a.myDelta));
+  S.recruiting.report={week,reactions:rows.slice(0,10)};
+}
 function resolveRecruitingWeek(week){
   if(!S.recruiting||S.recruiting.signed)return [];
+  const snaps=recruitPreSnaps();   // Phase 34: capture pre-resolution state for the weekly report
   applyPlayerIntents();   // Phase 33: your queued actions land first, then the AI brain's, then commitments
   // in-season: verbal commitments only (finalize=false) — binding signatures wait for the offseason
   const out=advanceRecruiting(S.recruiting.pool,S.world.teams,week,S.schedule.weeks,S.seed,false,undefined,undefined,S.teamId);
+  buildRecruitReport(snaps,week);   // Phase 34: diff into a readable board report
   const me=S.teamId;
   // Phase 16: a verbal you held can flip away; you can flip one from a rival. Toast the swings.
   const lost=out.filter(r=>r._flipped&&r._flipped.from===me);
@@ -3919,6 +3982,10 @@ function renderHome(app){
       <div><div class="cond" style="font-size:22px;font-weight:800">${head}</div>
         <div class="muted" style="font-size:13px;margin-top:2px">${nc} ${subKind}${nc===1?'':'s'} \u00b7 class #${rk}${nq?' \u00b7 \u23f3 '+nq+' queued':''}</div></div>
       <span class="tag accent" style="font-size:14px">${gr}</span></div>`;
+    // Phase 34: a one-line teaser of last week's board report (top reaction), nudging you to read it.
+    const rep=stage!=='closed'&&R.report&&R.report.reactions&&R.report.reactions[0];
+    if(rep){const tc={good:'good',bad:'bad',warn:'accent',neutral:'dim'}[rep.tone]||'dim';
+      const line=el('div','muted '+tc,'\ud83d\udccb '+rep.name+': '+rep.text);line.style.cssText='font-size:12px;margin-top:6px';rc.append(line);}
     const rb=el('button','btn line',stage==='closed'?'View signed class':stage==='national'?'Final push \u2192':'Work the board \u2192');rb.style.marginTop='10px';rb.dataset.tid='home-recruit';
     rb.onclick=()=>{UI.view='recruit';render();};
     rc.append(rb);v.append(rc);
@@ -4833,6 +4900,8 @@ function renderRecruiting(app){
       <span class="meta">${stage==='open'?'Verbals':'Signed'} ${stage==='open'?cls.length:signedN}${stage!=='open'&&cls.length>signedN?'/'+cls.length:''}</span>
       <span class="meta dim">${stageLabel}</span></div>`;
   v.append(sum);
+  // Phase 34 (legibility): last week's board report — what moved + why — read it before setting this week's plan.
+  if(stage!=='closed')reportCard(v);
   // Phase 33: this week's queued plan — the actions that resolve at the next advance, alongside the AI's.
   if(stage!=='closed')planCard(v);
   if(stage==='national')v.append(el('div','hint center','Early Signing Period done — '+signedN+' signed. Push the holdouts, then hold National Signing Day from Home.'));
@@ -4868,6 +4937,26 @@ function planCard(v){
     x.onclick=()=>{clearRecIntent(rec);render();toast('Cleared');};
     row.querySelector('button').onclick=()=>recruitSheet(rec);
     row.append(x);c.append(row);
+  });
+  v.append(c);
+}
+// Phase 34 (legibility): last week's board report — a readable line per recruit (what moved + why), so you
+// can react. Built in resolveRecruitingWeek; tones map to good/cooling(warn)/bad/neutral. Rows open the sheet.
+function reportCard(v){
+  const rep=S.recruiting.report;
+  if(!rep||!rep.reactions||!rep.reactions.length)return;
+  const toneCls={good:'good',bad:'bad',warn:'accent',neutral:'dim'};
+  const c=el('div','card');c.dataset.tid='rec-report';c.style.marginTop='10px';
+  c.innerHTML=`<div class="row spread"><span class="meta dim">Last week’s board report</span><span class="meta dim">Week ${rep.week}</span></div>`;
+  rep.reactions.forEach(rx=>{
+    const b=el('button','lrow');b.dataset.id='rep-'+rx.id;b.style.cssText='width:100%;text-align:left;margin-top:7px;padding:7px 8px';
+    const sign=rx.myDelta>0?'+'+rx.myDelta:rx.myDelta<0?''+rx.myDelta:'';
+    b.innerHTML=`<div style="flex:1;min-width:0">
+        <div class="nm" style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rx.name} <span class="dim" style="font-weight:400">${rx.pos}</span></div>
+        <div class="meta ${toneCls[rx.tone]||'dim'}">${rx.text}</div></div>
+      ${sign?`<span class="cond ${rx.myDelta>0?'good':'bad'}" style="flex:none;font-weight:700;font-size:13px">${sign}</span>`:''}`;
+    b.onclick=()=>{const rec=recById(rx.id);if(rec)recruitSheet(rec);};
+    c.append(b);
   });
   v.append(c);
 }

@@ -262,6 +262,27 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('AI scout action: deterministic by seed', a === pool2.map(r => r.scout).join(','));
 })();
 
+/* 11) recruit reaction (Phase 34 legibility): the pure read of a board recruit's week returns a sensible
+   {text, tone} — urgent/decisive events outrank your action's result; tones are correct; never throws. */
+(function () {
+  const base = { action: null, angle: null, angleLabel: '', prefMatch: null, myDelta: 0, rivalAbbr: 'RIV', rivalDelta: 0, rivalLeads: false, rankNow: 2, rankPrev: 2, nSuitors: 4, committedMine: false, flippedToMe: false, flippedAway: false };
+  const R = o => recruitReaction(Object.assign({}, base, o));
+  check('Reaction: a commit to you reads as good', R({ committedMine: true }).tone === 'good');
+  check('Reaction: a decommit (flip away) reads as bad', R({ flippedAway: true }).tone === 'bad');
+  check('Reaction: a flip TO you reads as good', R({ flippedToMe: true }).tone === 'good');
+  check('Reaction: a rival surging ahead reads as cooling (warn)', R({ rivalDelta: 16, rivalLeads: true, myDelta: 2 }).tone === 'warn');
+  const pitchHit = R({ action: 'pitch', angle: 'nil', angleLabel: 'NIL Money', prefMatch: 0, myDelta: 12 });
+  check('Reaction: a pref-matched pitch that landed reads as good', pitchHit.tone === 'good' && /NIL Money/.test(pitchHit.text), pitchHit.text);
+  check('Reaction: an off-priority pitch reads as neutral', R({ action: 'pitch', angle: 'nil', angleLabel: 'NIL Money', prefMatch: 2, myDelta: 4 }).tone === 'neutral');
+  check('Reaction: a quiet, untouched week reads as neutral', R({}).tone === 'neutral');
+  // the decisive events outrank an action you also took the same week (e.g. you pitched but he flipped away)
+  check('Reaction: a decommit outranks your action that week', R({ action: 'pitch', prefMatch: 0, myDelta: 8, flippedAway: true }).tone === 'bad');
+  // every reaction returns a non-empty string + a known tone, never throws
+  const tones = ['good', 'bad', 'warn', 'neutral'];
+  const all = [R({ committedMine: true }), R({ flippedAway: true }), R({ action: 'visit', myDelta: 20 }), R({ action: 'scout' }), R({ rankNow: 1, rankPrev: 3 }), R({ myDelta: 9 }), R({})];
+  check('Reaction: always returns text + a known tone', all.every(x => x.text && tones.includes(x.tone)));
+})();
+
 const passed = results.filter(r => r.pass).length;
 const summary = runCycle(2026);
 const signedPct = (100 * summary.pool.filter(r => r.signed).length / summary.pool.length).toFixed(0);

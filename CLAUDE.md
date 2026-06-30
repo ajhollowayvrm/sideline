@@ -469,6 +469,26 @@ plain static files so Pages still serves it with zero config.
   everyone (the player gets free intel on them) while the deep tail stays foggy (the player's scouting edge).
   See "Phase 33 design — recruiting rework" below. *(Open polish: a "use a special to take two actions on one
   recruit" perk — left out of v1 deliberately.)*
+- **Phase 34 — Recruiting legibility (the weekly board report).** ✅ DONE. The Phase 33 loop was mechanically
+  solid but week-to-week *flat* — you queued actions and watched raw interest numbers. This pass makes the week
+  **readable**: after each in-season resolution, a **board report** explains *what moved and why* per recruit.
+  Pure fenced **`recruitReaction(c)`** (in the RECRUIT ENGINE block, no rng/DOM/S — the app computes the diff
+  `c`, it returns `{text, tone}` with tone ∈ good/warn/bad/neutral) reads a recruit's week into one line on a
+  headline ladder: commits/decommits/flips first, then a **rival pulling ahead** ("⚠️ Cooling — ABC is pushing
+  hard"), then your action's result keyed on whether the pitch matched his `prefs` ("🔥 Loved your NIL pitch —
+  exactly what he wants" vs "didn't move the needle — not his priority"), then drift (rank up/down, quiet week).
+  App: `recruitPreSnaps` snapshots each board recruit (my interest/rank, the full suitor `iv` map, my queued
+  intent) **before** resolution; `buildRecruitReport` diffs against the resolved board (my Δ, the biggest rival
+  mover + whether he now leads, commit/flip state) into `S.recruiting.report = {week, reactions:[…]}` (transient,
+  rebuilt each week, top-10 by urgency). UI: a **"Last week's board report"** card on the recruiting view (above
+  the plan card — read it, then set this week's plan; rows are colored by tone + show your interest Δ + open the
+  recruit sheet) and a one-line **teaser** on the Home recruiting card. **No save bump** — `report` rides on the
+  recreated-at-kickoff `S.recruiting` (absent-safe). `reclab` → 44 (the reaction ladder: commit→good, flip→bad,
+  rival-surge→warn, pref-matched pitch→good, off-priority→neutral, decisive events outrank your action, always
+  returns text + a known tone), `qa` → 259 (a weekly report is generated with readable reactions over a season;
+  the report card renders). See "Phase 34 design — recruiting legibility" below. *(Next legibility/feel ideas,
+  not yet built: season results rippling into weekly recruiting + commitment-date windows; weekly action
+  scarcity (capped visits, the double-down special, diminishing returns); interest decay-on-neglect.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1744,6 +1764,58 @@ and there's no per-recruit signing calendar beyond the existing Early/National p
 
 ---
 
+## Phase 34 design — recruiting legibility (the weekly board report)
+
+Decided 2026-06-30 with AJ — the first of the "improve recruiting week to week" ideas. Phase 33's loop was
+mechanically complete (queue intents → resolve with the AI brain → commits/flips) but **informationally
+flat**: every week you poked interest numbers and waited. The highest value-per-effort fix is **legibility** —
+surface *what moved and why* each week so the player can read a developing story and react, which also makes
+the AI brain + scouting work you can already feel. Envelope-safe by construction: it's pure surfacing of data
+the resolution already produces (no change to `iv`/commit math, no rng).
+
+### The pure read (`recruitReaction`, in the RECRUIT ENGINE block)
+`recruitReaction(c)` — depends only on the diff context `c` the app computes (no rng, no DOM, no `S`), returns
+`{text, tone}` with `tone ∈ 'good'|'bad'|'warn'|'neutral'`. A **headline ladder** puts the urgent/decisive
+events first so the one line you see is the one that matters: (1) committed to you / flipped to you → good;
+(2) decommitted/flipped away → bad; (3) a **rival surging ahead** (`rivalDelta ≥ 10 && rivalLeads && myDelta <
+rivalDelta`) → warn ("⚠️ Cooling — ABC is pushing hard"); (4) **your action's result** keyed on `prefMatch`
+(pitch on his top priority that moved him → "🔥 Loved your NIL pitch — exactly what he wants"; off-priority →
+"didn't move the needle — not his priority"; visit/promise/alumni/scout each get their own line); (5) drift if
+you didn't act (climbed to #1 / slipped a spot / trending up / quiet week). `reclab` validates the ladder
+(tones correct per scenario, decisive events outrank a same-week action, always returns text + a known tone).
+
+### The app diff (`recruitPreSnaps` + `buildRecruitReport`, in `resolveRecruitingWeek`)
+- `recruitPreSnaps()` — **before** resolution, snapshot each board recruit: my interest, my rank, a **copy of
+  the full suitor `iv` map**, my committed-to-me flag, and my queued intent (action + angle). Captured before
+  `applyPlayerIntents` clears the queue.
+- After `advanceRecruiting`, `buildRecruitReport(snaps, week)` diffs each board recruit against the resolved
+  state: my interest Δ, rank change, the **biggest rival mover** (max `iv` gain among other suitors + whether
+  he now leads), and commit/flip state (`committedMine`/`flippedAway` from the snapshot, `flippedToMe` from the
+  transient `rec._flipped`). It calls `recruitReaction`, keeps only **notable** rows (you acted, or a
+  commit/flip/rival-surge/big-Δ), sorts by urgency (commits/flips → cooling → good → neutral; then star, then
+  |Δ|), and stores the top 10 on `S.recruiting.report = {week, reactions:[{id,name,pos,stars,text,tone,myDelta}]}`.
+
+### UI
+A **"Last week's board report"** card (`reportCard`) on the recruiting view, placed **above** the plan card
+(read what happened → then set this week's plan): each row is a recruit + a tone-colored reaction line + your
+interest Δ (green/red), and opens the recruit sheet. The Home recruiting card gets a one-line **teaser** of the
+top reaction. Hidden once the class closes.
+
+### Save & validation
+**No save bump** — `S.recruiting.report` is transient (rebuilt every in-season week, absent-safe, and
+`S.recruiting` is recreated at kickoff), so there's nothing to migrate. `reclab` → 44 (the reaction ladder +
+robustness), `qa` → 259 (a weekly report with readable reactions is generated over a full season; the report
+card renders on the recruiting view). **Fifteen gates** (Phase 34 extends `reclab` + `qa`).
+
+### Deliberately out of scope (this pass)
+Legibility only — no new *mechanics*. The national blue-chip commit news stays in the Phase 19 media feed (this
+report is **your board**, not the country). The other "week to week" ideas — **season results rippling into
+weekly recruiting** + **commitment-date windows** (drama), **weekly action scarcity** (capped official visits,
+the double-down special, diminishing returns), and **interest decay-on-neglect** — are separate follow-ups, not
+part of this pass.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -2235,7 +2307,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
   weeklyHonors: [ ... ],         // Player-of-the-Week log (Phase 3.5)
-  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage, intents } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14); intents = {recruitId:{action,...,cost,label}} = this week's QUEUED actions, resolved at the week change (Phase 33)
+  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage, intents, report } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14); intents = {recruitId:{action,...,cost,label}} = this week's QUEUED actions, resolved at the week change (Phase 33); report = {week, reactions:[…]} = last week's board report, transient/rebuilt each week (Phase 34)
   offseasonReport: { year, graduated, tracked, freshmen, departed } | undefined,  // last rollover recap (Phase 5)
   world: { teams: [ Team, ... ] }
 }

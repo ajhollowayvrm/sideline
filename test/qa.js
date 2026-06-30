@@ -689,7 +689,7 @@ function startServer() {
     const me = S.teamId;
     const tgt = S.recruiting.pool.find(r => r.stars === 4 && r.iv[me] == null);
     offerRecruit(tgt);
-    let guard = 0;
+    let guard = 0, repSeen = 0, repTonesAllOk = true;   // Phase 34: track the weekly report across the season
     while (S.phase === 'Regular Season' && guard++ < 40) {
       // Phase 33: queue one action per week on the target — it resolves on advance (maximal push)
       if (tgt.committedTo !== me) {
@@ -698,6 +698,8 @@ function startServer() {
         else setRecIntent(tgt, 'pitch', { angle: tgt.prefs[0] });
       }
       advanceWeek();
+      const rr = S.recruiting && S.recruiting.report && S.recruiting.report.reactions;
+      if (rr) { repSeen = Math.max(repSeen, rr.length); if (!rr.every(x => x.text && ['good', 'bad', 'warn', 'neutral'].includes(x.tone))) repTonesAllOk = false; }
     }
     const committed = S.recruiting.pool.filter(r => r.committedTo).length;
     const signedNow = S.recruiting.pool.filter(r => r.signed).length;
@@ -705,11 +707,22 @@ function startServer() {
     // Phase 33: the AI scout action raised the shared read on blue-chips the player never scouted himself
     const fives = S.recruiting.pool.filter(r => r.stars === 5);
     const aiScoutedFives = fives.length ? fives.reduce((a, r) => a + r.scout, 0) / fives.length : 0;
+    // Phase 34: the weekly board report — built at each in-season week's resolution (max seen over the season)
     return { signed: S.recruiting.signed, stage: S.recruiting.stage, phase: S.phase, committed, signedNow, mine, tgtMine: tgt.committedTo === me, rank: myClassRank(),
-      champPhase: S.phase, champGames: S.champWeek ? S.champWeek.games.length : 0, aiScoutedFives };
+      champPhase: S.phase, champGames: S.champWeek ? S.champWeek.games.length : 0, aiScoutedFives, repSeen, repTonesAllOk };
   });
   check('Phase 14: season ends with VERBAL commits, class not yet signed', !cycle.signed && cycle.stage === 'open' && cycle.signedNow === 0 && cycle.champPhase === 'Conference Championships', `stage ${cycle.stage}, signed ${cycle.signedNow}`);
   check('Phase 33: the AI scout action evaluates blue-chips over a season (shared read rises)', cycle.aiScoutedFives > 10, `5★ avg scout ${cycle.aiScoutedFives.toFixed(0)}`);
+  check('Phase 34: a weekly board report is generated with readable reactions', cycle.repSeen > 0 && cycle.repTonesAllOk, `max ${cycle.repSeen} reactions/week`);
+  // the report card renders from a report with reactions (stage is still 'open' post-cycle)
+  const repRendered = await page.evaluate(() => {
+    const rid = (S.recruiting.board[0]) || S.recruiting.pool[0].id, rec = S.recruiting.pool.find(r => r.id === rid);
+    S.recruiting.report = { week: 5, reactions: [{ id: rid, name: rec.fn + ' ' + rec.ln, pos: rec.pos, stars: rec.stars, text: '🔥 Loved your visit', tone: 'good', myDelta: 12, pri: 2 }] };
+    UI.view = 'recruit'; UI.recruitTab = 'board'; render();
+    const card = document.querySelector('[data-tid="rec-report"]');
+    return !!card && /Loved your visit/.test(card.innerText);
+  });
+  check('Phase 34: the board report card renders on the recruiting view', repRendered);
   // ---------- PHASE 15: Championship Week (conf title games → CFP auto-bid seeding) ----------
   check('Phase 15: regular season hands off to Championship Week with title games', cycle.champPhase === 'Conference Championships' && cycle.champGames > 5, `${cycle.champGames} title games`);
   // Advance Championship Week from Home: watch the title game if reached, else set the playoff field.
