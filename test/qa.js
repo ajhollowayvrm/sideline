@@ -450,6 +450,9 @@ function startServer() {
   check('Recruiting: no horizontal overflow', await overflow(page));
   const recPts0 = await page.evaluate(() => S.recruiting.points);
   check('Recruiting: weekly points granted (refilled in-season)', recPts0 > 0, recPts0 + ' pts');
+  // Phase 33: the weekly budget is driven by the SCOUTING facility (migration backfilled it on the v1 save)
+  const scoutPts = await page.evaluate(() => { const t = controlled(); const hi = t.fac.scouting; const lo = (t.fac.scouting = 1, weeklyPoints()); t.fac.scouting = 10; const big = weeklyPoints(); t.fac.scouting = hi; return { lo, big, hasFac: t.fac.scouting != null }; });
+  check('Phase 33: scouting facility drives the recruiting point budget', scoutPts.hasFac && scoutPts.big > scoutPts.lo, JSON.stringify(scoutPts));
   await shot(page, '22-recruiting-board.png');
   // prospects big board
   await page.locator('[data-tid="rtab-prospects"]').click();
@@ -468,20 +471,23 @@ function startServer() {
   await page.waitForTimeout(150);
   const afterOffer = await page.evaluate(id => { const r = S.recruiting.pool.find(x => x.id === id); return { board: S.recruiting.board.includes(id), iv: r.iv[S.teamId] || 0 }; }, tgt.id);
   check('Recruiting: offer adds to board + sets a starting interest', afterOffer.board && afterOffer.iv > 0, JSON.stringify(afterOffer));
-  // scout (spends points, raises confidence)
+  // Phase 33: actions now QUEUE an intent (reserve points) and resolve at the week change.
   const ptsBeforeScout = await page.evaluate(() => S.recruiting.points);
   await page.locator('[data-tid="rec-scout"]').click();
   await page.waitForTimeout(150);
-  const afterScout = await page.evaluate(id => ({ scout: S.recruiting.pool.find(x => x.id === id).scout, pts: S.recruiting.points }), tgt.id);
-  check('Recruiting: scout raises confidence and spends points', afterScout.scout > 0 && afterScout.pts < ptsBeforeScout, JSON.stringify(afterScout));
-  // pitch (spends points, raises interest)
+  const afterScout = await page.evaluate(id => ({ intent: (S.recruiting.intents[id] || {}).action, pts: S.recruiting.points }), tgt.id);
+  check('Recruiting: setting Scout queues an intent and reserves points', afterScout.intent === 'scout' && afterScout.pts < ptsBeforeScout, JSON.stringify(afterScout));
+  // pitch on the SAME recruit — one action per recruit/week, so it REPLACES the scout intent
   await page.locator('[data-tid="rec-pitch"]').click();
   await page.waitForTimeout(150);
   check('Recruiting: pitch angle picker opens', await page.locator('[data-tid^="pitch-"]').first().isVisible());
   await page.locator('[data-tid^="pitch-"]').first().click();
   await page.waitForTimeout(150);
-  const afterPitch = await page.evaluate(id => ({ iv: S.recruiting.pool.find(x => x.id === id).iv[S.teamId], pts: S.recruiting.points }), tgt.id);
-  check('Recruiting: pitch raises interest and spends points', afterPitch.iv > afterOffer.iv && afterPitch.pts < afterScout.pts, JSON.stringify(afterPitch));
+  const afterPitch = await page.evaluate(id => ({ intent: (S.recruiting.intents[id] || {}).action, n: Object.keys(S.recruiting.intents).length }), tgt.id);
+  check('Recruiting: a later action replaces the first (one queued action per recruit/week)', afterPitch.intent === 'pitch' && afterPitch.n === 1, JSON.stringify(afterPitch));
+  // resolving the week applies the queued pitch (interest rises) and clears the queue
+  const resolved = await page.evaluate(id => { const iv0 = S.recruiting.pool.find(x => x.id === id).iv[S.teamId] || 0; applyPlayerIntents(); const r = S.recruiting.pool.find(x => x.id === id); return { iv0, iv1: r.iv[S.teamId] || 0, cleared: Object.keys(S.recruiting.intents).length }; }, tgt.id);
+  check('Recruiting: resolving applies the queued action (interest rises, queue clears)', resolved.iv1 > resolved.iv0 && resolved.cleared === 0, JSON.stringify(resolved));
   await page.locator('[data-tid="sheet-bg"]').click({ position: { x: 5, y: 5 } }).catch(() => {});
   await page.waitForTimeout(100);
   // board now shows the offered target
@@ -560,7 +566,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 29 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 30 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -577,7 +583,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v29)', mig.v === 29, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v30)', mig.v === 30, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -683,10 +689,14 @@ function startServer() {
     const me = S.teamId;
     const tgt = S.recruiting.pool.find(r => r.stars === 4 && r.iv[me] == null);
     offerRecruit(tgt);
-    scoutRecruit(tgt); visitRecruit(tgt); promiseRecruit(tgt, 'playingTime');   // maximal push
     let guard = 0;
     while (S.phase === 'Regular Season' && guard++ < 40) {
-      while (S.recruiting.points >= RECRUIT_COSTS.pitch) pitchRecruit(tgt, tgt.prefs[0]);  // pitch their top angle
+      // Phase 33: queue one action per week on the target — it resolves on advance (maximal push)
+      if (tgt.committedTo !== me) {
+        if (!tgt.promise) setRecIntent(tgt, 'promise', { type: 'playingTime' });
+        else if (!tgt.visited) setRecIntent(tgt, 'visit');
+        else setRecIntent(tgt, 'pitch', { angle: tgt.prefs[0] });
+      }
       advanceWeek();
     }
     const committed = S.recruiting.pool.filter(r => r.committedTo).length;
@@ -1010,7 +1020,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 29', roPost.version === 29, 'v' + roPost.version);
+  check('Rollover: save version bumped to 30', roPost.version === 30, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);
@@ -1147,7 +1157,7 @@ function startServer() {
     S.recruiting.points = 50;                             // ensure points to spend
     const before = Math.round(rec.iv[S.teamId] || 0), appBefore = t.legends[0].app;
     const avail = availableLegends(rec).length;
-    const ok = alumniVisit(rec, t.legends[0]);
+    const ok = setRecIntent(rec, 'alumni', { legend: t.legends[0] }); applyPlayerIntents();   // Phase 33: queue + resolve
     const after = Math.round(rec.iv[S.teamId] || 0);
     // aura: recruitFit on an unsaturated scenario (mid prestige vs a 4★) — with vs without the ring
     const probe = { stars: 4, pos: 'WR', st: 'XX', prefs: [] };

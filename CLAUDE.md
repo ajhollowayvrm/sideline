@@ -438,6 +438,31 @@ plain static files so Pages still serves it with zero config.
   camp screen opens before rollover, a grueling camp applies + boosts dev + opens the room worn down, camp is
   spent at kickoff). See "Phase 32 design — training camp" below. *(Open polish: a position-group focus + an
   AI camp model — left out deliberately to keep it lean.)*
+- **Phase 33 — Recruiting rework (intent queue + scouting facility + AI brain).** ✅ DONE. Recruiting moved
+  from **immediate-apply** actions to a **set-an-intent → resolve-at-the-week-change** model, and the AI
+  finally takes **discrete weekly actions** of its own. A new **`fac.scouting`** facility (1–10, upgradable
+  like the others) drives the weekly point budget (`weeklyPoints` is now scouting-keyed, not prestige — base
+  + `scouting*1.6` + the coach-archetype term, so Recruiter still matters). Each week the player **sets one
+  queued action per recruit** (`S.recruiting.intents`, keyed by recruit id — scout/pitch/visit/promise/alumni;
+  `setRecIntent` **reserves** points up front and captures the action's full effect at set-time incl. the
+  game-day visit bonus + coach mods; a second action on the same recruit **replaces** the first; `clearRecIntent`
+  refunds). At the week change `applyPlayerIntents` lands every queued action, **then** the engine's AI brain
+  acts, **then** interest is recomputed and commitments resolve — so a recruit's new interest takes the whole
+  competitive field into account at once. **AI recruiting brain** (in the fenced `RECRUIT ENGINE`,
+  `advanceRecruiting` gained a `playerTeamId` param that skips the human's team): each AI program gets a weekly
+  budget from its **scouting facility** (`aiBudget`) and spends it on a few **priority** targets (`aiPriority`
+  — fit × traction × need), a concentrated `aiActionGain` push — so a rival pouring resources into a kid shows
+  as a visible interest spike, and a strong-scouting program out-recruits an equal-prestige rival. The AI is a
+  **no-op on the finalize (Signing Day) pass** and on the player's own team, so convergence/cap/decommit
+  behaviour is preserved (cycle still ~92% signed). UI: the recruit-sheet action rail now **sets/replaces a
+  queued intent** (selected action highlighted, ✓), a "This week's plan" card (`planCard`) lists every queued
+  action + points reserved with clear buttons, the board row shows a ⏳ chip, the Home card shows a queued
+  count, and the Program/Team-browser facility lists gained a **Scouting** bar + upgrade. Save **v30**
+  (per-team `fac.scouting`, `S.recruiting.intents`; `migrateState` v29→v30 backfills both); `reclab` → 29
+  (AI concentrated effort, the scouting-budget head-to-head, budget scales with the facility), `qa` → 256
+  (intent queues/replaces/resolves, scouting drives the budget). See "Phase 33 design — recruiting rework"
+  below. *(Open polish: a "use a special to take two actions on one recruit" perk + an AI scout-action for
+  fog — left out of v1 deliberately.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1621,6 +1646,83 @@ multi-stage camp (install vs. conditioning). The first two are the obvious next 
 
 ---
 
+## Phase 33 design — recruiting rework (intent queue + scouting facility + AI brain)
+
+Decided 2026-06-29 with AJ. The Phase 4 loop applied recruiting actions **immediately** (click pitch →
+interest jumps now) and the AI only did **flat passive growth** on every suitor. AJ's reframe: each week you
+have a points budget from your **scouting facilities**, you **set an intended action** on a recruit (one per
+recruit/week, barring a special), and at the **week change** the game calculates **all** the actions toward
+that recruit — yours *and* every AI program's — and recomputes his interest, so the resolution sees the whole
+competitive picture at once. Two forks settled up front: points are driven by a **new `fac.scouting`
+facility** (not prestige), and the AI takes **discrete weekly actions** (a real recruiting brain), not just
+passive growth.
+
+### The hard constraints (what could NOT move)
+The fenced `RECRUIT ENGINE` is lab-validated (`reclab`) for **convergence** (~92% sign by Signing Day), a
+**class cap**, **prestige sensitivity**, **decommits**, and **determinism**. The rework had to preserve all
+of that. So the engine change is **additive**: passive growth stays exactly as-is (the convergence machinery
+is untouched), and the AI brain layers a *concentrated* push on top. The player's actions stay in the **app**
+(reusing the existing tuned pitch/visit/promise/alumni/scout effect math) and are applied to `iv` **before**
+the engine runs each week, so the engine only had to learn (a) AI discrete actions and (b) to skip the
+human's team.
+
+### The scouting facility (drives the budget — both sides)
+- New `fac.scouting` (1–10) — generated in `genWorld` scaled by prestige (like stadium/strength), upgradable
+  via the existing `facilityUpgradeCost`/`applyFacilityUpgrade` path (`FAC_BASE.scouting`), shown on the
+  Program facility list + the team-browser, in the import schema/template, and backfilled by the v29→v30
+  migration (`clamp(round(prestige/11),1,10)`).
+- `weeklyPoints()` = `max(4, round(REC.BASE_POINTS + scouting*1.6 + coachMods.points))` — scouting-dominant,
+  the prestige term **removed**, the coach-archetype term kept so **Recruiter** still matters. `REC.BASE_POINTS`
+  dropped 12→6 so scouting carries the budget.
+
+### The intent queue (player side — app layer)
+- `S.recruiting.intents = { [recruitId]: { action, angle?/legendId?, cost, gain?/scoutDelta?, label } }`.
+- `setRecIntent(rec, action, opt)` validates (on board, not signed/committed-to-you, once-flags for
+  visit/promise/alumni), **reserves** the point cost up front, and **captures the full effect at set-time**
+  (so the **game-day visit bonus** + coach mods are locked in even though the game is played before the week
+  resolves). A second action on the same recruit **replaces** the first (refund-then-charge). `clearRecIntent`
+  refunds. `RECRUIT_COSTS` unchanged (scout 2 / pitch 3 / visit 5 / promise 4 / alumni 4; offer is still a
+  free board slot).
+- `applyPlayerIntents()` lands every queued intent (bump interest / sharpen scouting / set the once-flag /
+  spend a legend appearance), then clears the queue. Called at the in-season week change (`resolveRecruitingWeek`,
+  before `advanceRecruiting`) **and** at National Signing Day (before the finalize pass), so a final-push intent
+  still counts. The Early Signing Period clears the queue when it grants the push budget.
+
+### The AI recruiting brain (engine — `advanceRecruiting`)
+`advanceRecruiting(... , playerTeamId)` — after passive growth, a new **1.5) concentrated-effort** pass (only
+when `!finalize`): bucket the pool by suitor (skipping `playerTeamId`), then for each AI team spend an
+`aiBudget(team)` (`REC.AI_BASE + scouting*REC.AI_PER`, `REC.AI_COST` per action; fac-less lab teams default to
+5) on its highest-`aiPriority` targets (`fit*12 + traction*0.12 + need`), each a deterministic `aiActionGain`
+push. It chases the **uncommitted + rivals' flippable verbals** (never its own verbal — passive growth defends
+those). The AI is a literal **no-op on the finalize pass and on the player's team**, so the validated envelope
+(convergence/cap/decommit) holds; a limited budget spread thinly across a big board keeps it from
+over-committing (the decommit "small gap doesn't flip" scenario still holds because each AI team only acts on a
+few recruits/week).
+
+### UI
+The recruit-sheet action rail now **sets/replaces a queued intent** instead of applying immediately (the
+selected action is highlighted with a ✓; pitch/alumni still open their angle/legend picker, which queues). A
+**"This week's plan"** card (`planCard`) on the recruiting view lists every queued action + the points reserved,
+each with a clear (✕) button; the board row shows a **⏳ <action>** chip; the Home recruiting card shows a
+**⏳ N queued** count.
+
+### Save & validation
+Save **v30** (per-team `fac.scouting`, `S.recruiting.intents`; `migrateState` v29→v30 backfills the scouting
+level from prestige + an empty intent queue). `reclab` → 29 (the AI concentrated effort doesn't break
+convergence/cap/decommits; a **better-scouting program out-recruits an equal-prestige rival** 22→2 of 24
+head-to-head; the AI weekly budget scales with the facility). `qa` → 256 (scouting drives the budget; setting
+Scout queues + reserves; a later action replaces it — one per recruit/week; resolving applies the queued action
+and clears the queue; the full season cycle still ends in verbals). **Fifteen gates** (Phase 33 extends `reclab`
++ `qa`).
+
+### Deliberately out of scope (v1)
+The **"use a special to take two actions on one recruit"** perk (AJ's parenthetical) is deferred — v1 is a
+strict one-intent-per-recruit. The AI brain only does interest-pushing actions (no AI **scout** action, since
+AI has no fog to clear), and the player's actions still run through the app (the engine doesn't model pitch
+angles for the AI). No per-recruit signing calendar beyond the existing Early/National periods.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -2080,7 +2182,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   innate-per-id → no save column); v25→v26 is a no-op (Phase 22 play-calling — a game's optional `g.calls`,
   the coach's recorded play calls, is absent-safe → absent reads as a pure AI game); v28→v29 is a structural
   no-op (Phase 32 training camp — `S.camp` is set in the offseason + cleared at kickoff, so absent reads as
-  "no camp chosen yet"). Each step re-derives ratings/ranks where needed.
+  "no camp chosen yet"); v29→v30 backfills per-team `fac.scouting` (from prestige) + `S.recruiting.intents={}`
+  (Phase 33 recruiting rework — the scouting facility drives the weekly point budget/AI recruiting budget, and
+  the intent queue holds the week's set-but-unresolved actions). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -2110,7 +2214,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
   weeklyHonors: [ ... ],         // Player-of-the-Week log (Phase 3.5)
-  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14)
+  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage, intents } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14); intents = {recruitId:{action,...,cost,label}} = this week's QUEUED actions, resolved at the week change (Phase 33)
   offseasonReport: { year, graduated, tracked, freshmen, departed } | undefined,  // last rollover recap (Phase 5)
   world: { teams: [ Team, ... ] }
 }
@@ -2143,7 +2247,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   offScheme, defScheme,                // the schemes the team runs (Phase 21); mutable — installed at takeover / from Program. Folded into simSides (matchup edge + roster fit + coach buy-in), never into the pure simEngine.
   roster: [Player],
   ratings: { off, def, ovr },          // derived from roster + staff boosts
-  fac: { stadium, strength, training, academics, nil },  // 1..10
+  fac: { stadium, strength, training, academics, nil, scouting },  // 1..10 (scouting drives recruiting points/AI budget — Phase 33)
   revenue, budget, payroll, facilityDebt,
   staff: [ { role, title, name, rating, salary, years,
              tier, scope, groups, boost } ],

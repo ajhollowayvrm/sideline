@@ -213,6 +213,28 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('Decommit: flips are deterministic by seed', d1 === d2 && d1.length > 0);
 })();
 
+/* 9) scouting facility (Phase 33): the AI recruiting brain spends a budget scaled by fac.scouting, so
+   a program with a strong scouting facility out-recruits an otherwise-identical program with a weak one. */
+(function () {
+  // Controlled head-to-head: two rivals with IDENTICAL prestige/fit but different scouting facilities
+  // contest the same recruits. The better-scouting program spends more concentrated weekly actions, so
+  // it should land more of the shared board — the budget is the only difference.
+  const A = { id: 'A', prestige: 60, fac: { scouting: 1 } };
+  const B = { id: 'B', prestige: 60, fac: { scouting: 10 } };
+  const pool = [];
+  for (let i = 0; i < 24; i++) pool.push({
+    id: 's' + i, pos: 'WR', st: 'TX', stars: 3, iv: { A: 30, B: 30 },
+    committedTo: null, signed: false
+  });
+  for (let w = 1; w <= 15; w++) advanceRecruiting(pool, [A, B], w, 15, 71, w === 15);
+  const toA = pool.filter(r => r.committedTo === 'A').length, toB = pool.filter(r => r.committedTo === 'B').length;
+  check('Scouting facility matters: better scouting out-recruits an equal-prestige rival', toB > toA, `fac10 ${toB} vs fac1 ${toA} of 24`);
+  // budget scales monotonically with the facility level
+  const a = (function () { const t = { id: 'x', fac: { scouting: 2 } }; return Math.round(eval('aiBudget')(t)); })();
+  const b = (function () { const t = { id: 'x', fac: { scouting: 9 } }; return Math.round(eval('aiBudget')(t)); })();
+  check('AI weekly budget grows with the scouting facility', b > a, `fac2 ${a} vs fac9 ${b} pts`);
+})();
+
 const passed = results.filter(r => r.pass).length;
 const summary = runCycle(2026);
 const signedPct = (100 * summary.pool.filter(r => r.signed).length / summary.pool.length).toFixed(0);
