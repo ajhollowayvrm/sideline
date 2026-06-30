@@ -471,23 +471,37 @@ function startServer() {
   await page.waitForTimeout(150);
   const afterOffer = await page.evaluate(id => { const r = S.recruiting.pool.find(x => x.id === id); return { board: S.recruiting.board.includes(id), iv: r.iv[S.teamId] || 0 }; }, tgt.id);
   check('Recruiting: offer adds to board + sets a starting interest', afterOffer.board && afterOffer.iv > 0, JSON.stringify(afterOffer));
-  // Phase 33: actions now QUEUE an intent (reserve points) and resolve at the week change.
-  const ptsBeforeScout = await page.evaluate(() => S.recruiting.points);
+  // Phase 33/35: actions QUEUE into an ARRAY (reserve points) and resolve at the week change; a 2nd action on
+  // the same recruit uses a weekly DOUBLE-DOWN token (ensure one is available for the test).
+  const ptsBeforeScout = await page.evaluate(() => { S.recruiting.doubles = 1; return S.recruiting.points; });
   await page.locator('[data-tid="rec-scout"]').click();
   await page.waitForTimeout(150);
-  const afterScout = await page.evaluate(id => ({ intent: (S.recruiting.intents[id] || {}).action, pts: S.recruiting.points }), tgt.id);
-  check('Recruiting: setting Scout queues an intent and reserves points', afterScout.intent === 'scout' && afterScout.pts < ptsBeforeScout, JSON.stringify(afterScout));
-  // pitch on the SAME recruit — one action per recruit/week, so it REPLACES the scout intent
+  const afterScout = await page.evaluate(id => ({ first: (S.recruiting.intents[id] || [])[0] && S.recruiting.intents[id][0].action, n: (S.recruiting.intents[id] || []).length, pts: S.recruiting.points }), tgt.id);
+  check('Recruiting: setting Scout queues an intent and reserves points', afterScout.first === 'scout' && afterScout.n === 1 && afterScout.pts < ptsBeforeScout, JSON.stringify(afterScout));
+  // pitch on the SAME recruit — with a double-down available it STACKS as a 2nd action (Phase 35)
   await page.locator('[data-tid="rec-pitch"]').click();
   await page.waitForTimeout(150);
   check('Recruiting: pitch angle picker opens', await page.locator('[data-tid^="pitch-"]').first().isVisible());
   await page.locator('[data-tid^="pitch-"]').first().click();
   await page.waitForTimeout(150);
-  const afterPitch = await page.evaluate(id => ({ intent: (S.recruiting.intents[id] || {}).action, n: Object.keys(S.recruiting.intents).length }), tgt.id);
-  check('Recruiting: a later action replaces the first (one queued action per recruit/week)', afterPitch.intent === 'pitch' && afterPitch.n === 1, JSON.stringify(afterPitch));
-  // resolving the week applies the queued pitch (interest rises) and clears the queue
-  const resolved = await page.evaluate(id => { const iv0 = S.recruiting.pool.find(x => x.id === id).iv[S.teamId] || 0; applyPlayerIntents(); const r = S.recruiting.pool.find(x => x.id === id); return { iv0, iv1: r.iv[S.teamId] || 0, cleared: Object.keys(S.recruiting.intents).length }; }, tgt.id);
-  check('Recruiting: resolving applies the queued action (interest rises, queue clears)', resolved.iv1 > resolved.iv0 && resolved.cleared === 0, JSON.stringify(resolved));
+  const afterPitch = await page.evaluate(id => ({ actions: (S.recruiting.intents[id] || []).map(x => x.action), doubles: S.recruiting.doubles }), tgt.id);
+  check('Recruiting: a double-down stacks a 2nd action on one recruit', afterPitch.actions.length === 2 && afterPitch.actions.includes('scout') && afterPitch.actions.includes('pitch') && afterPitch.doubles === 0, JSON.stringify(afterPitch));
+  // resolving the week applies BOTH queued actions (interest rises, scouting sharpens) and clears the queue
+  const resolved = await page.evaluate(id => { const r0 = S.recruiting.pool.find(x => x.id === id); const iv0 = r0.iv[S.teamId] || 0, sc0 = r0.scout; applyPlayerIntents(); const r = S.recruiting.pool.find(x => x.id === id); return { iv0, iv1: r.iv[S.teamId] || 0, sc0, sc1: r.scout, cleared: Object.keys(S.recruiting.intents).length }; }, tgt.id);
+  check('Recruiting: resolving applies the queued actions (interest + scouting rise, queue clears)', resolved.iv1 > resolved.iv0 && resolved.sc1 > resolved.sc0 && resolved.cleared === 0, JSON.stringify(resolved));
+  // Phase 35: weekly scarcity (official-visit cap) + decay-on-neglect
+  const p35 = await page.evaluate(() => {
+    const me = S.teamId, R = S.recruiting; R.intents = {}; R.points = 99; R.doubles = 0;
+    const cands = R.pool.filter(r => !r.committedTo && !r.signed && r.iv[me] == null && !r.visited).slice(0, 4);
+    cands.forEach(r => { if (!R.board.includes(r.id)) offerRecruit(r); });
+    cands.forEach(r => setRecIntent(r, 'visit'));            // try to queue more visits than the weekly cap
+    const cap = visitCap(), visitsQueued = queuedVisits();
+    R.intents = {};                                          // now test decay on a neglected board recruit
+    const nr = cands[0]; nr.iv[me] = 50; const before = nr.iv[me]; decayNeglect(new Set()); const after = nr.iv[me];
+    return { cap, visitsQueued, decayBefore: before, decayAfter: after };
+  });
+  check('Phase 35: official visits are capped per week', p35.visitsQueued === p35.cap, `${p35.visitsQueued} queued, cap ${p35.cap}`);
+  check('Phase 35: a neglected board recruit cools on you (decay)', p35.decayAfter < p35.decayBefore, `${p35.decayBefore}→${p35.decayAfter}`);
   await page.locator('[data-tid="sheet-bg"]').click({ position: { x: 5, y: 5 } }).catch(() => {});
   await page.waitForTimeout(100);
   // board now shows the offered target
@@ -566,7 +580,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 30 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 31 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -583,7 +597,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v30)', mig.v === 30, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v31)', mig.v === 31, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -689,7 +703,7 @@ function startServer() {
     const me = S.teamId;
     const tgt = S.recruiting.pool.find(r => r.stars === 4 && r.iv[me] == null);
     offerRecruit(tgt);
-    let guard = 0, repSeen = 0, repTonesAllOk = true;   // Phase 34: track the weekly report across the season
+    let guard = 0, repSeen = 0, repTonesAllOk = true, windowSeen = false;   // Phase 34/35: report + decision windows
     while (S.phase === 'Regular Season' && guard++ < 40) {
       // Phase 33: queue one action per week on the target — it resolves on advance (maximal push)
       if (tgt.committedTo !== me) {
@@ -700,6 +714,7 @@ function startServer() {
       advanceWeek();
       const rr = S.recruiting && S.recruiting.report && S.recruiting.report.reactions;
       if (rr) { repSeen = Math.max(repSeen, rr.length); if (!rr.every(x => x.text && ['good', 'bad', 'warn', 'neutral'].includes(x.tone))) repTonesAllOk = false; }
+      if (!windowSeen && S.recruiting.pool.some(r => r.decideWeek != null)) windowSeen = true;   // Phase 35
     }
     const committed = S.recruiting.pool.filter(r => r.committedTo).length;
     const signedNow = S.recruiting.pool.filter(r => r.signed).length;
@@ -709,11 +724,12 @@ function startServer() {
     const aiScoutedFives = fives.length ? fives.reduce((a, r) => a + r.scout, 0) / fives.length : 0;
     // Phase 34: the weekly board report — built at each in-season week's resolution (max seen over the season)
     return { signed: S.recruiting.signed, stage: S.recruiting.stage, phase: S.phase, committed, signedNow, mine, tgtMine: tgt.committedTo === me, rank: myClassRank(),
-      champPhase: S.phase, champGames: S.champWeek ? S.champWeek.games.length : 0, aiScoutedFives, repSeen, repTonesAllOk };
+      champPhase: S.phase, champGames: S.champWeek ? S.champWeek.games.length : 0, aiScoutedFives, repSeen, repTonesAllOk, windowSeen };
   });
   check('Phase 14: season ends with VERBAL commits, class not yet signed', !cycle.signed && cycle.stage === 'open' && cycle.signedNow === 0 && cycle.champPhase === 'Conference Championships', `stage ${cycle.stage}, signed ${cycle.signedNow}`);
   check('Phase 33: the AI scout action evaluates blue-chips over a season (shared read rises)', cycle.aiScoutedFives > 10, `5★ avg scout ${cycle.aiScoutedFives.toFixed(0)}`);
   check('Phase 34: a weekly board report is generated with readable reactions', cycle.repSeen > 0 && cycle.repTonesAllOk, `max ${cycle.repSeen} reactions/week`);
+  check('Phase 35: blue-chips open a commitment window (decision date) during the season', cycle.windowSeen);
   // the report card renders from a report with reactions (stage is still 'open' post-cycle)
   const repRendered = await page.evaluate(() => {
     const rid = (S.recruiting.board[0]) || S.recruiting.pool[0].id, rec = S.recruiting.pool.find(r => r.id === rid);
@@ -1037,7 +1053,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 30', roPost.version === 30, 'v' + roPost.version);
+  check('Rollover: save version bumped to 31', roPost.version === 31, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);

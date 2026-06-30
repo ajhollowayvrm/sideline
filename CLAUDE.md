@@ -486,9 +486,32 @@ plain static files so Pages still serves it with zero config.
   recreated-at-kickoff `S.recruiting` (absent-safe). `reclab` → 44 (the reaction ladder: commit→good, flip→bad,
   rival-surge→warn, pref-matched pitch→good, off-priority→neutral, decisive events outrank your action, always
   returns text + a known tone), `qa` → 259 (a weekly report is generated with readable reactions over a season;
-  the report card renders). See "Phase 34 design — recruiting legibility" below. *(Next legibility/feel ideas,
-  not yet built: season results rippling into weekly recruiting + commitment-date windows; weekly action
-  scarcity (capped visits, the double-down special, diminishing returns); interest decay-on-neglect.)*
+  the report card renders). See "Phase 34 design — recruiting legibility" below.
+- **Phase 35 — Week-to-week recruiting depth (drama + scarcity + upkeep).** ✅ DONE. The remaining "improve
+  recruiting week to week" ideas, shipped as one batch on top of the Phase 33/34 loop. **(1) Season ripple** —
+  your Saturday result energizes or cools your board: pure `gameRecruitVibe(my,opp,myRank,oppRank)` (a ranked
+  statement win is huge, a blowout loss stings, bounded −6..+9) is applied app-side (`applyGameRipple`) to your
+  board's interest, **in-state recruits most**, with a one-line note on the weekly report. **(2) Commitment
+  windows** — a blue-chip (4★+) who's ready first **announces a decision a week out** (`rec.decideWeek`, set in
+  the fenced commit pass instead of committing) and then **commits to whoever leads when the window elapses** —
+  so a rival (or you) can still make a final push; the finalize pass commits any pending window. **(3) Weekly
+  scarcity** — the intent queue is now an **array of ≤2 actions per recruit**: a weekly **double-down** token
+  (`R.doubles`, +1 for a Recruiter) lets you stack a 2nd action on one kid (else a 2nd action replaces the
+  first); **official visits are capped** per week (`visitCap`, 1 / 2 for a Recruiter); and **diminishing
+  returns** (`repeatFalloff`) tax spamming the *same* pitch on a recruit (`rec.hits`), rewarding variety.
+  **(4) Decay-on-neglect** — a board recruit you don't work that week **cools on you** (`decayNeglect`, player-
+  only; your own verbals decay too, so neglect risks a flip — pairs with Phase 16 decommits). All four are
+  **player-only or envelope-neutral**: the season ripple + decay touch only *your* interest, and the commitment
+  windows just delay/announce a commit the engine would make anyway, so `reclab` convergence holds (~90% signed).
+  UI: the action rail toggles actions (✓), shows the double-down/visit-cap readout, and flags a recruit's
+  decision date; the report surfaces the ripple note + a "🗓️ announced his decision Week N" reaction; the
+  board row shows a 🗓️ window chip. Save **v31** (`S.recruiting.intents` arrays + `S.recruiting.doubles`;
+  sparse `rec.decideWeek`/`rec.hits` ride in the columnar side-object — `migrateState` v30→v31 converts old
+  single intents to arrays + backfills `doubles`). `reclab` → 53 (windows announce/resolve + still converge,
+  the tail never windows; `gameRecruitVibe` ordering/bounds; `repeatFalloff` monotonic), `qa` → 262 (double-down
+  stacks a 2nd action; the visit cap holds; decay cools a neglected recruit; a window opens over a season). See
+  "Phase 35 design — week-to-week recruiting depth" below. *(Open polish: an AI that also schedules visits /
+  reacts to its own results; a recruit who picks a top-N finalist list.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1816,6 +1839,66 @@ part of this pass.
 
 ---
 
+## Phase 35 design — week-to-week recruiting depth (drama + scarcity + upkeep)
+
+Decided 2026-06-30 with AJ — "implement all of your week-to-week recruiting ideas." The four remaining items
+from the Phase 34 list, built as one batch. The governing constraint (as always): the fenced RECRUIT ENGINE is
+`reclab`-validated for convergence/cap/decommits, so anything that could move those is either **player-only**
+(the AI/league dynamics are untouched) or **envelope-neutral by construction**.
+
+### (1) Season ripple — your Saturday matters to recruits
+Pure `gameRecruitVibe(my,opp,myRank,oppRank)` (in the RECRUIT block): a signed interest nudge from the
+controlled team's result — a **ranked statement win** is the biggest boost, a **blowout loss** stings, bounded
+to [−6, +9]. The app (`applyGameRipple`, in `resolveRecruitingWeek` after the game is simmed) reads the
+controlled team's game that week and applies the vibe to **your board's** interest, scaled by proximity
+(**in-state recruits feel it ~2× the out-of-state**). Player-only (only `rec.iv[me]` moves), so the league
+envelope is untouched. Surfaced as a one-line **note** on the weekly report ("📈 Your win over ABC energized
+your board").
+
+### (2) Commitment windows — a decision date, with one last push
+In the fenced commit pass: when a **blue-chip (4★+)** first passes the readiness/threshold/roll to commit
+(mid-season), instead of committing he **announces a decision a week out** (`rec.decideWeek = week+1`). When the
+window elapses (`week ≥ decideWeek`, checked *before* the threshold gate so a cooled recruit still decides) he
+**commits to whoever LEADS then** — so a rival or the player can flip the race during the window. The finalize
+(Signing Day) pass commits any pending window immediately. Envelope-neutral: it only **delays/announces** a
+commit the engine would have made, consuming no extra rng (the commit roll already happened), and the **2★/3★
+tail never windows** — so `reclab` convergence holds (~90%). The report calls it out ("🗓️ Announced his
+decision — commits Week N (you lead!)"), and the board row + recruit sheet show the date.
+
+### (3) Weekly scarcity — the choice is now a tradeoff
+The intent queue (`S.recruiting.intents[recId]`) became an **array of ≤2 actions**:
+- **Double-down** (`R.doubles`, granted weekly, +1 for a **Recruiter**) — a token that lets you stack a **2nd
+  action** on one recruit (e.g. scout *and* pitch the same week). Without a token, a 2nd action **replaces** the
+  first (the old one-per-recruit rule). `setRecIntent` is now a **toggle** (clicking a queued action removes it,
+  refunding points + the token if it was the stacked 2nd).
+- **Official-visit cap** (`visitCap`, 1 / 2 for a Recruiter) — you can only host so many visits per week across
+  the whole board, so you choose *who* to bring in (NCAA-realistic), independent of points.
+- **Diminishing returns** (`repeatFalloff(n)`, pure) — repeating the **same pitch** on a recruit pays less each
+  time (tracked on `rec.hits`), so varying your approach beats spamming one angle.
+
+### (4) Decay-on-neglect — relationships need upkeep
+`decayNeglect(actedOn)` (app, player-only): a board recruit you **didn't work that week** cools on you a little
+(`REC.NEGLECT_DECAY`, roughly cancelling a week's passive growth, so a neglected target stagnates while active
+rivals climb). Skips recruits committed elsewhere (not your relationship to keep), but **your own verbals decay
+too** — neglect one and a rival can flip him (pairs with the Phase 16 decommit logic). Player-only, so the
+engine envelope is untouched.
+
+### Save & validation
+Save **v31** — `S.recruiting.intents` values are now arrays + `S.recruiting.doubles`; sparse `rec.decideWeek`
+and `rec.hits` ride in the columnar pool's per-recruit side-object (auto-persisted, no codec change).
+`migrateState` v30→v31 converts any old single-object intents to arrays + backfills `doubles`. `reclab` → 53
+(windows announce + resolve + still converge, tail never windows; `gameRecruitVibe` ordering + bounds;
+`repeatFalloff` monotonic/floored), `qa` → 262 (a double-down stacks a 2nd action; the visit cap holds; decay
+cools a neglected recruit; a commitment window opens over a season). **Fifteen gates** (Phase 35 extends
+`reclab` + `qa`).
+
+### Deliberately out of scope (this batch)
+The AI doesn't schedule visits or react to its *own* results (its weekly effort is still the Phase 33 budget +
+the Phase 33 scout action). No top-N **finalist list** per recruit, no NIL bidding, no per-recruit official-
+visit *calendar* beyond the weekly cap. These are the obvious next polish if the loop proves fun.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -2277,7 +2360,10 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   no-op (Phase 32 training camp — `S.camp` is set in the offseason + cleared at kickoff, so absent reads as
   "no camp chosen yet"); v29→v30 backfills per-team `fac.scouting` (from prestige) + `S.recruiting.intents={}`
   (Phase 33 recruiting rework — the scouting facility drives the weekly point budget/AI recruiting budget, and
-  the intent queue holds the week's set-but-unresolved actions). Each step re-derives ratings/ranks where needed.
+  the intent queue holds the week's set-but-unresolved actions); v30→v31 converts `S.recruiting.intents` values
+  from single objects to **arrays** (≤2 actions/recruit via the Phase 35 double-down) + backfills
+  `S.recruiting.doubles` (sparse `rec.decideWeek`/`rec.hits` ride in the columnar pool side-object, absent-safe).
+  Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -2307,13 +2393,15 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
   weeklyHonors: [ ... ],         // Player-of-the-Week log (Phase 3.5)
-  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage, intents, report } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14); intents = {recruitId:{action,...,cost,label}} = this week's QUEUED actions, resolved at the week change (Phase 33); report = {week, reactions:[…]} = last week's board report, transient/rebuilt each week (Phase 34)
+  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage, intents, doubles, report } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14); intents = {recruitId:[{action,...,cost,label,isDouble?}]} = this week's QUEUED actions (≤2/recruit), resolved at the week change (Phase 33/35); doubles = weekly double-down tokens (Phase 35); report = {week, reactions:[…], note} = last week's board report, transient/rebuilt each week (Phase 34/35)
   offseasonReport: { year, graduated, tracked, freshmen, departed } | undefined,  // last rollover recap (Phase 5)
   world: { teams: [ Team, ... ] }
 }
 
 // Recruit: { id, fn, ln, pos, st, stars, ov, pot, spd,str,awr, mot,comp, rebel, scout, prefs:[primary,secondary],
-//   iv:{ [teamId]: interest }, committedTo: teamId|null, signed, offered, visited, promise, alumni?, _flipped? }
+//   iv:{ [teamId]: interest }, committedTo: teamId|null, signed, offered, visited, promise, alumni?, decideWeek?, hits?, _flipped? }
+//   decideWeek = a blue-chip's announced commitment week — he commits to the leader then (Phase 35 window).
+//   hits = {action:count} of the player's repeated actions on him (Phase 35 diminishing returns). Both sparse.
 //   alumni = id of the legend who already made an alumni visit (Phase 11; one per recruit, no stacking).
 //   rebel = wants to be THE guy; repelled by a program that's a factory at his position (Phase 13).
 //   committedTo set + signed=false = a VERBAL (flippable until Signing Day); _flipped={from,to} is a

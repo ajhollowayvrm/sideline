@@ -788,7 +788,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:30,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:31,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -1001,6 +1001,13 @@ function migrateState(state){
       if(t.fac&&t.fac.scouting==null)t.fac.scouting=clamp(Math.round((t.prestige||50)/11),1,10);});  // team,
     if(state.recruiting&&!state.recruiting.intents)state.recruiting.intents={};  // + the weekly intent queue.
     state.version=30;
+  }
+  if((state.version||1)<31){           // Phase 35: week-to-week depth. The intent queue now holds an ARRAY of
+    if(state.recruiting){              // ≤2 actions per recruit (double-down); convert any old single intents,
+      const I=state.recruiting.intents;if(I)for(const k in I){if(!Array.isArray(I[k]))I[k]=[I[k]];}
+      if(state.recruiting.doubles==null)state.recruiting.doubles=1;   // + a weekly double-down token (re-granted)
+    }
+    state.version=31;                  // (decideWeek / rec.hits ride sparsely on recruits — absent-safe)
   }
   return state;
 }
@@ -1427,7 +1434,7 @@ const PITCH_ANGLES=[
 // Phase 33: BASE_POINTS is now a small floor; the weekly budget is dominated by the scouting facility
 // (see weeklyPoints / aiBudget). AI_* drive the AI recruiting brain's concentrated weekly effort.
 const REC={POOL:3400,COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:16,DECOMMIT_GAP:18,
-  AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.3};
+  AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.3,NEGLECT_DECAY:3.5};
 
 // Coach archetype/history effects — Phase 4 is the first system to apply them. Returns a bag of
 // multipliers/bonuses used by the weekly economy + the player's recruiting actions.
@@ -1537,6 +1544,19 @@ function aiActionGain(team,rec,r){const fit=recruitFit(team,rec);return (4+fit*6
 // is raised by ANYONE scouting (player intent or the AI brain), so heavily-recruited blue-chips become
 // well-known to everyone while the deep tail stays foggy (the player's scouting edge).
 function recScoutMult(rec){return 1+0.3*((rec.scout||0)/100);}
+// Phase 35 — season ripple: your Saturday result energizes (or cools) your board. Pure: returns a signed
+// base interest nudge from the controlled team's game (a ranked win is huge; a blowout loss stings). The app
+// scales it by proximity (in-state recruits feel it more) and applies it to your board. Bounded.
+function gameRecruitVibe(my,opp,myRank,oppRank){
+  if(my==null||opp==null)return 0;
+  const win=my>opp, margin=Math.abs(my-opp); let v=win?3:-2;
+  if(win){if(oppRank&&oppRank<=25)v+=4; if(margin>=21)v+=2;}                    // beat a ranked team / a statement win
+  else{if(margin>=21)v-=3; if(myRank&&myRank<=25&&(!oppRank||oppRank>25))v-=2;} // blown out / ranked team upset
+  return clamp(v,-6,9);
+}
+// Phase 35 — diminishing returns: repeating the SAME action on the same recruit pays less, so it's better to
+// vary your approach than to spam one pitch. Pure: a falloff multiplier for the (n)th prior use of an action.
+function repeatFalloff(n){return clamp(1/(1+0.35*(n||0)),0.4,1);}
 // Priority: concentrate where the team fits well AND already has traction (and on positions it needs).
 function aiPriority(team,rec){const need=(team.needs&&team.needs[rec.pos])?6:0;
   return recruitFit(team,rec)*12+(rec.iv[team.id]||0)*0.12+need;}
@@ -1617,13 +1637,20 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
     let entries=Object.entries(rec.iv).filter(([tid])=>byId[tid]&&!full(tid)).sort((a,b)=>b[1]-a[1]);
     if(!entries.length)return;
     const [leadId,lead]=entries[0], second=entries[1]?entries[1][1]:0;
-    const commit=()=>{rec.committedTo=leadId;if(last)rec.signed=true;counts[leadId]=(counts[leadId]||0)+1;out.push(rec);};
+    const commit=()=>{rec.committedTo=leadId;if(last)rec.signed=true;counts[leadId]=(counts[leadId]||0)+1;if(rec.decideWeek!=null)delete rec.decideWeek;out.push(rec);};
+    // Phase 35 — commitment windows: a blue-chip who's READY first ANNOUNCES a decision a week out
+    // (rec.decideWeek). When the window elapses he commits to whoever LEADS then — so a rival (or you) can
+    // still make a final push during the window. The finalize pass commits any pending window immediately.
+    if(rec.decideWeek!=null){if(last||week>=rec.decideWeek)commit();return;}
     if(last){if(lead>=bar&&(lead-second)>=gap)commit();return;}   // toss-ups (small gap) wait for the next pass
     const patience=rec.stars===5?0.55:rec.stars===4?0.35:0.18;
     if(readiness<patience)return;
     if(lead>=REC.COMMIT_THRESH&&(lead-second)>=REC.LEAD_GAP){
       const prob=readiness*clamp((lead-REC.COMMIT_THRESH)/28,0.05,1);
-      if(r()<prob)commit();
+      if(r()<prob){
+        if(rec.stars>=4&&week<weeks-2)rec.decideWeek=week+1;   // announce; commits next week to the leader then
+        else commit();
+      }
     }
   });
   if(last)pool.forEach(rec=>{if(rec.committedTo)rec.signed=true;});   // every verbal becomes a signature
@@ -2917,7 +2944,7 @@ function earlySigningPeriod(){
   // The recruits who already KNOW where they're going — the verbal commitments — make it official now.
   // The still-undecided (the close two-way races) hold off for National Signing Day's drama.
   let n=0; R.pool.forEach(rec=>{if(rec.committedTo&&!rec.signed){rec.signed=true;n++;}});
-  R.stage='national'; R.earlySigned=n; R.intents={};
+  R.stage='national'; R.earlySigned=n; R.intents={}; R.doubles=doublesPerWeek();
   R.points=Math.round(weeklyPoints()*1.5);   // a final-push budget for the signing-day window
 }
 // National Signing Day: the undecided make their final call (sign with their leader, or go unsigned),
@@ -3367,21 +3394,29 @@ function weeklyPoints(){const t=controlled(),m=myMods();
 function boardSlots(){return Math.max(6,REC.SLOTS+myMods().slots);}
 function initRecruiting(){
   // stage: 'open' (in-season, taking verbals) → 'national' (offseason, ESP done, NSD pending) → 'closed'
-  // intents = the week's queued actions (Phase 33), keyed by recruit id; resolved at the week change.
-  S.recruiting={cycle:1,points:weeklyPoints(),pool:genRecruits(S.seed,S.world.teams),board:[],signed:false,stage:'open',intents:{},report:null};
+  // intents = the week's queued actions, keyed by recruit id → an ARRAY of ≤2 actions (Phase 35 double-down).
+  // doubles = this week's double-down tokens (Phase 35) that let one recruit hold a 2nd action.
+  S.recruiting={cycle:1,points:weeklyPoints(),pool:genRecruits(S.seed,S.world.teams),board:[],signed:false,stage:'open',intents:{},doubles:doublesPerWeek(),report:null};
 }
-function grantRecruitPoints(){if(S.recruiting&&!S.recruiting.signed)S.recruiting.points=weeklyPoints();}
+function grantRecruitPoints(){if(S.recruiting&&!S.recruiting.signed){S.recruiting.points=weeklyPoints();S.recruiting.doubles=doublesPerWeek();}}
+// Phase 35 — weekly scarcity caps. A Recruiter brings more (official visits are limited; double-downs let you
+// stack a 2nd action on one recruit). These make the weekly choice a real tradeoff, not "spend till broke".
+function visitCap(){return (S.coach&&S.coach.archetype==='Recruiter')?2:1;}
+function doublesPerWeek(){return (S.coach&&S.coach.archetype==='Recruiter')?2:1;}
 // Phase 34 (legibility): snapshot each board recruit's pre-resolution state (my interest/rank, the full
 // suitor interest map, and my queued intent) so the post-week report can diff what actually moved + why.
 function recruitPreSnaps(){
   const me=S.teamId, R=S.recruiting, I=R.intents||{};
-  return R.board.map(recById).filter(Boolean).map(rec=>({
-    id:rec.id, myIv:rec.iv[me]||0, rank:myRank(rec)||(suitorList(rec).length+1),
-    committedToMe:rec.committedTo===me, iv:Object.assign({},rec.iv),
-    intent:I[rec.id]?{action:I[rec.id].action,angle:I[rec.id].angle}:null}));
+  return R.board.map(recById).filter(Boolean).map(rec=>{
+    const arr=I[rec.id]||[], main=arr.find(x=>x.action!=='scout')||arr[0];   // the headline action (Phase 35 arrays)
+    return {id:rec.id, myIv:rec.iv[me]||0, rank:myRank(rec)||(suitorList(rec).length+1),
+      committedToMe:rec.committedTo===me, decideWeek:rec.decideWeek, iv:Object.assign({},rec.iv),
+      intent:main?{action:main.action,angle:main.angle}:null};
+  });
 }
 // Diff the snapshots against the resolved board into a readable weekly report (S.recruiting.report).
-function buildRecruitReport(snaps,week){
+// note = a board-wide headline (e.g. the season-result ripple). Phase 35 also reports decision announcements.
+function buildRecruitReport(snaps,week,note){
   const me=S.teamId, rows=[];
   snaps.forEach(s=>{
     const rec=recById(s.id); if(!rec)return;
@@ -3393,24 +3428,30 @@ function buildRecruitReport(snaps,week){
     const committedMine=rec.committedTo===me&&!s.committedToMe;
     const flippedAway=s.committedToMe&&rec.committedTo!==me;
     const flippedToMe=!!(rec._flipped&&rec._flipped.to===me);
+    const announced=rec.decideWeek!=null&&s.decideWeek==null&&!rec.committedTo;   // Phase 35: just set a decision date
     const it=s.intent, prefMatch=it&&it.action==='pitch'?(rec.prefs[0]===it.angle?0:rec.prefs[1]===it.angle?1:2):null;
-    const r=recruitReaction({action:it?it.action:null,angle:it&&it.angle,angleLabel:it&&it.angle?prefLabel(it.angle):'',
+    let r;
+    if(announced)r={text:'🗓️ Announced his decision — commits Week '+rec.decideWeek+(rankNow===1?' (you lead!)':rankNow?' (you’re #'+rankNow+')':''),tone:rankNow===1?'good':'warn'};
+    else r=recruitReaction({action:it?it.action:null,angle:it&&it.angle,angleLabel:it&&it.angle?prefLabel(it.angle):'',
       prefMatch,myDelta,rivalAbbr,rivalDelta,rivalLeads,rankNow,rankPrev:s.rank,nSuitors:sl.length,committedMine,flippedToMe,flippedAway});
     // surface a row if you acted on him, or something notable happened
-    if(!(it||committedMine||flippedAway||flippedToMe||rivalDelta>=10||Math.abs(myDelta)>=6))return;
-    const pri=(committedMine||flippedToMe)?0:flippedAway?0:r.tone==='warn'?1:r.tone==='good'?2:3;
+    if(!(it||committedMine||flippedAway||flippedToMe||announced||rivalDelta>=10||Math.abs(myDelta)>=6))return;
+    const pri=(committedMine||flippedToMe)?0:flippedAway?0:announced?0:r.tone==='warn'?1:r.tone==='good'?2:3;
     rows.push({id:rec.id,name:rec.fn+' '+rec.ln,pos:rec.pos,stars:rec.stars,text:r.text,tone:r.tone,myDelta,pri});
   });
   rows.sort((a,b)=>a.pri-b.pri||b.stars-a.stars||Math.abs(b.myDelta)-Math.abs(a.myDelta));
-  S.recruiting.report={week,reactions:rows.slice(0,10)};
+  S.recruiting.report={week,reactions:rows.slice(0,10),note:note||null};
 }
 function resolveRecruitingWeek(week){
   if(!S.recruiting||S.recruiting.signed)return [];
   const snaps=recruitPreSnaps();   // Phase 34: capture pre-resolution state for the weekly report
+  const actedOn=new Set();for(const id in (S.recruiting.intents||{}))actedOn.add(id);   // who you worked this week
   applyPlayerIntents();   // Phase 33: your queued actions land first, then the AI brain's, then commitments
+  decayNeglect(actedOn);            // Phase 35: board recruits you ignored cool on you (upkeep matters)
+  const rippleNote=applyGameRipple(week);   // Phase 35: your Saturday result energizes/cools your board
   // in-season: verbal commitments only (finalize=false) — binding signatures wait for the offseason
   const out=advanceRecruiting(S.recruiting.pool,S.world.teams,week,S.schedule.weeks,S.seed,false,undefined,undefined,S.teamId);
-  buildRecruitReport(snaps,week);   // Phase 34: diff into a readable board report
+  buildRecruitReport(snaps,week,rippleNote);   // Phase 34/35: diff into a readable board report (+ ripple note)
   const me=S.teamId;
   // Phase 16: a verbal you held can flip away; you can flip one from a rival. Toast the swings.
   const lost=out.filter(r=>r._flipped&&r._flipped.from===me);
@@ -3434,56 +3475,113 @@ function myClass(){return S.recruiting?S.recruiting.pool.filter(r=>r.committedTo
 function myClassRank(){const me=controlled();const pool=S.recruiting.pool;
   const score=t=>classScore(t,pool);const my=score(me);
   return S.world.teams.filter(t=>score(t)>my).length+1;}
-/* ---- weekly intent queue (Phase 33) ----
-   One queued action per recruit per week. The player SETS an intent (reserving its point cost up front);
-   all intents resolve together at the week change (applyPlayerIntents) — alongside the AI brain's actions —
-   and then the recruit's interest is recomputed. Reserve on set, refund on clear/replace. The action's
-   effect (incl. game-day visit bonus + coach mods) is captured at SET time and replayed at resolution. */
+/* ---- weekly intent queue (Phase 33, arrays + scarcity in Phase 35) ----
+   Each week the player SETS queued actions per recruit — ONE by default, or TWO via a weekly DOUBLE-DOWN
+   token (`R.doubles`). `R.intents[recId]` is an ARRAY of ≤2 intent objects; setting reserves the point cost
+   up front. All intents resolve together at the week change (applyPlayerIntents). The action's effect
+   (game-day visit bonus + coach mods + the Phase 35 diminishing-returns falloff) is captured at SET time. */
 function recIntents(){const R=S.recruiting;return R.intents||(R.intents={});}
-function intentOf(rec){return recIntents()[rec.id]||null;}
-function intentCount(){return Object.keys(recIntents()).length;}
-function clearRecIntent(rec){const I=recIntents(),it=I[rec.id];if(!it)return;
-  S.recruiting.points+=it.cost;delete I[rec.id];autosave();}
-function setRecIntent(rec,action,opt){
-  opt=opt||{};const R=S.recruiting;
-  if(R.signed||rec.signed){toast('Already signed — can’t recruit him');return false;}
-  if(rec.committedTo===S.teamId){toast('Already committed to you');return false;}
-  if(!onBoard(rec)){toast('Offer a scholarship first');return false;}
-  if(action==='visit'&&rec.visited){toast('Already visited');return false;}
-  if(action==='promise'&&rec.promise){toast('Already made a promise');return false;}
-  if(action==='alumni'&&rec.alumni){toast('An alum already hosted this recruit');return false;}
-  const cost=RECRUIT_COSTS[action]||0, cur=intentOf(rec);
-  if(cost>R.points+(cur?cur.cost:0)){toast('Not enough recruiting points');return false;}
-  if(cur)clearRecIntent(rec);            // replace any existing intent on this recruit (refund first)
-  const m=myMods(), sm=recScoutMult(rec), it={action,cost,label:''};   // sm = scouting payoff (Phase 33)
+function intentsFor(rec){return recIntents()[rec.id]||[];}             // read-only array (may be empty)
+function intentCount(){return Object.values(recIntents()).reduce((n,a)=>n+a.length,0);}
+function queuedVisits(){return Object.values(recIntents()).reduce((n,a)=>n+a.filter(x=>x.action==='visit').length,0);}
+function hasIntent(rec,action){return intentsFor(rec).some(x=>x.action===action);}
+// Remove one queued action (refund its points + give back a double-down if it was the stacked 2nd action).
+function removeIntentAt(rec,idx){const I=recIntents(),arr=I[rec.id];if(!arr||!arr[idx])return;
+  const it=arr[idx];S.recruiting.points+=it.cost;if(it.isDouble)S.recruiting.doubles=(S.recruiting.doubles||0)+1;
+  arr.splice(idx,1);if(!arr.length)delete I[rec.id];autosave();}
+function clearRecIntent(rec){const arr=intentsFor(rec).slice();
+  for(let i=arr.length-1;i>=0;i--)removeIntentAt(rec,i);}
+// Build the intent object (cost + captured effect) for an action, or null (with a toast) if it can't be set.
+function buildIntent(rec,action,opt){
+  const m=myMods(), sm=recScoutMult(rec), it={action,cost:RECRUIT_COSTS[action]||0,label:''};   // sm = scouting payoff
   if(action==='scout'){it.scoutDelta=Math.round(30*m.scout);it.label='Scout';}
   else if(action==='pitch'){const angle=opt.angle;
     let mult=rec.prefs[0]===angle?1.6:rec.prefs[1]===angle?1.2:0.7;
     if(angle==='nil')mult*=m.nil; if(angle==='development')mult*=m.devPitch;
-    let gain=8*mult*m.pitch*sm; if(m.homeState&&rec.st===m.homeState)gain*=m.homeBonus;
+    const dr=repeatFalloff(rec.hits&&rec.hits.pitch||0);            // Phase 35: spamming the same pitch pays less
+    let gain=8*mult*m.pitch*sm*dr; if(m.homeState&&rec.st===m.homeState)gain*=m.homeBonus;
     it.angle=angle;it.gain=gain;it.label='Pitch · '+prefLabel(angle);}
   else if(action==='visit'){let gain=18*m.visit*sm; if(isGameDayVisit())gain*=1.5;
     if(m.homeState&&rec.st===m.homeState)gain*=m.homeBonus;
     it.gain=gain;it.label='Visit'+(isGameDayVisit()?' (game day)':'');}
   else if(action==='promise'){let gain=22*m.visit*sm; if(m.homeState&&rec.st===m.homeState)gain*=m.homeBonus;
     it.gain=gain;it.promiseType=opt.type||'playingTime';it.label='Promise';}
-  else if(action==='alumni'){const lg=opt.legend; if(!lg||(lg.app||0)<=0){toast('No appearances left for that alum');return false;}
-    it.legendId=lg.id;it.gain=alumniBoost(lg,rec,alumniCoachMod(lg))*sm;it.label='Alumni visit · '+lg.name.split(' ').slice(-1);}
-  else return false;
-  recIntents()[rec.id]=it; R.points-=cost; autosave(); return true;
+  else if(action==='alumni'){const lg=opt.legend; if(!lg||(lg.app||0)<=0){toast('No appearances left for that alum');return null;}
+    it.legendId=lg.id;it.gain=alumniBoost(lg,rec,alumniCoachMod(lg))*sm;it.label='Alumni · '+lg.name.split(' ').slice(-1);}
+  else return null;
+  return it;
 }
-// Resolve every queued intent (in-season week change + National Signing Day), then clear the queue.
+// Toggle an action on a recruit. Clicking a queued action removes it. A new action: slot 1 is free; a 2nd
+// needs a DOUBLE-DOWN token (else it replaces the first). Visits are weekly-capped (visitCap).
+function setRecIntent(rec,action,opt){
+  opt=opt||{};const R=S.recruiting;
+  if(R.signed||rec.signed){toast('Already signed — can’t recruit him');return false;}
+  if(rec.committedTo===S.teamId){toast('Already committed to you');return false;}
+  if(!onBoard(rec)){toast('Offer a scholarship first');return false;}
+  const arr=intentsFor(rec), exIdx=arr.findIndex(x=>x.action===action);
+  if(exIdx>=0){removeIntentAt(rec,exIdx);return true;}                 // toggle OFF a queued action
+  if(action==='visit'&&rec.visited){toast('Already visited');return false;}
+  if(action==='promise'&&rec.promise){toast('Already made a promise');return false;}
+  if(action==='alumni'&&rec.alumni){toast('An alum already hosted this recruit');return false;}
+  if(action==='visit'&&queuedVisits()>=visitCap()){toast('Only '+visitCap()+' official visit'+(visitCap()===1?'':'s')+' per week');return false;}
+  let isDouble=false, replaceIdx=-1;
+  if(arr.length>=2){toast('Two actions max on one recruit — clear one first');return false;}
+  if(arr.length===1){ if((R.doubles||0)>0)isDouble=true; else replaceIdx=0; }   // 2nd action needs a double, else swap
+  const cost=RECRUIT_COSTS[action]||0, refund=replaceIdx>=0?arr[replaceIdx].cost:0;
+  if(cost>R.points+refund){toast('Not enough recruiting points');return false;}
+  if(replaceIdx>=0)removeIntentAt(rec,replaceIdx);
+  const it=buildIntent(rec,action,opt); if(!it)return false;
+  it.isDouble=isDouble;
+  const I=recIntents(); (I[rec.id]||(I[rec.id]=[])).push(it);
+  R.points-=cost; if(isDouble)R.doubles--; autosave(); return true;
+}
+// Resolve every queued action (in-season week change + National Signing Day), then clear the queue.
 function applyPlayerIntents(){
   const R=S.recruiting; if(!R||!R.intents)return;
-  for(const rid in R.intents){const it=R.intents[rid],rec=recById(rid);if(!rec)continue;
-    if(it.action==='alumni'){const lg=(controlled().legends||[]).find(l=>l.id===it.legendId);
-      if(lg&&(lg.app||0)>0){lg.app--;rec.alumni=lg.id;bumpInterest(rec,it.gain);}continue;}
-    if(it.scoutDelta!=null)rec.scout=clamp(rec.scout+it.scoutDelta,0,100);
-    if(it.gain)bumpInterest(rec,it.gain);
-    if(it.action==='visit')rec.visited=true;
-    if(it.action==='promise')rec.promise={type:it.promiseType};
+  for(const rid in R.intents){const arr=R.intents[rid],rec=recById(rid);if(!rec||!arr)continue;
+    arr.forEach(it=>{
+      if(it.action==='alumni'){const lg=(controlled().legends||[]).find(l=>l.id===it.legendId);
+        if(lg&&(lg.app||0)>0){lg.app--;rec.alumni=lg.id;bumpInterest(rec,it.gain);}}
+      else{
+        if(it.scoutDelta!=null)rec.scout=clamp(rec.scout+it.scoutDelta,0,100);
+        if(it.gain)bumpInterest(rec,it.gain);
+        if(it.action==='visit')rec.visited=true;
+        if(it.action==='promise')rec.promise={type:it.promiseType};
+      }
+      rec.hits=rec.hits||{};rec.hits[it.action]=(rec.hits[it.action]||0)+1;   // Phase 35: track action repeats
+    });
   }
   R.intents={};
+}
+// Phase 35 — decay-on-neglect: a board recruit you DIDN'T work this week cools on you a little (you have to
+// maintain relationships). Player-only (your interest), so the engine envelope is untouched. Skips recruits
+// committed elsewhere (not your relationship to keep) — but your own verbals DO decay (neglect risks a flip).
+function decayNeglect(actedOn){
+  const me=S.teamId, R=S.recruiting;
+  R.board.forEach(id=>{ if(actedOn.has(id))return; const rec=recById(id);
+    if(!rec||rec.signed||rec.iv[me]==null)return;
+    if(rec.committedTo&&rec.committedTo!==me)return;
+    rec.iv[me]=clamp(rec.iv[me]-REC.NEGLECT_DECAY,0,100);
+  });
+}
+// Phase 35 — season ripple: your Saturday result energizes (or cools) your board, in-state recruits most.
+// Player-only. Returns a one-line note for the weekly report, or null if no game / no effect.
+function applyGameRipple(week){
+  const me=S.teamId, R=S.recruiting, g=teamGame(me,week);
+  if(!g||!g.played)return null;
+  const home=g.home===me, my=home?g.hs:g.as, opp=home?g.as:g.hs;
+  const meT=controlled(), oppT=teamById(home?g.away:g.home);
+  const vibe=gameRecruitVibe(my,opp,meT.natRank,oppT&&oppT.natRank);
+  if(!vibe)return null;
+  let n=0;
+  R.board.forEach(id=>{const rec=recById(id);if(!rec||rec.signed||rec.iv[me]==null)return;
+    if(rec.committedTo&&rec.committedTo!==me)return;
+    const inState=meT.homeState&&rec.st===meT.homeState;
+    rec.iv[me]=clamp(rec.iv[me]+vibe*(inState?0.6:0.3),0,100);n++;
+  });
+  if(!n)return null;
+  const win=my>opp;
+  return (win?'📈 ':'📉 ')+'Your '+(win?'win over ':'loss to ')+(oppT?oppT.abbr:'them')+' '+(vibe>=4?'energized':vibe>0?'helped':'cooled')+' your board';
 }
 /* ---- actions ---- */
 function offerRecruit(rec){
@@ -3977,7 +4075,7 @@ function renderHome(app){
     const rc=el('div','card');
     const head=stage==='closed'?'Class signed':stage==='national'?'Signing Day pending':R.points+' points';
     const subKind=stage==='open'?'verbal':'commit';
-    const nq=stage==='closed'?0:Object.keys(R.intents||{}).length;   // Phase 33: queued actions this week
+    const nq=stage==='closed'?0:intentCount();   // Phase 33/35: total queued actions this week
     rc.innerHTML=`<div class="row spread">
       <div><div class="cond" style="font-size:22px;font-weight:800">${head}</div>
         <div class="muted" style="font-size:13px;margin-top:2px">${nc} ${subKind}${nc===1?'':'s'} \u00b7 class #${rk}${nq?' \u00b7 \u23f3 '+nq+' queued':''}</div></div>
@@ -4922,17 +5020,20 @@ function renderRecruiting(app){
 function planCard(v){
   const R=S.recruiting, ids=Object.keys(R.intents||{});
   const c=el('div','card');c.dataset.tid='rec-plan';c.style.marginTop='10px';
-  if(!ids.length){c.innerHTML=`<div class="meta dim">This week’s plan</div>
+  const total=intentCount();
+  // Phase 35: weekly scarcity — points, double-down tokens, and official-visit cap on one line.
+  const caps=`<span class="meta dim">${R.points||0} pts · ⚡${R.doubles||0} double${(R.doubles||0)===1?'':'s'} · 🏟️ ${visitCap()-queuedVisits()}/${visitCap()} visits</span>`;
+  if(!total){c.innerHTML=`<div class="row spread"><span class="meta dim">This week’s plan</span>${caps}</div>
     <div class="meta" style="margin-top:4px">No actions queued — open a target and set one. They resolve when you advance.</div>`;
     v.append(c);return;}
-  const reserved=ids.reduce((s,id)=>s+(R.intents[id].cost||0),0);
-  c.innerHTML=`<div class="row spread"><span class="meta dim">This week’s plan</span><span class="meta">${ids.length} action${ids.length===1?'':'s'} · ${reserved} pts</span></div>`;
+  const reserved=Object.values(R.intents).reduce((s,a)=>s+a.reduce((x,it)=>x+(it.cost||0),0),0);
+  c.innerHTML=`<div class="row spread"><span class="meta dim">This week’s plan · ${total} action${total===1?'':'s'} · ${reserved} pts</span></div><div class="row spread" style="margin-top:2px">${caps}</div>`;
   ids.map(recById).filter(Boolean).forEach(rec=>{
-    const it=R.intents[rec.id];
+    const arr=R.intents[rec.id]||[];
     const row=el('div','row spread');row.style.cssText='margin-top:7px;gap:8px';
     row.innerHTML=`<button class="lrow" data-id="plan-${rec.id}" style="flex:1;min-width:0;text-align:left;padding:6px 8px">
         <div style="min-width:0"><div class="nm" style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rec.fn} ${rec.ln} <span class="dim" style="font-weight:400">${rec.pos}</span></div>
-        <div class="meta accent">${it.label}</div></div></button>`;
+        <div class="meta accent">${arr.map(it=>it.label).join(' + ')}</div></div></button>`;
     const x=el('button','btn sm line','✕');x.style.cssText='flex:none;padding:6px 10px';
     x.onclick=()=>{clearRecIntent(rec);render();toast('Cleared');};
     row.querySelector('button').onclick=()=>recruitSheet(rec);
@@ -4944,11 +5045,12 @@ function planCard(v){
 // can react. Built in resolveRecruitingWeek; tones map to good/cooling(warn)/bad/neutral. Rows open the sheet.
 function reportCard(v){
   const rep=S.recruiting.report;
-  if(!rep||!rep.reactions||!rep.reactions.length)return;
+  if(!rep||(!rep.reactions||!rep.reactions.length)&&!rep.note)return;
   const toneCls={good:'good',bad:'bad',warn:'accent',neutral:'dim'};
   const c=el('div','card');c.dataset.tid='rec-report';c.style.marginTop='10px';
-  c.innerHTML=`<div class="row spread"><span class="meta dim">Last week’s board report</span><span class="meta dim">Week ${rep.week}</span></div>`;
-  rep.reactions.forEach(rx=>{
+  c.innerHTML=`<div class="row spread"><span class="meta dim">Last week’s board report</span><span class="meta dim">Week ${rep.week}</span></div>`
+    +(rep.note?`<div class="meta accent" style="margin-top:5px">${rep.note}</div>`:'');   // Phase 35: season-result ripple
+  (rep.reactions||[]).forEach(rx=>{
     const b=el('button','lrow');b.dataset.id='rep-'+rx.id;b.style.cssText='width:100%;text-align:left;margin-top:7px;padding:7px 8px';
     const sign=rx.myDelta>0?'+'+rx.myDelta:rx.myDelta<0?''+rx.myDelta:'';
     b.innerHTML=`<div style="flex:1;min-width:0">
@@ -4967,11 +5069,13 @@ function recruitRow(rec){
   let status;
   if(committed)status=`<span class="tag ${mine?'good':'bad'}" style="font-size:10px">${mine?'TO YOU ✓':'→ '+teamById(committed).abbr}</span>`;
   else status=`<div class="cond ${rank===1?'good':''}" style="font-size:14px;font-weight:700">${rank?'#'+rank+'/'+nS:'—'}</div>`;
-  const it=S.recruiting&&S.recruiting.intents?intentOf(rec):null;   // Phase 33: queued action this week
+  const arr=S.recruiting&&S.recruiting.intents?intentsFor(rec):[];   // Phase 33/35: queued action(s) this week
+  const qLabel=arr.length?(arr.length>1?arr.length+' actions':arr[0].label):'';
+  const dw=(!committed&&rec.decideWeek!=null)?' · <span class="accent">🗓️ Wk '+rec.decideWeek+'</span>':'';   // Phase 35: decision window
   row.innerHTML=`${recruitStarChip(rec)}
     <div style="flex:1;min-width:0">
       <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rec.fn} ${rec.ln} <span class="dim" style="font-weight:400">${rec.pos} · ${rec.st}</span></div>
-      <div class="meta">${sc.text}${committed?'':' · interest '+mi+'%'}${it?' · <span class="accent">⏳ '+it.label+'</span>':''}</div>
+      <div class="meta">${sc.text}${committed?'':' · interest '+mi+'%'}${qLabel?' · <span class="accent">⏳ '+qLabel+'</span>':''}${dw}</div>
       ${committed?'':'<div class="bar" style="margin-top:5px"><i style="width:'+mi+'%"></i></div>'}</div>
     <div style="text-align:right;flex:none;margin-left:8px">${status}</div>`;
   row.onclick=()=>recruitSheet(rec);
@@ -5091,13 +5195,14 @@ function recruitSheet(rec){
       body.append(off);
       body.append(el('div','hint center','Offering opens this recruit on your board (uses 1 of '+boardSlots()+' slots).'));
     }else{
-      // Phase 33: one queued action per recruit per week — set it now; it resolves at the week change
-      // alongside every rival's actions, then his interest is recomputed.
-      const it=intentOf(rec), sel=a=>it&&it.action===a;
-      if(it){
+      // Phase 33/35: set queued action(s) — one per recruit, or two via a weekly DOUBLE-DOWN (⚡). They
+      // resolve at the week change alongside every rival's actions; clicking a queued action toggles it off.
+      const arr=intentsFor(rec), sel=a=>hasIntent(rec,a);
+      if(rec.decideWeek!=null)body.append(el('div','hint center','🗓️ He announces his decision Week '+rec.decideWeek+' — make your final push now.'));
+      if(arr.length){
         const q=el('div','card');q.style.cssText='text-align:center;margin-bottom:8px';
-        q.innerHTML=`<div class="meta dim">This week’s plan</div><div class="cond accent" style="font-size:16px;font-weight:800">${it.label}</div>`;
-        const clr=el('button','btn sm line','Clear plan (+'+it.cost+' pts)');clr.dataset.tid='rec-clear';clr.style.marginTop='6px';
+        q.innerHTML=`<div class="meta dim">This week’s plan</div><div class="cond accent" style="font-size:15px;font-weight:800">${arr.map(it=>it.label).join('  +  ')}</div>`;
+        const clr=el('button','btn sm line','Clear plan');clr.dataset.tid='rec-clear';clr.style.marginTop='6px';
         clr.onclick=()=>{clearRecIntent(rec);closeSheet();render();recruitSheet(rec);toast('Plan cleared');};
         q.append(clr);body.append(q);
       }
@@ -5108,22 +5213,28 @@ function recruitSheet(rec){
         b.dataset.tid=tid;b.disabled=!!disabled;b.onclick=onclick;return b;};
       const g1=el('div','btn-row');
       g1.append(
-        mk('scout','Scout · '+RECRUIT_COSTS.scout,'rec-scout',false,()=>setI('scout',null,'Queued: Scout')),
-        mk('pitch','Pitch · '+RECRUIT_COSTS.pitch,'rec-pitch',false,()=>pitchSheet(rec)));
+        mk('scout','Scout · '+RECRUIT_COSTS.scout,'rec-scout',false,()=>setI('scout',null,sel('scout')?'Scout removed':'Queued: Scout')),
+        mk('pitch','Pitch · '+RECRUIT_COSTS.pitch,'rec-pitch',false,()=>sel('pitch')?setI('pitch',null,'Pitch removed'):pitchSheet(rec)));
+      const visitBlocked=!sel('visit')&&queuedVisits()>=visitCap();
       const g2=el('div','btn-row');
       g2.append(
-        mk('visit',rec.visited?'Visited ✓':'Visit · '+RECRUIT_COSTS.visit+(isGameDayVisit()?' (GD!)':''),'rec-visit',!!rec.visited,()=>setI('visit',null,'Queued: Visit')),
-        mk('promise',rec.promise?'Promised ✓':'Promise · '+RECRUIT_COSTS.promise,'rec-promise',!!rec.promise,()=>setI('promise',{type:'playingTime'},'Queued: Promise')));
+        mk('visit',rec.visited?'Visited ✓':'Visit · '+RECRUIT_COSTS.visit+(isGameDayVisit()?' (GD!)':''),'rec-visit',!!rec.visited||visitBlocked,()=>setI('visit',null,sel('visit')?'Visit removed':'Queued: Visit')),
+        mk('promise',rec.promise?'Promised ✓':'Promise · '+RECRUIT_COSTS.promise,'rec-promise',!!rec.promise,()=>setI('promise',{type:'playingTime'},sel('promise')?'Promise removed':'Queued: Promise')));
       body.append(g1,g2);
       // Phase 11: alumni visit — deploy a program legend (limited appearances) to recruit this prospect.
       const avail=availableLegends(rec);
       if(rec.alumni||avail.length){
-        const al=mk('alumni',rec.alumni?'Alum hosted ✓':'Alumni visit · '+RECRUIT_COSTS.alumni,'rec-alumni',!!rec.alumni||!avail.length,()=>alumniSheet(rec));
+        const al=mk('alumni',rec.alumni?'Alum hosted ✓':'Alumni visit · '+RECRUIT_COSTS.alumni,'rec-alumni',!!rec.alumni||(!avail.length&&!sel('alumni')),()=>sel('alumni')?setI('alumni',null,'Alumni removed'):alumniSheet(rec));
         al.style.marginTop='9px';body.append(al);
       }
+      // Phase 35: scarcity readout — double-downs let you stack a 2nd action; visits are weekly-capped.
+      let sc2;
+      if(arr.length>=2)sc2='Two actions set (double-down used).';
+      else if(arr.length===1)sc2=(R.doubles>0?'Tap a 2nd action to stack it (uses a ⚡ double-down).':'A 2nd action will replace the first — no ⚡ left.');
+      else sc2='One action/week; stack a 2nd with a ⚡ double-down.';
       const drop=el('button','btn sm line','Drop from board');drop.style.marginTop='9px';drop.dataset.tid='rec-drop';
       drop.onclick=()=>{dropRecruit(rec);closeSheet();render();toast('Dropped from board');};
-      body.append(drop,el('div','hint center',R.points+' pts left · one action per recruit each week'));
+      body.append(drop,el('div','hint center',sc2+'\n'+(R.points||0)+' pts · ⚡'+(R.doubles||0)+' · 🏟️ '+(visitCap()-queuedVisits())+'/'+visitCap()+' visits'));
     }
   }else if(R.signed&&!committed){
     body.append(el('div','hint center','Signing Day has passed — this prospect went unsigned.'));
