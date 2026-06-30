@@ -348,6 +348,30 @@ function startServer() {
   check('Phase 27: injuries heal a week at a time', inj.afterHeal === 2, 'after heal: ' + inj.afterHeal);
   check('Phase 27: the Home injury report lists who is out', inj.reportShown);
 
+  // ---------- PHASE 39: redshirting ----------
+  const rs = await page.evaluate(() => {
+    const t = controlled(), opp = S.world.teams.find(x => x.id !== t.id);
+    // a buried, eligible young backup (non-RS class) — a natural redshirt candidate
+    const cand = t.roster.filter(p => p.so >= 2 && redshirtClass(p)).sort((a, b) => a.ov - b.ov)[0];
+    const target = redshirtClass(cand);
+    cand.rs = 'on';
+    const benched = benchedFor({ home: t.id, away: opp.id });   // Phase 39: a redshirt is held out
+    const heldOut = benched.has(cand.id);
+    const res = simEngine(t, opp, 24680, { benched });
+    const played = !!res.box[cand.id];                          // he records nothing (sat the game)
+    // rollover converts him onto the RS track (preserving a year), via the pure engine
+    const r = rng(424242);
+    const out = rolloverRoster([Object.assign({}, cand)], [], t.prestige, r, { rate: 1 });
+    const after = out.roster.find(p => p.id === cand.id);
+    const converted = after && after.yr === target && after.rs === 'used';
+    const reported = out.redshirted.some(p => p.id === cand.id);
+    delete cand.rs;   // cleanup (don't mutate the live save)
+    return { target, heldOut, played, converted, reported };
+  });
+  check('Phase 39: a redshirt designee is held out of the game', rs.heldOut && !rs.played);
+  check('Phase 39: rollover moves him onto the RS track, preserving a year', rs.converted, 'target=' + rs.target);
+  check('Phase 39: the redshirt is reported in the rollover summary', rs.reported);
+
   // advancing now opens the watch-then-commit viewer for your game; skip + commit each week.
   // bye weeks advance directly (no viewer). Capture the first watched game to verify its score
   // equals the committed result (the replay is faithful, not a re-roll).
@@ -641,7 +665,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 34 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 35 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -658,7 +682,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v34)', mig.v === 34, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v35)', mig.v === 35, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -1130,7 +1154,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 34', roPost.version === 34, 'v' + roPost.version);
+  check('Rollover: save version bumped to 35', roPost.version === 35, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);

@@ -228,6 +228,51 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('Graduate still carries its final-season box (gs) for snapshots', grad && grad.gs && grad.gs.reYds === 1200);
 })();
 
+/* 11) Phase 39 — redshirting. redshirtClass eligibility, and the rollover redshirt branch:
+   a designated eligible player who sat advances onto the RS track (preserving a year); the
+   4-game rule denies it if he played >4; a player already on the RS track can't redshirt again. */
+(function () {
+  // eligibility helper: FR/SO/JR/SR redshirt INTO the RS version; RS-* (or used) are ineligible
+  check('redshirtClass: FR → RS-FR', redshirtClass({ yr: 'FR' }) === 'RS-FR');
+  check('redshirtClass: JR → RS-JR', redshirtClass({ yr: 'JR' }) === 'RS-JR');
+  check('redshirtClass: an RS-track player is ineligible', redshirtClass({ yr: 'RS-FR' }) === null);
+  check('redshirtClass: a used redshirt is ineligible', redshirtClass({ yr: 'SO', rs: 'used' }) === null);
+
+  // a designated FR who sat (no gs) takes the redshirt → RS-FR + rs:'used', and is reported
+  const r = rng(3939);
+  const fr = { id: 'rs1', fn: 'Red', ln: 'Shirt', pos: 'WR', yr: 'FR', age: 18, st: 'TX', stars: 4, ov: 70, pot: 90, cap: false, spd: 70, str: 70, awr: 70, so: 3, rs: 'on' };
+  const res = rolloverRoster([fr], [], 80, r, { rate: 1 });
+  const after = res.roster.find(p => p.id === 'rs1');
+  check('Redshirt: a sat FR becomes RS-FR (preserves a year)', after && after.yr === 'RS-FR', after ? after.yr : 'gone');
+  check('Redshirt: marked rs:"used" (can\'t redshirt twice)', after && after.rs === 'used');
+  check('Redshirt: surfaced in summary.redshirted', res.redshirted && res.redshirted.length === 1 && res.redshirted[0].id === 'rs1');
+  check('Redshirt: he still develops the year (ov ≥ start)', after && after.ov >= 70);
+
+  // the 4-game rule: a designated player who already played >4 games does NOT redshirt (→ SO), rs cleared
+  const r2 = rng(3940);
+  const played = { id: 'rs2', fn: 'Too', ln: 'Many', pos: 'RB', yr: 'FR', age: 18, st: 'GA', stars: 3, ov: 68, pot: 80, cap: false, spd: 68, str: 68, awr: 68, so: 2, rs: 'on', gs: { gp: 9, rYds: 600 } };
+  const res2 = rolloverRoster([played], [], 75, r2, { rate: 1 });
+  const a2 = res2.roster.find(p => p.id === 'rs2');
+  check('Redshirt: a designee who played >4 games is denied (→ SO)', a2 && a2.yr === 'SO', a2 ? a2.yr : 'gone');
+  check('Redshirt: a wasted designation is cleared (no rs flag)', a2 && a2.rs == null);
+  check('Redshirt: a denied redshirt is NOT reported', res2.redshirted.length === 0);
+
+  // eligibility extension: a redshirt buys one extra season on the roster (5 transitions to graduate vs 4)
+  const survives = (redshirtYr1) => {
+    let r3 = rng(7000), p = { id: 'x', pos: 'TE', yr: 'FR', age: 18, st: 'OH', stars: 3, ov: 70, pot: 70, cap: false, spd: 70, str: 70, awr: 70, so: 1 };
+    if (redshirtYr1) p.rs = 'on';
+    let seasons = 0;
+    for (let i = 0; i < 8; i++) { const rr = rolloverRoster([p], [], 70, r3, { rate: 1 }); p = rr.roster.find(x => x.id === 'x'); if (!p) break; seasons++; }   // backfill fills the roster — track by id
+    return seasons;
+  };
+  check('Redshirt: a redshirted player lasts one extra season (5 vs 4)', survives(true) === survives(false) + 1, survives(true) + ' vs ' + survives(false));
+
+  // AI envelope: rolling a roster with NO redshirt designations is unaffected (redshirted empty)
+  const r4 = rng(3941);
+  const plain = rolloverRoster(genRoster(rng(55), 75), [], 75, r4, { rate: 1 });
+  check('Redshirt: a roster with no designations reports none', plain.redshirted.length === 0);
+})();
+
 const passed = results.filter(r => r.pass).length;
 console.log(`\n===== ${passed}/${results.length} rollover-lab checks passed =====`);
 process.exit(results.every(r => r.pass) ? 0 : 1);

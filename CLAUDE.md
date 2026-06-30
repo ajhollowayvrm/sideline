@@ -570,6 +570,24 @@ plain static files so Pages still serves it with zero config.
   representative slate≈1.0, tier ladder, determinism); `qa` → 273 (book onto a home weekend, the weekend cap +
   season budget hold, a non-home week can't host, resolving raises interest + marks visited + clears the plan,
   the Visits tab renders, v34 + a `visitPlan` codec round-trip). See "Phase 38 design — visit scheduler" below.
+- **Phase 39 — Redshirting & eligibility.** ✅ DONE. The 8-class ladder always had an `RS-` track
+  (`FR, RS-FR, … SR, RS-SR`) but nobody ever *entered* it — redshirting makes it mean something. A
+  **controlled-team coach lever** (sparse `p.rs`): designate a young, eligible player to redshirt → he's
+  **held out of games all season** (reuses the Phase 27 `benchedFor`/`g.out` availability machinery — drops
+  from `availRatings` exactly like an injury, frozen for faithful replay) but still **develops**, then at
+  rollover advances onto the **RS track at the same level** (`FR→RS-FR` instead of `FR→SO`) — preserving a
+  year of eligibility, so he spends **5 seasons on the roster instead of 4** (stamped `rs:'used'`, redshirt
+  once). Pure helpers in the fenced ROLLOVER block (`REDSHIRT_TO`, `redshirtClass(p)`); `rolloverRoster`
+  gained the redshirt branch + a `summary.redshirted` list, gated by the **4-game rule** (`gp>4` denies the
+  redshirt — designating a guy who already played a full season correctly wastes it). **Envelope-safe:** AI
+  never sets `rs`, so the league rollover is byte-identical → `rolllab`'s strength/aging checks are untouched
+  (same controlled-team-only pattern as camp/morale). UI: a redshirt toggle + eligibility note on the player
+  sheet, a 🔴 REDSHIRT roster-row badge, a redshirt line in the offseason recap. Save **v35** (sparse `p.rs`,
+  absent = never redshirted/available → no-op migration). `rolllab` → 40 (`redshirtClass` eligibility; a sat
+  FR becomes RS-FR + `rs:'used'` + reported; the 4-game rule denies/clears a >4-game designee; a redshirt
+  lasts one extra season 5-vs-4; an undesignated roster reports none), `qa` → 276 (a designee is held out of
+  the game and records nothing; rollover converts him onto the RS track; it's reported). See "Phase 39 design
+  — redshirting" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -2122,6 +2140,62 @@ weekends only); no dated multi-day visit *slots* (a weekend hosts up to `weekend
 
 ---
 
+## Phase 39 design — redshirting & eligibility
+
+Decided 2026-06-30 with AJ — the clearest mechanical gap in a multi-season roster sim: players just aged
+`FR→SO→…→SR` with no eligibility management. The 8-class ladder always *had* an `RS-` track, but nothing ever
+moved a player onto it — so the redshirt (CFB's core "preserve a year" lever) didn't exist. Phase 39 wires it
+in, reusing the existing ladder + the Phase 27 availability machinery. House discipline: pure helpers in the
+fenced ROLLOVER block, validated by `rolllab` before the UI, a save bump, all gates green.
+
+### The model (matches real CFB, reuses the 8-class ladder)
+A redshirt **preserves a year of eligibility**: instead of advancing to the next class, the player moves onto
+the **RS version of his current level** — `FR→RS-FR` (not `FR→SO`), `SO→RS-SO`, etc. — so he spends **5 seasons
+on the roster to play 4** (FR + RS-FR + RS-SO + RS-JR + RS-SR). Only the four non-RS classes can redshirt, and
+**only once** (`p.rs:'used'` is the permanent marker; a player already on the RS track is ineligible — the
+class itself encodes it). This is exactly the existing ladder; the `RS-` classes finally get *entered*.
+
+### The lever (controlled-team only, like camp/morale)
+Sparse per-player `p.rs`: `'on'` = redshirting this season, `'used'` = already spent. Designating a player
+**holds him out of every game all season** — the app extends the Phase 27 unavailability set: `benchedFor(g)`
+adds `p.rs==='on'` players (frozen into `g.out` like an injury → faithful replay), and the live fallbacks in
+`gamePools`/`availRatings` read `p.inj>0||p.rs==='on'`. So a redshirt **drops the team's available rating**
+exactly like an injury — that's the tangible tradeoff: forgo his contribution this year to bank an extra year.
+You'd redshirt buried depth (≈ no rating cost) or a freshman you're stashing (a real cost = the decision).
+
+### The pure rollover branch (fenced ROLLOVER ENGINE)
+`REDSHIRT_TO={"FR":"RS-FR","SO":"RS-SO","JR":"RS-JR","SR":"RS-SR"}` + `redshirtClass(p)` (the RS target, or
+null if ineligible/used). In `rolloverRoster`, before the normal advance: a designee (`p.rs==='on'`) who is
+eligible **and** genuinely sat (the **4-game rule** — `gp≤4`, denying anyone who already played a real season)
+advances to `redshirtClass(p)` instead of `NEXT_CLASS[p.yr]`, is stamped `rs:'used'`, and is pushed onto a new
+`summary.redshirted` list; a wasted/stale designation (ineligible, or `gp>4`) is just cleared and he advances
+normally. He still ages + **develops** the year. Single advance path (redshirt only chooses a different `nx`),
+so the career/dev/peak logic is unchanged.
+
+### Envelope safety
+AI teams never set `p.rs`, so `rolloverRoster` is **byte-identical for the league** → `rolllab`'s league-
+strength/aging/depth checks are untouched (the controlled-team-only pattern of camp/morale/press). Held-out
+redshirts are symmetric with injuries in the availability layer, which was already envelope-validated.
+
+### UI & save
+A redshirt control + eligibility note on the **player sheet** (controlled team: "Redshirt this season" →
+"Cancel redshirt"; states for *used* / *already played N games — can't redshirt*); a 🔴 **REDSHIRT** roster-row
+badge; a 🔴 **Redshirted** line in the offseason recap. Save **v35** (sparse `p.rs`; `migrateState` v34→v35 is
+a structural no-op — absent reads as "never redshirted, available"; `p.rs` auto-rides the columnar codec's
+sparse side-object, no codec change). `rolllab` → **40** (`redshirtClass` eligibility; a sat FR → RS-FR +
+`rs:'used'` + reported; the 4-game rule denies a >4-game designee and clears the flag; a redshirt lasts one
+extra season — 5 vs 4; an undesignated roster reports none), `qa` → **276** (a designee is held out and records
+nothing in his game; rollover converts him onto the RS track preserving a year; it's reported). **Sixteen
+gates** (Phase 39 extends `rolllab` + `qa`; no new lab — it's a rollover-engine change).
+
+### Deliberately out of scope
+The 4-game rule is a **correctness gate**, not a "play him in 4 then sit" micro-manager (a designee is fully
+held out — the strategic version of "redshirt"); no **medical redshirt** flow, no **AI redshirt** modeling
+(invisible flavor — AI aging is unchanged), no eligibility *waivers* / COVID-year extras, no spring-game
+position-battle layer. One lever (sit a young player to bank a year), read through the existing ladder.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -2590,7 +2664,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   shortlist yet; AI visits/momentum are derived); v32→v33 backfills `S.recruiting.visitsLeft` (Phase 37 official-
   visit calendar; NIL `nilSpend` rides on intents, AI ripple/NIL are behavior-only); v33→v34 backfills
   `S.recruiting.visitPlan={}` (Phase 38 visit-weekend scheduler — the booked-visit calendar; recreated at
-  kickoff, so it only patches an in-flight in-season save). Each step re-derives ratings/ranks where needed.
+  kickoff, so it only patches an in-flight in-season save); v34→v35 is a structural no-op (Phase 39 redshirting —
+  sparse `p.rs`: `'on'`=redshirting this season, `'used'`=already redshirted; absent reads as "never redshirted,
+  available"). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -2680,7 +2756,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 ### Player object (kept lean for storage)
 ```
 { id, fn, ln, pos, yr, age, st, stars, ov, pot, cap, spd, str, awr, so,
-  mot?, comp?, ego?, morale?, inj?, gs?, dev?, honors?, career?, peakOv? }   // trailing fields are sparse (absent = default)
+  mot?, comp?, ego?, morale?, inj?, rs?, gs?, dev?, honors?, career?, peakOv? }   // trailing fields are sparse (absent = default)
+//   rs = redshirt status (Phase 39; 'on' = redshirting this season → held out of games; 'used' = already
+//        redshirted. At rollover a sat 'on' designee advances onto the RS class track, preserving a year.)
 //   inj = weeks out injured (Phase 27; absent/0 = healthy; set by the app after a game, healed weekly + at rollover)
 //   so = depth order within position (0 = starter); cap = captain
 //   pot = TRUE ceiling (0..99). The UI never shows it raw — `scoutedCeiling(p)` renders a

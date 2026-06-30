@@ -788,7 +788,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:34,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:35,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -1020,6 +1020,9 @@ function migrateState(state){
     if(state.recruiting&&!state.recruiting.visitPlan)state.recruiting.visitPlan={};   // calendar (recreated at
     state.version=34;                  // kickoff anyway — this only patches an in-flight in-season save).
   }
+  if((state.version||1)<35){           // Phase 39: redshirting. Per-player `p.rs` ('on' = redshirting this
+    state.version=35;                  // season, 'used' = already redshirted) is a sparse field — absent
+  }                                    // reads as "never redshirted, available" → structural no-op.
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1145,8 +1148,9 @@ function startSeason(){
 // Depth-weighted usage pools for one team-game (starters get the lion's share of touches).
 function gamePools(team,benched){
   // Phase 27: injured players sit. `benched` (a Set of ids, frozen per game) is used when given so a
-  // PAST game replays faithfully even after rosters change; otherwise fall back to the live p.inj flag.
-  const out=p=>benched?benched.has(p.id):(p.inj>0);
+  // PAST game replays faithfully even after rosters change; otherwise fall back to the live p.inj flag
+  // (+ Phase 39: a redshirt designee, p.rs==='on', sits the whole season).
+  const out=p=>benched?benched.has(p.id):(p.inj>0||p.rs==='on');
   const byPos={}; team.roster.forEach(p=>{if(out(p))return;(byPos[p.pos]=byPos[p.pos]||[]).push(p);});
   for(const k in byPos) byPos[k].sort((a,b)=>a.so-b.so);
   const dep=p=>1/Math.pow((p.so||0)+1,1.35);              // so 0 ≫ so 1 ≫ deep backups
@@ -1755,6 +1759,12 @@ function weekendTier(q){return q>=1.45?VISIT_TIERS[3]:q>=1.18?VISIT_TIERS[2]:q>=
 
 // Class ladder: each step advances one year; SR / RS-SR graduate (→ null = off the roster).
 const NEXT_CLASS={"FR":"SO","RS-FR":"RS-SO","SO":"JR","RS-SO":"RS-JR","JR":"SR","RS-JR":"RS-SR","SR":null,"RS-SR":null};
+// Phase 39: REDSHIRT track. A redshirt preserves a year of eligibility — instead of advancing to the
+// next class, the player moves onto the RS version of his CURRENT level (FR→RS-FR), so he spends one
+// more season on the roster (5 years to play 4). Only the four non-RS classes can redshirt, once.
+const REDSHIRT_TO={"FR":"RS-FR","SO":"RS-SO","JR":"RS-JR","SR":"RS-SR"};
+// The class a player would redshirt INTO, or null if ineligible (already on the RS track, or used).
+function redshirtClass(p){return (p.rs!=='used'&&(p.yr in REDSHIRT_TO))?REDSHIRT_TO[p.yr]:null;}
 // Phase 11: the milestone-relevant box keys we accumulate into p.career (so a graduate can be
 // measured by a whole career, not one season). Summed from p.gs at each rollover before gs is wiped.
 const CAREER_KEYS=["gp","pYds","pTD","rYds","rTD","reYds","reTD","tkl","sk","dInt"];
@@ -1812,19 +1822,27 @@ function rolloverRoster(roster,signees,prestige,r,opts){
   opts=opts||{};
   // `rateFor(player)` (Phase 7) gives a per-player dev rate (side/coach specific); else flat opts.rate.
   const rateOf=p=>opts.rateFor?opts.rateFor(p):(opts.rate||1);
-  const graduated=[],cont=[];
+  const graduated=[],cont=[],redshirted=[];
   roster.forEach(src=>{
     const p=Object.assign({},src);
     // Phase 11: accumulate career milestone totals + peak OVR for EVERY player (incl. graduates),
     // from last season's box, BEFORE it's wiped — so legends carry real lifetime résumés.
     if(p.gs)p.career=addCareer(p.career,p.gs);
     p.peakOv=Math.max(p.peakOv||0,p.ov||0);
-    const nx=(p.yr in NEXT_CLASS)?NEXT_CLASS[p.yr]:p.yr;
+    // Phase 39: resolve a redshirt designation. A designated player who's eligible AND genuinely sat
+    // (≤4 games — the 4-game rule) advances onto the RS track at the same level (preserving the year)
+    // instead of to the next class; he's stamped rs:'used' so he can't redshirt again. A wasted/stale
+    // designation (ineligible, or he ended up playing >4 games) is just cleared and he advances normally.
+    let nx,didRS=false;
+    const rsTo=(p.rs==='on')?redshirtClass(p):null;
+    if(rsTo&&!(p.gs&&p.gs.gp>4)){nx=rsTo;didRS=true;}
+    else{if('rs' in p&&p.rs!=='used')delete p.rs;nx=(p.yr in NEXT_CLASS)?NEXT_CLASS[p.yr]:p.yr;}
     if(nx===null){graduated.push(p);return;}        // graduate keeps p.gs as its final-season box
-    p.yr=nx;p.age=(p.age||18)+1;
+    p.yr=nx;if(didRS)p.rs='used';p.age=(p.age||18)+1;
     if('gs' in p)delete p.gs;                       // fresh slate — no season-stat carryover
     p.dev=developPlayer(p,r,rateOf(p));             // record this offseason's OVR gain (UI surfaces it)
     p.peakOv=Math.max(p.peakOv,p.ov);               // peak reflects post-development OVR too
+    if(didRS)redshirted.push(p);
     cont.push(p);
   });
   const freshmen=(signees||[]).map(s=>recruitToFreshman(s,r));
@@ -1854,7 +1872,7 @@ function rolloverRoster(roster,signees,prestige,r,opts){
   out.forEach(p=>p.cap=false);
   const field=out.filter(p=>p.pos!=='K'&&p.pos!=='P').sort((a,b)=>b.ov-a.ov);
   if(field[0])field[0].cap=true; if(field[1])field[1].cap=true;
-  return {roster:out,graduated,freshmen,trackedCount:freshmen.length};
+  return {roster:out,graduated,freshmen,redshirted,trackedCount:freshmen.length};
 }
 // === ROLLOVER ENGINE (Phase 5) END ===
 
@@ -2583,16 +2601,17 @@ function moraleSpotlight(g){
 // (same ref → byte-identical games), so only a depleted team is genuinely weaker — losing your star QB
 // for weeks actually drops your offense, not just one matchup.
 function availRatings(team,benched){
-  const out=p=>benched?benched.has(p.id):(p.inj>0);
+  const out=p=>benched?benched.has(p.id):(p.inj>0||p.rs==='on');   // Phase 39: redshirts sit too
   const avail=team.roster.filter(p=>!out(p));
   if(avail.length===team.roster.length)return team.ratings;
   return teamRatings(avail,team.staff);
 }
 // The set of players unavailable for a game (Phase 27): the frozen `g.out` if it exists (so a played
 // game always replays the same), else computed from the current injury state (and frozen at sim time).
+// Phase 39: a redshirt designee (p.rs==='on') is unavailable all season, frozen into g.out like an injury.
 function benchedFor(g){
   if(g.out)return new Set(g.out);
-  const s=new Set();[g.home,g.away].forEach(tid=>{const t=teamById(tid);if(t)t.roster.forEach(p=>{if(p.inj>0)s.add(p.id);});});
+  const s=new Set();[g.home,g.away].forEach(tid=>{const t=teamById(tid);if(t)t.roster.forEach(p=>{if(p.inj>0||p.rs==='on')s.add(p.id);});});
   return s;
 }
 function simSides(g,benched){
@@ -3239,6 +3258,7 @@ function rolloverSeason(){
     postseason:(myPost&&myPost.label)||null,
     draft:{count:myPicks.length,top:myPicks[0]?myPicks[0].pick:null,names:myPicks.slice(0,3).map(p=>p.name+' ('+p.pos+', #'+p.pick+')')},
     camp:S.camp?{name:campPlan(S.camp.plan).name,injured:(S.camp.injured||[]).map(i=>i.name+' ('+i.pos+', '+i.weeks+'wk)')}:null,
+    redshirted:summary?(summary.redshirted||[]).map(p=>p.fn+' '+p.ln+' ('+p.pos+', now '+p.yr+')'):[],   // Phase 39
     inducted:myInducted.map(l=>({name:l.name,pos:l.pos,tier:l.tier,stature:l.stature}))};
   if(S.coach&&S.coach.pendingFire)triggerCoachingSearch();   // Phase 19c: you were let go — find a new job or retire
   autosave();
@@ -4223,10 +4243,12 @@ function renderHome(app){
     // Phase 32: the training camp the coach ran + anyone it left banged up
     const cmp=o.camp?`<div class="row spread" style="margin-top:4px"><span>Training camp</span><span class="cond accent" style="font-weight:800">${o.camp.name}</span></div>`+
       (o.camp.injured&&o.camp.injured.length?`<div class="muted bad" style="font-size:12px;margin-top:2px">🩹 Camp injuries: ${o.camp.injured.join(', ')}</div>`:''):'';
+    // Phase 39: players who took a redshirt this year (preserved a year of eligibility)
+    const rs=o.redshirted&&o.redshirted.length?`<div class="muted" style="font-size:12px;margin-top:6px">🔴 Redshirted: ${o.redshirted.join(', ')}</div>`:'';
     rc.innerHTML=`<div class="meta dim" style="margin-bottom:6px">Offseason recap</div>
       <div class="row spread"><span>Seniors graduated</span><span class="cond" style="font-weight:800">${o.graduated}</span></div>
       <div class="row spread"><span>Recruits enrolled</span><span class="cond" style="font-weight:800">${o.tracked}</span></div>
-      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${cmp}${pst}${drf}${fin}${arr}${dep}${poa}${ind}`;
+      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${cmp}${pst}${drf}${fin}${arr}${dep}${poa}${rs}${ind}`;
     v.append(rc);
   }
   if(inSeason||over){const sb=el('button','btn line','Season \u00b7 schedule & standings');sb.style.marginTop='10px';
@@ -5708,7 +5730,7 @@ function playerRow(p,isStarter,t){
   const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=p.id;
   row.innerHTML=`<div class="ovr ${p.ov>=85?'elite':''}">${p.ov}</div>
     <div style="flex:1">
-      <div class="nm">${p.fn} ${p.ln} ${p.cap?'<span class="cap">© CAPTAIN</span>':''}${p.inj>0?` <span class="tag" style="font-size:10px;background:#7a1f1f;color:#fff">🩹 OUT ${p.inj}wk</span>`:''}</div>
+      <div class="nm">${p.fn} ${p.ln} ${p.cap?'<span class="cap">© CAPTAIN</span>':''}${p.inj>0?` <span class="tag" style="font-size:10px;background:#7a1f1f;color:#fff">🩹 OUT ${p.inj}wk</span>`:''}${p.rs==='on'?` <span class="tag" style="font-size:10px;background:#8a1c1c;color:#fff">🔴 REDSHIRT</span>`:''}</div>
       <div class="meta">${p.yr} · ${p.age}y · ${p.st} · ${'★'.repeat(p.stars)}${'☆'.repeat(5-p.stars)}</div>
       <div class="meta" style="margin-top:3px">${ceilingChip(p)} <span class="dim">${devStage(p)}</span>${growthChip(p)}</div>
       <div class="meta" style="margin-top:3px">${traitChips(p)}${moraleChip(p)}${schemeChip(p,t)}</div>
@@ -5750,9 +5772,34 @@ function playerSheet(p,t){
   const dn=el('button','btn sm ghost','Move down');
   dn.onclick=()=>{swapDepth(p,t,1);closeSheet();render();};
   r2.append(up,dn);
+  body.append(el('hr','div'),r1,r2);
+  // Phase 39: redshirt designation — controlled team only. A redshirt sits the season but preserves a
+  // year of eligibility (FR→RS-FR), spending an extra year on the roster. Resolved at rollover.
+  if(t.id===S.teamId){
+    const played=(p.gs&&p.gs.gp)||0, target=redshirtClass(p);
+    if(p.rs==='on'){
+      const note=el('div','muted',`🔴 Sitting this season to redshirt — will become <b>${target||p.yr}</b> at season's end (preserving a year). He won't play.`);
+      note.style.cssText='font-size:12px;margin-top:9px';
+      const cancel=el('button','btn sm danger','Cancel redshirt');cancel.style.cssText='margin-top:7px;width:100%';
+      cancel.onclick=()=>{delete p.rs;t.ratings=teamRatings(t.roster,t.staff);recomputeRanks(S.world);autosave();closeSheet();render();toast(p.ln+' back in the rotation');};
+      body.append(note,cancel);
+    } else if(p.rs==='used'){
+      const note=el('div','muted','🔴 Redshirt already used — full year of eligibility spent.');
+      note.style.cssText='font-size:12px;margin-top:9px';body.append(note);
+    } else if(target&&played<=4){
+      const note=el('div','muted',`Redshirt → he'd sit this season and become <b>${target}</b> at year's end, banking an extra year on the roster.`);
+      note.style.cssText='font-size:12px;margin-top:9px';
+      const rsb=el('button','btn sm line','🔴 Redshirt this season');rsb.style.cssText='margin-top:7px;width:100%';
+      rsb.onclick=()=>{p.rs='on';t.ratings=teamRatings(t.roster,t.staff);recomputeRanks(S.world);autosave();closeSheet();render();toast(p.ln+' will redshirt — held out this season');};
+      body.append(note,rsb);
+    } else if(target&&played>4){
+      const note=el('div','muted bad',`Can't redshirt — already played ${played} games this season (the 4-game limit is gone).`);
+      note.style.cssText='font-size:12px;margin-top:9px';body.append(note);
+    }
+  }
   const edit=el('button','btn sm line','Edit player');edit.style.marginTop='9px';edit.style.width='100%';
   edit.onclick=()=>editPlayerSheet(p,t);
-  body.append(el('hr','div'),r1,r2,edit);
+  body.append(edit);
   openSheet(p.fn+' '+p.ln,body);
 }
 function makeStarter(p,t){
