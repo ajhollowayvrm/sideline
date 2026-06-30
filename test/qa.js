@@ -702,10 +702,14 @@ function startServer() {
     const committed = S.recruiting.pool.filter(r => r.committedTo).length;
     const signedNow = S.recruiting.pool.filter(r => r.signed).length;
     const mine = S.recruiting.pool.filter(r => r.committedTo === me).length;
+    // Phase 33: the AI scout action raised the shared read on blue-chips the player never scouted himself
+    const fives = S.recruiting.pool.filter(r => r.stars === 5);
+    const aiScoutedFives = fives.length ? fives.reduce((a, r) => a + r.scout, 0) / fives.length : 0;
     return { signed: S.recruiting.signed, stage: S.recruiting.stage, phase: S.phase, committed, signedNow, mine, tgtMine: tgt.committedTo === me, rank: myClassRank(),
-      champPhase: S.phase, champGames: S.champWeek ? S.champWeek.games.length : 0 };
+      champPhase: S.phase, champGames: S.champWeek ? S.champWeek.games.length : 0, aiScoutedFives };
   });
   check('Phase 14: season ends with VERBAL commits, class not yet signed', !cycle.signed && cycle.stage === 'open' && cycle.signedNow === 0 && cycle.champPhase === 'Conference Championships', `stage ${cycle.stage}, signed ${cycle.signedNow}`);
+  check('Phase 33: the AI scout action evaluates blue-chips over a season (shared read rises)', cycle.aiScoutedFives > 10, `5★ avg scout ${cycle.aiScoutedFives.toFixed(0)}`);
   // ---------- PHASE 15: Championship Week (conf title games → CFP auto-bid seeding) ----------
   check('Phase 15: regular season hands off to Championship Week with title games', cycle.champPhase === 'Conference Championships' && cycle.champGames > 5, `${cycle.champGames} title games`);
   // Advance Championship Week from Home: watch the title game if reached, else set the playoff field.

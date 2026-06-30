@@ -1427,7 +1427,7 @@ const PITCH_ANGLES=[
 // Phase 33: BASE_POINTS is now a small floor; the weekly budget is dominated by the scouting facility
 // (see weeklyPoints / aiBudget). AI_* drive the AI recruiting brain's concentrated weekly effort.
 const REC={POOL:3400,COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:16,DECOMMIT_GAP:18,
-  AI_BASE:6,AI_PER:1.4,AI_COST:4};
+  AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.3};
 
 // Coach archetype/history effects — Phase 4 is the first system to apply them. Returns a bag of
 // multipliers/bonuses used by the weekly economy + the player's recruiting actions.
@@ -1531,6 +1531,12 @@ function genRecruits(seed,teams){
 // recruits harder. Pure + deterministic from the week's rng. Guarded for fac-less lab teams (default 5).
 function aiBudget(team){const sc=(team&&team.fac&&team.fac.scouting)||5;return REC.AI_BASE+sc*REC.AI_PER;}
 function aiActionGain(team,rec,r){const fit=recruitFit(team,rec);return (4+fit*6)*(0.7+r()*0.6);}
+// Scouting payoff (Phase 33): a well-evaluated recruit is recruited harder — a pitch/visit to a kid you
+// (or the field) know well lands more than blind recruiting. Pure upside (×1.0 unscouted → ×1.3 fully
+// scouted), so the scout=0 baseline is byte-identical to the pre-scout-payoff envelope. Shared `rec.scout`
+// is raised by ANYONE scouting (player intent or the AI brain), so heavily-recruited blue-chips become
+// well-known to everyone while the deep tail stays foggy (the player's scouting edge).
+function recScoutMult(rec){return 1+0.3*((rec.scout||0)/100);}
 // Priority: concentrate where the team fits well AND already has traction (and on positions it needs).
 function aiPriority(team,rec){const need=(team.needs&&team.needs[rec.pos])?6:0;
   return recruitFit(team,rec)*12+(rec.iv[team.id]||0)*0.12+need;}
@@ -1573,7 +1579,13 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
         .map(rec=>({rec,pr:aiPriority(t,rec)})).sort((a,b)=>b.pr-a.pr);
       for(const {rec} of targets){
         if(budget<REC.AI_COST)break;budget-=REC.AI_COST;
-        rec.iv[tid]=clamp((rec.iv[tid]||0)+aiActionGain(t,rec,r),0,100);
+        // One action per target this week: SCOUT an under-evaluated recruit (a minority of the time — raises
+        // the shared read + makes later pitches land harder), else PITCH, amplified by how well he's scouted.
+        // Probabilistic so a team spreads scouting across its targets without spending its whole budget on it
+        // — the budget stays mostly on pitches, so a strong scouting program still out-recruits, while
+        // contested recruits accumulate evaluation from their many suitors over the cycle.
+        if((rec.scout||0)<REC.AI_SCOUT_TGT&&r()<REC.AI_SCOUT_P)rec.scout=clamp((rec.scout||0)+REC.AI_SCOUT_GAIN,0,100);
+        else rec.iv[tid]=clamp((rec.iv[tid]||0)+aiActionGain(t,rec,r)*recScoutMult(rec),0,100);
       }
     }
   }
@@ -3380,20 +3392,20 @@ function setRecIntent(rec,action,opt){
   const cost=RECRUIT_COSTS[action]||0, cur=intentOf(rec);
   if(cost>R.points+(cur?cur.cost:0)){toast('Not enough recruiting points');return false;}
   if(cur)clearRecIntent(rec);            // replace any existing intent on this recruit (refund first)
-  const m=myMods(), it={action,cost,label:''};
+  const m=myMods(), sm=recScoutMult(rec), it={action,cost,label:''};   // sm = scouting payoff (Phase 33)
   if(action==='scout'){it.scoutDelta=Math.round(30*m.scout);it.label='Scout';}
   else if(action==='pitch'){const angle=opt.angle;
     let mult=rec.prefs[0]===angle?1.6:rec.prefs[1]===angle?1.2:0.7;
     if(angle==='nil')mult*=m.nil; if(angle==='development')mult*=m.devPitch;
-    let gain=8*mult*m.pitch; if(m.homeState&&rec.st===m.homeState)gain*=m.homeBonus;
+    let gain=8*mult*m.pitch*sm; if(m.homeState&&rec.st===m.homeState)gain*=m.homeBonus;
     it.angle=angle;it.gain=gain;it.label='Pitch · '+prefLabel(angle);}
-  else if(action==='visit'){let gain=18*m.visit; if(isGameDayVisit())gain*=1.5;
+  else if(action==='visit'){let gain=18*m.visit*sm; if(isGameDayVisit())gain*=1.5;
     if(m.homeState&&rec.st===m.homeState)gain*=m.homeBonus;
     it.gain=gain;it.label='Visit'+(isGameDayVisit()?' (game day)':'');}
-  else if(action==='promise'){let gain=22*m.visit; if(m.homeState&&rec.st===m.homeState)gain*=m.homeBonus;
+  else if(action==='promise'){let gain=22*m.visit*sm; if(m.homeState&&rec.st===m.homeState)gain*=m.homeBonus;
     it.gain=gain;it.promiseType=opt.type||'playingTime';it.label='Promise';}
   else if(action==='alumni'){const lg=opt.legend; if(!lg||(lg.app||0)<=0){toast('No appearances left for that alum');return false;}
-    it.legendId=lg.id;it.gain=alumniBoost(lg,rec,alumniCoachMod(lg));it.label='Alumni visit · '+lg.name.split(' ').slice(-1);}
+    it.legendId=lg.id;it.gain=alumniBoost(lg,rec,alumniCoachMod(lg))*sm;it.label='Alumni visit · '+lg.name.split(' ').slice(-1);}
   else return false;
   recIntents()[rec.id]=it; R.points-=cost; autosave(); return true;
 }
@@ -4954,7 +4966,7 @@ function recruitSheet(rec){
       <span class="tag accent">${'★'.repeat(rec.stars)} ${rec.stars}-STAR</span>
       <span class="meta">${posName(rec.pos)} · ${rec.st}</span></div>
     <div class="kv"><span class="k">Ceiling</span><span>${sc.text}</span></div>
-    <div class="kv"><span class="k">Scouting</span><span>${rec.scout}%${sc.revealed?'':' · scout to sharpen'}</span></div>
+    <div class="kv"><span class="k">Scouting</span><span>${rec.scout}% · pitches +${Math.round((recScoutMult(rec)-1)*100)}%${sc.revealed?'':' · scout to sharpen'}</span></div>
     <div class="kv"><span class="k">Speed / Strength / Awareness</span><span>${rec.spd} · ${rec.str} · ${rec.awr}</span></div>
     <div class="kv"><span class="k">Work ethic</span><span>${traitRead('mot',rec.id,motVal(rec),rec.scout).text}</span></div>
     <div class="kv"><span class="k">Composure</span><span>${traitRead('comp',rec.id,compVal(rec),rec.scout).text}</span></div>

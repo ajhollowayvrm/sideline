@@ -235,6 +235,33 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('AI weekly budget grows with the scouting facility', b > a, `fac2 ${a} vs fac9 ${b} pts`);
 })();
 
+/* 10) AI scout action (Phase 33): the AI brain spends some budget SCOUTING its targets, raising the shared
+   `rec.scout` read — so heavily-recruited prospects become well-evaluated over a cycle (no player involved),
+   while the scouting payoff (recScoutMult) is pure upside (×1 unscouted → ×1.3 fully scouted). */
+(function () {
+  const seed = 88;
+  const teams = genWorld(seed);
+  const pool = genRecruits(seed, teams);
+  // recruits start fully unscouted
+  check('Recruits start unscouted (scout 0)', pool.every(r => r.scout === 0));
+  for (let w = 1; w <= 15; w++) advanceRecruiting(pool, teams, w, 15, seed, w === 15);
+  const avgScout = g => g.reduce((a, r) => a + r.scout, 0) / g.length;
+  const five = pool.filter(r => r.stars === 5), tail = pool.filter(r => r.stars === 2);
+  // the AI scouts at all (some recruits get raised off zero), concentrated on the most-recruited blue-chips
+  // (the field watches the 5★) far more than the deep 2★ tail (where the player keeps its scouting edge)
+  check('AI scout action: the AI evaluates recruits (raises scout off zero)', pool.some(r => r.scout > 0));
+  check('AI scout action: scouting concentrates on the most-recruited blue-chips', avgScout(five) > avgScout(tail) * 2 && avgScout(five) >= 20, `5★ avg ${avgScout(five).toFixed(0)} vs 2★ avg ${avgScout(tail).toFixed(0)}`);
+  check('AI scout action: scouting is bounded (0–100)', pool.every(r => r.scout >= 0 && r.scout <= 100));
+  // the scouting payoff is pure upside + monotonic
+  const m0 = recScoutMult({ scout: 0 }), m50 = recScoutMult({ scout: 50 }), m100 = recScoutMult({ scout: 100 });
+  check('Scouting payoff: ×1 unscouted, grows to ×1.3, monotonic', Math.abs(m0 - 1) < 1e-9 && m100 > m50 && m50 > m0 && m100 <= 1.3001, `${m0.toFixed(2)}/${m50.toFixed(2)}/${m100.toFixed(2)}`);
+  // determinism: same seed → same scouting picture
+  const a = pool.map(r => r.scout).join(',');
+  const teams2 = genWorld(seed), pool2 = genRecruits(seed, teams2);
+  for (let w = 1; w <= 15; w++) advanceRecruiting(pool2, teams2, w, 15, seed, w === 15);
+  check('AI scout action: deterministic by seed', a === pool2.map(r => r.scout).join(','));
+})();
+
 const passed = results.filter(r => r.pass).length;
 const summary = runCycle(2026);
 const signedPct = (100 * summary.pool.filter(r => r.signed).length / summary.pool.length).toFixed(0);

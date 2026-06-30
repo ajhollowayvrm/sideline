@@ -458,11 +458,17 @@ plain static files so Pages still serves it with zero config.
   queued intent** (selected action highlighted, ✓), a "This week's plan" card (`planCard`) lists every queued
   action + points reserved with clear buttons, the board row shows a ⏳ chip, the Home card shows a queued
   count, and the Program/Team-browser facility lists gained a **Scouting** bar + upgrade. Save **v30**
-  (per-team `fac.scouting`, `S.recruiting.intents`; `migrateState` v29→v30 backfills both); `reclab` → 29
-  (AI concentrated effort, the scouting-budget head-to-head, budget scales with the facility), `qa` → 256
-  (intent queues/replaces/resolves, scouting drives the budget). See "Phase 33 design — recruiting rework"
-  below. *(Open polish: a "use a special to take two actions on one recruit" perk + an AI scout-action for
-  fog — left out of v1 deliberately.)*
+  (per-team `fac.scouting`, `S.recruiting.intents`; `migrateState` v29→v30 backfills both); `reclab` → 35
+  (AI concentrated effort + scout actions, the scouting-budget head-to-head, budget scales with the facility,
+  the scouting payoff), `qa` → 257 (intent queues/replaces/resolves, scouting drives the budget, the AI scout
+  action evaluates blue-chips). Also a **scouting payoff + AI scout action**: scouting now has a recruiting
+  effect for *everyone* — a well-evaluated recruit is recruited harder (`recScoutMult`, ×1.0 unscouted → ×1.3
+  fully scouted, pure upside so the scout=0 baseline is unchanged), folded into both the player's queued-action
+  gains and the AI's pitches; the **AI brain spends a minority of its budget scouting** under-evaluated targets
+  (`REC.AI_SCOUT_*`), raising the **shared** `rec.scout` — so heavily-recruited blue-chips become well-known to
+  everyone (the player gets free intel on them) while the deep tail stays foggy (the player's scouting edge).
+  See "Phase 33 design — recruiting rework" below. *(Open polish: a "use a special to take two actions on one
+  recruit" perk — left out of v1 deliberately.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1706,20 +1712,35 @@ selected action is highlighted with a ✓; pitch/alumni still open their angle/l
 each with a clear (✕) button; the board row shows a **⏳ <action>** chip; the Home recruiting card shows a
 **⏳ N queued** count.
 
+### The scouting payoff + AI scout action
+Scouting was the player's fog-clearer only, so the AI had no reason to scout. To make the AI scout action
+*mean* something, scouting now has a **recruiting-effectiveness payoff for everyone**: `recScoutMult(rec) =
+1 + 0.3 × scout/100` (×1.0 unscouted → ×1.3 fully scouted — **pure upside**, so the scout=0 baseline is
+byte-identical to the pre-payoff envelope) multiplies the interest gain of an action — folded into the
+player's queued pitch/visit/promise/alumni gains (captured at set-time) **and** the AI's `aiActionGain`. So
+both sides have a real **scout-then-pitch tempo** choice (evaluate first → land harder, vs. spam pitches now).
+The **AI brain** spends a minority of its weekly budget scouting (`REC.AI_SCOUT_P` of its under-evaluated
+targets get a `REC.AI_SCOUT_GAIN` bump toward `REC.AI_SCOUT_TGT`, the rest pitch) — raising the **shared**
+`rec.scout`. Because many suitors chase the same blue-chips, **5★/top recruits get well-evaluated** by the
+field (the player gets free intel on them, and his fogged read sharpens), while the **deep 2★/3★ tail stays
+foggy** (the player keeps his scouting edge there — that's where scouting your own targets pays). Tuned so the
+budget stays mostly on pitches (a strong-scouting program still out-recruits a weak one **16→8** head-to-head)
+and convergence holds (~90% signed). No new save field — `rec.scout` already exists.
+
 ### Save & validation
 Save **v30** (per-team `fac.scouting`, `S.recruiting.intents`; `migrateState` v29→v30 backfills the scouting
-level from prestige + an empty intent queue). `reclab` → 29 (the AI concentrated effort doesn't break
-convergence/cap/decommits; a **better-scouting program out-recruits an equal-prestige rival** 22→2 of 24
-head-to-head; the AI weekly budget scales with the facility). `qa` → 256 (scouting drives the budget; setting
-Scout queues + reserves; a later action replaces it — one per recruit/week; resolving applies the queued action
-and clears the queue; the full season cycle still ends in verbals). **Fifteen gates** (Phase 33 extends `reclab`
-+ `qa`).
+level from prestige + an empty intent queue). `reclab` → 35 (the AI concentrated effort + scout actions don't
+break convergence/cap/decommits; a **better-scouting program out-recruits an equal-prestige rival** 16→8 of 24
+head-to-head; the AI weekly budget scales with the facility; the AI scout action concentrates on blue-chips +
+is bounded + deterministic; the `recScoutMult` payoff is monotonic upside). `qa` → 257 (scouting drives the
+budget; setting Scout queues + reserves; a later action replaces it — one per recruit/week; resolving applies
+the queued action and clears the queue; the full season cycle still ends in verbals; the AI scout action
+evaluates blue-chips over a season). **Fifteen gates** (Phase 33 extends `reclab` + `qa`).
 
 ### Deliberately out of scope (v1)
 The **"use a special to take two actions on one recruit"** perk (AJ's parenthetical) is deferred — v1 is a
-strict one-intent-per-recruit. The AI brain only does interest-pushing actions (no AI **scout** action, since
-AI has no fog to clear), and the player's actions still run through the app (the engine doesn't model pitch
-angles for the AI). No per-recruit signing calendar beyond the existing Early/National periods.
+strict one-intent-per-recruit. The AI's pitch math doesn't model specific pitch *angles* (the player's does),
+and there's no per-recruit signing calendar beyond the existing Early/National periods.
 
 ---
 
