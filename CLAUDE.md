@@ -510,8 +510,27 @@ plain static files so Pages still serves it with zero config.
   single intents to arrays + backfills `doubles`). `reclab` → 53 (windows announce/resolve + still converge,
   the tail never windows; `gameRecruitVibe` ordering/bounds; `repeatFalloff` monotonic), `qa` → 262 (double-down
   stacks a 2nd action; the visit cap holds; decay cools a neglected recruit; a window opens over a season). See
-  "Phase 35 design — week-to-week recruiting depth" below. *(Open polish: an AI that also schedules visits /
-  reacts to its own results; a recruit who picks a top-N finalist list.)*
+  "Phase 35 design — week-to-week recruiting depth" below.
+- **Phase 36 — AI recruiting depth + finalist lists.** ✅ DONE. The polish pass that makes the AI match the
+  player's Phase 35 depth, plus the headline drama piece. **(1) Finalist lists** — a maturing, well-recruited
+  recruit (late enough + a lead suitor ≥ `REC.FINAL_BAR`) **narrows to a top-`REC.FINALISTS`(4) shortlist**
+  (`rec.finalists`); from then on **only finalists can grow/flip/win him** (`isFinalist` gates the growth / AI /
+  decommit / commit passes), so cut suitors freeze out of the race. The **finalize (Signing Day) pass ignores
+  the shortlist** (he signs with his leader regardless — this is what keeps convergence ~91%). **(2) AI visits**
+  — the AI brain occasionally makes a big **concentrated push** on its top target (`REC.AI_VISIT_P`, two actions'
+  budget for ~2.2× the gain), a visible swing that mirrors the player's official visit. **(3) AI momentum** —
+  `aiBudget` gains a season-record term (`team.rec`): a hot program recruits harder, a cold one less, centered/
+  bounded and **guarded for rec-less lab teams** so the convergence cycle is unchanged. All three are
+  envelope-safe: finalists only narrow a commit the engine would make (and finalize ignores them), the AI
+  visit/momentum are budget-flavored concentration, and reclab still converges (91%). App/UI: being **cut**
+  blocks offering/working a recruit in the open race (the flip path for a committed-elsewhere verbal is
+  untouched); the report calls out "✅ Made his top 4" / "✂️ Cut from his finalists"; the board row shows a 🎯
+  Finalist / ✂️ Cut chip and the recruit sheet a finalists card. Save **v32** (sparse `rec.finalists` rides in
+  the columnar side-object → no-op migration). `reclab` → 60 (finalists set/respected + cut suitors freeze + a
+  meaningful share get a shortlist + still converge; the AI visit produces an outsized push; momentum responds to
+  the record + is rec-less-neutral), `qa` → 264 (recruits narrow to a shortlist over a season; a cut recruit
+  can't be offered). See "Phase 36 design — AI recruiting depth + finalists" below. *(Open polish: an AI that
+  reacts to *individual* game results like the player's ripple; NIL bidding; an official-visit calendar.)*
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -1895,7 +1914,58 @@ cools a neglected recruit; a commitment window opens over a season). **Fifteen g
 ### Deliberately out of scope (this batch)
 The AI doesn't schedule visits or react to its *own* results (its weekly effort is still the Phase 33 budget +
 the Phase 33 scout action). No top-N **finalist list** per recruit, no NIL bidding, no per-recruit official-
-visit *calendar* beyond the weekly cap. These are the obvious next polish if the loop proves fun.
+visit *calendar* beyond the weekly cap. These are the obvious next polish if the loop proves fun. *(The first
+three landed in Phase 36 below.)*
+
+---
+
+## Phase 36 design — AI recruiting depth + finalist lists
+
+Decided 2026-06-30 with AJ — the polish phase from the Phase 35 note: make the AI match the player's new depth
+(it should schedule visits + react to its results), and add the headline drama the player's loop was missing —
+a recruit **narrowing to a finalist shortlist**. Same constraint: the fenced RECRUIT ENGINE is `reclab`-validated
+for convergence, so every change is envelope-safe.
+
+### Finalists (the headline)
+`rec.finalists` — a shortlist of his top suitors. The new **pass 0** in `advanceRecruiting`: an uncommitted
+recruit who has **matured** (`readiness ≥ REC.FINAL_READY` *and* his lead interest ≥ `REC.FINAL_BAR`, with more
+suitors than the cut size) narrows to his **top `REC.FINALISTS`(4)** by interest, set once. A pure
+`isFinalist(rec,tid)` then gates **every later pass** — growth, the AI brain, decommits, and commitment — so a
+**cut suitor freezes** (no growth) and **cannot win or flip** him. The catch that preserves convergence: the
+**finalize (Signing Day) pass ignores the shortlist** (`last || isFinalist`), so a recruit whose finalists all
+stagnated still signs with his best available suitor instead of going unsigned — freezing the field mid-season
+was dropping ~8% of signings until this. App/UI: being **cut** blocks `offerRecruit`/`setRecIntent` **in the open
+race only** (a committed-elsewhere verbal is still chaseable — the Phase 16 flip path, which the engine already
+restricts to finalists); the report emits "✅ Made his top 4" / "✂️ Cut from his finalists"; the board row shows a
+🎯/✂️ chip and the sheet a finalists card.
+
+### AI visits (matching the player)
+In the AI brain loop: with probability `REC.AI_VISIT_P`, a team makes a big **concentrated push** on its **top
+target** — two actions' budget for ~**2.2×** a normal pitch's gain (a well-scouted target only). It's a visible
+interest spike that mirrors the player's official visit and reads in his report as a rival "pushing hard."
+Budget-bounded (it's concentration, not extra interest), so convergence is unchanged.
+
+### AI momentum (reacting to its results)
+`aiBudget(team)` gains a **season-record** multiplier from `team.rec` — a hot program (high win%) recruits with a
+bigger weekly budget, a cold one with less — **centered at .500, bounded to ±20%**, and **guarded** (`if(team.rec
+&& games≥3)`), so the rec-less synthetic teams in `reclab` are unaffected and the validated convergence cycle is
+byte-identical. So the AI "reacts to its results" at the season level (a hot team is a hot recruiter), available
+in-engine without needing per-game data.
+
+### Save & validation
+Save **v32** — `rec.finalists` rides sparsely in the columnar pool side-object (auto-persist, no codec change);
+`migrateState` v31→v32 is a structural no-op (absent = no shortlist yet; momentum/visits are derived). `reclab`
+→ 60 (finalists narrow to a shortlist + cut suitors freeze + a meaningful share get one + the cycle still
+converges ~91%; the AI visit produces an outsized single-week push; `aiBudget` momentum responds to the record
+and is neutral for rec-less teams), `qa` → 264 (recruits narrow to a shortlist over a season; a cut recruit
+can't be offered/worked). **Fifteen gates** (Phase 36 extends `reclab` + `qa`). Tuning that mattered: freezing
+cut suitors dropped convergence 90→82% until the finalize pass was made to **ignore the shortlist**; settled on
+`FINALISTS=4` / `FINAL_BAR=58` / `FINAL_READY=0.55` → 91%.
+
+### Deliberately out of scope (this phase)
+The AI still doesn't react to *individual* game results the way the player's `applyGameRipple` does (its momentum
+is season-record-level, to avoid a per-game league-wide ripple the lab can't validate). No **NIL bidding**, no
+**official-visit calendar** beyond the weekly cap, no recruit **re-opening** a closed shortlist.
 
 ---
 
@@ -2362,8 +2432,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   (Phase 33 recruiting rework — the scouting facility drives the weekly point budget/AI recruiting budget, and
   the intent queue holds the week's set-but-unresolved actions); v30→v31 converts `S.recruiting.intents` values
   from single objects to **arrays** (≤2 actions/recruit via the Phase 35 double-down) + backfills
-  `S.recruiting.doubles` (sparse `rec.decideWeek`/`rec.hits` ride in the columnar pool side-object, absent-safe).
-  Each step re-derives ratings/ranks where needed.
+  `S.recruiting.doubles` (sparse `rec.decideWeek`/`rec.hits` ride in the columnar pool side-object, absent-safe);
+  v31→v32 is a structural no-op (Phase 36 — `rec.finalists` rides sparsely in the pool side-object, absent = no
+  shortlist yet; AI visits/momentum are derived). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -2399,9 +2470,10 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 }
 
 // Recruit: { id, fn, ln, pos, st, stars, ov, pot, spd,str,awr, mot,comp, rebel, scout, prefs:[primary,secondary],
-//   iv:{ [teamId]: interest }, committedTo: teamId|null, signed, offered, visited, promise, alumni?, decideWeek?, hits?, _flipped? }
+//   iv:{ [teamId]: interest }, committedTo: teamId|null, signed, offered, visited, promise, alumni?, decideWeek?, hits?, finalists?, _flipped? }
 //   decideWeek = a blue-chip's announced commitment week — he commits to the leader then (Phase 35 window).
-//   hits = {action:count} of the player's repeated actions on him (Phase 35 diminishing returns). Both sparse.
+//   hits = {action:count} of the player's repeated actions on him (Phase 35 diminishing returns).
+//   finalists = [teamId] shortlist once he matures — only finalists can win/flip him (Phase 36). All sparse.
 //   alumni = id of the legend who already made an alumni visit (Phase 11; one per recruit, no stacking).
 //   rebel = wants to be THE guy; repelled by a program that's a factory at his position (Phase 13).
 //   committedTo set + signed=false = a VERBAL (flippable until Signing Day); _flipped={from,to} is a

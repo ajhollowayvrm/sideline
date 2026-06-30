@@ -788,7 +788,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:31,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:32,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
@@ -1009,6 +1009,9 @@ function migrateState(state){
     }
     state.version=31;                  // (decideWeek / rec.hits ride sparsely on recruits — absent-safe)
   }
+  if((state.version||1)<32){           // Phase 36: AI recruiting depth + finalist lists. `rec.finalists` (the
+    state.version=32;                  // shortlist) rides sparsely on recruits — absent reads as "no shortlist
+  }                                    // yet" → structural no-op (momentum/visits are derived, nothing to store).
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1434,7 +1437,8 @@ const PITCH_ANGLES=[
 // Phase 33: BASE_POINTS is now a small floor; the weekly budget is dominated by the scouting facility
 // (see weeklyPoints / aiBudget). AI_* drive the AI recruiting brain's concentrated weekly effort.
 const REC={POOL:3400,COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:16,DECOMMIT_GAP:18,
-  AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.3,NEGLECT_DECAY:3.5};
+  AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.3,NEGLECT_DECAY:3.5,
+  AI_VISIT_P:0.25,FINALISTS:4,FINAL_READY:0.55,FINAL_BAR:58};
 
 // Coach archetype/history effects — Phase 4 is the first system to apply them. Returns a bag of
 // multipliers/bonuses used by the weekly economy + the player's recruiting actions.
@@ -1536,7 +1540,11 @@ function genRecruits(seed,teams){
 // (a real "push" on the recruits it most wants + can win), rather than only flat passive growth. So a
 // rival pouring resources into a kid shows up as a visible interest spike, and a strong scouting program
 // recruits harder. Pure + deterministic from the week's rng. Guarded for fac-less lab teams (default 5).
-function aiBudget(team){const sc=(team&&team.fac&&team.fac.scouting)||5;return REC.AI_BASE+sc*REC.AI_PER;}
+function aiBudget(team){const sc=(team&&team.fac&&team.fac.scouting)||5;let b=REC.AI_BASE+sc*REC.AI_PER;
+  // Phase 36 — momentum: a program reacts to its own results. A hot team recruits harder, a cold one less.
+  // Centered at .500 (neutral), bounded; guarded for rec-less lab teams so the convergence cycle is unchanged.
+  if(team&&team.rec){const g=(team.rec.w||0)+(team.rec.l||0);if(g>=3)b*=clamp(0.8+(team.rec.w/g)*0.4,0.8,1.2);}
+  return b;}
 function aiActionGain(team,rec,r){const fit=recruitFit(team,rec);return (4+fit*6)*(0.7+r()*0.6);}
 // Scouting payoff (Phase 33): a well-evaluated recruit is recruited harder — a pitch/visit to a kid you
 // (or the field) know well lands more than blind recruiting. Pure upside (×1.0 unscouted → ×1.3 fully
@@ -1576,11 +1584,23 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
   const counts={};pool.forEach(p=>{if(p.committedTo)counts[p.committedTo]=(counts[p.committedTo]||0)+1;
     if(p._flipped)delete p._flipped;});
   const full=id=>(counts[id]||0)>=REC.CLASS_CAP;
+  const readiness=clamp((week-2)/(weeks-3),0,1);
+  // Phase 36 — once a recruit's FINALISTS are set, only they stay in the race (others are cut). isFinalist
+  // gates every later pass (growth / AI / decommit / commit), so the field narrows the way it does in real life.
+  const isFinalist=(rec,tid)=>!rec.finalists||rec.finalists.indexOf(tid)>=0;
+  // 0) finalists — a MATURING recruit (interest clears a bar, late enough in the cycle) narrows to a shortlist
+  //    of his top suitors. Set once, from the current interest order; from here only finalists can win him.
+  if(!finalize)pool.forEach(rec=>{
+    if(rec.signed||rec.committedTo||rec.finalists||readiness<REC.FINAL_READY)return;
+    const e=Object.entries(rec.iv).filter(([tid])=>byId[tid]).sort((a,b)=>b[1]-a[1]);
+    if(e.length>REC.FINALISTS&&e[0][1]>=REC.FINAL_BAR)rec.finalists=e.slice(0,REC.FINALISTS).map(x=>x[0]);
+  });
   // 1) passive interest growth — for uncommitted prospects AND verbal (unsigned) commits, so rival
-  //    programs keep pushing on a verbal pledge. Signed prospects are locked (no more movement).
+  //    programs keep pushing on a verbal pledge. Signed prospects are locked (no more movement). A recruit
+  //    with finalists set only grows interest for those finalists (the cut suitors freeze).
   pool.forEach(rec=>{
     if(rec.signed)return;
-    for(const tid in rec.iv){const t=byId[tid];if(!t)continue;
+    for(const tid in rec.iv){const t=byId[tid];if(!t||!isFinalist(rec,tid))continue;
       const fit=recruitFit(t,rec);
       rec.iv[tid]=clamp(rec.iv[tid]+(1.0+fit*3.2)*(0.6+r()*0.9),0,100);}
   });
@@ -1591,12 +1611,18 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
   if(!finalize){
     const bySuitor={};
     pool.forEach(rec=>{if(rec.signed)return;
-      for(const tid in rec.iv){if(tid===playerTeamId)continue;(bySuitor[tid]||(bySuitor[tid]=[])).push(rec);}});
+      for(const tid in rec.iv){if(tid===playerTeamId||!isFinalist(rec,tid))continue;(bySuitor[tid]||(bySuitor[tid]=[])).push(rec);}});
     for(const tid in bySuitor){
       const t=byId[tid];if(!t||full(tid))continue;
       let budget=aiBudget(t);
       const targets=bySuitor[tid].filter(rec=>rec.committedTo!==tid)
         .map(rec=>({rec,pr:aiPriority(t,rec)})).sort((a,b)=>b.pr-a.pr);
+      // Phase 36 — official visit: occasionally a team makes a big CONCENTRATED push on its top target
+      // (two actions' budget for ~2.2× the gain), a visible swing that mirrors the player's visit.
+      if(targets.length&&r()<REC.AI_VISIT_P&&budget>=REC.AI_COST*2&&(targets[0].rec.scout||0)>=REC.AI_SCOUT_TGT){
+        const rec=targets.shift().rec;budget-=REC.AI_COST*2;
+        rec.iv[tid]=clamp((rec.iv[tid]||0)+aiActionGain(t,rec,r)*recScoutMult(rec)*2.2,0,100);
+      }
       for(const {rec} of targets){
         if(budget<REC.AI_COST)break;budget-=REC.AI_COST;
         // One action per target this week: SCOUT an under-evaluated recruit (a minority of the time — raises
@@ -1617,7 +1643,7 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
       if(!rec.committedTo||rec.signed)return;
       const cur=rec.iv[rec.committedTo]||0;
       let best=null,bestV=-1;
-      for(const tid in rec.iv){if(tid===rec.committedTo)continue;const t=byId[tid];if(!t||full(tid))continue;
+      for(const tid in rec.iv){if(tid===rec.committedTo||!isFinalist(rec,tid))continue;const t=byId[tid];if(!t||full(tid))continue;
         if(rec.iv[tid]>bestV){bestV=rec.iv[tid];best=tid;}}
       if(best&&(bestV-cur)>=REC.DECOMMIT_GAP){
         const prob=clamp((bestV-cur-REC.DECOMMIT_GAP)/40,0.04,0.5);   // the further ahead, the likelier the flip
@@ -1630,11 +1656,12 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
       }
     });
   }
-  // 3) commitments — verbal during the season; binding only on the finalize (Signing Day) pass
-  const readiness=clamp((week-2)/(weeks-3),0,1), last=!!finalize;
+  // 3) commitments — verbal during the season; binding only on the finalize (Signing Day) pass. Only a
+  //    FINALIST can land him (Phase 36) — cut suitors are out of the running.
+  const last=!!finalize;
   pool.forEach(rec=>{
     if(rec.committedTo)return;
-    let entries=Object.entries(rec.iv).filter(([tid])=>byId[tid]&&!full(tid)).sort((a,b)=>b[1]-a[1]);
+    let entries=Object.entries(rec.iv).filter(([tid])=>byId[tid]&&!full(tid)&&(last||isFinalist(rec,tid))).sort((a,b)=>b[1]-a[1]);
     if(!entries.length)return;
     const [leadId,lead]=entries[0], second=entries[1]?entries[1][1]:0;
     const commit=()=>{rec.committedTo=leadId;if(last)rec.signed=true;counts[leadId]=(counts[leadId]||0)+1;if(rec.decideWeek!=null)delete rec.decideWeek;out.push(rec);};
@@ -3411,6 +3438,7 @@ function recruitPreSnaps(){
     const arr=I[rec.id]||[], main=arr.find(x=>x.action!=='scout')||arr[0];   // the headline action (Phase 35 arrays)
     return {id:rec.id, myIv:rec.iv[me]||0, rank:myRank(rec)||(suitorList(rec).length+1),
       committedToMe:rec.committedTo===me, decideWeek:rec.decideWeek, iv:Object.assign({},rec.iv),
+      finalists:rec.finalists?rec.finalists.slice():null, wasSuitor:rec.iv[me]!=null,   // Phase 36: shortlist state
       intent:main?{action:main.action,angle:main.angle}:null};
   });
 }
@@ -3429,14 +3457,18 @@ function buildRecruitReport(snaps,week,note){
     const flippedAway=s.committedToMe&&rec.committedTo!==me;
     const flippedToMe=!!(rec._flipped&&rec._flipped.to===me);
     const announced=rec.decideWeek!=null&&s.decideWeek==null&&!rec.committedTo;   // Phase 35: just set a decision date
+    const finalNew=rec.finalists&&!s.finalists;                                   // Phase 36: shortlist just set
+    const madeList=finalNew&&rec.finalists.indexOf(me)>=0, cutList=finalNew&&s.wasSuitor&&rec.finalists.indexOf(me)<0;
     const it=s.intent, prefMatch=it&&it.action==='pitch'?(rec.prefs[0]===it.angle?0:rec.prefs[1]===it.angle?1:2):null;
     let r;
-    if(announced)r={text:'🗓️ Announced his decision — commits Week '+rec.decideWeek+(rankNow===1?' (you lead!)':rankNow?' (you’re #'+rankNow+')':''),tone:rankNow===1?'good':'warn'};
+    if(cutList)r={text:'✂️ Cut from his finalists',tone:'bad'};
+    else if(madeList)r={text:'✅ Made his top '+rec.finalists.length+' finalists'+(rankNow===1?' (you lead)':''),tone:'good'};
+    else if(announced)r={text:'🗓️ Announced his decision — commits Week '+rec.decideWeek+(rankNow===1?' (you lead!)':rankNow?' (you’re #'+rankNow+')':''),tone:rankNow===1?'good':'warn'};
     else r=recruitReaction({action:it?it.action:null,angle:it&&it.angle,angleLabel:it&&it.angle?prefLabel(it.angle):'',
       prefMatch,myDelta,rivalAbbr,rivalDelta,rivalLeads,rankNow,rankPrev:s.rank,nSuitors:sl.length,committedMine,flippedToMe,flippedAway});
     // surface a row if you acted on him, or something notable happened
-    if(!(it||committedMine||flippedAway||flippedToMe||announced||rivalDelta>=10||Math.abs(myDelta)>=6))return;
-    const pri=(committedMine||flippedToMe)?0:flippedAway?0:announced?0:r.tone==='warn'?1:r.tone==='good'?2:3;
+    if(!(it||committedMine||flippedAway||flippedToMe||announced||madeList||cutList||rivalDelta>=10||Math.abs(myDelta)>=6))return;
+    const pri=(committedMine||flippedToMe||cutList)?0:flippedAway?0:announced?0:r.tone==='warn'?1:r.tone==='good'?2:3;
     rows.push({id:rec.id,name:rec.fn+' '+rec.ln,pos:rec.pos,stars:rec.stars,text:r.text,tone:r.tone,myDelta,pri});
   });
   rows.sort((a,b)=>a.pri-b.pri||b.stars-a.stars||Math.abs(b.myDelta)-Math.abs(a.myDelta));
@@ -3517,6 +3549,7 @@ function setRecIntent(rec,action,opt){
   opt=opt||{};const R=S.recruiting;
   if(R.signed||rec.signed){toast('Already signed — can’t recruit him');return false;}
   if(rec.committedTo===S.teamId){toast('Already committed to you');return false;}
+  if(rec.finalists&&!rec.committedTo&&rec.finalists.indexOf(S.teamId)<0){toast('✂️ You’ve been cut from his finalists');return false;}   // Phase 36 (open race only)
   if(!onBoard(rec)){toast('Offer a scholarship first');return false;}
   const arr=intentsFor(rec), exIdx=arr.findIndex(x=>x.action===action);
   if(exIdx>=0){removeIntentAt(rec,exIdx);return true;}                 // toggle OFF a queued action
@@ -3587,6 +3620,7 @@ function applyGameRipple(week){
 function offerRecruit(rec){
   if(onBoard(rec))return;
   if(rec.signed){toast('Already signed — can’t recruit him');return;}   // signed = locked (Phase 16)
+  if(rec.finalists&&!rec.committedTo&&rec.finalists.indexOf(S.teamId)<0){toast('✂️ He’s set his finalists — you’re not on the list');return;}   // Phase 36 (open race only)
   if(rec.committedTo&&rec.committedTo!==S.teamId)toast('Committed elsewhere — recruit him to flip it');   // verbal: you can still chase
   if(S.recruiting.board.length>=boardSlots()){toast('Board full — drop a target first');return;}
   const m=myMods(),me=controlled();
@@ -5072,10 +5106,11 @@ function recruitRow(rec){
   const arr=S.recruiting&&S.recruiting.intents?intentsFor(rec):[];   // Phase 33/35: queued action(s) this week
   const qLabel=arr.length?(arr.length>1?arr.length+' actions':arr[0].label):'';
   const dw=(!committed&&rec.decideWeek!=null)?' · <span class="accent">🗓️ Wk '+rec.decideWeek+'</span>':'';   // Phase 35: decision window
+  const fin=(!committed&&rec.finalists)?(rec.finalists.indexOf(S.teamId)>=0?' · <span class="good">🎯 Finalist</span>':' · <span class="bad">✂️ Cut</span>'):'';   // Phase 36
   row.innerHTML=`${recruitStarChip(rec)}
     <div style="flex:1;min-width:0">
       <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rec.fn} ${rec.ln} <span class="dim" style="font-weight:400">${rec.pos} · ${rec.st}</span></div>
-      <div class="meta">${sc.text}${committed?'':' · interest '+mi+'%'}${qLabel?' · <span class="accent">⏳ '+qLabel+'</span>':''}${dw}</div>
+      <div class="meta">${sc.text}${committed?'':' · interest '+mi+'%'}${qLabel?' · <span class="accent">⏳ '+qLabel+'</span>':''}${dw}${fin}</div>
       ${committed?'':'<div class="bar" style="margin-top:5px"><i style="width:'+mi+'%"></i></div>'}</div>
     <div style="text-align:right;flex:none;margin-left:8px">${status}</div>`;
   row.onclick=()=>recruitSheet(rec);
@@ -5187,6 +5222,15 @@ function recruitSheet(rec){
     ib.append(sl);
   }
   body.append(ib);
+  // Phase 36: finalist shortlist — did you make his top N, or get cut?
+  if(rec.finalists&&rec.committedTo!==S.teamId){
+    const inList=rec.finalists.indexOf(S.teamId)>=0;
+    const names=rec.finalists.map(id=>teamById(id)).filter(Boolean).map(tt=>tt.id===S.teamId?'YOU':tt.abbr).join(' · ');
+    const fb=el('div','card');fb.style.cssText='margin-top:8px;text-align:center';fb.dataset.tid='rec-finalists';
+    fb.innerHTML=`<div class="cond ${inList?'good':'bad'}" style="font-weight:800;font-size:15px">${inList?'🎯 You made his top '+rec.finalists.length:'✂️ He cut you from his finalists'}</div>
+      <div class="meta dim" style="margin-top:4px">Finalists: ${names}</div>`;
+    body.append(fb);
+  }
   if(canAct){
     body.append(el('hr','div'));
     if(!onB){

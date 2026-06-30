@@ -308,6 +308,36 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('Diminishing returns: first use is full, repeats pay less, floored', repeatFalloff(0) === 1 && repeatFalloff(1) < 1 && repeatFalloff(2) < repeatFalloff(1) && repeatFalloff(20) >= 0.4, `${repeatFalloff(0)}/${repeatFalloff(1).toFixed(2)}/${repeatFalloff(2).toFixed(2)}`);
 })();
 
+/* 13) Phase 36 — finalists + AI visits + momentum. */
+(function () {
+  // finalists: a maturing, well-recruited recruit narrows to a shortlist; cut suitors freeze and can't win.
+  const teams = []; for (let i = 0; i < 6; i++) teams.push({ id: 'T' + i, prestige: 55 + i * 6 });
+  const rec = { id: 'z', pos: 'WR', st: 'TX', stars: 4, iv: { T0: 78, T1: 70, T2: 64, T3: 58, T4: 50, T5: 44 }, committedTo: null, signed: false, scout: 60 };
+  const pool = [rec];
+  for (let w = 10; w <= 12; w++) advanceRecruiting(pool, teams, w, 15, 5, false, undefined, undefined, null);
+  check('Finalists: a maturing recruit narrows to a top-N shortlist', Array.isArray(rec.finalists) && rec.finalists.length >= 3 && rec.finalists.length < 6, JSON.stringify(rec.finalists));
+  const cut = Object.keys(rec.iv).filter(t => rec.finalists.indexOf(t) < 0);
+  check('Finalists: some suitors get cut', cut.length > 0, cut.join(','));
+  check('Finalists: cut suitors freeze (out of the running)', cut.every(t => rec.iv[t] <= 52), JSON.stringify(cut.map(t => t + ':' + Math.round(rec.iv[t]))));
+  // over a full cycle every committed recruit either had no shortlist or was won by a finalist
+  const cyc = (function () { const tms = genWorld(36), pl = genRecruits(36, tms); for (let w = 1; w <= 15; w++) advanceRecruiting(pl, tms, w, 15, 36, w === 15); return pl; })();
+  const withFinal = cyc.filter(r => r.finalists);
+  check('Finalists: a meaningful share of contested recruits get a shortlist', withFinal.length > 50, withFinal.length + ' had finalists');
+  // AI visit: a well-scouted top target occasionally gets a big concentrated push (beyond any normal week)
+  (function () {
+    const tms = [{ id: 'A', prestige: 80, fac: { scouting: 8 } }]; let maxJump = 0;
+    for (let trial = 0; trial < 60; trial++) {
+      const rr = { id: 'v' + trial, pos: 'WR', st: 'TX', stars: 5, iv: { A: 50 }, committedTo: null, signed: false, scout: 85 };
+      const b = rr.iv.A; advanceRecruiting([rr], tms, 8, 15, trial, false, undefined, undefined, null); maxJump = Math.max(maxJump, rr.iv.A - b);
+    }
+    check('AI visit: a well-scouted top target sometimes gets a big concentrated push', maxJump > 22, 'max weekly gain ' + maxJump.toFixed(0));
+  })();
+  // momentum: a hot program out-budgets a cold one; a rec-less (lab) team is unaffected
+  const bHot = aiBudget({ fac: { scouting: 5 }, rec: { w: 11, l: 1 } }), bCold = aiBudget({ fac: { scouting: 5 }, rec: { w: 1, l: 11 } }), bNeutral = aiBudget({ fac: { scouting: 5 } });
+  check('Momentum: a hot team recruits with a bigger budget than a cold one', bHot > bCold, `hot ${bHot.toFixed(1)} vs cold ${bCold.toFixed(1)}`);
+  check('Momentum: a rec-less team is unaffected (neutral, between hot and cold)', bNeutral > bCold && bNeutral < bHot, bNeutral.toFixed(1));
+})();
+
 const passed = results.filter(r => r.pass).length;
 const summary = runCycle(2026);
 const signedPct = (100 * summary.pool.filter(r => r.signed).length / summary.pool.length).toFixed(0);
