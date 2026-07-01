@@ -47,6 +47,13 @@ check('evaluateMandate returns a detail string with the record', /\d+–\d+/.tes
 check('Meeting the mandate lifts approval, missing drops it', mandateApprovalDelta(true, 'bowl') > 0 && mandateApprovalDelta(false, 'bowl') < 0);
 check('Missing stings at least as much as meeting rewards', Math.abs(mandateApprovalDelta(false, 'bowl')) >= mandateApprovalDelta(true, 'bowl'));
 check('A tougher mandate carries more approval weight', mandateApprovalDelta(true, 'playoff') > mandateApprovalDelta(true, 'progress'));
+// 3b) graded evaluation (the career-balance pass): a respectable miss is 'near' (a light sting), not a full failure
+check('evaluateMandate grades a bowl-eligible miss as "near"', evaluateMandate({ kind: 'conf', tier: 'conf' }, { w: 8, l: 4 }).grade === 'near');
+check('evaluateMandate grades a within-2 wins miss as "near"', evaluateMandate({ kind: 'wins', wins: 8, tier: 'winning' }, { w: 6, l: 6 }).grade === 'near');
+check('evaluateMandate grades a genuine collapse as "miss"', evaluateMandate({ kind: 'conf', tier: 'conf' }, { w: 3, l: 9 }).grade === 'miss');
+check('A "near" miss stings far less than a clean miss', mandateApprovalDelta('near', 'conf') < 0 && mandateApprovalDelta('near', 'conf') > mandateApprovalDelta('miss', 'conf'));
+check('A met season (8-4) HOLDS a good program (bowl mandate)', tierIdx(seasonMandate(84, 3).tier) <= tierIdx('bowl') && evaluateMandate(seasonMandate(84, 3), { w: 8, l: 4 }).met);
+check('Two-year honeymoon (year 2 still eased)', tierIdx(seasonMandate(75, 1).tier) < tierIdx(seasonMandate(75, 3).tier));
 
 // 4) initial contract scales with the job; buyout tracks the money left
 const cLow = initialContract(40), cHi = initialContract(88);

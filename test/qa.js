@@ -651,6 +651,17 @@ function startServer() {
   // resolving the week applies BOTH queued actions (interest rises, scouting sharpens) and clears the queue
   const resolved = await page.evaluate(id => { const r0 = S.recruiting.pool.find(x => x.id === id); const iv0 = r0.iv[S.teamId] || 0, sc0 = r0.scout; applyPlayerIntents(); const r = S.recruiting.pool.find(x => x.id === id); return { iv0, iv1: r.iv[S.teamId] || 0, sc0, sc1: r.scout, cleared: Object.keys(S.recruiting.intents).length }; }, tgt.id);
   check('Recruiting: resolving applies the queued actions (interest + scouting rise, queue clears)', resolved.iv1 > resolved.iv0 && resolved.sc1 > resolved.sc0 && resolved.cleared === 0, JSON.stringify(resolved));
+  // Phase 44: recruiting autopilot — hands off, your staff still builds a real slate of pursuits (so a
+  // deferring program doesn't sign an empty class).
+  const autoPilot = await page.evaluate(() => {
+    const me = S.teamId; S.recruiting.intents = {};
+    S.recruiting.pool.forEach(r => { if (r.committedTo !== me) delete r.iv[me]; });   // wipe my hands-off presence
+    const before = S.recruiting.pool.filter(r => r.iv[me] != null).length;
+    for (let w = 1; w <= 4; w++) autoRecruitWeek(w);
+    const after = S.recruiting.pool.filter(r => r.iv[me] != null).length;
+    return { before, after, on: S.recruiting.autopilot !== false };
+  });
+  check('Phase 44: recruiting autopilot builds a class hands-off (default on)', autoPilot.on && autoPilot.after >= 15, JSON.stringify(autoPilot));
   // Phase 35: decay-on-neglect (the official-visit cap moved to the Phase 38 weekend calendar below)
   const p35 = await page.evaluate(() => {
     const me = S.teamId, R = S.recruiting; R.intents = {};
@@ -803,7 +814,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 39 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 40 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -820,7 +831,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v39)', mig.v === 39, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v40)', mig.v === 40, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -1292,7 +1303,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 39', roPost.version === 39, 'v' + roPost.version);
+  check('Rollover: save version bumped to 40', roPost.version === 40, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);
@@ -1303,7 +1314,9 @@ function startServer() {
   check('Phase 11: no Ring of Honor exceeds the 12-legend cap', roPost.ringValid);
   check('Phase 13: an NFL draft is held at the rollover', roPost.draftYear === roPre.year && roPost.draftPicks > 0 && roPost.draftOrdered, `${roPost.draftPicks} picks, ${roPost.draftYear}`);
   check('Phase 13: draft picks build factory reputations league-wide', roPost.factoryTeams > 0, roPost.factoryTeams + ' teams with a factory');
-  check('Rollover: signed class enrolled as freshmen', roPost.myFresh === roPre.myClass && roPost.myFresh > 0, `${roPost.myFresh} enrolled (class ${roPre.myClass})`);
+  // Phase 44: with the recruiting autopilot the class can exceed what fits, so the scholarship cap (Phase 17)
+  // may trim the weakest signees — most of the signed class enrolls, capped by the ~85 roster limit.
+  check('Rollover: signed class enrolled as freshmen', roPost.myFresh > 0 && roPost.myFresh <= roPre.myClass && roPost.myFresh >= Math.min(roPre.myClass, roPre.myClass * 0.6), `${roPost.myFresh} enrolled (class ${roPre.myClass})`);
   check('Rollover: roster holds at ~84 league-wide', roPost.sizesOk && roPost.myRosterN >= 78 && roPost.myRosterN <= 96, 'mine ' + roPost.myRosterN);
   check('Rollover: last season stats wiped (no p.gs carryover)', roPost.statPlayers === 0, roPost.statPlayers + ' players still carry stats');
   check('Rollover: offseason recap recorded', roPost.report && roPost.report.year === roPost.year && roPost.report.graduated === roPre.mySeniors, `grads ${roPost.report && roPost.report.graduated} vs ${roPre.mySeniors}`);
@@ -1495,6 +1508,16 @@ function startServer() {
       cleared: S.coachSearch === null, approvalReset: S.coach.approval === 52, tenureReset: S.coach.tenure === 0 };
   });
   check('Phase 19c: taking a job switches programs + extends the career résumé', took.switched && took.careerGrew && took.cleared && took.approvalReset && took.tenureReset);
+  // Phase 44: a voluntary poach-up move — a hot coach is courted by a better program and can leave for it.
+  const poach = await page.evaluate(() => {
+    const me = controlled(), before = S.teamId, careerBefore = S.coach.career.length;
+    const bigger = S.world.teams.filter(t => t.prestige > me.prestige + 6 && t.id !== me.id).sort((a, b) => a.prestige - b.prestige)[0];
+    if (!bigger) return { skip: true };
+    S.coach.jobOffers = { year: S.year, openings: [bigger.id], fromName: me.name };
+    takeJob(bigger.id);   // works off jobOffers even with no coachSearch
+    return { switched: S.teamId === bigger.id && S.teamId !== before, careerGrew: S.coach.career.length === careerBefore + 1, offersCleared: S.coach.jobOffers === null };
+  });
+  check('Phase 44: a poach-up offer lets a hot coach move UP voluntarily', poach.skip || (poach.switched && poach.careerGrew && poach.offersCleared), JSON.stringify(poach));
   const retired = await page.evaluate(() => {
     S.coach.pendingFire = true; triggerCoachingSearch(); retireCoach();
     UI.view = 'home'; render();

@@ -191,7 +191,18 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   const solvent = budgets.filter(b => b > 0).length;
   check('Most programs stay solvent over 8 seasons', solvent > w.teams.length * 0.6, `${solvent}/${w.teams.length} solvent`);
   check('No absurd runaway budgets (all under $1B)', budgets.every(b => b < 1e9), `max ${(Math.max(...budgets) / 1e6).toFixed(0)}M`);
+  // Phase 44: the anti-hoard + operating costs keep even a rich, all-winning dynasty from ballooning.
+  check('Budgets stay grounded (no nine-figure idle piles)', budgets.every(b => b < 250e6), `max ${(Math.max(...budgets) / 1e6).toFixed(0)}M`);
   check('Debt trends down across seasons', w.teams.every(t => t.facilityDebt < 80e6));
+})();
+
+/* 8b) prestige drift (Phase 44): standing drifts toward results — bounded, signed, ~zero at expectation */
+(function () {
+  check('Over-performing lifts prestige, under-performing drops it',
+    seasonPrestigeDrift(60, 11, 1) > 0 && seasonPrestigeDrift(60, 2, 10) < 0);
+  check('Prestige drift is bounded (±1.6/yr)',
+    [seasonPrestigeDrift(30, 12, 0), seasonPrestigeDrift(95, 0, 12), seasonPrestigeDrift(50, 6, 6)].every(d => Math.abs(d) <= 1.6));
+  check('A blueblood meeting its (high) expectation barely drifts', Math.abs(seasonPrestigeDrift(90, 10, 2)) < 0.6, seasonPrestigeDrift(90, 10, 2).toFixed(2));
 })();
 
 /* 8) legend coaches (Phase 11): a program's retired great can surface as a candidate for their alma

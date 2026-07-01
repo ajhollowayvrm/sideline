@@ -789,7 +789,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:39,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:40,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      rivalries:null,rivalryHeat:null,records:null,lastRealign:null,
@@ -797,7 +797,7 @@ function finishNewGame(ng){
   // Phase 19b: coach approval + tenure + a per-job career résumé (persist across seasons, not in S.media).
   S.coach.approval=55; S.coach.tenure=0; S.coach.approvalHistory=[]; S.coach.career=[];
   // Phase 42: your opening contract (scaled by the job's prestige); the AD's mandate is set at kickoff.
-  S.coach.contract=initialContract((teamById(S.teamId)||{}).prestige); S.coach.mandate=null; S.coach.extensionOffer=null;
+  S.coach.contract=initialContract((teamById(S.teamId)||{}).prestige); S.coach.mandate=null; S.coach.extensionOffer=null; S.coach.jobOffers=null;   // Phase 44: poach-up job offers
   // Phase 21: install the coach's preferred schemes onto the program he takes over (buy-in on day one;
   // the roster only fits as well as the players' instincts do — a project to recruit/develop into).
   const me=teamById(S.teamId); if(me){if(S.coach.offScheme)me.offScheme=S.coach.offScheme; if(S.coach.defScheme)me.defScheme=S.coach.defScheme;}
@@ -1051,6 +1051,10 @@ function migrateState(state){
   if((state.version||1)<39){           // Phase 43: conference realignment. `team.conf` already exists and is
     state.version=39;                  // mutated in place at rollover; `S.lastRealign` (the last wave, for the
   }                                    // recap) is absent-safe → structural no-op.
+  if((state.version||1)<40){           // Phase 44: career-balance + economy pass. Backfill the poach-up job-offers
+    if(state.coach&&state.coach.jobOffers===undefined)state.coach.jobOffers=null;   // slot (regenerated each offseason).
+    state.version=40;                  // Everything else in the pass is behavior-only (mandate curve, finances, prestige drift).
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1159,6 +1163,7 @@ function startSeason(){
   recomputeRanks(S.world);
   initMedia();                 // Phase 19: a fresh preseason AP poll + an empty news feed
   if(S.coach)S.coach.mandate=seasonMandate(controlled().prestige,S.coach.tenure||0);   // Phase 42: the AD's goal for the year
+  if(S.coach)S.coach.jobOffers=null;   // Phase 44: any un-taken poach-up offers lapse once you kick off
   setWeeklyTask();
   autosave();
 }
@@ -1284,6 +1289,8 @@ function simEngine(home,away,seed,opts){
   // stuffed. Deterministic from the call history → no new rng draw, so determinism/replay are intact.
   const usage={[home.id]:{run:0,pass:0},[away.id]:{run:0,pass:0}};
   const dusage={[home.id]:{base:0,blitz:0,cover:0,run:0},[away.id]:{base:0,blitz:0,cover:0,run:0}};  // Phase 30: defensive-call mix (the AI OC reads it)
+  const dcR=rng((seed^0x51ed2701)>>>0);   // Phase 44: the AI DC's disguise roll draws from a DEDICATED substream, so
+                                          // scheming vs the controlled offense no longer desyncs the main play stream (less variance).
   const KEY_THRESH=0.60, RUN_KEY=7.5, PASS_KEY=6.5;
   const keyedPen=(offId,type)=>{const c=usage[offId],tot=c.run+c.pass;return Math.max(0,((c[type]+4)/(tot+8))-KEY_THRESH);};
   // Phase 25 discipline/penalties: a per-snap pre-snap foul chance from team COMPOSURE (Phase 10) +
@@ -1362,7 +1369,7 @@ function simEngine(home,away,seed,opts){
         if(pick==='blitz'||pick==='cover'||pick==='run')dcall=pick; }
       else if(aiDefVs && off.id===aiDefVs && def.id!==aiDefVs){   // Phase 29: AI DC schemes vs the controlled offense
         const u=usage[off.id], tot=u.run+u.pass, runRate=(u.run+2)/(tot+4);
-        dcall=aiDefCall({down,togo,los,runRate},r()); }
+        dcall=aiDefCall({down,togo,los,runRate},dcR()); }
       const dSack =dcall==='blitz'?0.05:dcall==='cover'?-0.012:0;   // blitz → pressure; cover (3-man rush) → less
       const dComp =dcall==='cover'?-0.10:dcall==='run'?0.06:dcall==='blitz'?-0.03:0;  // cover takes the pass; stack-box opens it
       const dPassY=dcall==='blitz'?5:dcall==='run'?3:dcall==='cover'?-3:0;            // light coverage → bigger gains
@@ -1909,16 +1916,20 @@ const MANDATE_DEFS={
   conf:{kind:'conf',label:'Win the conference'},
   playoff:{kind:'playoff',label:'Make the College Football Playoff'}
 };
-// Which tier a program of this prestige demands. Year one (tenure 0) is a honeymoon — one notch easier.
+// Which tier a program of this prestige demands. The FIRST TWO years are a honeymoon — one notch easier —
+// so early variance (or a rebuild) doesn't spiral a coach out the door. Baseline tiers are deliberately
+// modest: most good programs are asked to reach a bowl, not to win it all every year (only true bluebloods
+// carry conf/playoff mandates), so a solid-but-not-elite season isn't an automatic failure.
 function mandateTier(prestige,tenure){
-  const p=prestige||50; let i=p>=85?4:p>=72?3:p>=58?2:p>=44?1:0;
-  if((tenure||0)<1&&i>0)i--;
+  const p=prestige||50; let i=p>=90?4:p>=87?3:p>=52?2:p>=42?1:0;
+  if((tenure||0)<2&&i>0)i--;
   return MANDATE_TIERS[i];
 }
-// Win threshold for the wins-based tiers (progress scales with the program's floor; winning ≈ 7 of ~12).
+// Win threshold for the wins-based tiers. Kept monotonic with difficulty (progress ≤ winning) so the
+// honeymoon expiring never RAISES the win bar — the old "6→7 after a bad year" ratchet is gone.
 function mandateWins(tier,prestige){
-  if(tier==='progress')return clamp(Math.round((prestige||40)/12)+1,3,6);
-  if(tier==='winning')return 7;
+  if(tier==='progress')return clamp(Math.round((prestige||40)/12)+1,3,5);
+  if(tier==='winning')return 6;
   return 0;
 }
 function seasonMandate(prestige,tenure){
@@ -1926,21 +1937,34 @@ function seasonMandate(prestige,tenure){
   const label=def.kind==='wins'?(tier==='progress'?'Win at least '+wins+' games':'Post a winning season ('+wins+'+ wins)'):def.label;
   return {tier,kind:def.kind,wins,label};
 }
-// Did the coach meet the mandate? ctx: {w, l, bowl, confTitle, playoff, natTitle}. Higher goals subsume lower.
+// Grade the season against the mandate. ctx: {w, l, bowl, confTitle, playoff, natTitle}. Higher goals
+// subsume lower. Returns {met, grade:'met'|'near'|'miss', detail}: a MISS that still cleared a respectable
+// bar (bowl-eligible, or within 2 wins of a wins goal) is graded 'near' — a small sting, not a full failure,
+// so a good-not-great season no longer tanks the seat.
 function evaluateMandate(m,ctx){
-  if(!m)return {met:true,detail:''};
+  if(!m)return {met:true,grade:'met',detail:''};
   ctx=ctx||{};let met=false;
   if(m.kind==='playoff')met=!!(ctx.playoff||ctx.natTitle);
   else if(m.kind==='conf')met=!!(ctx.confTitle||ctx.playoff||ctx.natTitle);
   else if(m.kind==='bowl')met=!!(ctx.bowl||ctx.confTitle||ctx.playoff||(ctx.w||0)>=6);
   else met=(ctx.w||0)>=(m.wins||0);
-  return {met,detail:(met?'Delivered':'Fell short')+' ('+(ctx.w||0)+'–'+(ctx.l||0)+')'};
+  let grade;
+  if(met)grade='met';
+  else{
+    const respectable=!!(ctx.bowl||ctx.confTitle||ctx.playoff||(ctx.w||0)>=6||(m.kind==='wins'&&(ctx.w||0)>=(m.wins||0)-2));
+    grade=respectable?'near':'miss';
+  }
+  return {met,grade,detail:(met?'Delivered':grade==='near'?'Just short':'Fell short')+' ('+(ctx.w||0)+'–'+(ctx.l||0)+')'};
 }
-// The approval swing from meeting/missing the mandate (folded into the season-end settle). Missing a goal
-// stings a bit more than meeting it rewards; a tougher mandate carries more weight. Bounded.
-function mandateApprovalDelta(met,tier){
+// The approval swing from the mandate (folded into the season-end settle). Accepts a grade
+// ('met'|'near'|'miss') — or a boolean for back-compat (true='met', false='miss'). A clean MISS stings
+// (a tougher mandate more); a 'near' is only a light sting; meeting it rewards. Bounded.
+function mandateApprovalDelta(grade,tier){
   const w={progress:4,winning:4,bowl:5,conf:6,playoff:8}[tier]||4;
-  return met?w:-(w+2);
+  const g=grade===true?'met':grade===false?'miss':grade;
+  if(g==='met')return w;
+  if(g==='near')return -Math.max(2,Math.round(w*0.4));
+  return -(w+2);
 }
 // The contract you're handed at a job. A blueblood job is longer + better paid. salary in $.
 function initialContract(prestige){
@@ -2197,12 +2221,29 @@ function resolveFinances(team,year,seed,mult,hcSalary){
   const debt=team.facilityDebt||0;
   const interest=debt*0.08, principal=Math.min(debt, debt*0.18);
   const debtService=interest+principal;
-  const expenses=Math.round((team.payroll||0)+debtService+(hcSalary||0));   // Phase 42: the head coach's salary is a real program cost
+  // Phase 44: operating costs scale with program SIZE (a big program has big overhead — facilities,
+  // travel, support staff), so revenue doesn't all fall to idle surplus. A real recurring sink.
+  const facSum=(fac.stadium||5)+(fac.strength||5)+(fac.training||5)+(fac.academics||5)+(fac.nil||5)+(fac.scouting||5);
+  const ops=Math.round(prestige*130000 + facSum*300000);
+  const expenses=Math.round((team.payroll||0)+debtService+ops+(hcSalary||0));   // Phase 42: the head coach's salary is a real program cost
   const net=revenue-expenses;
-  team.budget=Math.round((team.budget||0)+net);
+  let bud=Math.round((team.budget||0)+net);
+  // Phase 44: soft anti-hoard — cash far above a season's revenue is reinvested (the excess decays),
+  // so a long dynasty can't pile up meaningless nine-figure budgets with nothing to spend on.
+  const cap=revenue*1.5;
+  if(bud>cap)bud=Math.round(cap+(bud-cap)*0.3);
+  team.budget=bud;
   team.facilityDebt=Math.max(0,Math.round(debt-principal));
-  team.lastFinances={revenue,expenses,net,debtService:Math.round(debtService)};
+  team.lastFinances={revenue,expenses,net,ops,debtService:Math.round(debtService)};
   return team.lastFinances;
+}
+// Phase 44: season prestige drift — a program's standing drifts toward its results (two-way mobility:
+// a winner climbs, a chronic loser slips). Bounded + self-limiting (climbing raises the win expectation,
+// so it plateaus). Local win-expectation formula keeps the ECONOMY block self-contained for econlab.
+function seasonPrestigeDrift(prestige,w,l){
+  const games=(w||0)+(l||0); if(games<6)return 0;
+  const exp=clamp(((prestige||50)-25)/65,0.15,0.85)*games;   // = winExpectation*games
+  return clamp(((w||0)-exp)*0.18,-1.6,1.6);
 }
 // Escalating cost to raise a facility from `level` → `level+1`. Caps at 10 (Infinity past it).
 function facilityUpgradeCost(key,level){
@@ -2730,7 +2771,7 @@ function gameApprovalDelta(ctx){
 // Season-end approval swing: wins vs the prestige expectation, plus title bonuses. Bounded.
 function seasonApprovalDelta(ctx){
   const games=(ctx.w||0)+(ctx.l||0), exp=winExpectation(ctx.prestige)*games;
-  let d=((ctx.w||0)-exp)*3;
+  let d=((ctx.w||0)-exp)*2;   // gentler slope (was 3): a modest over/under-shoot no longer whipsaws the seat
   if(ctx.confTitle)d+=6; if(ctx.natTitle)d+=12;
   return clamp(d,-25,25);
 }
@@ -2802,6 +2843,23 @@ function coachOpenings(teams,firedPrestige,seed,n){
     return {id:t.id,w:w*(0.5+r())};
   }).sort((a,b)=>b.w-a.w);
   return scored.slice(0,n||4).map(e=>e.id);
+}
+// A BETTER program courting a successful coach (poach-up — the mirror of coachOpenings). Only fires when
+// he's clearly over-performing (high approval); weighted ABOVE his current job, sweet-spot a real step up,
+// never a step down. So a strong tenure opens the ladder UPWARD, not just firings dropping you down.
+// Deterministic by seed. Pure. Returns [] when he isn't being courted.
+function coachPoachOffers(teams,myPrestige,approval,seed,n){
+  if((approval||0)<70)return [];                          // only a hot commodity gets a call
+  const r=rng((seed^hashStr('poach'+(myPrestige||0)))>>>0);
+  const scored=teams.map(t=>{
+    const above=(t.prestige||50)-(myPrestige||50);        // >0 = a better job than the one you hold
+    let w;
+    if(above<3)w=0;                                        // lateral or below — you wouldn't leave for it
+    else if(above<16)w=clamp(0.5+above*0.02,0,1);         // a real step up — the sweet spot
+    else w=0.12;                                           // a full blueblood — rarely calls for a rising coach
+    return {id:t.id,w:w*(0.5+r())};
+  }).filter(e=>e.w>0).sort((a,b)=>b.w-a.w);
+  return scored.slice(0,n||3).map(e=>e.id);
 }
 // === MEDIA ENGINE (Phase 19) END ===
 
@@ -3443,7 +3501,7 @@ function settleSeasonApproval(){
   const madePlayoff=['firstround','quarterfinal','semifinal','runnerup','champion'].includes(fin);
   const ev=evaluateMandate(m,{w:t.rec.w,l:t.rec.l,bowl:fin==='bowlwin'||fin==='bowlloss',confTitle,playoff:madePlayoff,natTitle});
   let d=seasonApprovalDelta({w:t.rec.w,l:t.rec.l,prestige:t.prestige,confTitle,natTitle});
-  if(m)d+=mandateApprovalDelta(ev.met,m.tier);                 // meeting/missing the AD's goal moves the seat
+  if(m)d+=mandateApprovalDelta(ev.grade,m.tier);               // meeting/nearly-missing/missing the AD's goal moves the seat
   S.coach.approval=approvalUpdate(S.coach.approval==null?50:S.coach.approval,d);
   S.coach.approvalHistory=(S.coach.approvalHistory||[]).concat(S.coach.approval);
   S.coach.tenure=(S.coach.tenure||0)+1;
@@ -3467,8 +3525,21 @@ function settleSeasonApproval(){
     if(S.media)mediaEvent(S.week,'milestone',t.abbr+' parts ways with its head coach',
       (expired&&!slump)?'Your contract expired and '+t.name+' opted not to renew after a '+t.rec.w+'–'+t.rec.l+' season.'
         :'After a disappointing season ('+t.rec.w+'–'+t.rec.l+'), '+t.name+' is moving on.',{color:t.color,teams:[t.id],mine:true});
+  }else{
+    // Career mobility: a strong, mandate-meeting season gets you COURTED by a better program (poach-up).
+    // You choose to leave for it or stay — the ladder now runs upward, not just down through firings.
+    const pool=S.world.teams.filter(x=>x.id!==t.id).map(x=>({id:x.id,prestige:x.prestige}));
+    const offers=ev.met&&S.coach.approval>=70
+      ? coachPoachOffers(pool,t.prestige,S.coach.approval,(S.seed^hashStr('offers'+yr))>>>0,3) : [];
+    if(offers.length){
+      S.coach.jobOffers={year:yr,openings:offers,fromName:t.name};
+      if(S.media){const bs=teamById(offers[0]);mediaEvent(S.week,'milestone',bs.abbr+' is eyeing your coach',
+        'After a '+t.rec.w+'–'+t.rec.l+' season, bigger programs are calling. '+bs.name+' leads the list.',{color:bs.color,teams:[bs.id],mine:true});}
+    }else S.coach.jobOffers=null;
   }
 }
+// Decline the standing poach-up offers and stay put.
+function declineJobOffers(){ if(S.coach)S.coach.jobOffers=null; render(); toast('You’re staying put — for now'); }
 // Phase 42: accept a standing contract-extension offer (fresh years + a raise).
 function acceptExtension(){
   const o=S.coach&&S.coach.extensionOffer,c=S.coach&&S.coach.contract;
@@ -3528,7 +3599,7 @@ function openPortal(){
     });
   });
   advancePortal(pool,views,S.seed,false);                // an opening AI round so interest builds
-  S.portal={year:yr,pool,points:portalPoints(),stage:'open',departures,arrivals:null};
+  S.portal={year:yr,pool,points:portalPoints(),stage:'open',departures,arrivals:null,autopilot:true};   // Phase 44: staff pursues transfers by default
   S.world.teams.forEach(t=>t.ratings=teamRatings(t.roster,t.staff));   // rosters shrank
   recomputeRanks(S.world);
   setPortalTask();autosave();
@@ -3544,9 +3615,25 @@ function pursueTransfer(tr){
   else tr.iv[S.teamId]=clamp(tr.iv[S.teamId]+15,0,100);
   autosave();return true;
 }
+// Phase 44: portal autopilot — your staff pursues incoming transfers to fill the holes you didn't work,
+// so a hands-off program isn't a one-way exit. Modest: targets your biggest needs / best fits, roughly
+// replacing what you lost. Runs before the finalize round so pursued fits can sign.
+function autoPortalPursue(){
+  const P=S.portal; if(!P||P.autopilot===false)return;
+  const me=controlled(), meId=S.teamId, needs=computePortalNeeds(me);
+  const meView={id:meId,prestige:me.prestige,needs};
+  const avail=P.pool.filter(tr=>!tr.committedTo).map(tr=>({tr,fit:portalFit(meView,tr)})).sort((a,b)=>b.fit-a.fit);
+  const want=Math.min((P.departures?P.departures.length:0)+2,10);   // roughly replace what you lost
+  let added=0;
+  for(const {tr} of avail){ if(added>=want)break;
+    if(tr.iv[meId]==null)tr.iv[meId]=clamp(Math.round(20+portalFit(meView,tr)*24),8,62);
+    else tr.iv[meId]=clamp(tr.iv[meId]+15,0,100);
+    added++; }
+}
 // Close the portal: finalize commitments, drop each committed transfer onto his new roster, then move on.
 function closePortal(){
   const P=S.portal; if(!P||P.stage==='closed')return;
+  autoPortalPursue();                                   // Phase 44: staff fills your holes if you didn't work the board
   advancePortal(P.pool,portalTeamViews(),S.seed,true);
   const arrivals=[];
   P.pool.forEach(tr=>{
@@ -3702,6 +3789,12 @@ function rolloverSeason(){
   const carousel=advanceCoachCarousel(S.world,S.coachMarket,S.seed,yr,{controlledId:me,coach:S.coach});
   S.world.teams.forEach(t=>{t.payroll=(t.staff||[]).reduce((s,x)=>s+(x.salary||0),0);});
   decayRivalries();                    // Phase 40: rivalries cool a touch each offseason; heat prunes
+  // Phase 44: prestige drifts toward this year's results (two-way mobility — a G5 that wins climbs, a
+  // blueblood that craters slips). Uses the fractional `_pp` accumulator, applied before ranks/realignment.
+  S.world.teams.forEach(t=>{ if(!t.rec)return;
+    t._pp=(t._pp||0)+seasonPrestigeDrift(t.prestige,t.rec.w,t.rec.l);
+    const inc=t._pp>=1?Math.floor(t._pp):t._pp<=-1?Math.ceil(t._pp):0;
+    if(inc){t.prestige=clamp((t.prestige||50)+inc,20,99);t._pp-=inc;} });
   S.year=(S.year||2026)+1;
   applyRealignment();                  // Phase 43: conference realignment waves (risers get poached up)
   S.world.teams.forEach(t=>{t.rec=emptyRec();t.ratings=teamRatings(t.roster,t.staff);});
@@ -3747,14 +3840,15 @@ function recordStint(){const old=controlled();
   S.coach.career=(S.coach.career||[]).concat({team:old.name,abbr:old.abbr,
     seasons:S.coach.tenure||0,titles:(old.titles||[]).length,confTitles:(old.confTitles||[]).length});}
 // Take one of the open jobs: bank the old stint, switch programs, reset approval/tenure, fresh start.
+// Works both from a firing (S.coachSearch) and from a voluntary poach-up move (S.coach.jobOffers).
 function takeJob(teamId){
-  if(!S.coachSearch)return;
+  if(!S.coachSearch&&!(S.coach&&S.coach.jobOffers))return;
   const nu=teamById(teamId); if(!nu)return;
   recordStint();
   S.teamId=teamId;
   S.coach.approval=52; S.coach.tenure=0; S.coach.approvalHistory=[];
   S.coach.contract=initialContract(nu.prestige); S.coach.mandate=null; S.coach.extensionOffer=null; S.coach.lastMandate=null;   // Phase 42: a fresh deal at the new job
-  S.coachSearch=null;
+  S.coachSearch=null; S.coach.jobOffers=null;
   applyAccent(nu);recomputeRanks(S.world);
   S.task={type:'Media Day',label:S.year+' Media Day',
     note:'A new chapter at '+nu.name+'. Settle in, then kick off the season when you’re ready.'};
@@ -3951,7 +4045,7 @@ function initRecruiting(){
   // doubles = this week's double-down tokens (Phase 35) that let one recruit hold a 2nd action.
   // visitsLeft = the season-long official-visit budget; visitPlan = recruits booked per home-game
   //   weekend (Phase 38 scheduler — official visits are now a calendar, reserved at booking).
-  S.recruiting={cycle:1,points:weeklyPoints(),pool:genRecruits(S.seed,S.world.teams),board:[],signed:false,stage:'open',intents:{},doubles:doublesPerWeek(),visitsLeft:SEASON_VISITS,visitPlan:{},report:null};
+  S.recruiting={cycle:1,points:weeklyPoints(),pool:genRecruits(S.seed,S.world.teams),board:[],signed:false,stage:'open',intents:{},doubles:doublesPerWeek(),visitsLeft:SEASON_VISITS,visitPlan:{},report:null,autopilot:true};   // Phase 44: staff works the board by default
 }
 // Official visits remaining this season — reserved at booking onto a weekend (Phase 38).
 function visitsLeft(){const R=S.recruiting;return (R&&R.visitsLeft==null?SEASON_VISITS:R.visitsLeft);}
@@ -4059,6 +4153,29 @@ function buildRecruitReport(snaps,week,note){
   rows.sort((a,b)=>a.pri-b.pri||b.stars-a.stars||Math.abs(b.myDelta)-Math.abs(a.myDelta));
   S.recruiting.report={week,reactions:rows.slice(0,10),note:note||null};
 }
+// Phase 44: recruiting autopilot — your staff works the board when you don't. Each week it maintains a
+// slate of good-fit pursuits (auto-offering to fill it) and pushes them like a rival program, so a
+// hands-off program still lands a real, below-average class instead of an empty one. Deliberately MODEST
+// (staff-level budget, no coach mods) — an engaged coach who targets manually still out-recruits it. It
+// works directly on `iv` (behind the scenes, no board clutter) and mirrors the AI brain it competes with.
+function autoRecruitWeek(week){
+  const R=S.recruiting; if(!R||R.autopilot===false||R.signed)return;
+  const me=controlled(), meId=S.teamId, pool=R.pool;
+  const isFin=rec=>!rec.finalists||rec.finalists.indexOf(meId)>=0;
+  const mine=pool.filter(rec=>!rec.signed&&rec.iv[meId]!=null&&(!rec.committedTo||rec.committedTo===meId)&&isFin(rec));
+  const TARGET=22;   // keep roughly a class-worth of active pursuits alive
+  if(mine.length<TARGET){
+    const cand=pool.filter(rec=>!rec.signed&&!rec.committedTo&&rec.iv[meId]==null&&(!rec.finalists||rec.finalists.indexOf(meId)>=0))
+      .map(rec=>({rec,fit:recruitFit(me,rec)})).sort((a,b)=>b.fit-a.fit);
+    for(const {rec,fit} of cand){ if(mine.length>=TARGET)break;
+      rec.iv[meId]=Math.max(rec.iv[meId]||0,clamp(Math.round(14+fit*22),8,60)); mine.push(rec); }
+  }
+  let budget=aiBudget(me)*0.85;   // slightly under a focused rival — hands-off is viable, not optimal
+  const targets=mine.filter(rec=>rec.committedTo!==meId).map(rec=>({rec,pr:aiPriority(me,rec)})).sort((a,b)=>b.pr-a.pr);
+  const rr=rng((S.seed^hashStr('auto'+week+meId))>>>0);
+  for(const {rec} of targets){ if(budget<REC.AI_COST)break; budget-=REC.AI_COST;
+    rec.iv[meId]=clamp((rec.iv[meId]||0)+aiActionGain(me,rec,rr)*recScoutMult(rec),0,100); }
+}
 function resolveRecruitingWeek(week){
   if(!S.recruiting||S.recruiting.signed)return [];
   const snaps=recruitPreSnaps();   // Phase 34: capture pre-resolution state for the weekly report
@@ -4066,6 +4183,7 @@ function resolveRecruitingWeek(week){
   (visitPlan()[week]||[]).forEach(id=>actedOn.add(id));   // Phase 38: a recruit you hosted for a visit isn't "neglected"
   const visitNote=applyWeekendVisits(week);   // Phase 38: resolve official visits booked for this home weekend
   applyPlayerIntents();   // Phase 33: your queued actions land first, then the AI brain's, then commitments
+  autoRecruitWeek(week);  // Phase 44: your staff fills out the class on the recruits you didn't personally work
   decayNeglect(actedOn);            // Phase 35: board recruits you ignored cool on you (upkeep matters)
   const rippleNote=applyLeagueRipple(week); // Phase 35/37: every team's Saturday result moves its board (note=yours)
   applyAINil(week);                 // Phase 37: AI programs place NIL bids on the recruits they're chasing
@@ -5163,6 +5281,18 @@ function adContractCard(v){
       (()=>{const b=el('button','btn','Accept extension (+'+o.addYears+' yrs)');b.style.marginTop='8px';b.dataset.tid='accept-extension';
         b.onclick=()=>{acceptExtension();render();};return b;})());
   }
+  // Phase 44: a better program is courting you — leave for it, or stay put.
+  const jo=S.coach.jobOffers;
+  if(jo&&jo.openings&&jo.openings.length&&S.phase!=='Regular Season'){
+    card.append(el('div','muted accent',`📣 Bigger programs are calling after your season.`));
+    jo.openings.forEach(id=>{const nu=teamById(id);if(!nu)return;
+      const b=el('button','btn line',`Take the ${nu.name} job — prestige ${nu.prestige}, ${nu.conf}`);
+      b.style.marginTop='7px';b.dataset.tid='take-offer-'+id;
+      b.onclick=()=>{if(confirm)confirmSheet('Leave '+t.name+' for '+nu.name+'?','A fresh start at a bigger program — your record here is banked to your résumé.',()=>{takeJob(id);render();toast('New job: '+nu.name);});};
+      card.append(b);});
+    const stay=el('button','btn','Stay at '+t.name);stay.style.marginTop='7px';stay.dataset.tid='decline-offers';
+    stay.onclick=()=>declineJobOffers();card.append(stay);
+  }
   v.append(card);
 }
 function pressHomeCard(v){
@@ -5770,6 +5900,16 @@ function renderRecruiting(app){
 }
 // Phase 33: the week's queued recruiting plan — every set intent, the points it reserves, and a
 // reminder that they resolve at the next advance (alongside every rival's actions).
+// Phase 44: the staff-autopilot toggle — your assistants recruit the board when ON (default), so a
+// hands-off week still builds a class; turn OFF for full manual control.
+function autopilotToggle(c){
+  const R=S.recruiting, on=R.autopilot!==false;
+  const t=el('button','btn sm '+(on?'':'line'),(on?'🤖 Staff autopilot: ON':'✋ Full control (autopilot OFF)'));
+  t.style.cssText='margin-top:8px;width:100%';t.dataset.tid='rec-autopilot';
+  t.onclick=()=>{R.autopilot=!on;render();toast(R.autopilot?'Staff will help work the board':'You’re on your own — full control');};
+  c.append(t);
+  if(on){const h=el('div','meta dim','Your assistants fill out the class on recruits you don’t personally work.');h.style.cssText='margin-top:5px;font-size:11px';c.append(h);}
+}
 function planCard(v){
   const R=S.recruiting, ids=Object.keys(R.intents||{});
   const c=el('div','card');c.dataset.tid='rec-plan';c.style.marginTop='10px';
@@ -5778,7 +5918,7 @@ function planCard(v){
   const caps=`<span class="meta dim">${R.points||0} pts · ⚡${R.doubles||0} double${(R.doubles||0)===1?'':'s'} · 🏟️ ${totalBooked()} booked · ${visitsLeft()} left</span>`;
   if(!total){c.innerHTML=`<div class="row spread"><span class="meta dim">This week’s plan</span>${caps}</div>
     <div class="meta" style="margin-top:4px">No actions queued — open a target and set one. They resolve when you advance.</div>`;
-    v.append(c);return;}
+    autopilotToggle(c);v.append(c);return;}
   const reserved=Object.values(R.intents).reduce((s,a)=>s+a.reduce((x,it)=>x+(it.cost||0),0),0);
   c.innerHTML=`<div class="row spread"><span class="meta dim">This week’s plan · ${total} action${total===1?'':'s'} · ${reserved} pts</span></div><div class="row spread" style="margin-top:2px">${caps}</div>`;
   ids.map(recById).filter(Boolean).forEach(rec=>{
@@ -5792,6 +5932,7 @@ function planCard(v){
     row.querySelector('button').onclick=()=>recruitSheet(rec);
     row.append(x);c.append(row);
   });
+  autopilotToggle(c);
   v.append(c);
 }
 // Phase 34 (legibility): last week's board report — a readable line per recruit (what moved + why), so you

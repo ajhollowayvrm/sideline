@@ -142,6 +142,12 @@ const rankOf = (poll, id) => { const e = poll.top.find(x => x.teamId === id); re
   check('coachOpenings is deterministic by seed', JSON.stringify(coachOpenings(teams, 75, 9, 4)) === JSON.stringify(ids));
   check('coachOpenings varies by seed', JSON.stringify(coachOpenings(teams, 75, 3, 4)) !== JSON.stringify(ids));
   check('A short candidate list returns at most what exists', coachOpenings(teams.slice(0, 2), 75, 9, 4).length <= 2);
+  // Phase 44 — poach-up offers (upward mobility): only a hot coach is courted, and only by BETTER jobs.
+  const bigger = []; for (let i = 0; i < 60; i++) bigger.push({ id: 'b' + i, prestige: 20 + i });   // 20..79
+  check('No poach offers for a lukewarm coach', coachPoachOffers(bigger, 50, 60, 5, 3).length === 0);
+  const poach = coachPoachOffers(bigger, 50, 82, 5, 3);
+  check('A hot coach gets courted by better programs', poach.length > 0 && poach.every(id => bigger.find(t => t.id === id).prestige > 50));
+  check('coachPoachOffers is deterministic by seed', JSON.stringify(coachPoachOffers(bigger, 50, 82, 5, 3)) === JSON.stringify(poach));
 })();
 
 const passed = results.filter(r => r.pass).length;

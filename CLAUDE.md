@@ -678,6 +678,32 @@ plain static files so Pages still serves it with zero config.
   frequency, risers poached up into the power tier, bounded, source-floor + poacher-cap respected, a settled
   league produces no moves, Independent never a destination, determinism); `qa` → 296 (a wave moves a rigged
   riser up + changes `team.conf` + records it). See "Phase 43 design — conference realignment" below.
+- **Phase 44 — Career-balance & economy pass.** ✅ DONE. A tuning pass off a multi-season playtest that found
+  a punishing hot seat, runaway budgets, and a recruiting cliff. **Six fixes, all envelope-safe.** **(1) Mandate/
+  hot-seat curve** (CONTRACT engine): baseline mandate tiers lowered (most good programs are asked to *reach a
+  bowl*, not win it all; conf/playoff reserved for true bluebloods), a **two-year honeymoon** (was one), win
+  thresholds made monotonic (the "6→7 after a bad year" ratchet is gone), and **graded evaluation** —
+  `evaluateMandate` now returns `{met, grade:'met'|'near'|'miss'}` where a respectable miss (bowl-eligible / within
+  2 wins) is a **light** sting, not a full failure; `mandateApprovalDelta` takes the grade (boolean back-compat),
+  and `seasonApprovalDelta`'s slope softened (×3→×2). Net: a good-not-great season no longer spirals a coach out.
+  **(2) Recruiting + portal passive floor** (app layer): a **staff autopilot** (`autoRecruitWeek`, default on,
+  toggle on the plan card) auto-offers + pushes a class-worth of good-fit pursuits when you don't, so a hands-off
+  program lands a real (below-average) class instead of an empty one — deliberately modest (staff budget, no coach
+  mods) so an engaged coach still out-recruits it; a matching **portal autopilot** (`autoPortalPursue`) pursues
+  incoming transfers to fill your holes. **(3) Economy sink** (`resolveFinances`): operating costs now scale with
+  program size + a **soft anti-hoard** (cash far above a season's revenue decays), so budgets stay grounded instead
+  of ballooning to nine figures. **(4) Prestige drift** (`seasonPrestigeDrift`, at rollover): a program's standing
+  drifts toward its results (a G5 winner climbs, a blueblood that craters slips) — bounded + self-limiting, so the
+  ladder runs two ways. **(5) Carousel upward mobility** (`coachPoachOffers`): a strong, mandate-meeting season gets
+  you **courted by a better program** — a Home card lets you leave for it (`takeJob` generalized to a voluntary move)
+  or stay. **(6) Variance**: the AI DC's disguise roll (`aiDefCall`) now draws from a **dedicated rng substream**,
+  so scheming vs the controlled offense no longer desyncs the whole play stream (less rng churn in your games).
+  Save **v40** (`S.coach.jobOffers`; `migrateState` v39→v40 backfills it null — everything else is behavior-only).
+  Labs: `contractlab` → 35 (graded eval + honeymoon + softened penalty), `medialab` → 52 (poach-up offers),
+  `econlab` → 36 (anti-hoard + prestige drift), `qa` → 298 (recruiting autopilot builds a class hands-off; a
+  poach-up move works). Validated with a 10-season auto-sim playtest: a blueblood keeps the job + climbs to #1
+  (was fired in 4 yrs), a bottom program shows a survivable rebuild, budgets stay ~$200M (was runaway $257M+),
+  and portal churn is roughly neutral (was a one-way drain). See "Phase 44 design — career-balance pass" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -2533,6 +2559,82 @@ no TV-market / geography model beyond prestige (the "riser gets pulled up" heuri
 
 ---
 
+## Phase 44 design — career-balance & economy pass
+
+Decided 2026-07-01 with AJ, off a multi-season auto-sim playtest ("play a few seasons and see how it
+feels"). The playtest surfaced four concrete problems the deep systems papered over: (1) the hot seat was
+**brutally unforgiving** — an 8-4 blueblood coach fired in 4 years, every career a downward slide; (2)
+**runaway budgets** — cash ballooned to $257M+ with no sink once facilities maxed; (3) a **recruiting
+cliff** — deferring the board signed *zero* while AI teams signed 19-25, hollowing the roster; (4) high
+**single-season variance** with no margin. Six fixes, each **envelope-safe** (a pure recalibration or an
+app-layer/controlled-team-only addition), so the 20 validated gates hold. One save bump (**v40**).
+
+### (1) Mandate + hot-seat curve (CONTRACT engine — pure)
+The root cause: `mandateTier` demanded conf/playoff of good programs *every year* (an 86-prestige team was
+told to make the playoff), `evaluateMandate` was binary met/missed, and the approval slope was steep — so
+a solid-but-not-elite season stacked a season-delta AND a full mandate-miss penalty and bled the seat to a
+firing. Fixes: lower the baseline tiers (`p>=90` playoff · `p>=87` conf · `p>=52` bowl · `p>=42` winning ·
+else progress — most good programs land at **bowl**, met by ≥6 wins), a **two-year honeymoon** (was one),
+monotonic win thresholds (progress ≤ winning, killing the old "6→7 after a bad year" ratchet), **graded
+evaluation** (`evaluateMandate` → `{met, grade:'met'|'near'|'miss'}`; a bowl-eligible / within-2-wins miss
+is `'near'`), a grade-aware `mandateApprovalDelta` (near = `-max(2, round(w·0.4))`; boolean back-compat
+kept for the lab), and a softened `seasonApprovalDelta` slope (×3→×2). `firingDecision` is unchanged (it
+already required tenure≥2 for the two-under-bar path + a <12 meltdown), so the medialab firing checks hold.
+
+### (2) Recruiting + portal passive floor (app layer)
+The AI concentrated-effort pass **skips the player's team** (so the player must act), and the AI only pushes
+recruits it's *already* a suitor on — a hands-off program was a suitor on ~13 of 3,400 and signed 0.
+`autoRecruitWeek` (in `resolveRecruitingWeek`, default `S.recruiting.autopilot!==false`) has your **staff**
+work the board: each week it auto-offers to top-fit uncommitted recruits to maintain ~22 live pursuits, then
+pushes the priorities with a **modest** budget (`aiBudget(me)*0.85`, no coach mods) via the same
+`aiActionGain`/`aiPriority` the AI uses — so a hands-off program lands a real, **below-average** class, but an
+engaged coach targeting manually still out-recruits it. A matching `autoPortalPursue` (in `closePortal`)
+pursues incoming transfers to roughly replace departures, so the portal isn't a one-way exit. Both are
+app-layer + controlled-team-only → the fenced RECRUIT/PORTAL engines + `reclab`/`portallab` are untouched. A
+plan-card toggle (`autopilotToggle`) turns it off for full manual control.
+
+### (3) Economy sink (`resolveFinances`)
+Two additions curb the runaway: an **operating cost** that scales with program size (`prestige·130k +
+Σfac·300k`) so revenue doesn't all fall to idle surplus, and a **soft anti-hoard** — cash above `revenue·1.5`
+decays (excess × 0.3), so a long dynasty can't pile up nine-figure budgets. Both only tighten the books
+(negatives are untouched → the "budget can go negative" econlab check holds), and the `hcSalary=0` default
+path is unchanged. Multi-season budgets now settle ~$200M for a mega-program instead of climbing unbounded.
+
+### (4) Prestige drift (`seasonPrestigeDrift`, at rollover)
+A program's standing drifts toward its results — `((w) − winExpectation·games)·0.18`, bounded ±1.6/yr, applied
+via the fractional `_pp` accumulator before ranks/realignment. **Self-limiting** (climbing raises the win
+expectation, so it plateaus) and two-way (a chronic loser slips), so the league map shifts realistically over a
+dynasty without destabilizing (`rolllab` tests the pure `rolloverRoster` with fixed prestige → unaffected).
+
+### (5) Carousel upward mobility (`coachPoachOffers`, pure — MEDIA engine)
+The mirror of `coachOpenings`: a coach who's **over-performing** (met mandate + approval ≥70) gets **courted by
+a better program** (weighted above his current job, a real step up the sweet spot). `settleSeasonApproval` posts
+`S.coach.jobOffers`; a Home card lets him **leave for it** (`takeJob` generalized to work off a voluntary offer,
+not just a firing) or stay. So the ladder runs upward, not only down through firings.
+
+### (6) Variance (`aiDefCall`)
+The AI DC's disguise roll consumed an `r()` from the main play stream, desyncing (re-rolling) every controlled-
+team game vs the neutral baseline — balanced on average but high-variance. It now draws from a **dedicated rng
+substream** (`dcR`, seeded off the game seed), so scheming vs your offense applies its intended modifier without
+churning the rest of the game. AI-vs-AI is still byte-identical (the DC never fires there), so `simlab` holds.
+
+### Save & validation
+Save **v40** (`S.coach.jobOffers`; `migrateState` v39→v40 backfills it null — everything else is behavior-only).
+`contractlab` → 35 (graded eval, two-year honeymoon, softened penalty), `medialab` → 52 (poach-up offers only
+court a hot coach, only by better jobs), `econlab` → 36 (anti-hoard grounds budgets, prestige drift signed +
+bounded + ~zero at expectation), `qa` → 298 (the recruiting autopilot builds a class hands-off; a poach-up move
+works). **Twenty gates** (Phase 44 extends `contractlab`/`medialab`/`econlab`/`qa`; no new lab — it's a tuning
+pass over existing engines). Validated with a 10-season auto-sim: a blueblood keeps the job + climbs to #1
+(was fired in 4), a bottom program shows a survivable rebuild that trends up, budgets stay grounded ~$200M, and
+portal churn is roughly neutral.
+
+### Deliberately out of scope
+No AI use of the recruiting/portal autopilots (AI already recruits via its own brain); no contract *negotiation*
+(you accept or ignore offers); the poach-up offer is take-it-or-stay (no counter/leverage); prestige drift is
+results-only (no brand/market model). This is a balance pass, not new systems.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -2958,7 +3060,8 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **39**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **40**). v39→v40 (Phase 44) backfills `S.coach.jobOffers=null` (poach-up offers, regenerated
+  each offseason) — the rest of the career-balance/economy pass is behavior-only. v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
