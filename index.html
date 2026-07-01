@@ -789,13 +789,15 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:37,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:38,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      rivalries:null,rivalryHeat:null,records:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // Phase 19b: coach approval + tenure + a per-job career résumé (persist across seasons, not in S.media).
   S.coach.approval=55; S.coach.tenure=0; S.coach.approvalHistory=[]; S.coach.career=[];
+  // Phase 42: your opening contract (scaled by the job's prestige); the AD's mandate is set at kickoff.
+  S.coach.contract=initialContract((teamById(S.teamId)||{}).prestige); S.coach.mandate=null; S.coach.extensionOffer=null;
   // Phase 21: install the coach's preferred schemes onto the program he takes over (buy-in on day one;
   // the roster only fits as well as the players' instincts do — a project to recruit/develop into).
   const me=teamById(S.teamId); if(me){if(S.coach.offScheme)me.offScheme=S.coach.offScheme; if(S.coach.defScheme)me.defScheme=S.coach.defScheme;}
@@ -1040,6 +1042,12 @@ function migrateState(state){
     state.records=state.records||emptyRecords();   // played games — no seeding, like the Ring of Honor).
     state.version=37;
   }
+  if((state.version||1)<38){           // Phase 42: AD expectations + a contract. Backfill a contract scaled by
+    if(state.coach&&!state.coach.contract){        // the current job's prestige; the mandate is set at the next
+      const mt=(state.world&&state.world.teams||[]).find(t=>t.id===state.teamId);   // kickoff (extensionOffer null).
+      state.coach.contract=initialContract(mt&&mt.prestige);state.coach.mandate=null;state.coach.extensionOffer=null;}
+    state.version=38;
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1147,6 +1155,7 @@ function startSeason(){
     S.camp=null;}
   recomputeRanks(S.world);
   initMedia();                 // Phase 19: a fresh preseason AP poll + an empty news feed
+  if(S.coach)S.coach.mandate=seasonMandate(controlled().prestige,S.coach.tenure||0);   // Phase 42: the AD's goal for the year
   setWeeklyTask();
   autosave();
 }
@@ -1881,6 +1890,72 @@ function applyRecord(records,bucket,key,value,meta){
 }
 // === RECORD ENGINE (Phase 41) END ===
 
+// === CONTRACT ENGINE (Phase 42) START ===
+// AD expectations + the coach's contract. Pure (depends only on clamp), so test/contractlab.js validates
+// it offline. Each preseason the AD sets a prestige-scaled MANDATE (make a bowl, win the conference, reach
+// the playoff…); meeting or missing it feeds the existing approval / hot-seat machinery (Phase 19) and
+// governs contract extensions vs. non-renewal. The contract (years / salary / buyout) is a real GM number —
+// the salary is folded into the controlled team's finances (resolveFinances), so a big deal costs the program.
+
+// Mandate tiers, easiest → hardest. Each maps to what "met" means (a win threshold, or a postseason result).
+const MANDATE_TIERS=['progress','winning','bowl','conf','playoff'];
+const MANDATE_DEFS={
+  progress:{kind:'wins',label:'Show progress'},
+  winning:{kind:'wins',label:'Post a winning season'},
+  bowl:{kind:'bowl',label:'Reach a bowl game'},
+  conf:{kind:'conf',label:'Win the conference'},
+  playoff:{kind:'playoff',label:'Make the College Football Playoff'}
+};
+// Which tier a program of this prestige demands. Year one (tenure 0) is a honeymoon — one notch easier.
+function mandateTier(prestige,tenure){
+  const p=prestige||50; let i=p>=85?4:p>=72?3:p>=58?2:p>=44?1:0;
+  if((tenure||0)<1&&i>0)i--;
+  return MANDATE_TIERS[i];
+}
+// Win threshold for the wins-based tiers (progress scales with the program's floor; winning ≈ 7 of ~12).
+function mandateWins(tier,prestige){
+  if(tier==='progress')return clamp(Math.round((prestige||40)/12)+1,3,6);
+  if(tier==='winning')return 7;
+  return 0;
+}
+function seasonMandate(prestige,tenure){
+  const tier=mandateTier(prestige,tenure),def=MANDATE_DEFS[tier],wins=mandateWins(tier,prestige);
+  const label=def.kind==='wins'?(tier==='progress'?'Win at least '+wins+' games':'Post a winning season ('+wins+'+ wins)'):def.label;
+  return {tier,kind:def.kind,wins,label};
+}
+// Did the coach meet the mandate? ctx: {w, l, bowl, confTitle, playoff, natTitle}. Higher goals subsume lower.
+function evaluateMandate(m,ctx){
+  if(!m)return {met:true,detail:''};
+  ctx=ctx||{};let met=false;
+  if(m.kind==='playoff')met=!!(ctx.playoff||ctx.natTitle);
+  else if(m.kind==='conf')met=!!(ctx.confTitle||ctx.playoff||ctx.natTitle);
+  else if(m.kind==='bowl')met=!!(ctx.bowl||ctx.confTitle||ctx.playoff||(ctx.w||0)>=6);
+  else met=(ctx.w||0)>=(m.wins||0);
+  return {met,detail:(met?'Delivered':'Fell short')+' ('+(ctx.w||0)+'–'+(ctx.l||0)+')'};
+}
+// The approval swing from meeting/missing the mandate (folded into the season-end settle). Missing a goal
+// stings a bit more than meeting it rewards; a tougher mandate carries more weight. Bounded.
+function mandateApprovalDelta(met,tier){
+  const w={progress:4,winning:4,bowl:5,conf:6,playoff:8}[tier]||4;
+  return met?w:-(w+2);
+}
+// The contract you're handed at a job. A blueblood job is longer + better paid. salary in $.
+function initialContract(prestige){
+  const p=prestige||50,years=p>=80?5:p>=62?4:3;
+  return {years,yearsLeft:years,salary:Math.round((1.4+(p/100)*6)*1e6)};
+}
+// What the school owes to fire you now (~60% of the money left on the deal).
+function buyoutOf(c){return Math.round(((c&&c.salary)||0)*((c&&c.yearsLeft)||0)*0.6);}
+// An extension offer, or null. Offered when you've MET the mandate and are at least secure — and either the
+// deal is running down (≤2 yrs) or you had a standout year (approval ≥72, a bigger bump).
+function contractExtension(prestige,approval,met,yearsLeft){
+  if(!met||approval<50)return null;
+  const big=approval>=72;
+  if((yearsLeft||0)>2&&!big)return null;
+  return {addYears:big?3:2,raise:big?1.25:1.12,big};
+}
+// === CONTRACT ENGINE (Phase 42) END ===
+
 // === ROLLOVER ENGINE (Phase 5) START ===
 // Pure, deterministic season-rollover model. Depends only on rng/ri/clamp/pick + the data arrays
 // FN/LN/STATES/POS/CLASSES (no DOM, no S, no globals beyond those), so test/rolllab.js can extract
@@ -2059,7 +2134,7 @@ const FAC_BASE={stadium:6e6,strength:2.2e6,training:2.4e6,academics:1.9e6,nil:2.
 // budget += net (cash carries over, can go negative → constrains spending), pays down debt
 // (interest + principal), and stores a lean team.lastFinances for the Program UI / recap.
 // Deterministic: a light seeded jitter keys off (seed, year, team id). Returns lastFinances.
-function resolveFinances(team,year,seed,mult){
+function resolveFinances(team,year,seed,mult,hcSalary){
   const fac=team.fac||{}, prestige=team.prestige||50, rec=team.rec||{w:0,l:0};
   const games=(rec.w||0)+(rec.l||0), winPct=games?rec.w/games:0;
   const confBase=(ECON_CONF_BASE[team.conf]||16)*1e6;
@@ -2073,7 +2148,7 @@ function resolveFinances(team,year,seed,mult){
   const debt=team.facilityDebt||0;
   const interest=debt*0.08, principal=Math.min(debt, debt*0.18);
   const debtService=interest+principal;
-  const expenses=Math.round((team.payroll||0)+debtService);
+  const expenses=Math.round((team.payroll||0)+debtService+(hcSalary||0));   // Phase 42: the head coach's salary is a real program cost
   const net=revenue-expenses;
   team.budget=Math.round((team.budget||0)+net);
   team.facilityDebt=Math.max(0,Math.round(debt-principal));
@@ -3292,16 +3367,44 @@ function enterOffseason(){
 function settleSeasonApproval(){
   if(!S.coach)return;
   const t=controlled(), yr=S.year||2026, champ=((S.awards&&S.awards[S.awards.length-1])||{}).champion;
-  const d=seasonApprovalDelta({w:t.rec.w,l:t.rec.l,prestige:t.prestige,
-    confTitle:(t.confTitles||[]).includes(yr),natTitle:!!(champ&&champ.teamId===t.id)});
+  const natTitle=!!(champ&&champ.teamId===t.id), confTitle=(t.confTitles||[]).includes(yr);
+  // Phase 42: evaluate the AD's mandate for the season that just ended (from the postseason finish).
+  const m=S.coach.mandate, fin=(t.lastPostseason&&t.lastPostseason.finish)||'none';
+  const madePlayoff=['firstround','quarterfinal','semifinal','runnerup','champion'].includes(fin);
+  const ev=evaluateMandate(m,{w:t.rec.w,l:t.rec.l,bowl:fin==='bowlwin'||fin==='bowlloss',confTitle,playoff:madePlayoff,natTitle});
+  let d=seasonApprovalDelta({w:t.rec.w,l:t.rec.l,prestige:t.prestige,confTitle,natTitle});
+  if(m)d+=mandateApprovalDelta(ev.met,m.tier);                 // meeting/missing the AD's goal moves the seat
   S.coach.approval=approvalUpdate(S.coach.approval==null?50:S.coach.approval,d);
   S.coach.approvalHistory=(S.coach.approvalHistory||[]).concat(S.coach.approval);
   S.coach.tenure=(S.coach.tenure||0)+1;
-  // Phase 19c: a sustained slump ends the tenure — flagged here, acted on after the league rolls over.
-  if(firingDecision(S.coach.approvalHistory,t.prestige,S.coach.tenure)){
-    S.coach.pendingFire=true;
-    if(S.media)mediaEvent(S.week,'milestone',t.abbr+' parts ways with its head coach','After a disappointing season ('+t.rec.w+'–'+t.rec.l+'), '+t.name+' is moving on.',{color:t.color,teams:[t.id],mine:true});
+  if(m){S.coach.lastMandate={label:m.label,met:ev.met,detail:ev.detail,year:yr};}   // for the offseason recap
+  // Phase 42: contract — a year ticks off; a strong, mandate-meeting season earns an extension offer.
+  const c=S.coach.contract;
+  if(c){
+    c.yearsLeft=Math.max(0,(c.yearsLeft||0)-1);
+    const ext=contractExtension(t.prestige,S.coach.approval,ev.met,c.yearsLeft);
+    if(ext){
+      S.coach.extensionOffer={addYears:ext.addYears,years:(c.years||0)+ext.addYears,salary:Math.round((c.salary||0)*ext.raise),big:ext.big};
+      if(S.media)mediaEvent(S.week,'milestone',t.abbr+' offers its coach an extension',
+        'After a '+t.rec.w+'–'+t.rec.l+' season, '+t.name+' wants to lock you up for '+ext.addYears+' more years.',{color:t.color,teams:[t.id],mine:true});
+    }
   }
+  // Firing: a sustained slump (Phase 19c) OR an expired contract the school declined to renew (Phase 42).
+  const slump=firingDecision(S.coach.approvalHistory,t.prestige,S.coach.tenure);
+  const expired=c&&c.yearsLeft<=0&&!S.coach.extensionOffer;
+  if(slump||expired){
+    S.coach.pendingFire=true;S.coach.fireReason=slump?'slump':'expired';
+    if(S.media)mediaEvent(S.week,'milestone',t.abbr+' parts ways with its head coach',
+      (expired&&!slump)?'Your contract expired and '+t.name+' opted not to renew after a '+t.rec.w+'–'+t.rec.l+' season.'
+        :'After a disappointing season ('+t.rec.w+'–'+t.rec.l+'), '+t.name+' is moving on.',{color:t.color,teams:[t.id],mine:true});
+  }
+}
+// Phase 42: accept a standing contract-extension offer (fresh years + a raise).
+function acceptExtension(){
+  const o=S.coach&&S.coach.extensionOffer,c=S.coach&&S.coach.contract;
+  if(!o||!c)return;
+  c.years=o.years;c.yearsLeft=(c.yearsLeft||0)+o.addYears;c.salary=o.salary;
+  S.coach.extensionOffer=null;autosave();toast('📝 Contract extended — +'+o.addYears+' years');
 }
 // Early Signing Period: every recruit already committed (a verbal) puts pen to paper now. The rest stay
 // open for one last push before National Signing Day. Grants a final offseason recruiting-points budget.
@@ -3498,7 +3601,8 @@ function rolloverSeason(){
   const arrived=(S.portal&&S.portal.arrivals)||[];      // who you signed out of it
   // (A) Finances settle once a year for EVERY team (uses last season's record, before it resets).
   const yr=S.year||2026;
-  S.world.teams.forEach(t=>resolveFinances(t,yr,S.seed,t.id===me?mgrFinanceMult():1));  // Manager runs a tighter books
+  const myHcSalary=(S.coach&&S.coach.contract&&S.coach.contract.salary)||0;   // Phase 42: your salary hits your program's books
+  S.world.teams.forEach(t=>resolveFinances(t,yr,S.seed,t.id===me?mgrFinanceMult():1,t.id===me?myHcSalary:0));  // Manager runs a tighter books
   let summary=null,myInducted=[],allGrads=[];
   S.world.teams.forEach(t=>{
     const res=rolloverRoster(t.roster,signeesBy[t.id]||[],t.prestige,r,{rateFor:p=>devRateFor(t,p)});
@@ -3549,6 +3653,7 @@ function rolloverSeason(){
     draft:{count:myPicks.length,top:myPicks[0]?myPicks[0].pick:null,names:myPicks.slice(0,3).map(p=>p.name+' ('+p.pos+', #'+p.pick+')')},
     camp:S.camp?{name:campPlan(S.camp.plan).name,injured:(S.camp.injured||[]).map(i=>i.name+' ('+i.pos+', '+i.weeks+'wk)')}:null,
     redshirted:summary?(summary.redshirted||[]).map(p=>p.fn+' '+p.ln+' ('+p.pos+', now '+p.yr+')'):[],   // Phase 39
+    mandate:(S.coach&&S.coach.lastMandate)?S.coach.lastMandate:null,   // Phase 42: did you meet the AD's goal?
     inducted:myInducted.map(l=>({name:l.name,pos:l.pos,tier:l.tier,stature:l.stature}))};
   if(S.coach&&S.coach.pendingFire)triggerCoachingSearch();   // Phase 19c: you were let go — find a new job or retire
   autosave();
@@ -3576,6 +3681,7 @@ function takeJob(teamId){
   recordStint();
   S.teamId=teamId;
   S.coach.approval=52; S.coach.tenure=0; S.coach.approvalHistory=[];
+  S.coach.contract=initialContract(nu.prestige); S.coach.mandate=null; S.coach.extensionOffer=null; S.coach.lastMandate=null;   // Phase 42: a fresh deal at the new job
   S.coachSearch=null;
   applyAccent(nu);recomputeRanks(S.world);
   S.task={type:'Media Day',label:S.year+' Media Day',
@@ -4496,6 +4602,7 @@ function renderHome(app){
   };
   task.append(adv);v.append(task);
   approvalStrip(v);                          // Phase 19b: approval + hot-seat read
+  adContractCard(v);                         // Phase 42: the AD's mandate + your contract (+ extension offers)
   if(inSeason)pressHomeCard(v);              // weekly press conference (optional)
   if(inChamp)champHomeCard(v);
   if(inPost)postseasonHomeCard(v);
@@ -4535,10 +4642,12 @@ function renderHome(app){
       (o.camp.injured&&o.camp.injured.length?`<div class="muted bad" style="font-size:12px;margin-top:2px">🩹 Camp injuries: ${o.camp.injured.join(', ')}</div>`:''):'';
     // Phase 39: players who took a redshirt this year (preserved a year of eligibility)
     const rs=o.redshirted&&o.redshirted.length?`<div class="muted" style="font-size:12px;margin-top:6px">🔴 Redshirted: ${o.redshirted.join(', ')}</div>`:'';
+    // Phase 42: did you meet the AD's mandate for the year?
+    const man=o.mandate?`<div class="row spread" style="margin-top:4px"><span>AD mandate</span><span class="cond ${o.mandate.met?'good':'bad'}" style="font-weight:800">${o.mandate.met?'✓ Met':'✗ Missed'}</span></div><div class="muted" style="font-size:12px;margin-top:1px">${o.mandate.label} — ${o.mandate.detail}</div>`:'';
     rc.innerHTML=`<div class="meta dim" style="margin-bottom:6px">Offseason recap</div>
       <div class="row spread"><span>Seniors graduated</span><span class="cond" style="font-weight:800">${o.graduated}</span></div>
       <div class="row spread"><span>Recruits enrolled</span><span class="cond" style="font-weight:800">${o.tracked}</span></div>
-      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${cmp}${pst}${drf}${fin}${arr}${dep}${poa}${rs}${ind}`;
+      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${man}${cmp}${pst}${drf}${fin}${arr}${dep}${poa}${rs}${ind}`;
     v.append(rc);
   }
   if(inSeason||over){const sb=el('button','btn line','Season \u00b7 schedule & standings');sb.style.marginTop='10px';
@@ -4955,6 +5064,32 @@ function approvalStrip(v){
     <div class="bar" style="margin-top:6px"><i style="width:${a}%;background:${col}"></i></div>
     <div class="row spread" style="margin-top:8px"><span class="meta dim">Locker room</span><span class="meta">${moraleMood(mor)} ${mor>=58?'buzzing':mor>=42?'steady':'restless'} (${mor})</span></div>`;
   v.append(c);
+}
+// Phase 42: the AD's season mandate + the coach's contract, with any standing extension offer to accept.
+function adContractCard(v){
+  if(!S.coach||!S.coach.contract)return;
+  const t=controlled(),c=S.coach.contract,m=S.coach.mandate,o=S.coach.extensionOffer;
+  v.append(el('h2','sec','AD & Contract'));
+  const card=el('div','card');card.dataset.tid='ad-contract';
+  let html='';
+  if(m){
+    const rec=t.rec.w+'–'+t.rec.l;
+    // a live "on track?" read during the season for the win-threshold mandates
+    let track='';
+    if(m.kind==='wins'){const need=Math.max(0,(m.wins||0)-t.rec.w);
+      track=t.rec.w>=m.wins?' <span class="good">✓ met</span>':(S.phase==='Regular Season'?' <span class="dim">('+need+' to go)</span>':'');}
+    html+=`<div class="row spread"><span class="meta dim">AD expectation · ${S.year||2026}</span><span class="meta">${rec}${track}</span></div>
+      <div class="cond" style="font-size:16px;font-weight:800;margin-top:2px">${m.label}</div>`;
+  }else html+=`<div class="meta dim">The AD sets this year’s goal at kickoff.</div>`;
+  html+=`<div class="row spread" style="margin-top:9px"><span class="meta dim">Contract</span><span class="cond" style="font-weight:700">${c.yearsLeft} yr${c.yearsLeft===1?'':'s'} left · ${money(c.salary)}/yr</span></div>
+    <div class="row spread" style="margin-top:2px"><span class="meta dim">Buyout</span><span class="meta">${money(buyoutOf(c))}</span></div>`;
+  card.innerHTML=html;
+  if(o){
+    card.append(el('div','muted good',`📝 ${t.name} wants to extend you — ${o.years} yrs total, ${money(o.salary)}/yr.`),
+      (()=>{const b=el('button','btn','Accept extension (+'+o.addYears+' yrs)');b.style.marginTop='8px';b.dataset.tid='accept-extension';
+        b.onclick=()=>{acceptExtension();render();};return b;})());
+  }
+  v.append(card);
 }
 function pressHomeCard(v){
   const p=currentPress();if(!p)return;

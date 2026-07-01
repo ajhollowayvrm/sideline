@@ -439,6 +439,47 @@ function startServer() {
   check('Phase 41: rollover-time capture sets season + career records', rec.seasonOk && rec.careerOk);
   check('Phase 41: the Record Book view renders with a records card', rec.viewShown && rec.gameCardShown);
 
+  // ---------- PHASE 42: AD expectations & contract ----------
+  const con = await page.evaluate(() => {
+    const t = controlled();
+    const savedCoach = JSON.parse(JSON.stringify(S.coach));
+    const savedRec = JSON.parse(JSON.stringify(t.rec));
+    const savedPost = t.lastPostseason ? JSON.parse(JSON.stringify(t.lastPostseason)) : null;
+    const c0 = S.coach.contract, m0 = S.coach.mandate;
+    const hasContract = !!(c0 && c0.years > 0 && c0.salary > 0 && c0.yearsLeft > 0 && buyoutOf(c0) > 0);
+    const hasMandate = !!(m0 && m0.label && m0.tier);              // set at kickoff
+    // extension flow: a met mandate + a great record + a short, secure deal → an offer you can accept
+    S.coach.mandate = { tier: 'winning', kind: 'wins', wins: 3, label: 'test mandate' };
+    S.coach.contract = { years: 3, yearsLeft: 1, salary: 4e6 };
+    S.coach.extensionOffer = null; S.coach.approval = 70; S.coach.tenure = 3; S.coach.approvalHistory = [70, 70];
+    t.rec = { w: 11, l: 1, cw: 8, cl: 0, pf: 400, pa: 100, streak: 5 }; t.lastPostseason = null;
+    settleSeasonApproval();
+    const met = !!(S.coach.lastMandate && S.coach.lastMandate.met);
+    const offered = !!S.coach.extensionOffer;
+    const yl0 = S.coach.contract.yearsLeft;
+    if (offered) acceptExtension();
+    const extended = S.coach.contract.yearsLeft > yl0 && !S.coach.extensionOffer;
+    // a MISSED mandate on an expiring deal flags a firing (not renewed)
+    S.coach.contract = { years: 3, yearsLeft: 1, salary: 4e6 }; S.coach.extensionOffer = null;
+    S.coach.approval = 40; S.coach.approvalHistory = [40, 40]; S.coach.pendingFire = false;
+    S.coach.mandate = { tier: 'bowl', kind: 'bowl', label: 'reach a bowl' };
+    t.rec = { w: 3, l: 9, cw: 1, cl: 7, pf: 150, pa: 380, streak: -3 }; t.lastPostseason = { finish: 'none' };
+    settleSeasonApproval();
+    const firedOnMiss = !!S.coach.pendingFire;
+    // restore live state so the season flow that follows is untouched
+    S.coach = savedCoach; t.rec = savedRec; t.lastPostseason = savedPost;
+    UI.view = 'home'; render();
+    const cardShown = !!document.querySelector('[data-tid="ad-contract"]');
+    UI.view = 'home';
+    return { hasContract, hasMandate, met, offered, extended, firedOnMiss, cardShown };
+  });
+  check('Phase 42: a contract (years/salary/buyout) is set at new game', con.hasContract);
+  check('Phase 42: the AD sets a season mandate at kickoff', con.hasMandate);
+  check('Phase 42: meeting the mandate is recorded + earns an extension offer', con.met && con.offered);
+  check('Phase 42: accepting the extension adds years + clears the offer', con.extended);
+  check('Phase 42: missing the mandate on an expiring deal triggers non-renewal', con.firedOnMiss);
+  check('Phase 42: the AD & Contract card renders on Home', con.cardShown);
+
   // advancing now opens the watch-then-commit viewer for your game; skip + commit each week.
   // bye weeks advance directly (no viewer). Capture the first watched game to verify its score
   // equals the committed result (the replay is faithful, not a re-roll).
@@ -732,7 +773,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 37 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 38 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -749,7 +790,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v37)', mig.v === 37, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v38)', mig.v === 38, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -1221,7 +1262,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 37', roPost.version === 37, 'v' + roPost.version);
+  check('Rollover: save version bumped to 38', roPost.version === 38, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);

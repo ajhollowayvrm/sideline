@@ -21,7 +21,8 @@
     "camplab": "node test/camplab.js",
     "visitlab": "node test/visitlab.js",
     "rivalrylab": "node test/rivalrylab.js",
-    "recordlab": "node test/recordlab.js"
+    "recordlab": "node test/recordlab.js",
+    "contractlab": "node test/contractlab.js"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

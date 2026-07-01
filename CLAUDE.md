@@ -634,6 +634,30 @@ plain static files so Pages still serves it with zero config.
   + meta); `qa` → 286 (fresh book empty at new game, a monster game sets + reports the single-game record, the
   team points record, rollover-time season + career capture, the view renders). See "Phase 41 design — the
   record book" below.
+- **Phase 42 — AD expectations & a contract.** ✅ DONE. Frames the existing hot seat (Phase 19b/c) with explicit,
+  legible stakes: each preseason the **AD sets a mandate**, and you coach on a real **contract**. Pure fenced
+  **`CONTRACT ENGINE`** (depends only on `clamp`): `seasonMandate(prestige,tenure)` — a prestige-scaled goal
+  (progress → winning → bowl → conference → playoff; year one is a **honeymoon**, one tier easier);
+  `evaluateMandate(m,ctx)` — met/missed from the season (a playoff goal needs a berth, a bowl goal is met by
+  ≥6 wins, higher goals subsume lower); `mandateApprovalDelta` — the approval swing (missing stings more than
+  meeting rewards; a tougher goal weighs more), **folded into the existing `settleSeasonApproval`** so the
+  mandate drives the seat; `initialContract(prestige)` (years + salary, a blueblood job pays more/longer),
+  `buyoutOf(c)`, and `contractExtension(prestige,approval,met,yearsLeft)` (offered only when you're
+  overperforming — met + secure + the deal running down / a standout year). App: `S.coach.contract`/`mandate`/
+  `extensionOffer`/`lastMandate`; the mandate is set at kickoff (`startSeason`), evaluated at season end
+  (`settleSeasonApproval` → approval move + `lastMandate` for the recap), a year ticks off the deal, and a
+  strong season posts an **extension offer** (`acceptExtension` adds years + a raise); an **expired contract
+  the school declines to renew** is a firing path alongside the Phase 19c slump (`fireReason`). The **head
+  coach's salary is now a real program cost** — `resolveFinances` gained an optional `hcSalary` (default 0 →
+  `econlab` byte-identical) that the controlled team pays, so a big deal constrains the budget. UI: an **AD &
+  Contract** card on Home (the mandate + a live "on track?" read, the contract's years/salary/buyout, and an
+  **Accept extension** button when offered) + a mandate met/missed line in the offseason recap. Save **v38**
+  (`S.coach.contract`/`mandate`/`extensionOffer`; `migrateState` v37→v38 backfills a prestige-scaled contract
+  for the current job). New gate `npm run contractlab` (23 checks: mandate scales with prestige + softens year
+  one, evaluate reads a season, approval swing signs/weights, contract scales + buyout tracks the money,
+  extension offered only when overperforming); `qa` → 292 (contract at new game, mandate at kickoff, meeting it
+  earns + accepts an extension, missing on an expiring deal triggers non-renewal, the card renders). See
+  "Phase 42 design — AD expectations & contract" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -2378,6 +2402,59 @@ not the lineage); no coaching/streak records beyond team season wins; no single-
 
 ---
 
+## Phase 42 design — AD expectations & contract
+
+Decided 2026-06-30 with AJ. The hot seat (Phase 19b/c) already fired coaches on *sustained* failure, but the
+pressure was implicit — an approval meter, no stated goal. Phase 42 makes the stakes **legible**: the AD hands
+you a **season mandate** each preseason and you coach on a **contract** (years / salary / buyout). Meeting or
+missing the mandate flows through the *existing* approval machinery (no parallel system), and the contract
+adds a real GM number — your salary now costs the program. House discipline: a pure fenced engine + node lab
+before UI, a save bump, all gates green.
+
+### Pure `CONTRACT ENGINE` (fenced, lab before UI)
+`// === CONTRACT ENGINE (Phase 42) START/END ===` (depends only on `clamp`), so `test/contractlab.js`
+validates it offline:
+- `seasonMandate(prestige, tenure)` — the AD's goal, prestige-scaled across five tiers (`progress → winning →
+  bowl → conf → playoff`). **Year one is a honeymoon** (one tier easier). Returns `{tier, kind, wins?, label}`.
+- `evaluateMandate(m, ctx)` — met/missed from `{w,l,bowl,confTitle,playoff,natTitle}`; a playoff goal needs a
+  berth, a conf goal is satisfied by a playoff berth, a bowl goal by ≥6 wins, a wins goal by the threshold
+  (higher goals subsume lower results). Returns `{met, detail}`.
+- `mandateApprovalDelta(met, tier)` — the approval swing (missing stings a bit more than meeting rewards; a
+  tougher mandate weighs more). **Folded into `settleSeasonApproval`** on top of the existing
+  `seasonApprovalDelta`, so the mandate drives the same hot seat — no new firing system.
+- `initialContract(prestige)` — `{years, yearsLeft, salary}` (a blueblood job pays more + runs longer);
+  `buyoutOf(c)` (~60% of the money left); `contractExtension(prestige, approval, met, yearsLeft)` — an offer
+  only when you're **overperforming** (met the mandate + at least secure, and the deal is running down or you
+  had a standout year → a bigger bump).
+
+### App layer
+- State on `S.coach`: `contract`, `mandate` (set at **kickoff**, `startSeason`), `extensionOffer`, `lastMandate`
+  (for the recap), `fireReason`.
+- `settleSeasonApproval` (season end): build the season `ctx` from `t.rec` + `t.lastPostseason.finish` +
+  `confTitles`, `evaluateMandate`, fold `mandateApprovalDelta` into approval, tick a year off the deal, post an
+  `extensionOffer` when `contractExtension` fires, and flag a firing on the existing slump **or** an **expired,
+  un-renewed contract** (`fireReason='expired'`). `acceptExtension()` applies the offer (fresh years + raise).
+- `finishNewGame` / `takeJob` hand you a fresh `initialContract` (scaled by the job's prestige).
+- **Finances:** `resolveFinances` gained an optional `hcSalary` (default 0) added to expenses; `rolloverSeason`
+  passes the controlled coach's contract salary — so your deal is a real cost. Default 0 keeps `econlab`
+  byte-identical.
+
+### UI & save
+An **AD & Contract** card on Home (below the approval strip): the mandate + a live "on track?" read (for
+wins-based goals), the contract's years-left / salary / buyout, and an **Accept extension** button when one's
+on the table; a mandate met/missed line in the offseason recap; media events for the extension offer + the
+firing. Save **v38** (`S.coach.contract`/`mandate`/`extensionOffer`; `migrateState` v37→v38 backfills a
+prestige-scaled contract for the current job — the mandate is set at the next kickoff). New gate
+`npm run contractlab` (23 checks); `qa` → 292. **Nineteen gates** now (adds `contractlab`).
+
+### Deliberately out of scope
+No contract **negotiation** (you accept or ignore the AD's offer — no haggling salary/years); no **buyout
+payment** flow when you leave for another job (the buyout is a displayed number + a firing-cost concept, not a
+deducted transaction); mandates are **prestige/tenure-derived**, not per-AD personalities or multi-goal
+bundles; the mandate feeds the existing approval meter rather than a separate "job security" track.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -2803,7 +2880,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **37**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **38**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -2850,8 +2927,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   sparse `p.rs`: `'on'`=redshirting this season, `'used'`=already redshirted; absent reads as "never redshirted,
   available"); v35→v36 seeds `S.rivalries` (the world's famous rivalries — abbr-resolved, persist across seasons)
   + `S.rivalryHeat={}` (Phase 40 rivalries & trophies; both ride plainly on `S`, no codec change); v36→v37
-  backfills an empty `S.records` (Phase 41 all-time record book — records accrue from played games, no seeding).
-  Each step re-derives ratings/ranks where needed.
+  backfills an empty `S.records` (Phase 41 all-time record book — records accrue from played games, no seeding);
+  v37→v38 backfills a prestige-scaled `S.coach.contract` (Phase 42 AD expectations & contract — `mandate`/
+  `extensionOffer` set at the next kickoff / season end). Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -2867,7 +2945,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 ```
 {
   version, seed, createdAt, lastSaved,
-  coach: { first, last, homeState, archetype, history, offScheme, defScheme, approval, tenure, approvalHistory:[…], career:[…] },  // off/defScheme = the schemes the coach loves (Phase 21, buy-in target); approval+hot-seat persist across seasons (Phase 19b); career = per-stop résumé (Phase 19c)
+  coach: { first, last, homeState, archetype, history, offScheme, defScheme, approval, tenure, approvalHistory:[…], career:[…], contract:{years,yearsLeft,salary}, mandate:{tier,kind,wins?,label,...}, extensionOffer, lastMandate },  // off/defScheme = the schemes the coach loves (Phase 21, buy-in target); approval+hot-seat persist across seasons (Phase 19b); career = per-stop résumé (Phase 19c); contract/mandate/extensionOffer = AD expectations & the deal (Phase 42) — mandate set at kickoff, evaluated at season end
   teamId,                 // id of the controlled team
   year,                   // calendar-year counter, init 2026, ++ each rollover (Phase 5)
   week, phase,            // Preseason → 1..15/"Regular Season" → "Conference Championships" (Phase 15) → "Postseason" (bowls+playoff) → "Offseason" (Signing Day → transfer portal) → (rollover) → Preseason; "Retired" ends the career (Phase 19c)
@@ -3076,9 +3154,9 @@ National Signing Day → transfer portal** → rollover (graduate/enshrine/**dra
 settle → carousel → facilities/series — closes across multiple years, and the **hot seat** means a sustained
 slump can end your tenure; your stars leave a permanent mark on the program both on its Ring of Honor and on
 its pro-pipeline reputation.
-**Eighteen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
+**Nineteen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
 `traitlab` / `schemelab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `medialab` /
-`camplab` / `visitlab` / `rivalrylab` / `recordlab` / `qa`.
+`camplab` / `visitlab` / `rivalrylab` / `recordlab` / `contractlab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during
