@@ -480,6 +480,36 @@ function startServer() {
   check('Phase 42: missing the mandate on an expiring deal triggers non-renewal', con.firedOnMiss);
   check('Phase 42: the AD & Contract card renders on Home', con.cardShown);
 
+  // ---------- PHASE 43: conference realignment ----------
+  const rlg = await page.evaluate(() => {
+    const POWER = ['SEC', 'Big Ten', 'ACC', 'Big 12'];
+    let ry = null; for (let y = 2026; y < 2226; y++) if (isRealignYear(S.seed, y)) { ry = y; break; }
+    // pure engine: a wave's moves are well-formed (into a different conference)
+    const moves0 = realignMoves(S.world.teams.map(t => ({ id: t.id, conf: t.conf, prestige: t.prestige })), S.seed, ry);
+    const wellFormed = moves0.every(m => m.to && m.from && m.to !== m.from);
+    // snapshot everything the wave touches
+    const sc = {}, sd = {}; S.world.teams.forEach(t => { sc[t.id] = t.conf; sd[t.id] = t.div; });
+    const sy = S.year, sl = S.lastRealign, sf = S.media ? S.media.feed.slice() : null;
+    // rig a clear riser stranded in a full-sized weak league (not a tiny conf the source-floor protects)
+    const sz = {}; S.world.teams.forEach(t => sz[t.conf] = (sz[t.conf] || 0) + 1);
+    const weak = S.world.teams.find(t => !POWER.includes(t.conf) && t.conf !== 'Independent' && sz[t.conf] > 7);
+    const sp = weak.prestige; weak.prestige = 96;
+    S.year = ry; S.lastRealign = null;
+    applyRealignment();
+    const applied = !!(S.lastRealign && S.lastRealign.moves.length);
+    const riserMoved = POWER.includes(weak.conf) && weak.conf !== sc[weak.id];
+    const recapHasIt = applied && S.lastRealign.moves.some(m => m.abbr === weak.abbr);
+    // restore live state so the rest of the flow is untouched
+    S.world.teams.forEach(t => { t.conf = sc[t.id]; t.div = sd[t.id]; }); weak.prestige = sp;
+    S.year = sy; S.lastRealign = sl; if (S.media && sf) S.media.feed = sf;
+    recomputeRanks(S.world);
+    return { hasRealignYear: ry !== null, wellFormed, applied, riserMoved, recapHasIt };
+  });
+  check('Phase 43: realignment fires on a seeded cadence', rlg.hasRealignYear);
+  check('Phase 43: a wave produces well-formed conference moves', rlg.wellFormed);
+  check('Phase 43: applying a wave moves a riser up + changes team.conf', rlg.applied && rlg.riserMoved);
+  check('Phase 43: the move is recorded for the offseason recap', rlg.recapHasIt);
+
   // advancing now opens the watch-then-commit viewer for your game; skip + commit each week.
   // bye weeks advance directly (no viewer). Capture the first watched game to verify its score
   // equals the committed result (the replay is faithful, not a re-roll).
@@ -773,7 +803,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 38 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 39 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -790,7 +820,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v38)', mig.v === 38, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v39)', mig.v === 39, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -1262,7 +1292,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 38', roPost.version === 38, 'v' + roPost.version);
+  check('Rollover: save version bumped to 39', roPost.version === 39, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);

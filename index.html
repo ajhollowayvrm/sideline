@@ -789,10 +789,10 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:38,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:39,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
-     rivalries:null,rivalryHeat:null,records:null,
+     rivalries:null,rivalryHeat:null,records:null,lastRealign:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // Phase 19b: coach approval + tenure + a per-job career résumé (persist across seasons, not in S.media).
   S.coach.approval=55; S.coach.tenure=0; S.coach.approvalHistory=[]; S.coach.career=[];
@@ -1048,6 +1048,9 @@ function migrateState(state){
       state.coach.contract=initialContract(mt&&mt.prestige);state.coach.mandate=null;state.coach.extensionOffer=null;}
     state.version=38;
   }
+  if((state.version||1)<39){           // Phase 43: conference realignment. `team.conf` already exists and is
+    state.version=39;                  // mutated in place at rollover; `S.lastRealign` (the last wave, for the
+  }                                    // recap) is absent-safe → structural no-op.
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1955,6 +1958,52 @@ function contractExtension(prestige,approval,met,yearsLeft){
   return {addYears:big?3:2,raise:big?1.25:1.12,big};
 }
 // === CONTRACT ENGINE (Phase 42) END ===
+
+// === REALIGN ENGINE (Phase 43) START ===
+// Conference realignment. Pure + deterministic from (seed, year) (depends on rng/hashStr), so
+// test/realignlab.js validates it offline. Realignment comes in WAVES (a seeded per-year chance, not every
+// year); in a wave the strongest conferences (the "power" tier, by average member prestige) POACH the best
+// available risers from weaker leagues — a program that has climbed the prestige ladder gets invited up.
+// Bounded (a handful of moves per wave, a size cap on the poachers, a size floor on the sources) so the
+// league reaches equilibrium (super-conferences fill, then stop) rather than collapsing. App layer mutates
+// team.conf at rollover; everything downstream (scheduling, championships, revenue, awards) reads it live.
+const REALIGN={CHANCE:0.30, POWER_CONFS:4, POWER_CAP:20, MIN_CONF:6, MAX_MOVES:4, POACH_BAR:72};
+// Is `year` a realignment year? Deterministic per (seed, year). ~CHANCE of the time.
+function isRealignYear(seed,year){return rng((seed^hashStr('realign'+year))>>>0)()<REALIGN.CHANCE;}
+// The wave's moves. `teams` = [{id, conf, prestige}]. Returns [{id, from, to}] (empty off-wave). Pure.
+// The power conferences take turns (strongest first) grabbing the top remaining riser from a weaker league.
+function realignMoves(teams,seed,year){
+  if(!isRealignYear(seed,year))return [];
+  const byConf={};teams.forEach(t=>(byConf[t.conf]=byConf[t.conf]||[]).push(t));
+  const confs=Object.keys(byConf).map(c=>({name:c,size:byConf[c].length,power:byConf[c].reduce((s,t)=>s+(t.prestige||50),0)/byConf[c].length}));
+  confs.sort((a,b)=>b.power-a.power||(a.name<b.name?-1:1));
+  // The power tier = the top conferences by average prestige — but only REAL leagues (≥ MIN_CONF members;
+  // a tiny 2-team conf with a high average isn't a super-conference). Independent (Notre Dame's own deal) is
+  // never a poacher or a destination, but a strong independent CAN be poached up.
+  const powerNames=confs.filter(c=>c.name!=='Independent'&&c.size>=REALIGN.MIN_CONF).slice(0,REALIGN.POWER_CONFS).map(c=>c.name);
+  const powerSet=new Set(powerNames);
+  const sizeOf={};Object.keys(byConf).forEach(c=>sizeOf[c]=byConf[c].length);
+  const moves=[],moved=new Set();
+  let progress=true;
+  while(moves.length<REALIGN.MAX_MOVES&&progress){
+    progress=false;
+    for(const name of powerNames){
+      if(moves.length>=REALIGN.MAX_MOVES)break;
+      if(sizeOf[name]>=REALIGN.POWER_CAP)continue;
+      // candidates: not already in a power conf, not already moved, a real riser, and leaving keeps the
+      // source at/above the floor (Independent has no floor — it can always be raided).
+      const cand=teams.filter(t=>!powerSet.has(t.conf)&&!moved.has(t.id)&&(t.prestige||50)>=REALIGN.POACH_BAR
+        &&(t.conf==='Independent'||sizeOf[t.conf]>REALIGN.MIN_CONF))
+        .sort((a,b)=>(b.prestige||50)-(a.prestige||50)||(a.id<b.id?-1:1));
+      if(!cand.length)continue;
+      const p=cand[0];
+      moves.push({id:p.id,from:p.conf,to:name});moved.add(p.id);
+      sizeOf[p.conf]--;sizeOf[name]++;progress=true;
+    }
+  }
+  return moves;
+}
+// === REALIGN ENGINE (Phase 43) END ===
 
 // === ROLLOVER ENGINE (Phase 5) START ===
 // Pure, deterministic season-rollover model. Depends only on rng/ri/clamp/pick + the data arrays
@@ -3162,6 +3211,27 @@ function notifyRecords(broke){
     mediaEvent(S.week,'milestone','Record books rewritten: '+b.name,
       b.name+' set a new all-time '+b.def.label.toLowerCase()+' record with '+b.v+' '+b.def.unit+'.',{color:t.color,teams:[t.id],mine:true});}
 }
+/* ============================================================
+   CONFERENCE REALIGNMENT — app layer over the pure REALIGN ENGINE (Phase 43)
+   Runs at rollover (for the upcoming season). Mutates team.conf (clears div — the new conference's
+   alignment is flat unless it re-divisions); everything downstream reads conf live. Records the wave on
+   S.lastRealign for the recap + a media event.
+   ============================================================ */
+function applyRealignment(){
+  const yr=S.year||2026, me=S.teamId;
+  const view=S.world.teams.map(t=>({id:t.id,conf:t.conf,prestige:t.prestige}));
+  const moves=realignMoves(view,S.seed,yr);
+  if(!moves.length){S.lastRealign=null;return;}
+  const log=moves.map(m=>{const t=teamById(m.id);t.conf=m.to;t.div='';   // join the new league; flat alignment
+    return {abbr:t.abbr,name:t.name,color:t.color,from:m.from,to:m.to,mine:t.id===me};});
+  S.lastRealign={year:yr,moves:log};
+  if(S.media){
+    const mine=log.find(m=>m.mine);
+    const head=mine?'Realignment: '+mine.abbr+' is joining the '+mine.to:'Realignment shakes up the map';
+    const body=log.map(m=>m.abbr+': '+m.from+' → '+m.to).join(' · ');
+    mediaEvent(0,'title',head,body,{color:(mine||log[0]).color,teams:moves.map(m=>m.id),mine:!!mine});
+  }
+}
 function setWeeklyTask(){
   const t=controlled(),g=teamGame(t.id,S.week);
   if(!g){S.task={type:'Bye',label:'Bye Week',note:'No game scheduled. Rest the roster and advance.'};return;}
@@ -3633,6 +3703,7 @@ function rolloverSeason(){
   S.world.teams.forEach(t=>{t.payroll=(t.staff||[]).reduce((s,x)=>s+(x.salary||0),0);});
   decayRivalries();                    // Phase 40: rivalries cool a touch each offseason; heat prunes
   S.year=(S.year||2026)+1;
+  applyRealignment();                  // Phase 43: conference realignment waves (risers get poached up)
   S.world.teams.forEach(t=>{t.rec=emptyRec();t.ratings=teamRatings(t.roster,t.staff);});
   S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;S.postseason=null;S.champWeek=null;S.portal=null;S.media=null;
   S.week=0;S.phase='Preseason';
@@ -3654,6 +3725,7 @@ function rolloverSeason(){
     camp:S.camp?{name:campPlan(S.camp.plan).name,injured:(S.camp.injured||[]).map(i=>i.name+' ('+i.pos+', '+i.weeks+'wk)')}:null,
     redshirted:summary?(summary.redshirted||[]).map(p=>p.fn+' '+p.ln+' ('+p.pos+', now '+p.yr+')'):[],   // Phase 39
     mandate:(S.coach&&S.coach.lastMandate)?S.coach.lastMandate:null,   // Phase 42: did you meet the AD's goal?
+    realign:S.lastRealign&&S.lastRealign.year===S.year?S.lastRealign.moves:null,   // Phase 43: this offseason's conference moves
     inducted:myInducted.map(l=>({name:l.name,pos:l.pos,tier:l.tier,stature:l.stature}))};
   if(S.coach&&S.coach.pendingFire)triggerCoachingSearch();   // Phase 19c: you were let go — find a new job or retire
   autosave();
@@ -4644,10 +4716,12 @@ function renderHome(app){
     const rs=o.redshirted&&o.redshirted.length?`<div class="muted" style="font-size:12px;margin-top:6px">🔴 Redshirted: ${o.redshirted.join(', ')}</div>`:'';
     // Phase 42: did you meet the AD's mandate for the year?
     const man=o.mandate?`<div class="row spread" style="margin-top:4px"><span>AD mandate</span><span class="cond ${o.mandate.met?'good':'bad'}" style="font-weight:800">${o.mandate.met?'✓ Met':'✗ Missed'}</span></div><div class="muted" style="font-size:12px;margin-top:1px">${o.mandate.label} — ${o.mandate.detail}</div>`:'';
+    // Phase 43: conference realignment moves this offseason (your move highlighted)
+    const rlg=o.realign&&o.realign.length?`<div class="muted" style="font-size:12px;margin-top:6px">🔀 Realignment: ${o.realign.map(m=>(m.mine?'<b class="accent">':'')+m.abbr+': '+m.from+' → '+m.to+(m.mine?'</b>':'')).join(' · ')}</div>`:'';
     rc.innerHTML=`<div class="meta dim" style="margin-bottom:6px">Offseason recap</div>
       <div class="row spread"><span>Seniors graduated</span><span class="cond" style="font-weight:800">${o.graduated}</span></div>
       <div class="row spread"><span>Recruits enrolled</span><span class="cond" style="font-weight:800">${o.tracked}</span></div>
-      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${man}${cmp}${pst}${drf}${fin}${arr}${dep}${poa}${rs}${ind}`;
+      <div class="row spread"><span>Freshmen on roster</span><span class="cond" style="font-weight:800">${o.freshmen}</span></div>${man}${rlg}${cmp}${pst}${drf}${fin}${arr}${dep}${poa}${rs}${ind}`;
     v.append(rc);
   }
   if(inSeason||over){const sb=el('button','btn line','Season \u00b7 schedule & standings');sb.style.marginTop='10px';

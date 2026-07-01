@@ -658,6 +658,26 @@ plain static files so Pages still serves it with zero config.
   extension offered only when overperforming); `qa` → 292 (contract at new game, mandate at kickoff, meeting it
   earns + accepts an extension, missing on an expiring deal triggers non-renewal, the card renders). See
   "Phase 42 design — AD expectations & contract" below.
+- **Phase 43 — Conference realignment.** ✅ DONE. Over a long dynasty the conference map shifts: strong
+  programs get poached up into the super-conferences, and a G5 program that climbs the prestige ladder can earn
+  an invite to a power league. Pure fenced **`REALIGN ENGINE`** (deterministic from `(seed, year)` via
+  `rng`/`hashStr`): realignment comes in **waves** (`isRealignYear` — a seeded ~30%/yr cadence, not every
+  year); `realignMoves(teams,seed,year)` ranks conferences by **average member prestige**, takes the top
+  `POWER_CONFS`(4) real leagues (≥ `MIN_CONF` members — a tiny 2-team conf can't rank as "power"; Independent
+  is never a poacher/destination) as the **power tier**, and they **take turns (strongest first) poaching the
+  best remaining riser** (prestige ≥ `POACH_BAR`) from a weaker league — **bounded** (`MAX_MOVES`/wave, a
+  `POWER_CAP` on the poachers, a `MIN_CONF` floor on the sources, so the league reaches equilibrium as
+  super-conferences fill rather than collapsing). App: `applyRealignment()` runs at rollover (for the upcoming
+  season, after the year ticks over), mutates `team.conf` (clears `div` — the new league is flat) and records
+  the wave on `S.lastRealign`; **everything downstream reads `conf` live** — `genSchedule` (conference
+  weighting + a now-cross-conf preset rivalry auto-locks via `rivalLegsForYear`), `confChampGames`, revenue
+  (`ECON_CONF_BASE`), and awards. So a move to a stronger conference automatically means more money + a tougher
+  slate. UI: a 🔀 realignment line in the offseason recap (your move highlighted) + a media headline. Save
+  **v39** (`S.lastRealign`; `migrateState` v38→v39 is a structural no-op — `team.conf` already exists and is
+  mutated in place, `lastRealign` is absent-safe). New gate `npm run realignlab` (16 checks: seeded cadence +
+  frequency, risers poached up into the power tier, bounded, source-floor + poacher-cap respected, a settled
+  league produces no moves, Independent never a destination, determinism); `qa` → 296 (a wave moves a rigged
+  riser up + changes `team.conf` + records it). See "Phase 43 design — conference realignment" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -2455,6 +2475,64 @@ bundles; the mandate feeds the existing approval meter rather than a separate "j
 
 ---
 
+## Phase 43 design — conference realignment
+
+Decided 2026-06-30 with AJ — the last big multi-decade flavor piece. Over a long dynasty the conference map
+should shift the way real college football's has: talent consolidates into super-conferences, and a program
+that climbs earns an invite up (the dream for a coach building a Group-of-5 school into a power). The design
+constraint: it touches scheduling, championships, revenue, and awards — but all of those already read
+`team.conf` **live**, so realignment is just a bounded, deterministic mutation of `team.conf` at rollover, and
+everything downstream follows for free. House discipline: a pure fenced engine + node lab before UI, a save
+bump, all gates green.
+
+### Pure `REALIGN ENGINE` (fenced, lab before UI)
+`// === REALIGN ENGINE (Phase 43) START/END ===` (deterministic from `(seed, year)` via `rng`/`hashStr`), so
+`test/realignlab.js` validates it offline:
+- `isRealignYear(seed, year)` — realignment comes in **waves**, a seeded ~`REALIGN.CHANCE`(30%)/yr cadence
+  (not every year — realignment is episodic).
+- `realignMoves(teams, seed, year)` — `teams` = `[{id, conf, prestige}]`. Ranks conferences by **average
+  member prestige**; the **power tier** is the top `POWER_CONFS`(4) *real* leagues (≥ `MIN_CONF` members, so a
+  tiny 2-team conference can't rank as a super-conference; **Independent** is never a poacher or a destination,
+  though a strong independent can be poached up). The power conferences **take turns, strongest first**,
+  grabbing the top remaining **riser** (prestige ≥ `POACH_BAR`(72)) from a weaker league. **Bounded** so the
+  league reaches equilibrium rather than collapsing: `MAX_MOVES`(4)/wave, a `POWER_CAP`(20) on each poacher,
+  and a `MIN_CONF`(6) floor that protects a source league from being raided below viability. Returns
+  `[{id, from, to}]`. Fully deterministic (candidates ordered by prestige then id — no rng in the move
+  selection, only in the wave cadence).
+
+### App layer — one mutation, everything follows
+`applyRealignment()` runs in `rolloverSeason` **after the year ticks over** (so it aligns the upcoming
+season), builds the lean view, calls `realignMoves`, then for each move sets `team.conf = to` and clears
+`team.div` (the new league is flat unless it re-divisions). It records the wave on `S.lastRealign` (for the
+recap) and fires a media headline. Because it runs before the kickoff that rebuilds the schedule, and because
+**every consumer reads `conf` live**, the knock-on effects are automatic:
+- `genSchedule` weights the new conference; a preset rivalry that just became **cross-conference** now
+  auto-locks as a fixed leg (`rivalLegsForYear` keys off `A.conf === B.conf`), so rivalries survive realignment.
+- `confChampGames` uses the new membership; `recomputeRanks` re-derives conf/div ranks.
+- Revenue jumps/drops with `ECON_CONF_BASE[conf]` (a move up is a raise), and awards (All-Conference / conf
+  POY) follow the new alignment. A move to a stronger league also means a **tougher schedule** — earned.
+
+The controlled team can be the riser (win at a G5 school → climb prestige → get the call-up), and its move is
+highlighted in the recap.
+
+### Save & validation
+Save **v39** (`S.lastRealign`; `migrateState` v38→v39 is a **structural no-op** — `team.conf` already exists
+and is mutated in place, `S.lastRealign` is absent-safe). Nothing new is columnar. New gate
+`npm run realignlab` (16 checks: seeded cadence + frequency + determinism; a wave poaches risers **up** into
+the power tier, bounded by `MAX_MOVES`; source-floor + poacher-cap respected; a **settled** league with no
+eligible risers produces no moves; Independent is never a destination). `qa` → 296 (a wave applied at a
+realignment year moves a rigged riser up + actually changes `team.conf` + records it for the recap).
+**Twenty gates** now (adds `realignlab`).
+
+### Deliberately out of scope
+No player **choice** in the matter (realignment is done *to* you by the school/AD, like real life — no
+"accept the invitation?" prompt); no **relegation** of a weak power-conf program back down (waves only expand
+the power tier — the dominant real dynamic); no **new** conferences forming or old ones formally dissolving (a
+raided league just shrinks toward its floor); no **re-divisioning** (a team joins flat — `div` is cleared);
+no TV-market / geography model beyond prestige (the "riser gets pulled up" heuristic).
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -2880,7 +2958,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **38**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **39**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -2929,7 +3007,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   + `S.rivalryHeat={}` (Phase 40 rivalries & trophies; both ride plainly on `S`, no codec change); v36→v37
   backfills an empty `S.records` (Phase 41 all-time record book — records accrue from played games, no seeding);
   v37→v38 backfills a prestige-scaled `S.coach.contract` (Phase 42 AD expectations & contract — `mandate`/
-  `extensionOffer` set at the next kickoff / season end). Each step re-derives ratings/ranks where needed.
+  `extensionOffer` set at the next kickoff / season end); v38→v39 is a structural no-op (Phase 43 conference
+  realignment — `team.conf` already exists + is mutated in place at rollover; `S.lastRealign` is absent-safe).
+  Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -2958,6 +3038,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   rivalries,              // [ Rivalry ] — established rivalries incl. their trophy holder + series (Phase 40); created at new game, persist across seasons
   rivalryHeat,            // { pairKey: number } — not-yet-born pairs' accumulating heat (Phase 40); crosses RIVALRY_BORN → a new rivalry is christened
   records,                // { game, season, career, team: {recordKey: {value, name, pos?, teamId, abbr, color, year, detail}} } — all-time record book (Phase 41); captured as games/seasons resolve, persists across seasons
+  lastRealign,            // { year, moves:[{abbr,name,color,from,to,mine}] } | null — the last conference-realignment wave (Phase 43); team.conf is mutated in place, this is just the recap record
   lastPlayedWeek,         // last week resolved (for the Scores tab)
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
@@ -3154,9 +3235,9 @@ National Signing Day → transfer portal** → rollover (graduate/enshrine/**dra
 settle → carousel → facilities/series — closes across multiple years, and the **hot seat** means a sustained
 slump can end your tenure; your stars leave a permanent mark on the program both on its Ring of Honor and on
 its pro-pipeline reputation.
-**Nineteen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
+**Twenty green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
 `traitlab` / `schemelab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `medialab` /
-`camplab` / `visitlab` / `rivalrylab` / `recordlab` / `contractlab` / `qa`.
+`camplab` / `visitlab` / `rivalrylab` / `recordlab` / `contractlab` / `realignlab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during
