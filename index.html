@@ -665,6 +665,7 @@ function render(){
   if(UI.view==='portal') renderPortal(app);
   if(UI.view==='camp') renderCamp(app);
   if(UI.view==='media') renderMedia(app);
+  if(UI.view==='records') renderRecords(app);
   if(UI.view==='season') renderSeason(app);
   if(UI.view==='browse') renderBrowse(app,false);
   if(UI.view==='program') renderProgram(app);
@@ -788,10 +789,10 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:36,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:37,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
-     rivalries:null,rivalryHeat:null,
+     rivalries:null,rivalryHeat:null,records:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // Phase 19b: coach approval + tenure + a per-job career résumé (persist across seasons, not in S.media).
   S.coach.approval=55; S.coach.tenure=0; S.coach.approvalHistory=[]; S.coach.career=[];
@@ -799,6 +800,7 @@ function finishNewGame(ng){
   // the roster only fits as well as the players' instincts do — a project to recruit/develop into).
   const me=teamById(S.teamId); if(me){if(S.coach.offScheme)me.offScheme=S.coach.offScheme; if(S.coach.defScheme)me.defScheme=S.coach.defScheme;}
   initRivalries();   // Phase 40: seed the world's famous rivalries (persist across seasons)
+  S.records=emptyRecords();   // Phase 41: an empty all-time record book (fills from played games)
   // choose a save slot
   chooseSlotSheet();
 }
@@ -1033,6 +1035,10 @@ function migrateState(state){
         holder:null,aw:0,bw:0,streakTeam:null,streak:0,born:null,last:null});});
     state.rivalryHeat={};
     state.version=36;
+  }
+  if((state.version||1)<37){           // Phase 41: the all-time record book. Starts EMPTY (records accrue from
+    state.records=state.records||emptyRecords();   // played games — no seeding, like the Ring of Honor).
+    state.version=37;
   }
   return state;
 }
@@ -1830,6 +1836,50 @@ function bornRivalry(abbrA,abbrB,seed){
           trophy:'The '+RIVALRY_TROPHIES[(h>>3)%RIVALRY_TROPHIES.length]};
 }
 // === RIVALRY ENGINE (Phase 40) END ===
+
+// === RECORD ENGINE (Phase 41) START ===
+// The all-time RECORD BOOK. Pure + data-only (no S/DOM), so test/recordlab.js validates it offline.
+// The sim wipes p.gs every rollover, so — like the Ring of Honor — records must be CAPTURED as games and
+// seasons resolve into a persistent ledger (S.records). This block owns the CATEGORY REGISTRY + the
+// "keep the max" primitive; the app captures values into it at each advance / at rollover.
+
+// Each def: {key, label, stat, unit}. `stat` = the box/career key it reads. Buckets: game / season / career / team.
+const RECORD_DEFS={
+  game:[
+    {key:'g_pyds',label:'Passing yards',stat:'pYds',unit:'yds'},{key:'g_ptd',label:'Passing TDs',stat:'pTD',unit:'TD'},
+    {key:'g_ryds',label:'Rushing yards',stat:'rYds',unit:'yds'},{key:'g_rtd',label:'Rushing TDs',stat:'rTD',unit:'TD'},
+    {key:'g_reyds',label:'Receiving yards',stat:'reYds',unit:'yds'},{key:'g_retd',label:'Receiving TDs',stat:'reTD',unit:'TD'},
+    {key:'g_tkl',label:'Tackles',stat:'tkl',unit:'tkl'},{key:'g_sk',label:'Sacks',stat:'sk',unit:'sk'},
+    {key:'g_int',label:'Interceptions',stat:'dInt',unit:'INT'}
+  ],
+  season:[
+    {key:'s_pyds',label:'Passing yards',stat:'pYds',unit:'yds'},{key:'s_ptd',label:'Passing TDs',stat:'pTD',unit:'TD'},
+    {key:'s_ryds',label:'Rushing yards',stat:'rYds',unit:'yds'},{key:'s_rtd',label:'Rushing TDs',stat:'rTD',unit:'TD'},
+    {key:'s_reyds',label:'Receiving yards',stat:'reYds',unit:'yds'},{key:'s_retd',label:'Receiving TDs',stat:'reTD',unit:'TD'},
+    {key:'s_tkl',label:'Tackles',stat:'tkl',unit:'tkl'},{key:'s_sk',label:'Sacks',stat:'sk',unit:'sk'},
+    {key:'s_int',label:'Interceptions',stat:'dInt',unit:'INT'}
+  ],
+  career:[
+    {key:'c_pyds',label:'Career passing yards',stat:'pYds',unit:'yds'},{key:'c_ptd',label:'Career passing TDs',stat:'pTD',unit:'TD'},
+    {key:'c_ryds',label:'Career rushing yards',stat:'rYds',unit:'yds'},{key:'c_reyds',label:'Career receiving yards',stat:'reYds',unit:'yds'},
+    {key:'c_tkl',label:'Career tackles',stat:'tkl',unit:'tkl'},{key:'c_sk',label:'Career sacks',stat:'sk',unit:'sk'}
+  ],
+  team:[
+    {key:'t_gpts',label:'Points in a game',unit:'pts'},{key:'t_gmargin',label:'Largest margin of victory',unit:'pts'},
+    {key:'t_spts',label:'Points in a season',unit:'pts'},{key:'t_swins',label:'Wins in a season',unit:'wins'}
+  ]
+};
+const RECORD_BUCKETS=['game','season','career','team'];
+function emptyRecords(){const o={};RECORD_BUCKETS.forEach(b=>o[b]={});return o;}
+// Keep the max. Returns {broke, prev} — broke true when `value` sets a NEW record (STRICTLY beats, and >0),
+// so a tie keeps the original holder. `meta` is the holder snapshot ({value} is added).
+function applyRecord(records,bucket,key,value,meta){
+  if(!records[bucket])records[bucket]={};
+  const prev=records[bucket][key];
+  if(value>0&&(!prev||value>prev.value)){records[bucket][key]=Object.assign({value},meta);return {broke:true,prev};}
+  return {broke:false,prev};
+}
+// === RECORD ENGINE (Phase 41) END ===
 
 // === ROLLOVER ENGINE (Phase 5) START ===
 // Pure, deterministic season-rollover model. Depends only on rng/ri/clamp/pick + the data arrays
@@ -2768,6 +2818,7 @@ function advanceWeek(){
   recomputeRanks(S.world);
   updateMedia(wk,boxes,recOut);             // Phase 19: refresh the AP poll + push the week's news stories
   announceRivalryEvents(wk,bumpRivalries(boxes.map(b=>b.g),'reg'));   // Phase 40: trophies change hands, rivalries heat up / are born
+  notifyRecords(captureGameRecords(boxes,'reg'));                     // Phase 41: capture single-game records into the book
   if(S.week>S.schedule.weeks)finishRegularSeason();   // → postseason (bowls + playoff), then offseason
   else{setWeeklyTask();grantRecruitPoints();}
   autosave();
@@ -2989,6 +3040,53 @@ function announceRivalryEvents(wk,events){
     }
   });
 }
+/* ============================================================
+   RECORD BOOK — app layer over the pure RECORD ENGINE (Phase 41)
+   Owns S.records (the all-time ledger). Records are CAPTURED once per real advance (game records) and at
+   rollover before p.gs is wiped (season + career records). Persists across seasons; accrues from played
+   games (no seeding — like the Ring of Honor).
+   ============================================================ */
+function ensureRecords(){if(!S.records)S.records=emptyRecords();return S.records;}
+function playerRecMeta(p,t){return {name:p.fn+' '+p.ln,pos:p.pos,teamId:t.id,abbr:t.abbr,color:t.color,year:S.year||2026};}
+// Capture single-game player + team records from a week's boxes. Returns the controlled team's broken
+// records (for a toast + a media note). Runs ONCE per real advance (never on determinism re-sims).
+function captureGameRecords(boxes,stage){
+  const R=ensureRecords(),me=S.teamId,yr=S.year||2026,broke=[];
+  (boxes||[]).forEach(({g,box})=>{
+    const H=teamById(g.home),A=teamById(g.away);
+    [H,A].forEach(t=>{if(!t)return;const oppAbbr=(t.id===g.home?A:H).abbr;
+      t.roster.forEach(p=>{const s=box[p.id];if(!s)return;
+        RECORD_DEFS.game.forEach(d=>{const v=s[d.stat]||0;if(v<=0)return;
+          const res=applyRecord(R,'game',d.key,v,Object.assign(playerRecMeta(p,t),{detail:'vs '+oppAbbr+(stage==='reg'?' · Wk '+g.week:'')}));
+          if(res.broke&&t.id===me)broke.push({def:d,v,name:p.fn+' '+p.ln});});});});
+    // team single-game records
+    const hi=Math.max(g.hs,g.as),lo=Math.min(g.hs,g.as),margin=hi-lo,hiT=g.hs>=g.as?H:A,Wt=g.hs>g.as?H:A,Lt=g.hs>g.as?A:H;
+    if(hiT)applyRecord(R,'team','t_gpts',hi,{name:hiT.name,teamId:hiT.id,abbr:hiT.abbr,color:hiT.color,year:yr,detail:'vs '+(hiT===H?A:H).abbr+' '+hi+'–'+lo});
+    if(Wt&&margin>0)applyRecord(R,'team','t_gmargin',margin,{name:Wt.name,teamId:Wt.id,abbr:Wt.abbr,color:Wt.color,year:yr,detail:'def. '+Lt.abbr+' '+hi+'–'+lo});
+  });
+  return broke;
+}
+// Capture single-season + career records from every roster BEFORE p.gs is wiped (called at rolloverSeason top).
+function captureSeasonRecords(){
+  const R=ensureRecords(),yr=S.year||2026;
+  S.world.teams.forEach(t=>{
+    if(t.rec){const rl=t.rec.w+'–'+t.rec.l;
+      applyRecord(R,'team','t_spts',t.rec.pf||0,{name:t.name,teamId:t.id,abbr:t.abbr,color:t.color,year:yr,detail:rl+' season'});
+      applyRecord(R,'team','t_swins',t.rec.w||0,{name:t.name,teamId:t.id,abbr:t.abbr,color:t.color,year:yr,detail:rl+' season'});}
+    t.roster.forEach(p=>{const gs=p.gs;
+      if(gs)RECORD_DEFS.season.forEach(d=>{const v=gs[d.stat]||0;if(v>0)applyRecord(R,'season',d.key,v,Object.assign(playerRecMeta(p,t),{detail:'in '+yr}));});
+      const car=addCareer(p.career,gs||{});   // career-to-date incl. this season (ROLLOVER engine helper)
+      RECORD_DEFS.career.forEach(d=>{const v=car[d.stat]||0;if(v>0)applyRecord(R,'career',d.key,v,Object.assign(playerRecMeta(p,t),{detail:p.yr+' · '+t.abbr}));});
+    });
+  });
+}
+// Toast + a media note when the controlled team breaks an all-time record.
+function notifyRecords(broke){
+  (broke||[]).forEach(b=>toast('🏈 All-time record: '+b.name+' — '+b.v+' '+b.def.unit+' ('+b.def.label+')'));
+  if(broke&&broke.length&&S.media){const b=broke[0],t=controlled();
+    mediaEvent(S.week,'milestone','Record books rewritten: '+b.name,
+      b.name+' set a new all-time '+b.def.label.toLowerCase()+' record with '+b.v+' '+b.def.unit+'.',{color:t.color,teams:[t.id],mine:true});}
+}
 function setWeeklyTask(){
   const t=controlled(),g=teamGame(t.id,S.week);
   if(!g){S.task={type:'Bye',label:'Bye Week',note:'No game scheduled. Rest the roster and advance.'};return;}
@@ -3043,10 +3141,12 @@ function myChampGame(){const me=S.teamId;return S.champWeek?S.champWeek.games.fi
 // Resolve Championship Week (sim every unplayed title game — deterministic, so a watched score is the
 // committed score), then crown champions + hand off to awards/playoff.
 function advanceChampWeek(){
-  S.champWeek.games.forEach(g=>{if(!g.played){const box=simGame(g);applyResult(g,box);}});
+  const rboxes=[];
+  S.champWeek.games.forEach(g=>{if(!g.played){const box=simGame(g);applyResult(g,box);rboxes.push({g,box});}});
   healWeek(); S.champWeek.games.forEach(g=>applyInjuries(g._inj));   // Phase 27
   recomputeRanks(S.world);
   announceRivalryEvents(S.week,bumpRivalries(S.champWeek.games,'champ'));   // Phase 40
+  notifyRecords(captureGameRecords(rboxes,'champ'));                        // Phase 41
   S.champWeek.done=true;
   finishConfChampionships();
 }
@@ -3122,10 +3222,12 @@ function myPostseasonGame(){const me=S.teamId;
 function advancePostseason(){
   const ps=S.postseason,round=ps.round,me=S.teamId;
   const myGame=postseasonRoundGames(round).find(g=>g.home===me||g.away===me);
-  postseasonRoundGames(round).forEach(g=>{if(!g.played){const box=simGame(g);applyResult(g,box);}});
+  const rboxes=[];
+  postseasonRoundGames(round).forEach(g=>{if(!g.played){const box=simGame(g);applyResult(g,box);rboxes.push({g,box});}});
   healWeek(); postseasonRoundGames(round).forEach(g=>applyInjuries(g._inj));   // Phase 27
   recomputeRanks(S.world);
   announceRivalryEvents(S.week,bumpRivalries(postseasonRoundGames(round),null));   // Phase 40 (stage from g.kind: bowl/playoff)
+  notifyRecords(captureGameRecords(rboxes,'post'));                                // Phase 41
   if(myGame){const iWon=winnerOfGame(myGame)===me;        // did the controlled team just bow out / advance?
     if(!iWon||myGame.kind==='bowl'||round===3)ps.meDone=true;}
   if(round<3){
@@ -3390,6 +3492,7 @@ function rolloverSeason(){
   const me=S.teamId, r=rng((S.seed^hashStr('rollover'+(S.year||2026)))>>>0);
   const campR=rng((S.seed^hashStr('camp'+(S.year||2026)))>>>0);   // Phase 32: deterministic camp injuries
   const myPost=controlled().lastPostseason||null;  // this year's bowl/playoff finish (for the recap)
+  captureSeasonRecords();                          // Phase 41: bank single-season + career records BEFORE p.gs is wiped
   resolvePromises(me);                             // clear resolved obligations (departures modeled by the portal)
   const departed=(S.portal&&S.portal.departures)||[];   // who you lost to the transfer portal (Phase 18)
   const arrived=(S.portal&&S.portal.arrivals)||[];      // who you signed out of it
@@ -4724,10 +4827,42 @@ function facUpgradeRow(t,label,key,manage){
 /* ============================================================
    SEASON (schedule · standings · top 25 · scores)
    ============================================================ */
+// Phase 41: the all-time RECORD BOOK — single-game / single-season / career / team bests, league-wide.
+// Rows held by the controlled program are highlighted in the accent color.
+function renderRecords(app){
+  const t=controlled(),me=S.teamId,R=S.records||emptyRecords();
+  const v=el('div','view');v.dataset.tid='records-view';
+  v.append(scoreboard(t));
+  v.append(el('div','hint center','All-time bests across the league. Your program’s records glow in your color; they accrue from games played, so an early save starts a fresh book.'));
+  const section=(title,bucket,defs)=>{
+    v.append(el('h2','sec',title));
+    const any=defs.some(d=>R[bucket]&&R[bucket][d.key]);
+    if(!any){v.append(el('div','hint center','No records set yet.'));return;}
+    const c=el('div','card');c.dataset.tid='rec-'+bucket;
+    c.innerHTML=defs.map(d=>{const r=R[bucket]&&R[bucket][d.key];
+      if(!r)return `<div class="row spread" style="margin:6px 0"><span class="meta dim">${d.label}</span><span class="dim">—</span></div>`;
+      const mine=r.teamId===me;
+      return `<div class="row spread" style="margin:7px 0;border-top:1px solid var(--line);padding-top:7px">
+        <div style="flex:1"><div class="nm" style="font-size:14px">${d.label}</div>
+        <div class="meta">${r.name}${r.pos?' <span class="dim">('+r.pos+')</span>':''} · ${r.abbr}${mine?' ⭐':''} · ${r.year}${r.detail?' · '+r.detail:''}</div></div>
+        <div class="cond" style="font-size:19px;font-weight:800${mine?';color:var(--accent)':''}">${r.value}<span class="dim" style="font-size:11px;font-weight:600"> ${d.unit}</span></div></div>`;
+    }).join('');
+    v.append(c);
+  };
+  section('Single-Game Records','game',RECORD_DEFS.game);
+  section('Single-Season Records','season',RECORD_DEFS.season);
+  section('Career Records','career',RECORD_DEFS.career);
+  section('Team Records','team',RECORD_DEFS.team);
+  v.style.paddingBottom='10px';
+  app.append(v);
+}
 function renderSeason(app){
   const t=controlled();
   const v=el('div','view');
   v.append(scoreboard(t));
+  const rb=el('button','btn line','🏅 All-Time Record Book');rb.style.marginTop='10px';rb.dataset.tid='open-records';
+  rb.onclick=()=>{UI.view='records';render();};
+  v.append(rb);
   if(!S.schedule){
     // No live schedule yet — but last spring's NFL draft board is still reviewable in the preseason.
     if(S.draft){v.append(el('div','hint center','The season hasn’t kicked off — last spring’s NFL draft is below.'));
@@ -6256,7 +6391,7 @@ function openTeamEditor(t){
    bottom nav
    ============================================================ */
 function renderNav(app){
-  if(!['home','team','recruit','portal','media','season','browse','program'].includes(UI.view))return;
+  if(!['home','team','recruit','portal','media','records','season','browse','program'].includes(UI.view))return;
   const nav=el('div','nav');
   const items=[
     ['home','Home','M3 11l9-8 9 8M5 10v10h14V10'],

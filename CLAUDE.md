@@ -613,6 +613,27 @@ plain static files so Pages still serves it with zero config.
   emergent names); `visitlab` → 22 (rivalry weekend outdraws a neutral one); `qa` → 281 (presets seeded,
   winning takes the trophy, approval amplified, a rivalry is born, the banner + card render). See "Phase 40
   design — rivalries & trophies" below.
+- **Phase 41 — The all-time record book.** ✅ DONE. A league-wide **Record Book** that celebrates the deep sim.
+  The sim wipes `p.gs` every rollover, so — like the Ring of Honor — records are **captured as they happen**
+  into a persistent ledger (`S.records`), not reconstructed. Pure fenced **`RECORD ENGINE`** (no S/DOM): a
+  **category registry** `RECORD_DEFS` (28 categories across four buckets — **single-game**, **single-season**,
+  **career** for players; **team** for programs) + `emptyRecords()` + `applyRecord(records,bucket,key,value,
+  meta)` (the "keep the max" primitive — a strictly-greater positive value sets a new record and returns
+  `{broke, prev}`; a tie keeps the original holder). App capture: `captureGameRecords(boxes,stage)` runs once
+  per **real advance** (regular week / championship / postseason — alongside `computeWeeklyHonors`/
+  `bumpRivalries`, so it's off the determinism-re-sim path) for single-game player + team points/margin
+  records; `captureSeasonRecords()` runs at the **top of `rolloverSeason`, before `p.gs` is wiped**, for
+  single-season records and **career** records (career-to-date via the ROLLOVER engine's `addCareer`, so a
+  climbing 4-year star updates the mark each year). The controlled team breaking an all-time record fires a
+  toast + a media note (`notifyRecords`). UI: a **Record Book** view (`UI.view='records'`, in the nav
+  whitelist) reached from a button on the Season page — four sections, each row = label · value · holder ·
+  team · year · detail, with **your program's records glowing in your accent color**. Save **v37** (`S.records`;
+  `migrateState` v36→v37 backfills an **empty** book — records accrue from played games, no seeding; rides
+  plainly on `S`, no codec change). New gate `npm run recordlab` (12 checks: registry well-formed + unique
+  keys, `applyRecord` keeps the max / ignores lower / a tie holds / non-positive never records / stores value
+  + meta); `qa` → 286 (fresh book empty at new game, a monster game sets + reports the single-game record, the
+  team points record, rollover-time season + career capture, the view renders). See "Phase 41 design — the
+  record book" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -2301,6 +2322,62 @@ manual rename / trophy customization.
 
 ---
 
+## Phase 41 design — the all-time record book
+
+Decided 2026-06-30 with AJ — the payoff of a deep, multi-decade sim: a **league-wide record book**. The core
+constraint (same as Phase 11 legends): the sim **wipes `p.gs` every rollover**, so historical single-game and
+single-season records *cannot be reconstructed* after the fact — they must be **captured as games resolve**
+into a persistent ledger. So the record book is a small **incremental-capture** layer, not a query. House
+discipline: a pure fenced engine + node lab before UI, a save bump, all gates green.
+
+### Pure `RECORD ENGINE` (fenced, lab before UI)
+`// === RECORD ENGINE (Phase 41) START/END ===` — pure + data-only (no S/DOM), so `test/recordlab.js`
+validates it offline:
+- `RECORD_DEFS` — the **category registry** (the single source of truth for what's tracked): four buckets —
+  **game** + **season** + **career** (per-player, each def carries a box/career `stat`) and **team** (program
+  points/margin/wins). 28 categories. Each def `{key, label, stat?, unit}`.
+- `emptyRecords()` — `{game:{}, season:{}, career:{}, team:{}}`.
+- `applyRecord(records, bucket, key, value, meta)` — the **"keep the max"** primitive: a **strictly-greater**
+  positive `value` sets a new record (stores `{value, ...meta}`) and returns `{broke:true, prev}`; a lower or
+  tying value is ignored (a tie keeps the original holder); a non-positive value never records.
+
+### App capture (once per real game / at rollover)
+- `captureGameRecords(boxes, stage)` — single-game player records + team points/margin, from a week's boxes.
+  Called in **all three real advance paths** (`advanceWeek` `'reg'`, `advanceChampWeek` `'champ'`,
+  `advancePostseason` `'post'`) right beside `computeWeeklyHonors`/`bumpRivalries` — i.e. **once per real
+  game**, never on a determinism re-sim or a watch replay (those call `simEngine` directly). Returns the
+  controlled team's broken records for `notifyRecords` (a toast + a media note).
+- `captureSeasonRecords()` — single-season records (from `p.gs`) + **career** records (career-to-date =
+  `addCareer(p.career, p.gs)`, the ROLLOVER engine helper, so a 4-year star's climbing total re-sets the mark
+  each year), for **every** roster league-wide. Called at the **top of `rolloverSeason`, before `rolloverRoster`
+  wipes `p.gs`**. Team season points/wins captured here too.
+- No seeding: `finishNewGame` sets `S.records = emptyRecords()`, and records accrue only from played games —
+  a fresh dynasty opens with an empty book that fills as it plays (matches the Ring-of-Honor philosophy).
+
+### UI
+A **Record Book** view (`renderRecords`, `UI.view='records'`, added to the nav whitelist) reached from a
+button on the Season page (present in every branch, incl. preseason). Four sections (game / season / career /
+team); each row shows the label, the value + unit, and the holder (name · pos · team · year · detail). Rows
+held by the **controlled program glow in the accent color** (⭐), so "my program in the record book" reads at
+a glance without storing a separate per-program book.
+
+### Save & validation
+Save **v37** (`S.records`; `migrateState` v36→v37 backfills an empty book). `S.records` rides plainly on `S`
+(the columnar codec only special-cases rosters + the recruit pool), so **no codec change**. New gate
+`npm run recordlab` (12 checks: registry well-formed + globally-unique keys, all buckets present; `applyRecord`
+sets the first value, ignores a lower one, breaks on a higher one + returns `prev`, holds on a tie, never
+records a non-positive value, stores value + meta together). `qa` → 286 (fresh book empty at new game; a
+612-yard game sets + reports the single-game passing record; the team single-game points record; rollover-time
+season + career capture; the Record Book view renders). **Eighteen gates** now (adds `recordlab`).
+
+### Deliberately out of scope
+**Global (league-wide) records only** — no separate per-program record book (the controlled program's records
+are just highlighted in the shared one); no **record progression history** (only the current holder is kept,
+not the lineage); no coaching/streak records beyond team season wins; no single-game *team* yardage records
+(points/margin only). The registry is a table, so adding categories later is data, not code.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -2726,7 +2803,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **36**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **37**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -2772,8 +2849,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   kickoff, so it only patches an in-flight in-season save); v34→v35 is a structural no-op (Phase 39 redshirting —
   sparse `p.rs`: `'on'`=redshirting this season, `'used'`=already redshirted; absent reads as "never redshirted,
   available"); v35→v36 seeds `S.rivalries` (the world's famous rivalries — abbr-resolved, persist across seasons)
-  + `S.rivalryHeat={}` (Phase 40 rivalries & trophies; both ride plainly on `S`, no codec change). Each step
-  re-derives ratings/ranks where needed.
+  + `S.rivalryHeat={}` (Phase 40 rivalries & trophies; both ride plainly on `S`, no codec change); v36→v37
+  backfills an empty `S.records` (Phase 41 all-time record book — records accrue from played games, no seeding).
+  Each step re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -2801,6 +2879,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   draft,                  // { year, picks:[{pick,round,grade,pid,name,pos,teamId,abbr,color}] } | null — last NFL draft class (Phase 13)
   rivalries,              // [ Rivalry ] — established rivalries incl. their trophy holder + series (Phase 40); created at new game, persist across seasons
   rivalryHeat,            // { pairKey: number } — not-yet-born pairs' accumulating heat (Phase 40); crosses RIVALRY_BORN → a new rivalry is christened
+  records,                // { game, season, career, team: {recordKey: {value, name, pos?, teamId, abbr, color, year, detail}} } — all-time record book (Phase 41); captured as games/seasons resolve, persists across seasons
   lastPlayedWeek,         // last week resolved (for the Scores tab)
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
@@ -2997,9 +3076,9 @@ National Signing Day → transfer portal** → rollover (graduate/enshrine/**dra
 settle → carousel → facilities/series — closes across multiple years, and the **hot seat** means a sustained
 slump can end your tenure; your stars leave a permanent mark on the program both on its Ring of Honor and on
 its pro-pipeline reputation.
-**Seventeen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
+**Eighteen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
 `traitlab` / `schemelab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `medialab` /
-`camplab` / `visitlab` / `rivalrylab` / `qa`.
+`camplab` / `visitlab` / `rivalrylab` / `recordlab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during
