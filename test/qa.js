@@ -372,6 +372,41 @@ function startServer() {
   check('Phase 39: rollover moves him onto the RS track, preserving a year', rs.converted, 'target=' + rs.target);
   check('Phase 39: the redshirt is reported in the rollover summary', rs.reported);
 
+  // ---------- PHASE 40: rivalries & trophies ----------
+  const riv = await page.evaluate(() => {
+    const t = controlled(), opp = S.world.teams.find(x => x.id !== t.id);
+    const presetCount = (S.rivalries || []).length;
+    const ironBowl = (S.rivalries || []).some(rv => rv.name === 'Iron Bowl');   // famous presets seeded at new game
+    // ensure a rivalry between me and opp (reuse a preset if it exists), then record a rivalry WIN for me
+    let rv = rivalryFor(t.id, opp.id);
+    if (!rv) { rv = { a: t.id, b: opp.id, name: 'QA Rivalry', trophy: 'QA Cup', preset: true, intensity: 60, holder: null, aw: 0, bw: 0, streakTeam: null, streak: 0, born: null, last: null }; S.rivalries.push(rv); }
+    rv.holder = null;
+    const g = { id: 'qariv', home: t.id, away: opp.id, week: 14, played: true, hs: 31, as: 17 };
+    const events = bumpRivalries([g], 'reg');
+    const tookTrophy = rv.holder === t.id && events.some(e => e.type === 'trophy-won');
+    const bannerShown = rivalryBannerHTML(t.id, opp.id).length > 0;
+    // approval amplification: a rivalry result swings approval more than the same non-rivalry result
+    const base = { won: true, myOvr: t.ratings.ovr, oppOvr: opp.ratings.ovr };
+    const amplified = gameApprovalDelta({ ...base, rivalry: true }) > gameApprovalDelta({ ...base, rivalry: false });
+    // emergent: two OTHER teams stage repeated ranked nailbiters → a rivalry is born
+    const others = S.world.teams.filter(tm => tm.id !== t.id && tm.id !== opp.id).slice(0, 2);
+    others[0].natRank = 5; others[1].natRank = 8;
+    let born = false;
+    for (let i = 0; i < 8 && !born; i++) {
+      const gg = { id: 'qab' + i, home: others[0].id, away: others[1].id, week: 14, played: true, hs: 24, as: 21 };
+      if (bumpRivalries([gg], 'reg').some(e => e.type === 'born')) born = true;
+    }
+    UI.view = 'program'; render();
+    const cardShown = !!document.querySelector('[data-tid="rivalry-card"]');
+    UI.view = 'home'; render();   // restore Home for the season-advance flow that follows
+    return { presetCount, ironBowl, tookTrophy, bannerShown, amplified, born, cardShown };
+  });
+  check('Phase 40: famous rivalries seeded at new game (Iron Bowl present)', riv.presetCount >= 20 && riv.ironBowl, riv.presetCount + ' rivalries');
+  check('Phase 40: winning a rivalry game takes the trophy', riv.tookTrophy);
+  check('Phase 40: a rivalry result amplifies approval', riv.amplified);
+  check('Phase 40: a new rivalry is born from repeated big meetings', riv.born);
+  check('Phase 40: the Home rivalry banner + Program rivalry card render', riv.bannerShown && riv.cardShown);
+
   // advancing now opens the watch-then-commit viewer for your game; skip + commit each week.
   // bye weeks advance directly (no viewer). Capture the first watched game to verify its score
   // equals the committed result (the replay is faithful, not a re-roll).
@@ -665,7 +700,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 35 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 36 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -682,7 +717,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v35)', mig.v === 35, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v36)', mig.v === 36, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -1154,7 +1189,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 35', roPost.version === 35, 'v' + roPost.version);
+  check('Rollover: save version bumped to 36', roPost.version === 36, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);

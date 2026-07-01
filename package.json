@@ -19,7 +19,8 @@
     "portallab": "node test/portallab.js",
     "medialab": "node test/medialab.js",
     "camplab": "node test/camplab.js",
-    "visitlab": "node test/visitlab.js"
+    "visitlab": "node test/visitlab.js",
+    "rivalrylab": "node test/rivalrylab.js"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

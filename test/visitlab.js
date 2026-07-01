@@ -60,6 +60,9 @@ const oneSided = weekendQuality({ oppRank: 6, myRank: null });
 ok(marquee > oneSided, 'a both-ranked marquee tops the same opponent with me unranked (' + marquee.toFixed(3) + ' > ' + oneSided.toFixed(3) + ')');
 // the marquee bump only fires when BOTH are top-15
 ok(weekendQuality({ oppRank: 6, myRank: 20 }) < marquee, 'marquee needs BOTH teams top-15 (me #20 gets no clash bump)');
+// Phase 40: a rivalry weekend is always a bigger draw than the same non-rivalry weekend
+ok(weekendQuality({ oppRank: 22, rivalry: true }) > weekendQuality({ oppRank: 22 }), 'a rivalry weekend outdraws the same non-rivalry one');
+ok(weekendQuality({ rivalry: true }) > weekendQuality({}), 'even an unranked rivalry weekend beats a neutral one');
 
 // 7–8. Bounded [0.6, 1.7] at the extremes.
 const qMax = weekendQuality({ oppRank: 1, oppPrestige: 99, myRank: 1 });

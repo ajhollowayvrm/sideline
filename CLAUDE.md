@@ -588,6 +588,31 @@ plain static files so Pages still serves it with zero config.
   lasts one extra season 5-vs-4; an undesignated roster reports none), `qa` → 276 (a designee is held out of
   the game and records nothing; rollover converts him onto the RS track; it's reported). See "Phase 39 design
   — redshirting" below.
+- **Phase 40 — Rivalries & trophies.** ✅ DONE. Real, named rivalries with **game trophies** that change
+  hands, plus **emergent rivalries** that form from playing a lot or in big moments. Pure fenced **`RIVALRY
+  ENGINE`** (depends only on `clamp`/`hashStr`): a `RIVALRIES` table of ~40 authentic rivalries (Iron Bowl,
+  Egg Bowl → Golden Egg, The Game, Red River, Apple Cup, Territorial Cup, …) keyed by real abbr; `rivalryGain`
+  (intensity a single meeting adds — close games / ranked clashes / big stages (bowl < champ < playoff) /
+  upsets, bounded 2–22); `bornRivalry` (deterministic name + trophy for an emergent one); `intensityTier`
+  (Simmering → Heated → Bitter → Blood Feud). App layer: `S.rivalries` (established, with the **trophy holder**
+  + series record, persist across seasons) + `S.rivalryHeat` (not-yet-born pairs' accumulating heat);
+  `bumpRivalries` records every resolved game (regular week / championship / bowl / playoff) — the winner
+  **takes the trophy**, established rivalries heat up, and a **new rivalry is BORN** (christened + given a
+  trophy, a media event) when a pair's heat crosses the bar (~4 ranked classics, or many routine meetings);
+  `decayRivalries` cools things a touch each offseason. **Cross-conference presets are locked into the
+  schedule** (`rivalLegsForYear`, alternating host) so the marquee non-conf rivalries happen yearly.
+  **Stakes fold into existing systems** (the rank-based "marquee" hack is now rivalry-aware): approval
+  (`gameApprovalDelta` +rivalry — beating a rival means more, losing stings; non-rivalry byte-identical),
+  recruiting ripple (`gameRecruitVibe` +rivalry), visit-weekend quality (`weekendQuality` +rivalry marquee),
+  and media (a rivalry story per notable game + a "rivalry is born" event). UI: a 🔥 rivalry banner on the
+  Home matchup card (name · trophy · series · who holds it), a **Rivalries** card on the Program page
+  (trophies held + each rivalry's tier/series/holder), toasts when a trophy changes hands or a rivalry is
+  born. Save **v36** (`S.rivalries`/`S.rivalryHeat`; `migrateState` v35→v36 seeds the presets — they ride
+  plainly on `S`, no codec change). New gate `npm run rivalrylab` (22 checks: gain direction/stage-ladder/
+  bounds, the born bar needs sustained/big heat, tier ladder, preset table well-formed, deterministic
+  emergent names); `visitlab` → 22 (rivalry weekend outdraws a neutral one); `qa` → 281 (presets seeded,
+  winning takes the trophy, approval amplified, a rivalry is born, the banner + card render). See "Phase 40
+  design — rivalries & trophies" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -2196,6 +2221,86 @@ position-battle layer. One lever (sit a young player to bank a year), read throu
 
 ---
 
+## Phase 40 design — rivalries & trophies
+
+Decided 2026-06-30 with AJ — the flagged "marquee is a rank-based hack" gap, plus AJ's ask for **emergent
+rivalries you create by playing a team a lot or in big moments**. `TEAMS` holds real FBS schools with real
+abbreviations, so rivalries + trophies use **authentic names** keyed by abbr. House discipline: a pure fenced
+engine + node lab before UI, a save bump, all gates green; every amplification hook keeps its non-rivalry path
+**byte-identical** (widen clamps only when `rivalry` is set) so the validated envelopes hold.
+
+### The data (two stores, both persist across seasons)
+- `S.rivalries` — **established** rivalries (preset + born): `{a,b,name,trophy,preset,intensity,holder,aw,bw,
+  streakTeam,streak,born,last}`. `holder` = the team that currently holds the trophy (last winner); `aw/bw` =
+  the series record; `intensity` drives the tier. Created once at new game (`initRivalries`) + backfilled by
+  migration — **NOT recreated at kickoff** (so the trophy holder + series + heat accumulate over a career).
+- `S.rivalryHeat` — `{pairKey: number}` for **not-yet-born** pairs, accumulating heat until it crosses the
+  bar. Bounded by a yearly decay + prune (`decayRivalries`), so it can't balloon over a long dynasty.
+
+### Pure `RIVALRY ENGINE` (fenced, lab before UI)
+`// === RIVALRY ENGINE (Phase 40) START/END ===` (depends only on `clamp`/`hashStr`), so `test/rivalrylab.js`
+extracts + validates it offline:
+- `RIVALRIES` — ~40 preset `[abbrA, abbrB, name, trophy]` (trophy `''` = bragging rights, still changes
+  hands). Resolved against the world at init; a pair whose teams aren't both present is silently skipped
+  (safe across roster imports).
+- `rivalryKey(a,b)` — canonical unordered pair key.
+- `rivalryGain(ctx)` — intensity a single meeting adds, from `{marginAbs, bothRanked, stage, late, upset}`.
+  A blowout regular-season game barely moves it (~3); a close ranked playoff meeting is a bonfire (~22).
+  Stage ladder `reg < bowl < champ < playoff`. Bounded [2, 22].
+- `bornRivalry(abbrA,abbrB,seed)` — a deterministic name (`ABBR–ABBR <title>`) + trophy (`The <noun>`) for a
+  newly-christened emergent rivalry.
+- `intensityTier(x)` — Simmering → Heated → Bitter → Blood Feud.
+
+### App layer
+- `rivalryFor(x,y)` — the established rivalry between two teams (or null); `rivalryView(rv)` — a UI view
+  (teams, holder, series leader, tier).
+- `bumpRivalries(games, stage)` — called after results resolve in **all four** paths (regular week `'reg'`,
+  Championship Week `'champ'`, and the postseason where stage is read per-game from `g.kind` bowl/playoff).
+  For each played game: the winner **takes the trophy** (`holder = winner`), an established rivalry updates
+  (series/streak/`intensity += gain*0.4`), else the pair's `heat += gain` and — when it crosses
+  `RIVALRY_BORN` — a **new rivalry is born** (named, given a trophy, a media event). Returns the controlled
+  team's notable events (trophy won/lost, born) for `announceRivalryEvents` (toasts + a feed story).
+- `rivalLegsForYear(year)` — **cross-conference** preset rivalries as locked schedule edges (alternating
+  host), merged into `genSchedule`'s `locked` alongside the series legs, so marquee non-conf rivalries happen
+  every year (in-conf rivals meet through normal conference scheduling). `genSchedule` tags these `g.rivalry`
+  (not `g.series`).
+
+### Amplification (the stakes — non-rivalry paths byte-identical)
+- **Approval** — `gameApprovalDelta` gains a `rivalry` term (`±2`) and a widened clamp **only when rivalry**
+  (`±7` vs the unchanged `±5`), so beating a rival moves the seat more and a non-rivalry result is identical
+  (`medialab`'s `±5` bound holds).
+- **Recruiting ripple** — `gameRecruitVibe` gains an optional `rivalry` 5th arg (`±` + widened clamp only
+  when set); threaded through `applyLeagueRipple`. Existing 4-arg calls (`reclab`) are byte-identical.
+- **Visit weekends** — `weekendQuality` gains a `rivalry` marquee term (`+0.28`); a rivalry weekend is always
+  a big draw (fixes the pure rank-based marquee). `visitlab`'s neutral/mean cases don't set it → unchanged.
+- **Media** — a rivalry game gets its own story (trophy on the line) ahead of the generic upset/ranked tag,
+  and a **"A rivalry is born"** `mediaEvent` fires when one is christened.
+
+### UI
+A 🔥 **rivalry banner** on the Home matchup card (name · tier · trophy on the line · series · who holds it);
+a **Rivalries** card on the Program page (trophies currently held + each rivalry's tier / series / holder,
+sorted by intensity, born rivalries flagged with their year); toasts when a trophy changes hands or a rivalry
+is born.
+
+### Save & validation
+Save **v36** (`S.rivalries`, `S.rivalryHeat`; `migrateState` v35→v36 seeds the presets from the world's abbrs
++ an empty heat map). Both ride plainly on `S` (the columnar codec only special-cases rosters + the recruit
+pool), so **no codec change**. New gate `npm run rivalrylab` (22 checks: gain direction / stage ladder /
+bounds; the born bar needs sustained or big-moment heat; tier ladder; preset table well-formed + no dup
+pairs; deterministic order-independent emergent names). `visitlab` → 22 (rivalry weekend outdraws neutral),
+`qa` → 281 (presets seeded incl. the Iron Bowl, winning a rivalry takes the trophy, a rivalry result
+amplifies approval, a new rivalry is born from repeated big meetings, the banner + card render). **Seventeen
+gates** now (adds `rivalrylab`).
+
+### Deliberately out of scope
+No **in-game** rivalry effect (the pure `simEngine` is untouched — the stakes are approval / recruiting /
+trophies / media, so the scoring envelope holds; "anything can happen" is left as flavor); no player-facing
+rivalry *scheduling* (you can't propose a rivalry game — cross-conf presets are auto-locked, emergent ones
+form from whoever you actually play); no rivalry-specific recruiting *battles* beyond the existing ripple; no
+manual rename / trophy customization.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -2621,7 +2726,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **34**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
+  (currently **36**). v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
   `recruiting:null` (created at kickoff); v6→v7 backfills the `S.year` calendar-year counter
@@ -2666,7 +2771,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   `S.recruiting.visitPlan={}` (Phase 38 visit-weekend scheduler — the booked-visit calendar; recreated at
   kickoff, so it only patches an in-flight in-season save); v34→v35 is a structural no-op (Phase 39 redshirting —
   sparse `p.rs`: `'on'`=redshirting this season, `'used'`=already redshirted; absent reads as "never redshirted,
-  available"). Each step re-derives ratings/ranks where needed.
+  available"); v35→v36 seeds `S.rivalries` (the world's famous rivalries — abbr-resolved, persist across seasons)
+  + `S.rivalryHeat={}` (Phase 40 rivalries & trophies; both ride plainly on `S`, no codec change). Each step
+  re-derives ratings/ranks where needed.
   **Bump `version` + extend `migrateState` on any save-shape change.**
 - **Season engine** (`genSchedule`/`startSeason`/`simGame`/`advanceWeek`): `genSchedule(world,seed)`
   picks ~12 conference-weighted matchups per team then greedy edge-colors them into
@@ -2692,6 +2799,8 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   media,                  // { poll:{week, top:[{teamId,rank,prev,pts}], others}, feed:[Story] } | null — AP poll + news feed (Phase 19); created at kickoff, nulled at rollover
   postseason,             // { year, round, playoff:{seeds[12], rounds:[[Game]], champion}, bowls:[Game], meDone } | null (Phase 12)
   draft,                  // { year, picks:[{pick,round,grade,pid,name,pos,teamId,abbr,color}] } | null — last NFL draft class (Phase 13)
+  rivalries,              // [ Rivalry ] — established rivalries incl. their trophy holder + series (Phase 40); created at new game, persist across seasons
+  rivalryHeat,            // { pairKey: number } — not-yet-born pairs' accumulating heat (Phase 40); crosses RIVALRY_BORN → a new rivalry is christened
   lastPlayedWeek,         // last week resolved (for the Scores tab)
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
@@ -2718,11 +2827,17 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 //   committed transfer is stripped of those portal fields and pushed onto his new team's roster with
 //   `fromTransfer:true`. Unsigned transfers leave the modeled league.
 
-// Game: { id, week, home: teamId, away: teamId, played, hs, as, calls?, adjusts?, out? }   // hs/as = home/away score
+// Game: { id, week, home: teamId, away: teamId, played, hs, as, calls?, adjusts?, out?, rivalry?, series? }   // hs/as = home/away score
 //   out? = ids that sat (injured) at kickoff, frozen so a past game replays faithfully (Phase 27).
 //   calls? = the coach's ordered play calls if he coached it (Phase 22); adjusts? = his in-game
 //   adjustment timeline [{at:playNo, plan:{shadow,boost}}] (Phase 24, coverage reassignment + pep-talks).
 //   Both replay on commit/replay (simGame/buildGameLog via gameDecideOpts) so watch == commit. Absent = a pure AI game.
+//   rivalry? = a locked cross-conf rivalry leg (Phase 40); series? = a booked non-conf series leg (Phase 8).
+
+// Rivalry (S.rivalries, Phase 40): { a, b: teamId, name, trophy, preset:bool, intensity, holder: teamId|null,
+//   aw, bw, streakTeam, streak, born: year|null, last:{year,winner,ws,ls} }. holder = who currently holds the
+//   trophy (last winner); aw/bw = the series record (a's wins / b's wins); preset false = an emergent rivalry
+//   BORN when S.rivalryHeat[pairKey] crossed RIVALRY_BORN. See the RIVALRY ENGINE block.
 ```
 
 ### Team object
@@ -2882,9 +2997,9 @@ National Signing Day → transfer portal** → rollover (graduate/enshrine/**dra
 settle → carousel → facilities/series — closes across multiple years, and the **hot seat** means a sustained
 slump can end your tenure; your stars leave a permanent mark on the program both on its Ring of Honor and on
 its pro-pipeline reputation.
-**Sixteen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
+**Seventeen green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
 `traitlab` / `schemelab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `medialab` /
-`camplab` / `visitlab` / `qa`.
+`camplab` / `visitlab` / `rivalrylab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during

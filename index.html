@@ -788,15 +788,17 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:35,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:36,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
+     rivalries:null,rivalryHeat:null,
      task:{type:'Media Day',label:'Preseason Media Day',note:'Set the tone with the press, then kick off the season.'}};
   // Phase 19b: coach approval + tenure + a per-job career résumé (persist across seasons, not in S.media).
   S.coach.approval=55; S.coach.tenure=0; S.coach.approvalHistory=[]; S.coach.career=[];
   // Phase 21: install the coach's preferred schemes onto the program he takes over (buy-in on day one;
   // the roster only fits as well as the players' instincts do — a project to recruit/develop into).
   const me=teamById(S.teamId); if(me){if(S.coach.offScheme)me.offScheme=S.coach.offScheme; if(S.coach.defScheme)me.defScheme=S.coach.defScheme;}
+  initRivalries();   // Phase 40: seed the world's famous rivalries (persist across seasons)
   // choose a save slot
   chooseSlotSheet();
 }
@@ -1023,6 +1025,15 @@ function migrateState(state){
   if((state.version||1)<35){           // Phase 39: redshirting. Per-player `p.rs` ('on' = redshirting this
     state.version=35;                  // season, 'used' = already redshirted) is a sparse field — absent
   }                                    // reads as "never redshirted, available" → structural no-op.
+  if((state.version||1)<36){           // Phase 40: rivalries & trophies. Seed the world's famous rivalries
+    const byAbbr={};(state.world&&state.world.teams||[]).forEach(t=>byAbbr[t.abbr]=t);   // (persist across
+    state.rivalries=[];                                                                  // seasons); heat map empty.
+    RIVALRIES.forEach(([aa,ba,name,trophy])=>{const A=byAbbr[aa],B=byAbbr[ba];if(!A||!B)return;
+      state.rivalries.push({a:A.id,b:B.id,name,trophy,preset:true,intensity:RIVALRY_ESTABLISHED,
+        holder:null,aw:0,bw:0,streakTeam:null,streak:0,born:null,last:null});});
+    state.rivalryHeat={};
+    state.version=36;
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1097,7 +1108,7 @@ function genSchedule(world,seed,locked){
     busy.get(m.A).add(wk);busy.get(m.B).add(wk);
     const home=m.lock?m.lock.home:(m.ha<0.5?m.A:m.B),away=m.lock?m.lock.away:(m.ha<0.5?m.B:m.A);
     const g={id:'g'+(gi++).toString(36),week:wk+1,home,away,played:false,hs:null,as:null};
-    if(m.lock){g.series=true;if(m.lock.neutral)g.neutral=true;}
+    if(m.lock){if(m.lock.rivalry)g.rivalry=true;else{g.series=true;if(m.lock.neutral)g.neutral=true;}}   // Phase 40: rivalry locks aren't series
     games.push(g);
   });
   return {weeks:SEASON_WEEKS,games};
@@ -1115,7 +1126,7 @@ function teamGames(teamId){return S.schedule?S.schedule.games.filter(g=>g.home==
 function lastGameFor(teamId){const gs=teamGames(teamId).filter(g=>g.played);return gs.length?gs[gs.length-1]:null;}
 
 function startSeason(){
-  S.schedule=genSchedule(S.world,S.seed,seriesLegsForYear(S.year||2026));
+  S.schedule=genSchedule(S.world,S.seed,seriesLegsForYear(S.year||2026).concat(rivalLegsForYear(S.year||2026)));
   S.world.teams.forEach(t=>t.rec=emptyRec());
   S.weeklyHonors=[];
   S.phase='Regular Season';S.week=1;S.lastPlayedWeek=0;
@@ -1567,12 +1578,13 @@ function recScoutMult(rec){return 1+0.3*((rec.scout||0)/100);}
 // Phase 35 — season ripple: your Saturday result energizes (or cools) your board. Pure: returns a signed
 // base interest nudge from the controlled team's game (a ranked win is huge; a blowout loss stings). The app
 // scales it by proximity (in-state recruits feel it more) and applies it to your board. Bounded.
-function gameRecruitVibe(my,opp,myRank,oppRank){
+function gameRecruitVibe(my,opp,myRank,oppRank,rivalry){
   if(my==null||opp==null)return 0;
   const win=my>opp, margin=Math.abs(my-opp); let v=win?3:-2;
   if(win){if(oppRank&&oppRank<=25)v+=4; if(margin>=21)v+=2;}                    // beat a ranked team / a statement win
   else{if(margin>=21)v-=3; if(myRank&&myRank<=25&&(!oppRank||oppRank>25))v-=2;} // blown out / ranked team upset
-  return clamp(v,-6,9);
+  if(rivalry)v+=win?3:-2;                                                       // Phase 40: a rivalry result echoes on the trail
+  return clamp(v,rivalry?-9:-6,rivalry?11:9);                                   // non-rivalry bounds unchanged (byte-identical)
 }
 // Phase 35 — diminishing returns: repeating the SAME action on the same recruit pays less, so it's better to
 // vary your approach than to spam one pitch. Pure: a falloff multiplier for the (n)th prior use of an action.
@@ -1743,11 +1755,81 @@ function weekendQuality(o){o=o||{};
   const opp=rankPull(o.oppRank), me=rankPull(o.myRank);
   const prestige=clamp(((o.oppPrestige==null?60:o.oppPrestige)-60)/30,-1,1)*0.15;   // a blueblood draws even unranked
   const marquee=(o.oppRank&&o.oppRank<=15&&o.myRank&&o.myRank<=15)?0.25:0;            // both ranked → GameDay clash
-  return clamp(1+opp*0.45+prestige+me*0.2+marquee,0.6,1.7);
+  const rivalry=o.rivalry?0.28:0;                                                     // Phase 40: a rivalry weekend is always big
+  return clamp(1+opp*0.45+prestige+me*0.2+marquee+rivalry,0.6,1.7);
 }
 // Tier label from the quality multiplier (thresholds picked so the neutral ~1.0 reads "Solid").
 function weekendTier(q){return q>=1.45?VISIT_TIERS[3]:q>=1.18?VISIT_TIERS[2]:q>=0.92?VISIT_TIERS[1]:VISIT_TIERS[0];}
 // === VISIT ENGINE (Phase 38) END ===
+
+// === RIVALRY ENGINE (Phase 40) START ===
+// Rivalries + game trophies. Pure + data-only (depends on clamp/hashStr), so test/rivalrylab.js can
+// extract + validate it offline. Famous PRESET rivalries seed the world; a NEW rivalry is BORN when a
+// pair's accumulated "heat" — grown by close games, ranked clashes, and big-stage meetings — crosses a
+// bar. The winner of a rivalry game holds its trophy. The app layer resolves abbrs→ids, records results,
+// and folds rivalry stakes into approval / recruiting ripple / visit weekends / media.
+
+// Preset rivalries: [abbrA, abbrB, name, trophy]. trophy '' = bragging rights only (the "trophy" is the
+// bragging rights, which still change hands to the winner). Abbrs are resolved against the world at init;
+// any pair whose teams aren't both present is silently skipped, so this is safe across roster imports.
+const RIVALRIES=[
+  ["ALA","AUB","Iron Bowl",""],["MISS","MSST","Egg Bowl","Golden Egg"],
+  ["OU","TEX","Red River Rivalry","Golden Hat"],["TEX","TAMU","Lone Star Showdown",""],
+  ["LSU","ARK","The Golden Boot","Golden Boot"],["LSU","MISS","Magnolia Bowl",""],
+  ["ALA","TENN","Third Saturday in October",""],["UGA","AUB","Deep South's Oldest Rivalry",""],
+  ["UGA","FLA","World's Largest Outdoor Cocktail Party",""],["MIZ","ARK","Battle Line Rivalry","Battle Line Trophy"],
+  ["UGA","GT","Clean, Old-Fashioned Hate",""],["FLA","FSU","Sunshine Showdown",""],
+  ["CLEM","SC","Palmetto Bowl",""],["LOU","UK","Governor's Cup (KY)","Governor's Cup"],
+  ["CIN","LOU","Keg of Nails","Keg of Nails"],["IOWA","ISU","Cy-Hawk Series","Cy-Hawk Trophy"],
+  ["PITT","WVU","Backyard Brawl",""],["OSU","MICH","The Game",""],
+  ["MICH","MSU","Michigan–Michigan State","Paul Bunyan Trophy"],["MINN","WIS","Border Battle","Paul Bunyan's Axe"],
+  ["MINN","IOWA","Floyd of Rosedale","Floyd of Rosedale"],["MINN","MICH","Little Brown Jug","Little Brown Jug"],
+  ["IND","PUR","Old Oaken Bucket","Old Oaken Bucket"],["ILL","NW","Land of Lincoln","Land of Lincoln Trophy"],
+  ["WIS","IOWA","Heartland Trophy","Heartland Trophy"],["NEB","IOWA","Heroes Game","Heroes Trophy"],
+  ["ORE","ORST","Platypus Trophy","Platypus Trophy"],["WASH","WSU","Apple Cup","Apple Cup"],
+  ["USC","UCLA","Crosstown Rivalry","Victory Bell"],["OU","OKST","Bedlam",""],
+  ["KU","KSU","Sunflower Showdown","Governor's Cup"],["ARIZ","ASU","Territorial Cup","Territorial Cup"],
+  ["KU","MIZ","Border War",""],["UVA","VT","Commonwealth Clash","Commonwealth Cup"],
+  ["CAL","STAN","The Big Game","Stanford Axe"],["MIA","FSU","Miami–Florida State",""],
+  ["UNC","NCST","Textile Bowl",""],["ARMY","NAVY","Army–Navy Game","Commander-in-Chief's Trophy"],
+  ["UTAH","BYU","Holy War",""],["BAY","TCU","The Revivalry",""]
+];
+const RIVALRY_ESTABLISHED=62;   // preset seed intensity (already a rivalry)
+const RIVALRY_BORN=48;          // heat bar at which a NEW rivalry is christened
+const RIVALRY_FLOOR=30;         // emergent rivalries can cool to here (presets to ~45); never vanish
+const RIVALRY_MAX=100;
+const RIVALRY_TIERS=['Simmering','Heated','Bitter','Blood Feud'];
+// Emergent-trophy pool (deterministic pick) + emergent-name descriptors.
+const RIVALRY_TROPHIES=['Iron Skillet','Old Brass Spittoon','Wagon Wheel','Copper Anvil','Peace Pipe',
+  'Bronze Stalk','Milk Can','Telephone Trophy','Old Cannon','Silver Spade','Beehive Boot','Bones Trophy',
+  'Brass Bell','Golden Gavel','Steel Tire','Oaken Gavel'];
+const RIVALRY_TITLES=['Border War','Grudge Match','The Clash','Bad Blood','The Feud','The Standoff',
+  'The Reckoning','The Rumble'];
+
+// Canonical unordered pair key for two team ids.
+function rivalryKey(a,b){return a<b?a+'|'+b:b+'|'+a;}
+// Intensity tier label from an intensity score.
+function intensityTier(x){return x>=85?RIVALRY_TIERS[3]:x>=65?RIVALRY_TIERS[2]:x>=40?RIVALRY_TIERS[1]:RIVALRY_TIERS[0];}
+// Intensity a single meeting adds. Pure/bounded. ctx: {marginAbs, bothRanked, stage, late, upset}.
+// A blowout regular-season game barely moves it; a close ranked playoff meeting is a bonfire.
+function rivalryGain(ctx){
+  ctx=ctx||{};
+  let g=3;                                                      // they played — a little heat regardless
+  if(ctx.marginAbs!=null){if(ctx.marginAbs<=3)g+=6;else if(ctx.marginAbs<=7)g+=4;else if(ctx.marginAbs<=14)g+=1;}
+  if(ctx.bothRanked)g+=5;                                       // a ranked clash matters
+  g+=({reg:0,bowl:5,champ:8,playoff:10}[ctx.stage])||0;         // the bigger the stage, the bigger the memory
+  if(ctx.late)g+=2;                                             // rivalry-week timing
+  if(ctx.upset)g+=3;                                            // an upset stings / thrills
+  return clamp(g,2,22);
+}
+// Name + trophy for a newly-BORN emergent rivalry (deterministic from the pair + seed). abbrs identify it.
+function bornRivalry(abbrA,abbrB,seed){
+  const pair=abbrA<abbrB?[abbrA,abbrB]:[abbrB,abbrA];
+  const h=hashStr(pair.join('|')+(seed||0));
+  return {name:pair.join('–')+' '+RIVALRY_TITLES[h%RIVALRY_TITLES.length],
+          trophy:'The '+RIVALRY_TROPHIES[(h>>3)%RIVALRY_TROPHIES.length]};
+}
+// === RIVALRY ENGINE (Phase 40) END ===
 
 // === ROLLOVER ENGINE (Phase 5) START ===
 // Pure, deterministic season-rollover model. Depends only on rng/ri/clamp/pick + the data arrays
@@ -2468,7 +2550,8 @@ function gameApprovalDelta(ctx){
   const gap=(ctx.oppOvr||70)-(ctx.myOvr||70);          // + = opponent was the stronger team
   if(ctx.won){if(gap>=2||ctx.oppRanked)d+=2; if(gap>=6)d+=1;}
   else{if(gap<=-3)d-=3; else if(gap>=2||ctx.oppRanked)d+=1.5;}
-  return clamp(d,-5,5);
+  if(ctx.rivalry)d+=ctx.won?2:-2;                       // Phase 40: beating a rival means more; losing to one stings
+  return clamp(d,ctx.rivalry?-7:-5,ctx.rivalry?7:5);    // non-rivalry stays ±5 (byte-identical); rivalry widened
 }
 // Season-end approval swing: wins vs the prestige expectation, plus title bonuses. Bounded.
 function seasonApprovalDelta(ctx){
@@ -2684,6 +2767,7 @@ function advanceWeek(){
   S.lastPlayedWeek=wk;S.week++;
   recomputeRanks(S.world);
   updateMedia(wk,boxes,recOut);             // Phase 19: refresh the AP poll + push the week's news stories
+  announceRivalryEvents(wk,bumpRivalries(boxes.map(b=>b.g),'reg'));   // Phase 40: trophies change hands, rivalries heat up / are born
   if(S.week>S.schedule.weeks)finishRegularSeason();   // → postseason (bowls + playoff), then offseason
   else{setWeeklyTask();grantRecruitPoints();}
   autosave();
@@ -2739,10 +2823,19 @@ function pushStory(list,wk,tag,d,r,extra){
 function buildWeekStories(wk,boxes,recOut,prevPoll,poll){
   const out=[], me=S.teamId;
   const rankAt=tid=>{const e=prevPoll&&prevPoll.top.find(x=>x.teamId===tid);return e?e.rank:null;};
-  // game stories — upsets, ranked clashes, blowouts
+  // game stories — rivalries (trophy on the line) first, then upsets / ranked clashes / blowouts
   (boxes||[]).forEach(({g})=>{
     const h=teamById(g.home),a=teamById(g.away),homeWon=g.hs>g.as;
     const W=homeWon?h:a,L=homeWon?a:h,ws=Math.max(g.hs,g.as),ls=Math.min(g.hs,g.as),margin=ws-ls;
+    // Phase 40: a rivalry game gets its own story (trophy changes hands) — for your game or a notable one.
+    const riv=rivalryFor(g.home,g.away);
+    if(riv&&(W.id===me||L.id===me||margin<=10||(rankAt(W.id)&&rankAt(W.id)<=25)||(rankAt(L.id)&&rankAt(L.id)<=25))){
+      const r=rng((S.seed^hashStr('riv'+wk+g.id))>>>0);
+      pushStory(out,wk,'rivalry',{headline:W.abbr+' wins the '+riv.name,
+        body:W.name+' beat '+L.name+' '+ws+'–'+ls+' to take the '+riv.name+(riv.trophy?' and claim '+riv.trophy:'')+'.'},r,
+        {color:W.color,teams:[W.id,L.id],mine:W.id===me||L.id===me});
+      return;
+    }
     const tag=gameStoryTag({rank:rankAt(W.id),ovr:W.ratings.ovr},{rank:rankAt(L.id),ovr:L.ratings.ovr},margin);
     if(!tag)return;
     const r=rng((S.seed^hashStr('story'+wk+g.id))>>>0);
@@ -2781,7 +2874,7 @@ function updateMedia(wk,boxes,recOut){
     const g=mg.g, opp=teamById(g.home===me?g.away:g.home);
     const myPts=g.home===me?g.hs:g.as, oppPts=g.home===me?g.as:g.hs, won=myPts>oppPts;
     const before=hotSeatTier(S.coach.approval||50,mine.prestige,S.coach.tenure||0).tier;
-    S.coach.approval=clamp((S.coach.approval||50)+gameApprovalDelta({won,myOvr:mine.ratings.ovr,oppOvr:opp.ratings.ovr,oppRanked:!!pollRankOf(opp.id)}),3,99);
+    S.coach.approval=clamp((S.coach.approval||50)+gameApprovalDelta({won,myOvr:mine.ratings.ovr,oppOvr:opp.ratings.ovr,oppRanked:!!pollRankOf(opp.id),rivalry:!!rivalryFor(g.home,g.away)}),3,99);
     const after=hotSeatTier(S.coach.approval,mine.prestige,S.coach.tenure||0).tier;
     if(after==='hot'&&before!=='hot')mediaEvent(wk,'milestone','Pressure mounts on '+mine.abbr,'The seat is heating up after the latest result — approval has slipped to '+Math.round(S.coach.approval)+'%.',{color:mine.color,teams:[me],mine:true});
   }
@@ -2804,6 +2897,97 @@ function updateMedia(wk,boxes,recOut){
 function mediaEvent(wk,tag,headline,body,extra){
   if(!S.media)return;
   S.media.feed=[Object.assign({id:'ev'+(_mediaSeq++),week:wk,tag,headline,body},extra||{})].concat(S.media.feed).slice(0,MEDIA_FEED_CAP);
+}
+/* ============================================================
+   RIVALRIES & TROPHIES — app layer over the pure RIVALRY ENGINE (Phase 40)
+   Owns S.rivalries (established rivalries incl. their trophy holder + series) and S.rivalryHeat (the
+   not-yet-born pairs' accumulating heat). Both persist across seasons (NOT reset at kickoff/rollover).
+   ============================================================ */
+function initRivalries(){
+  const byAbbr={};S.world.teams.forEach(t=>byAbbr[t.abbr]=t);
+  S.rivalries=[];
+  RIVALRIES.forEach(([aa,ba,name,trophy])=>{const A=byAbbr[aa],B=byAbbr[ba];if(!A||!B)return;
+    S.rivalries.push({a:A.id,b:B.id,name,trophy,preset:true,intensity:RIVALRY_ESTABLISHED,
+      holder:null,aw:0,bw:0,streakTeam:null,streak:0,born:null,last:null});});
+  S.rivalryHeat={};
+}
+// The established rivalry (preset or born) between two teams, or null.
+function rivalryFor(x,y){return (S.rivalries||[]).find(rv=>(rv.a===x&&rv.b===y)||(rv.a===y&&rv.b===x))||null;}
+// A UI view of a rivalry: the two teams, the trophy holder, the series leader + line, and the tier.
+function rivalryView(rv){
+  if(!rv)return null;const A=teamById(rv.a),B=teamById(rv.b);if(!A||!B)return null;
+  return {rv,A,B,holder:rv.holder?teamById(rv.holder):null,
+    lead:rv.aw>rv.bw?A:rv.bw>rv.aw?B:null,series:rv.aw+'–'+rv.bw,tier:intensityTier(rv.intensity)};
+}
+// Cross-conference preset rivalries as LOCKED schedule edges (so the marquee non-conf rivalries happen
+// every year); in-conference rivals meet through normal conference scheduling. Host alternates by year.
+function rivalLegsForYear(year){
+  const out=[];(S.rivalries||[]).forEach(rv=>{if(!rv.preset)return;
+    const A=teamById(rv.a),B=teamById(rv.b);if(!A||!B||A.conf===B.conf)return;
+    const flip=(hashStr(rivalryKey(rv.a,rv.b))+year)%2===0;
+    out.push({home:flip?rv.a:rv.b,away:flip?rv.b:rv.a,rivalry:true});});
+  return out;
+}
+// Record resolved games into the rivalry system: established rivalries update (trophy → winner, series,
+// streak, intensity); other pairs accumulate HEAT and a NEW rivalry is BORN when it crosses the bar.
+// Returns notable events for the controlled team (trophy won/lost) + any born rivalry, for media/toasts.
+function bumpRivalries(games,stage){
+  if(!S.rivalries)initRivalries();
+  const me=S.teamId,year=S.year||2026,events=[];
+  (games||[]).forEach(g=>{
+    if(!g.played)return;const w=winnerOfGame(g),l=(w===g.home?g.away:g.home);
+    const W=teamById(w),L=teamById(l);if(!W||!L)return;
+    const st=g.kind?(({bowl:'bowl',playoff:'playoff',champ:'champ'})[g.kind]||stage):stage;
+    const marginAbs=Math.abs(g.hs-g.as);
+    const bothRanked=!!(W.natRank&&W.natRank<=25&&L.natRank&&L.natRank<=25);
+    const late=st==='reg'&&(g.week||S.week||0)>=13;
+    const upset=(L.ratings.ovr-W.ratings.ovr)>=4;
+    const gain=rivalryGain({marginAbs,bothRanked,stage:st,late,upset});
+    const rv=rivalryFor(g.home,g.away);
+    if(rv){
+      rv.intensity=clamp(rv.intensity+gain*0.4,0,RIVALRY_MAX);
+      if(w===rv.a)rv.aw++;else rv.bw++;
+      rv.streak=(rv.streakTeam===w)?rv.streak+1:1;rv.streakTeam=w;
+      const prevHolder=rv.holder;rv.holder=w;
+      rv.last={year,winner:w,ws:Math.max(g.hs,g.as),ls:Math.min(g.hs,g.as)};
+      if(g.home===me||g.away===me)events.push({type:me===w?'trophy-won':'trophy-lost',rv,opp:me===w?L:W,took:prevHolder!==w});
+    }else{
+      const key=rivalryKey(g.home,g.away);S.rivalryHeat=S.rivalryHeat||{};
+      const heat=(S.rivalryHeat[key]||0)+gain;
+      if(heat>=RIVALRY_BORN){
+        delete S.rivalryHeat[key];
+        const nb=bornRivalry(W.abbr,L.abbr,S.seed);
+        const nr={a:g.home,b:g.away,name:nb.name,trophy:nb.trophy,preset:false,
+          intensity:clamp(heat,RIVALRY_FLOOR,RIVALRY_MAX),holder:w,
+          aw:w===g.home?1:0,bw:w===g.away?1:0,streakTeam:w,streak:1,born:year,
+          last:{year,winner:w,ws:Math.max(g.hs,g.as),ls:Math.min(g.hs,g.as)}};
+        S.rivalries.push(nr);
+        events.push({type:'born',rv:nr,mine:g.home===me||g.away===me,teams:[W,L]});
+      }else S.rivalryHeat[key]=heat;
+    }
+  });
+  return events;
+}
+// Yearly cooldown (at rollover): heat decays + prunes; established intensity eases toward a floor.
+function decayRivalries(){
+  const H=S.rivalryHeat||{};for(const k in H){H[k]*=0.7;if(H[k]<6)delete H[k];}
+  (S.rivalries||[]).forEach(rv=>{rv.intensity=Math.max(rv.preset?45:RIVALRY_FLOOR,rv.intensity*0.94);});
+}
+// Media + toasts for the controlled team's rivalry events (trophy changes hands, a rivalry is born).
+function announceRivalryEvents(wk,events){
+  const me=S.teamId;
+  (events||[]).forEach(ev=>{
+    if(ev.type==='born'){
+      if(S.media)mediaEvent(wk,'title','A rivalry is born: '+ev.rv.name,
+        ev.teams[0].name+' and '+ev.teams[1].name+' have staged enough big games to make it official — '+ev.rv.name+' is on the map, with '+ev.rv.trophy+' on the line.',
+        {color:ev.teams[0].color,teams:[ev.rv.a,ev.rv.b],mine:ev.mine});
+      if(ev.mine)toast('🔥 New rivalry: '+ev.rv.name);
+    }else if(ev.type==='trophy-won'){
+      toast('🏆 You won the '+ev.rv.name+'! '+(ev.rv.trophy?ev.rv.trophy+' is yours.':'Bragging rights are yours.'));
+    }else if(ev.type==='trophy-lost'){
+      toast('💔 You lost the '+ev.rv.name+' to '+ev.opp.abbr+'.');
+    }
+  });
 }
 function setWeeklyTask(){
   const t=controlled(),g=teamGame(t.id,S.week);
@@ -2862,6 +3046,7 @@ function advanceChampWeek(){
   S.champWeek.games.forEach(g=>{if(!g.played){const box=simGame(g);applyResult(g,box);}});
   healWeek(); S.champWeek.games.forEach(g=>applyInjuries(g._inj));   // Phase 27
   recomputeRanks(S.world);
+  announceRivalryEvents(S.week,bumpRivalries(S.champWeek.games,'champ'));   // Phase 40
   S.champWeek.done=true;
   finishConfChampionships();
 }
@@ -2940,6 +3125,7 @@ function advancePostseason(){
   postseasonRoundGames(round).forEach(g=>{if(!g.played){const box=simGame(g);applyResult(g,box);}});
   healWeek(); postseasonRoundGames(round).forEach(g=>applyInjuries(g._inj));   // Phase 27
   recomputeRanks(S.world);
+  announceRivalryEvents(S.week,bumpRivalries(postseasonRoundGames(round),null));   // Phase 40 (stage from g.kind: bowl/playoff)
   if(myGame){const iWon=winnerOfGame(myGame)===me;        // did the controlled team just bow out / advance?
     if(!iWon||myGame.kind==='bowl'||round===3)ps.meDone=true;}
   if(round<3){
@@ -3238,6 +3424,7 @@ function rolloverSeason(){
   ensureCoachMarket();
   const carousel=advanceCoachCarousel(S.world,S.coachMarket,S.seed,yr,{controlledId:me,coach:S.coach});
   S.world.teams.forEach(t=>{t.payroll=(t.staff||[]).reduce((s,x)=>s+(x.salary||0),0);});
+  decayRivalries();                    // Phase 40: rivalries cool a touch each offseason; heat prunes
   S.year=(S.year||2026)+1;
   S.world.teams.forEach(t=>{t.rec=emptyRec();t.ratings=teamRatings(t.roster,t.staff);});
   S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;S.postseason=null;S.champWeek=null;S.portal=null;S.media=null;
@@ -3506,7 +3693,7 @@ function homeWeekends(){const me=S.teamId;if(!S.schedule)return [];
 function weekendInfo(week){const me=S.teamId,g=teamGame(me,week);
   if(!g||g.home!==me)return null;
   const opp=teamById(g.away), my=controlled();
-  const q=weekendQuality({myRank:my.natRank,oppRank:opp&&opp.natRank,oppPrestige:opp&&opp.prestige,week});
+  const q=weekendQuality({myRank:my.natRank,oppRank:opp&&opp.natRank,oppPrestige:opp&&opp.prestige,week,rivalry:!!(opp&&rivalryFor(me,opp.id))});
   const booked=(visitPlan()[week]||[]);
   return {week,game:g,opp,q,tier:weekendTier(q),booked,slotsLeft:Math.max(0,weekendCap()-booked.length)};}
 function visitWeekFor(rec){for(const wk in visitPlan())if(visitPlan()[wk].includes(rec.id))return +wk;return null;}
@@ -3539,7 +3726,7 @@ function unbookVisit(rec){const wk=visitWeekFor(rec);if(wk==null)return false;
 function applyWeekendVisits(week){const R=S.recruiting;if(!R)return null;
   const ids=(visitPlan()[week]||[]);if(!ids.length)return null;
   const me=S.teamId,my=controlled(),g=teamGame(me,week),opp=g&&teamById(g.away===me?g.home:g.away);
-  const q=weekendQuality({myRank:my.natRank,oppRank:opp&&opp.natRank,oppPrestige:opp&&opp.prestige,week});
+  const q=weekendQuality({myRank:my.natRank,oppRank:opp&&opp.natRank,oppPrestige:opp&&opp.prestige,week,rivalry:!!(opp&&rivalryFor(me,opp.id))});
   const m=myMods();let n=0;
   ids.forEach(id=>{const rec=recById(id);if(!rec||rec.signed||rec.committedTo===me)return;
     let gain=20*q*m.visit*recScoutMult(rec);
@@ -3728,7 +3915,7 @@ function applyLeagueRipple(week){
   const vibe={};
   S.world.teams.forEach(t=>{const g=teamGame(t.id,week);if(!g||!g.played)return;
     const home=g.home===t.id, my=home?g.hs:g.as, opp=home?g.as:g.hs, oppT=teamById(home?g.away:g.home);
-    const v=gameRecruitVibe(my,opp,t.natRank,oppT&&oppT.natRank);
+    const v=gameRecruitVibe(my,opp,t.natRank,oppT&&oppT.natRank,!!rivalryFor(g.home,g.away));   // Phase 40: rivalry result echoes louder
     if(v)vibe[t.id]={v,oppAbbr:oppT?oppT.abbr:'them',win:my>opp};});
   // apply to each suitor's interest on the recruits they chase
   S.recruiting.pool.forEach(rec=>{if(rec.signed)return;
@@ -4162,7 +4349,7 @@ function renderHome(app){
   task.innerHTML=`<div class="row spread"><span class="tag accent">${S.phase}</span><span class="meta">${wkLabel}</span></div>
     <div class="cond" style="font-size:22px;font-weight:800;margin-top:10px">${S.task.label}</div>
     <div class="muted" style="font-size:13px;margin-top:4px">${S.task.note}</div>`;
-  if(inSeason){const wkGame=teamGame(t.id,S.week);if(wkGame){const opp=teamById(wkGame.home===t.id?wkGame.away:wkGame.home);task.insertAdjacentHTML('beforeend',schemeMatchupHTML(t,opp));}}
+  if(inSeason){const wkGame=teamGame(t.id,S.week);if(wkGame){const opp=teamById(wkGame.home===t.id?wkGame.away:wkGame.home);task.insertAdjacentHTML('beforeend',rivalryBannerHTML(t.id,opp.id)+schemeMatchupHTML(t,opp));}}
   const myPg=inPost?myPostseasonGame():null;
   const myCg=inChamp?myChampGame():null;
   const signing=over&&S.recruiting&&S.recruiting.stage==='national';   // Early Signing done, NSD pending
@@ -4339,6 +4526,7 @@ function renderProgram(app){
   v.append(r);
   schemesCard(v,t);
   trophyCase(v,t);
+  rivalryCard(v,t);
   ringOfHonor(v,t);
   proPipeline(v,t);
   app.append(v);
@@ -4394,6 +4582,18 @@ function schemeMatchupHTML(me,opp){
     <div class="row spread" style="margin:2px 0"><span class="dim">Your ${me.offScheme} vs ${opp.defScheme}</span><span class="${cls(oEdge)}">${word(oEdge)}</span></div>
     <div class="row spread" style="margin:2px 0"><span class="dim">Your ${me.defScheme} vs ${opp.offScheme}</span><span class="${cls(-dEdge)}">${word(-dEdge)}</span></div></div>`;
 }
+// Phase 40: a rivalry banner for the Home matchup card — the name, the trophy, the series, who holds it.
+function rivalryBannerHTML(myId,oppId){
+  const rv=rivalryFor(myId,oppId);if(!rv)return '';
+  const opp=teamById(oppId);
+  const holdTxt=rv.holder?(rv.holder===myId?'You hold '+(rv.trophy||'bragging rights'):opp.abbr+' holds '+(rv.trophy||'bragging rights')):'Up for grabs';
+  const hi=Math.max(rv.aw,rv.bw),lo=Math.min(rv.aw,rv.bw),leadId=rv.aw>rv.bw?rv.a:rv.bw>rv.aw?rv.b:null;
+  const seriesTxt=leadId?teamById(leadId).abbr+' leads series '+hi+'–'+lo:(rv.aw||rv.bw?'series even '+rv.aw+'–'+rv.bw:'first meeting on record');
+  return `<div class="card" data-tid="rivalry-banner" style="margin-top:10px;border-left:4px solid var(--accent)">
+    <div class="row spread"><span class="tag accent" style="font-size:11px">🔥 RIVALRY · ${intensityTier(rv.intensity)}</span><span class="meta">${seriesTxt}</span></div>
+    <div class="cond" style="font-size:18px;font-weight:800;margin-top:4px">${rv.name}</div>
+    <div class="muted" style="font-size:12px;margin-top:2px">${rv.trophy?'🏆 '+rv.trophy+' on the line · ':''}${holdTxt}</div></div>`;
+}
 // Phase 15: the program's trophy case — national championships (Phase 12) + conference titles earned
 // in Championship Week. Empty until the program wins some hardware in a played season.
 function trophyCase(v,t){
@@ -4404,6 +4604,28 @@ function trophyCase(v,t){
   const natlRow=natl.length?`<div class="row spread" style="margin:4px 0"><span class="meta dim">🏆 National Titles</span><span class="nm">${natl.length} <span class="dim" style="font-weight:400">(${natl.join(', ')})</span></span></div>`:'';
   const confRow=conf.length?`<div class="row spread" style="margin:4px 0"><span class="meta dim">${t.conf} Titles</span><span class="nm">${conf.length} <span class="dim" style="font-weight:400">(${conf.join(', ')})</span></span></div>`:'';
   c.innerHTML=natlRow+confRow;
+  v.append(c);
+}
+// Phase 40: the program's rivalries — the trophies it currently holds + each rivalry's series record,
+// intensity, and who holds the hardware. Sorted by intensity (the bitterest first).
+function rivalryCard(v,t){
+  const mine=(S.rivalries||[]).filter(rv=>rv.a===t.id||rv.b===t.id).sort((x,y)=>y.intensity-x.intensity);
+  if(!mine.length)return;
+  const held=mine.filter(rv=>rv.holder===t.id&&rv.trophy).map(rv=>rv.trophy);
+  v.append(el('h2','sec','Rivalries'));
+  const c=el('div','card');c.dataset.tid='rivalry-card';
+  const heldRow=held.length?`<div class="row spread" style="margin:2px 0 8px"><span class="meta dim">🏆 Trophies held</span><span class="nm" style="text-align:right">${held.join(', ')}</span></div>`:'';
+  const rows=mine.slice(0,10).map(rv=>{
+    const opp=teamById(rv.a===t.id?rv.b:rv.a); if(!opp)return '';
+    const myW=rv.a===t.id?rv.aw:rv.bw, opW=rv.a===t.id?rv.bw:rv.aw;
+    const lead=myW>opW?'<span class="good">leads '+myW+'–'+opW+'</span>':opW>myW?'<span class="bad">trails '+myW+'–'+opW+'</span>':'<span class="dim">even '+myW+'–'+opW+'</span>';
+    const hold=rv.holder?(rv.holder===t.id?'<span class="tag accent" style="font-size:10px">holds '+(rv.trophy||'bragging rights')+'</span>':'<span class="tag" style="font-size:10px">'+opp.abbr+' holds it</span>'):'';
+    return `<div class="row spread" style="margin:6px 0;border-top:1px solid var(--line);padding-top:6px">
+      <div><div class="nm" style="font-size:14px">${rv.name}${rv.preset?'':' <span class="dim" style="font-size:10px;font-weight:400">(born ${rv.born})</span>'}</div>
+      <div class="meta">vs ${opp.abbr} · ${intensityTier(rv.intensity)} · ${lead}</div></div>
+      <div style="text-align:right">${hold}</div></div>`;
+  }).join('');
+  c.innerHTML=heldRow+rows;
   v.append(c);
 }
 // Phase 13: the program's NFL pipeline — positional "factory" reputations (built from draft picks) +
