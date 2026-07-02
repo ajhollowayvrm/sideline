@@ -610,6 +610,13 @@ function startServer() {
   check('Honors: national Offensive + Defensive POW present', honors.hasNatOff && honors.hasNatDef);
   check('Honors: per-conference POW computed', honors.confs >= 8, honors.confs + ' conferences');
   check('Honors: Off POW is a skill player, Def POW a defender', ['QB', 'RB', 'WR', 'TE'].includes(honors.offPos) && ['DE', 'DT', 'LB', 'CB', 'S'].includes(honors.defPos), `off ${honors.offPos} / def ${honors.defPos}`);
+  // Phase 45.1: nicknames flow into the weekly honors snapshot + the media POW story
+  const powNick = await page.evaluate(() => {
+    const last = S.weeklyHonors[S.weeklyHonors.length - 1], o = last && last.national.off;
+    const story = mkStory('pow', { name: 'Test Guy', nick: 'Ice', pos: 'QB', abbr: 'ZZZ', line: '400 yds' }, () => 0);
+    return { hasNickField: !!(o && 'nick' in o), storyHasNick: /“Ice”/.test(story.headline) && /“Ice”/.test(story.body) };
+  });
+  check('Phase 45.1: weekly POW carries a nickname + the media story shows it', powNick.hasNickField && powNick.storyHasNick, JSON.stringify(powNick));
 
   // player sheet now surfaces in-season stats instead of "— preseason —"
   await page.locator('[data-tid="nav-team"]').click();
@@ -656,6 +663,9 @@ function startServer() {
   await page.locator(`[data-id="${tgt.id}"]`).first().click();
   await page.waitForTimeout(150);
   check('Recruiting: prospect sheet hides the raw potential number', !/Potential/.test(await page.locator('[data-tid="sheet"]').innerText()));
+  // Phase 45.1: fog-safe projected identity on the recruit sheet (stars/pos/state always; trait tag only when scouted)
+  const projTxt = await page.locator('[data-tid="sheet"]').innerText();
+  check('Phase 45.1: recruit sheet shows a fog-safe projected identity', /Projects as:/.test(projTxt) && /Scout him to project his temperament/.test(projTxt));
   await shot(page, '24-recruiting-prospect.png');
   await page.locator('[data-tid="rec-offer"]').click();
   await page.waitForTimeout(150);

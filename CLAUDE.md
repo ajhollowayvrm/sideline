@@ -2712,6 +2712,16 @@ determinism, nickname gate + earned overlay + trench-awareness, knownFor/backsto
 fan-favorite triggers). `qa` → **302** (jersey #/nickname/known-for render on the row + sheet; a monster game is
 remembered + carries onto the legend). **Twenty-one gates** now (adds `identitylab`).
 
+### Phase 45.1 — identity everywhere (follow-up polish) ✅ DONE
+The identity surfaces beyond the roster/sheet: the **weekly honors** snapshot carries `nick` (stamped in
+`computeWeeklyHonors`), so the shared `honorRowHTML` shows nicknames on the Home POW card + the Season Honors
+tab, and the **media feed** POW story (`mkStory('pow')`, an optional `d.nick`) reads "X 'Ice' earns Player of
+the Week." Season awards get nicknames too via an **app-layer** `stampAwardNicks(aw)` (run after `computeAwards`,
+so the fenced AWARDS engine stays pure + `awardlab` untouched) → `awardRow` + the Heisman media event show them.
+The **recruit sheet** gets a **fog-safe** "Projects as: Blue-chip QB out of TX" line — stars/position/home state
+always, with a temperament tag appended ONLY once the trait is scouted-revealed (reusing the `traitRead().revealed`
+gate), so it never leaks the fog you'd pay to clear. `qa` → **304** (POW/media nickname; recruit projection).
+
 ### Deliberately out of scope (stays a factory)
 No free-text/editable names, no relationships or off-field storylines, no per-player dialogue — identity is
 *derived from what he does*. Retired numbers are honored (a banner) but not reissue-enforced on live rosters

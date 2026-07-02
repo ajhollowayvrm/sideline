@@ -2848,8 +2848,9 @@ function mkStory(tag,d,r){
     body:`A top-25 showdown went to ${d.wLong}, ${d.ws}–${d.ls}.`};
   if(tag==='blowout')return {headline:pk([`${d.w} routs ${d.l}`,`${d.w} buries ${d.l} ${d.ws}–${d.ls}`]),
     body:`${d.wLong} dominated ${d.lLong} wire to wire.`};
-  if(tag==='pow')return {headline:pk([`${d.name} headlines the Players of the Week`,`${d.name} earns Player of the Week`]),
-    body:`${d.name} (${d.pos}, ${d.abbr}) — ${d.line}.`};
+  if(tag==='pow'){const nm=d.name+(d.nick?' “'+d.nick+'”':'');   // Phase 45.1: nickname in the headline
+    return {headline:pk([`${nm} headlines the Players of the Week`,`${nm} earns Player of the Week`]),
+    body:`${nm} (${d.pos}, ${d.abbr}) — ${d.line}.`};}
   if(tag==='riser')return {headline:pk([`${d.w} surges in the poll`,`${d.w} climbing fast`]),
     body:`${d.wLong} jumped ${d.delta} spot${d.delta===1?'':'s'} to #${d.rank}.`};
   if(tag==='commit')return {headline:`${d.stars}★ ${d.pos} commits to ${d.w}`,
@@ -3132,7 +3133,7 @@ function computeWeeklyHonors(week,boxes){
       const def=(s.tkl||0)+(s.sk||0)*4+(s.dInt||0)*6;
       cand.push({p,t,conf:t.conf,off,def,s});});}));
   const bestBy=(arr,key)=>arr.reduce((b,c)=>(!b||c[key]>b[key])?c:b,null);
-  const mk=(c,side)=>c?{pid:c.p.id,teamId:c.t.id,name:c.p.fn+' '+c.p.ln,pos:c.p.pos,abbr:c.t.abbr,color:c.t.color,line:honorLine(c.s,side)}:null;
+  const mk=(c,side)=>c?{pid:c.p.id,teamId:c.t.id,name:c.p.fn+' '+c.p.ln,nick:nickname(c.p),pos:c.p.pos,abbr:c.t.abbr,color:c.t.color,line:honorLine(c.s,side)}:null;
   const pick=arr=>({off:mk(bestBy(arr,'off'),'off'),def:mk(bestBy(arr,'def'),'def')});
   const byConf={};[...new Set(cand.map(c=>c.conf))].forEach(cf=>byConf[cf]=pick(cand.filter(c=>c.conf===cf)));
   // Coach of the Week (Phase 8, deferred from 3.5): the biggest upset win of the week.
@@ -3186,7 +3187,7 @@ function buildWeekStories(wk,boxes,recOut,prevPoll,poll){
   // player of the week (national offense)
   const hon=(S.weeklyHonors&&S.weeklyHonors[S.weeklyHonors.length-1])||null;
   if(hon&&hon.national&&hon.national.off){const o=hon.national.off;
-    pushStory(out,wk,'pow',{name:o.name,pos:o.pos,abbr:o.abbr,line:o.line},rng((S.seed^hashStr('pow'+wk))>>>0),{color:o.color,teams:[o.teamId]});}
+    pushStory(out,wk,'pow',{name:o.name,nick:o.nick,pos:o.pos,abbr:o.abbr,line:o.line},rng((S.seed^hashStr('pow'+wk))>>>0),{color:o.color,teams:[o.teamId]});}
   // poll risers (jumped ≥4 spots into/up the top 25)
   (poll?poll.top:[]).forEach(e=>{if(e.prev&&e.prev-e.rank>=4){const t=teamById(e.teamId);
     pushStory(out,wk,'riser',{w:t.abbr,wLong:t.name,delta:e.prev-e.rank,rank:e.rank},rng((S.seed^hashStr('rise'+wk+e.teamId))>>>0),{color:t.color,teams:[t.id]});}});
@@ -3435,6 +3436,16 @@ function setWeeklyTask(){
 }
 // Stamp a year's award winners onto the winning players' p.honors (survives rollover), so a
 // career's accolades persist on the player even after stats wipe. Lean: [{year, award}].
+// Phase 45.1: stamp derived nicknames onto award honorees (app-layer, so the fenced AWARDS engine stays
+// pure). Runs while the players still exist (at award time), so the snapshot carries the name for later cards.
+function honoreeNick(h){if(!h||!h.pid||!h.teamId)return '';const t=teamById(h.teamId);const p=t&&(t.roster||[]).find(x=>x.id===h.pid);return p?nickname(p):'';}
+function stampAwardNicks(aw){
+  if(!aw)return; const one=h=>{if(h)h.nick=honoreeNick(h);};
+  one(aw.heisman);one(aw.poyDef);one(aw.freshman);
+  (aw.allAmerican||[]).forEach(one);
+  for(const cf in (aw.byConf||{})){one(aw.byConf[cf].off);one(aw.byConf[cf].def);}
+  for(const cf in (aw.allConference||{})){(aw.allConference[cf]||[]).forEach(one);}
+}
 function stampHonors(aw){
   const give=(snap,label)=>{if(!snap)return;const t=teamById(snap.teamId);if(!t)return;
     const p=t.roster.find(x=>x.id===snap.pid);if(!p)return;(p.honors=p.honors||[]).push({year:aw.year,award:label});};
@@ -3504,8 +3515,9 @@ function finishConfChampionships(){
   champWinners.forEach(w=>{const t=teamById(w);mediaEvent(S.week,'title',t.name+' wins the '+t.conf+' championship',t.name+' '+t.nick+' are '+t.conf+' champions.',{color:t.color,teams:[t.id]});});
   // Awards now reflect the title games too (decided post-Championship-Week, pre-bowls — like real life).
   const aw=computeAwards(S.world.teams,S.year||2026);
-  S.awards=S.awards||[];S.awards.push(aw);stampHonors(aw);
-  if(aw.heisman)mediaEvent(S.week,'award',aw.heisman.name+' wins the Heisman',aw.heisman.name+' ('+aw.heisman.pos+', '+aw.heisman.abbr+') is the national player of the year — '+aw.heisman.line+'.',{color:aw.heisman.color,teams:[aw.heisman.teamId]});
+  S.awards=S.awards||[];S.awards.push(aw);stampAwardNicks(aw);stampHonors(aw);   // Phase 45.1: stamp nicknames onto award honorees (app-layer, keeps the AWARDS engine pure)
+  if(aw.heisman){const hn=aw.heisman.name+(aw.heisman.nick?' “'+aw.heisman.nick+'”':'');
+    mediaEvent(S.week,'award',hn+' wins the Heisman',hn+' ('+aw.heisman.pos+', '+aw.heisman.abbr+') is the national player of the year — '+aw.heisman.line+'.',{color:aw.heisman.color,teams:[aw.heisman.teamId]});}
   const champIds=[...champWinners].sort((a,b)=>rankScore(teamById(b))-rankScore(teamById(a)));
   S.champWeek=null;
   startPostseason(champIds);
@@ -4539,7 +4551,7 @@ function honorRowHTML(label,h){
   if(!h)return `<div class="row spread" style="margin:6px 0"><span class="meta dim">${label}</span><span class="meta dim">—</span></div>`;
   return `<div class="row spread" style="margin:6px 0;gap:8px">
     <div class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${h.color};flex:none"></span>
-      <div style="min-width:0"><div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${h.name} <span class="dim" style="font-weight:400">${h.pos} · ${h.abbr}</span></div>
+      <div style="min-width:0"><div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${h.name}${h.nick?' <span class="accent" style="font-weight:700">“'+h.nick+'”</span>':''} <span class="dim" style="font-weight:400">${h.pos} · ${h.abbr}</span></div>
       <div class="meta dim">${h.line}</div></div></div>
     <span class="tag accent" style="font-size:10px;flex:none">${label}</span></div>`;
 }
@@ -5948,7 +5960,7 @@ function awardRow(label,snap){
   if(!snap)return `<div class="row spread" style="margin:6px 0"><span class="meta dim">${label}</span><span class="meta dim">—</span></div>`;
   return `<div class="row spread" style="margin:6px 0;gap:8px">
     <div class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${snap.color};flex:none"></span>
-      <div style="min-width:0"><div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${snap.name} <span class="dim" style="font-weight:400">${snap.pos} · ${snap.abbr}</span></div>
+      <div style="min-width:0"><div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${snap.name}${snap.nick?' <span class="accent" style="font-weight:700">“'+snap.nick+'”</span>':''} <span class="dim" style="font-weight:400">${snap.pos} · ${snap.abbr}</span></div>
       <div class="meta dim">${snap.line||''}</div></div></div>
     <span class="tag accent" style="font-size:10px;flex:none">${label}</span></div>`;
 }
@@ -6255,9 +6267,16 @@ function recruitSheet(rec){
   // Phase 16: a VERBAL commit elsewhere is now flippable — you can recruit him until he signs.
   const onB=onBoard(rec), committed=rec.committedTo, canFlip=committed&&committed!==S.teamId&&!rec.signed;
   const canAct=!R.signed&&!rec.signed&&committed!==S.teamId;
+  // Phase 45.1: a FOG-SAFE projected identity — stars/position/home state always; a temperament tag only
+  // once you've scouted him enough to read the trait (so it never leaks the fog you'd otherwise pay to clear).
+  const projHead=rec.stars>=5?'Five-star':rec.stars>=4?'Blue-chip':rec.stars<=2?'Under-the-radar':'Solid';
+  const traitRevealed=traitRead('comp',rec.id,compVal(rec),rec.scout).revealed;
+  const projTag=!traitRevealed?'':(motVal(rec)>=70?' — outworks everyone':egoVal(rec)>=72?' — plays with swagger':compVal(rec)>=70?' — unflappable':(compVal(rec)<=36&&!isTrench(rec))?' — boom-or-bust':'');
+  const proj=projHead+' '+rec.pos+' out of '+rec.st+projTag;
   body.innerHTML=`<div class="row spread" style="margin-bottom:8px">
       <span class="tag accent">${'★'.repeat(rec.stars)} ${rec.stars}-STAR</span>
       <span class="meta">${posName(rec.pos)} · ${rec.st}</span></div>
+    <div class="card" style="margin-bottom:8px"><div class="cond accent" style="font-size:14px;font-weight:800">Projects as: ${proj}</div>${traitRevealed?'':'<div class="muted" style="font-size:11px;margin-top:2px">Scout him to project his temperament.</div>'}</div>
     <div class="kv"><span class="k">Ceiling</span><span>${sc.text}</span></div>
     <div class="kv"><span class="k">Scouting</span><span>${rec.scout}% · pitches +${Math.round((recScoutMult(rec)-1)*100)}%${sc.revealed?'':' · scout to sharpen'}</span></div>
     <div class="kv"><span class="k">Speed / Strength / Awareness</span><span>${rec.spd} · ${rec.str} · ${rec.awr}</span></div>
