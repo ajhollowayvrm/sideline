@@ -789,7 +789,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:40,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:41,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      rivalries:null,rivalryHeat:null,records:null,lastRealign:null,
@@ -1055,6 +1055,9 @@ function migrateState(state){
     if(state.coach&&state.coach.jobOffers===undefined)state.coach.jobOffers=null;   // slot (regenerated each offseason).
     state.version=40;                  // Everything else in the pass is behavior-only (mandate curve, finances, prestige drift).
   }
+  if((state.version||1)<41){           // Phase 45: player identity. `p.moments` (signature single games) is a
+    state.version=41;                  // sparse per-player field — absent reads as "no moments yet" → structural
+  }                                    // no-op (nickname/number/known-for are all derived, nothing to store).
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -2508,6 +2511,110 @@ function alumniBoost(legend,rec,coachMod){
 }
 // === LEGACY ENGINE (Phase 11) END ===
 
+// === IDENTITY ENGINE (Phase 45) START ===
+// Player individualism, DERIVED (not stored): a jersey number + nickname + one-line "known for" and
+// backstory, computed from the player's id hash + traits + résumé (honors/career/gs). Deterministic, so
+// it's free across 11k players and permanent per career. Depends only on hashStr/clamp + the TRAIT reads
+// (motVal/compVal/egoVal) + data on the player — no DOM, no S — so test/identitylab.js validates it offline.
+// Earned/fogged like the traits: a freshman shows no nickname; it surfaces once he's played (established),
+// and a real résumé milestone earns a nickname that supersedes the flavor one.
+
+// Career-to-date = banked career totals (summed at rollover) + this season's live box, so a monster season
+// earns its identity NOW, not a year late.
+function careerToDate(p){const c=Object.assign({},(p&&p.career)||{});const g=(p&&p.gs)||{};for(const k in g)c[k]=(c[k]||0)+g[k];return c;}
+// Jersey number in a position-plausible band, deterministic from the id.
+const JERSEY_BANDS={QB:[1,18],RB:[1,49],WR:[1,19],TE:[80,89],OT:[70,79],OG:[60,79],C:[50,79],DE:[40,99],DT:[90,99],LB:[1,59],CB:[1,39],S:[1,49],K:[1,49],P:[1,49]};
+function jerseyNo(p){const b=JERSEY_BANDS[(p&&p.pos)]||[1,99];return b[0]+(hashStr(((p&&p.id)||'')+'jsy')%(b[1]-b[0]+1));}
+// Positions that live in the trenches — they get grit nicknames + line-appropriate descriptors, never
+// "playmaker"/speed flavor (an offensive tackle isn't "The Blur").
+const TRENCH_POS={OT:1,OG:1,C:1,DT:1};
+function isTrench(p){return !!TRENCH_POS[(p&&p.pos)];}
+// Flavor nickname pools, chosen by the player's dominant trait; the id picks within a pool.
+const NICK_FLAVOR={
+  motor:['The Motor','Tank','Relentless','Workhorse','Bulldozer'],
+  cool:['Ice','The General','Cool Hand','Smooth','Silk'],
+  boom:['Boom','Jets','Lightning','The Blur','Highlight'],
+  swagger:['Prime','Money','Showtime','The Show','Neon'],
+  trench:['Tank','Mauler','Hoss','Anchor','Pancake','The Wall','Big Country'],
+  gen:['Sarge','Mad Dog','Buckets','Truck','Flash','Country','Boogie','Juice','Radio','Ghost']};
+function nickFlavor(p){
+  const mot=motVal(p),comp=compVal(p),ego=egoVal(p);
+  let pool;
+  if(isTrench(p))pool=(mot>=66?NICK_FLAVOR.motor:NICK_FLAVOR.trench);   // linemen: grit, not speed
+  else if(mot>=66)pool=NICK_FLAVOR.motor;
+  else if(comp>=66)pool=NICK_FLAVOR.cool;
+  else if(comp<=38)pool=NICK_FLAVOR.boom;
+  else if(ego>=70)pool=NICK_FLAVOR.swagger;
+  else pool=NICK_FLAVOR.gen;
+  return pool[hashStr(((p&&p.id)||'')+'nk')%pool.length];
+}
+// Earned nickname from the résumé (supersedes flavor once a milestone is real). Reads honors + career-to-date.
+function nickEarned(p){
+  const h=((p&&p.honors)||[]).map(x=>x.award);
+  if(h.some(a=>/Heisman/i.test(a)))return 'The Franchise';
+  if(h.some(a=>/Bednarik/i.test(a)))return 'The Enforcer';
+  const c=careerToDate(p);
+  if((c.pYds||0)>=8000)return 'The General';
+  if((c.rYds||0)>=3500)return 'The Workhorse';
+  if((c.reYds||0)>=2800)return 'Hands';
+  if((c.sk||0)>=25)return 'The Closer';
+  if((c.dInt||0)>=12)return 'The Ballhawk';
+  return null;
+}
+// How "established" a player is (drives the nickname unlock): real snaps, or an honor, or an upperclassman.
+function isEstablished(p){
+  const c=careerToDate(p), gp=c.gp||0;
+  return gp>=8 || ((p&&p.honors&&p.honors.length)>0) || (p&&p.yr&&/JR|SR/.test(p.yr));
+}
+// The display nickname (or '' when not yet earned). Earned overlay beats flavor.
+function nickname(p){
+  if(!p)return '';
+  const e=nickEarned(p); if(e)return e;
+  if(!isEstablished(p))return '';
+  return nickFlavor(p);
+}
+// "Known for" — one earned descriptor from honors → career milestones → traits (a person, not a rating).
+function knownFor(p){
+  if(!p)return '';
+  const H=(p.honors||[]);
+  const heis=H.filter(x=>/Heisman/i.test(x.award)).length; if(heis)return heis>1?heis+'× Heisman winner':'Heisman winner';
+  const aa=H.filter(x=>/All-America/i.test(x.award)).length; if(aa)return (aa>1?aa+'× ':'')+'All-America '+p.pos;
+  const cp=H.filter(x=>/POY|Player of the Year/i.test(x.award)).length; if(cp)return 'Conference Player of the Year';
+  const c=careerToDate(p);
+  if((c.pYds||0)>=6000)return (c.pYds)+'-yard career passer';
+  if((c.rYds||0)>=2500)return (c.rYds)+'-yard career rusher';
+  if((c.reYds||0)>=2200)return (c.reYds)+'-yard receiver';
+  if((c.sk||0)>=18)return (c.sk)+'-sack pass rusher';
+  if((c.dInt||0)>=8)return 'ball-hawking '+p.pos+' ('+c.dInt+' career INT)';
+  if(isTrench(p))return motVal(p)>=70?'A relentless grinder up front':compVal(p)>=66?'A steady anchor up front':(p.stars||3)+'★ '+p.pos;
+  if(motVal(p)>=70)return 'A relentless worker';
+  if(compVal(p)>=70)return 'Ice in his veins';
+  if(compVal(p)<=36)return 'Boom-or-bust playmaker';
+  if(egoVal(p)>=72)return 'Plays with swagger';
+  return (p.stars||3)+'★ '+p.pos;
+}
+// Backstory — one flavor line from home state + recruiting stars + a trait tag.
+function backstory(p){
+  if(!p)return '';
+  const st=p.st||'?', s=p.stars||3;
+  let head = s>=5?'Five-star out of '+st : s>=4?'Blue-chip from '+st : s<=2?'Under-recruited out of '+st : st+' native';
+  let tag = motVal(p)>=70?'outworks everyone' : egoVal(p)>=72?'plays with swagger' : compVal(p)>=70?'unflappable' : (compVal(p)<=36&&!isTrench(p))?'a boom-or-bust gamer' : null;
+  return tag?head+' — '+tag:head;
+}
+// Emergent status — a fan-favorite label (or null), DERIVED from over-performance / roots. A contributor
+// (starter or two-deep) who's beating his recruiting billing, or a local kid who made good. Pass his team's
+// home state for the hometown-hero read. Pure — used for a controlled-team badge, no storage.
+function fanFavorite(p,homeState){
+  if(!p)return null;
+  const starter=(p.so==null?9:p.so)<=1, s=p.stars||3, ov=p.ov||0;
+  if(!starter)return null;
+  if(homeState&&p.st===homeState&&ov>=80)return 'Hometown Hero';
+  if(s<=2&&ov>=78)return 'Overachiever';
+  if(s<=3&&ov>=88)return 'Homegrown Star';
+  return null;
+}
+// === IDENTITY ENGINE (Phase 45) END ===
+
 // === POSTSEASON ENGINE (Phase 12) START ===
 // Pure, deterministic postseason model: a 12-team College Football Playoff bracket + a slate of named
 // bowls for the other bowl-eligible teams, plus the prestige/recruiting/revenue payoff a finish confers.
@@ -3001,6 +3108,7 @@ function advanceWeek(){
   updateMedia(wk,boxes,recOut);             // Phase 19: refresh the AP poll + push the week's news stories
   announceRivalryEvents(wk,bumpRivalries(boxes.map(b=>b.g),'reg'));   // Phase 40: trophies change hands, rivalries heat up / are born
   notifyRecords(captureGameRecords(boxes,'reg'));                     // Phase 41: capture single-game records into the book
+  captureMoments(boxes);                                             // Phase 45c: remember signature performances
   if(S.week>S.schedule.weeks)finishRegularSeason();   // → postseason (bowls + playoff), then offseason
   else{setWeeklyTask();grantRecruitPoints();}
   autosave();
@@ -3229,7 +3337,35 @@ function announceRivalryEvents(wk,events){
    games (no seeding — like the Ring of Honor).
    ============================================================ */
 function ensureRecords(){if(!S.records)S.records=emptyRecords();return S.records;}
-function playerRecMeta(p,t){return {name:p.fn+' '+p.ln,pos:p.pos,teamId:t.id,abbr:t.abbr,color:t.color,year:S.year||2026};}
+function playerRecMeta(p,t){return {pid:p.id,name:p.fn+' '+p.ln,pos:p.pos,teamId:t.id,abbr:t.abbr,color:t.color,year:S.year||2026};}
+// Phase 45c: capture SIGNATURE single-game moments onto the controlled team's players (sparse p.moments,
+// keeps the best ~6). Runs once per real advance beside captureGameRecords (never on determinism re-sims),
+// so a big performance is REMEMBERED — and carries onto the legend snapshot at graduation. Controlled team
+// only, so it's cheap. Deterministic (reads the resolved box).
+const MOMENT_TESTS=[
+  s=>(s.pYds||0)>=350?s.pYds+' pass yds'+((s.pTD||0)>=3?', '+s.pTD+' TD':''):null,
+  s=>(s.pTD||0)>=4?s.pTD+' passing TD':null,
+  s=>(s.rYds||0)>=175?s.rYds+' rush yds'+((s.rTD||0)>=2?', '+s.rTD+' TD':''):null,
+  s=>(s.rTD||0)>=3?s.rTD+' rushing TD':null,
+  s=>(s.reYds||0)>=150?(s.rec||0)+' rec, '+s.reYds+' yds'+((s.reTD||0)>=2?', '+s.reTD+' TD':''):null,
+  s=>(s.reTD||0)>=3?s.reTD+' TD catches':null,
+  s=>(s.sk||0)>=3?s.sk+' sacks':null,
+  s=>(s.dInt||0)>=2?s.dInt+' INTs':null,
+  s=>(s.tkl||0)>=15?s.tkl+' tackles':null];
+function captureMoments(boxes){
+  const me=S.teamId,t=controlled(),yr=S.year||2026; if(!t)return;
+  (boxes||[]).forEach(({g,box})=>{
+    if(g.home!==me&&g.away!==me)return;
+    const opp=teamById(g.home===me?g.away:g.home); if(!opp)return;
+    const stage=g.kind==='champ'?' ('+opp.abbr+' — title game, '+yr+')':g.kind==='playoff'||g.kind==='bowl'?' vs '+opp.abbr+' ('+(g.name||'bowl')+', '+yr+')':' vs '+opp.abbr+' ('+yr+')';
+    t.roster.forEach(p=>{const s=box[p.id];if(!s)return;
+      let feat=null;for(const test of MOMENT_TESTS){feat=test(s);if(feat)break;}
+      if(!feat)return;
+      const line=feat+stage;
+      p.moments=p.moments||[]; if(p.moments.indexOf(line)<0){p.moments.push(line); if(p.moments.length>6)p.moments.shift();}
+    });
+  });
+}
 // Capture single-game player + team records from a week's boxes. Returns the controlled team's broken
 // records (for a toast + a media note). Runs ONCE per real advance (never on determinism re-sims).
 function captureGameRecords(boxes,stage){
@@ -3350,6 +3486,7 @@ function advanceChampWeek(){
   recomputeRanks(S.world);
   announceRivalryEvents(S.week,bumpRivalries(S.champWeek.games,'champ'));   // Phase 40
   notifyRecords(captureGameRecords(rboxes,'champ'));                        // Phase 41
+  captureMoments(rboxes);                                                   // Phase 45c
   S.champWeek.done=true;
   finishConfChampionships();
 }
@@ -3431,6 +3568,7 @@ function advancePostseason(){
   recomputeRanks(S.world);
   announceRivalryEvents(S.week,bumpRivalries(postseasonRoundGames(round),null));   // Phase 40 (stage from g.kind: bowl/playoff)
   notifyRecords(captureGameRecords(rboxes,'post'));                                // Phase 41
+  captureMoments(rboxes);                                                          // Phase 45c
   if(myGame){const iWon=winnerOfGame(myGame)===me;        // did the controlled team just bow out / advance?
     if(!iWon||myGame.kind==='bowl'||round===3)ps.meDone=true;}
   if(round<3){
@@ -3724,7 +3862,8 @@ function legendSnap(p,toYear){
   const stat=legendStature({honors,career:p.career||{},peakOv:p.peakOv||p.ov||0});
   return {id:p.id,name:p.fn+' '+p.ln,pos:p.pos,st:p.st,
     from:toYear-classYears,to:toYear,peakOv:p.peakOv||p.ov||0,
-    honors,career:p.career||{},stature:stat.score,tier:stat.tier,app:0};
+    honors,career:p.career||{},stature:stat.score,tier:stat.tier,app:0,
+    moments:(p.moments||[]).slice(-4)};   // Phase 45c: carry his signature games into the Ring of Honor
 }
 // Enshrine a team's worthy graduates into its Ring of Honor (top 12 all-time by stature survive).
 // Returns the freshly inducted snapshots so the controlled team can surface them in the recap.
@@ -5063,15 +5202,24 @@ function ringOfHonor(v,t){
     v.append(el('div','empty','No legends yet.\nNotable players who graduate are enshrined here forever — your history accrues as your stars finish their careers.'));
     return;
   }
+  // Phase 45d: retired numbers — the program's Immortal legends' jerseys hang from the rafters.
+  const retired=legs.filter(l=>l.tier==='Immortal');
+  if(retired.length){
+    const rn=el('div','card');rn.dataset.tid='retired-numbers';rn.style.marginBottom='8px';
+    rn.innerHTML=`<div class="meta dim" style="margin-bottom:5px">Retired numbers</div>`+
+      retired.map(l=>`<span class="tag accent" style="font-size:12px;margin-right:6px">#${jerseyNo(l)} ${l.name}${nickname(l)?' “'+nickname(l)+'”':''}</span>`).join('');
+    v.append(rn);
+  }
   legs.forEach(l=>v.append(legendRow(l)));
 }
 function legendRow(l){
   const d=el('div','lrow');d.dataset.id='legend-'+l.id;
   const hon=(l.honors||[]).length?(l.honors.length+' honor'+(l.honors.length===1?'':'s')):'—';
+  const nk=nickname(l);   // Phase 45: legends carry their nickname into the Ring of Honor
   d.innerHTML=`<div class="row spread" style="gap:8px">
       <div style="min-width:0">
-        <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.name}
-          <span class="dim" style="font-weight:400">${l.pos} · ${l.st||''}</span></div>
+        <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.name}${nk?` <span class="accent" style="font-weight:700">“${nk}”</span>`:''}
+          <span class="dim" style="font-weight:400">#${jerseyNo(l)} ${l.pos} · ${l.st||''}</span></div>
         <div class="meta dim">${l.from}–${l.to} · peak ${l.peakOv} OVR · ${hon}</div></div>
       <div style="text-align:right;flex:none">
         <div class="tag accent" style="font-size:10px">${l.tier}</div>
@@ -5082,8 +5230,10 @@ function legendRow(l){
 // A legend's full résumé: era, peak, stature tier, and every honor earned across their career.
 function legendSheet(l){
   const body=el('div');
+  const nk=nickname(l);   // Phase 45
   body.innerHTML=`<div class="row spread" style="margin-bottom:8px">
-      <span class="tag accent">${l.tier}</span><span class="meta">${l.pos} · ${l.st||''}</span></div>
+      <span class="tag accent">${l.tier}</span><span class="meta">#${jerseyNo(l)} ${l.pos} · ${l.st||''}</span></div>
+    <div class="card" style="margin-bottom:8px"><div class="cond accent" style="font-size:15px;font-weight:800">${knownFor(l)}</div>${nk?`<div class="muted" style="font-size:12px;margin-top:2px">Known around the program as “${nk}”</div>`:''}</div>
     <div class="kv"><span class="k">Era</span><span>${l.from}–${l.to}</span></div>
     <div class="kv"><span class="k">Peak OVR</span><span>${l.peakOv}</span></div>
     <div class="kv"><span class="k">Stature</span><span>${l.stature} / 100</span></div>`;
@@ -5103,7 +5253,12 @@ function legendSheet(l){
       wrap.append(el('div','row spread',`<span class="meta">${h.award}</span><span class="meta dim">${h.year}</span>`)));
     body.append(wrap);
   }
-  openSheet(l.name,body);
+  // Phase 45c: signature moments captured while he played (carried onto the legend snapshot).
+  if(l.moments&&l.moments.length){
+    body.append(el('h2','sec','Signature moments'));
+    const w=el('div');l.moments.forEach(m=>w.append(el('div','meta','⭐ '+m)));body.append(w);
+  }
+  openSheet(l.name+(nk?' “'+nk+'”':''),body);
 }
 // A facility row with its level bar + an Upgrade (cost) button (cash, or finance on credit).
 function facUpgradeRow(t,label,key,manage){
@@ -6435,9 +6590,11 @@ function statBlock(p){
 }
 function playerRow(p,isStarter,t){
   const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=p.id;
+  const nk=nickname(p);   // Phase 45: derived nickname (earned/flavor), '' until established
+  const fav=(t&&t.id===S.teamId)?fanFavorite(p,t.homeState):null;   // Phase 45d: emergent status (your team)
   row.innerHTML=`<div class="ovr ${p.ov>=85?'elite':''}">${p.ov}</div>
     <div style="flex:1">
-      <div class="nm">${p.fn} ${p.ln} ${p.cap?'<span class="cap">© CAPTAIN</span>':''}${p.inj>0?` <span class="tag" style="font-size:10px;background:#7a1f1f;color:#fff">🩹 OUT ${p.inj}wk</span>`:''}${p.rs==='on'?` <span class="tag" style="font-size:10px;background:#8a1c1c;color:#fff">🔴 REDSHIRT</span>`:''}</div>
+      <div class="nm"><span class="dim" style="font-weight:600">#${jerseyNo(p)}</span> ${p.fn} ${p.ln}${nk?` <span class="accent" style="font-weight:700">“${nk}”</span>`:''} ${fav?`<span class="tag accent" style="font-size:9px">★ ${fav}</span>`:''} ${p.cap?'<span class="cap">© CAPTAIN</span>':''}${p.inj>0?` <span class="tag" style="font-size:10px;background:#7a1f1f;color:#fff">🩹 OUT ${p.inj}wk</span>`:''}${p.rs==='on'?` <span class="tag" style="font-size:10px;background:#8a1c1c;color:#fff">🔴 REDSHIRT</span>`:''}</div>
       <div class="meta">${p.yr} · ${p.age}y · ${p.st} · ${'★'.repeat(p.stars)}${'☆'.repeat(5-p.stars)}</div>
       <div class="meta" style="margin-top:3px">${ceilingChip(p)} <span class="dim">${devStage(p)}</span>${growthChip(p)}</div>
       <div class="meta" style="margin-top:3px">${traitChips(p)}${moraleChip(p)}${schemeChip(p,t)}</div>
@@ -6448,10 +6605,40 @@ function playerRow(p,isStarter,t){
   row.onclick=()=>playerSheet(p,t);
   return row;
 }
+// Phase 45c: all-time records this player currently holds (scans the record book by pid).
+function recordsHeldBy(pid){
+  const R=S.records; if(!R||!pid)return [];
+  const out=[];['game','season','career'].forEach(bucket=>{const b=R[bucket]||{};
+    for(const key in b){const rec=b[key];if(rec&&rec.pid===pid){const def=(RECORD_DEFS[bucket]||[]).find(d=>d.key===key);
+      out.push({label:(def?def.label:key),value:rec.value,unit:def?def.unit:'',scope:bucket});}}});
+  return out;}
+// Phase 45c: a "Career & legacy" section on the player sheet — who he's becoming, not just his rating:
+// career totals (to date), all-time records he holds, and his signature moments.
+function playerLegacy(body,p,t){
+  const c=careerToDate(p), lines=[];
+  if(c.pYds)lines.push(c.pYds+' career pass yds'+(c.pTD?', '+c.pTD+' TD':''));
+  if(c.rYds)lines.push(c.rYds+' career rush yds'+(c.rTD?', '+c.rTD+' TD':''));
+  if(c.reYds)lines.push((c.rec||0)+' rec, '+c.reYds+' career yds'+(c.reTD?', '+c.reTD+' TD':''));
+  if(c.tkl)lines.push(c.tkl+' career tackles');
+  if(c.sk)lines.push(c.sk+' career sacks');
+  if(c.dInt)lines.push(c.dInt+' career INTs');
+  const held=recordsHeldBy(p.id), moments=(p.moments||[]);
+  if(!lines.length&&!held.length&&!moments.length)return;   // a young player with no story yet
+  const card=el('div','card');card.style.marginTop='10px';card.dataset.tid='player-legacy';
+  let html='<div class="meta dim" style="margin-bottom:4px">Career & legacy</div>';
+  if(lines.length)html+=lines.map(x=>'<div class="meta">'+x+'</div>').join('');
+  if(held.length)html+='<div style="margin-top:6px">'+held.map(h=>`<div class="meta accent">🏆 All-time ${h.scope} record — ${h.label} (${h.value}${h.unit?' '+h.unit:''})</div>`).join('')+'</div>';
+  if(moments.length)html+='<div style="margin-top:6px">'+moments.slice().reverse().map(m=>'<div class="meta">⭐ '+m+'</div>').join('')+'</div>';
+  card.innerHTML=html;body.append(card);
+}
 function playerSheet(p,t){
   const body=el('div');
   const sc=scoutedCeiling(p);
-  body.innerHTML=`<div class="kv"><span class="k">Position</span><span>${posName(p.pos)}</span></div>
+  const nk=nickname(p);   // Phase 45 identity
+  body.innerHTML=`<div class="card" style="margin-bottom:10px">
+      <div class="cond accent" style="font-size:15px;font-weight:800">${knownFor(p)}</div>
+      <div class="muted" style="font-size:12px;margin-top:3px">${backstory(p)}</div></div>
+    <div class="kv"><span class="k">Position</span><span>#${jerseyNo(p)} · ${posName(p.pos)}</span></div>
     <div class="kv"><span class="k">Class / Age</span><span>${p.yr} · ${p.age}</span></div>
     <div class="kv"><span class="k">Home state</span><span>${p.st}</span></div>
     <div class="kv"><span class="k">Overall</span><span>${p.ov}</span></div>
@@ -6466,6 +6653,7 @@ function playerSheet(p,t){
     ${p.dev>0?`<div class="kv"><span class="k">Developed (last offseason)</span><span class="good">▲ +${p.dev} OVR</span></div>`:''}
     ${(p.honors&&p.honors.length)?`<div class="kv"><span class="k">Honors</span><span>${p.honors.map(h=>h.year+' '+h.award).join('; ')}</span></div>`:''}
     ${statBlock(p)}`;
+  playerLegacy(body,p,t);   // Phase 45c: career totals · records held · signature moments
   const r1=el('div','btn-row');
   const starter=el('button','btn sm '+(p.so===0?'line':'ghost'),p.so===0?'Already starter':'Promote to starter');
   starter.disabled=p.so===0;
@@ -6507,7 +6695,7 @@ function playerSheet(p,t){
   const edit=el('button','btn sm line','Edit player');edit.style.marginTop='9px';edit.style.width='100%';
   edit.onclick=()=>editPlayerSheet(p,t);
   body.append(edit);
-  openSheet(p.fn+' '+p.ln,body);
+  openSheet(p.fn+' '+p.ln+(nk?' “'+nk+'”':''),body);
 }
 function makeStarter(p,t){
   const grp=t.roster.filter(x=>x.pos===p.pos).sort((a,b)=>a.so-b.so);

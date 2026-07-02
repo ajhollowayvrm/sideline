@@ -704,6 +704,27 @@ plain static files so Pages still serves it with zero config.
   poach-up move works). Validated with a 10-season auto-sim playtest: a blueblood keeps the job + climbs to #1
   (was fired in 4 yrs), a bottom program shows a survivable rebuild, budgets stay ~$200M (was runaway $257M+),
   and portal churn is roughly neutral (was a one-way drain). See "Phase 44 design — career-balance pass" below.
+- **Phase 45 — Player identity (nicknames · known-for · legacy · cult status).** ✅ DONE. Makes an individual
+  player feel like a *person* remembered for specific things — almost entirely **derived**, so it's near-free
+  across 11k players. Pure fenced **`IDENTITY ENGINE`** (depends only on `hashStr`/`clamp` + the TRAIT reads +
+  a player's data — no DOM/S, so `test/identitylab.js` validates it offline): **`jerseyNo`** (position-plausible,
+  deterministic from the id), **`nickname`** (a flavor pool chosen by dominant trait — trench players get grit
+  not speed — with an **earned** overlay that supersedes it once a real résumé milestone hits: Heisman→"The
+  Franchise", 8k pass yds→"The General", 30 sacks→"The Closer"; **gated** so a freshman shows none and earns it
+  once established), **`knownFor`** (one earned descriptor from honors→career→traits — "2× All-America CB",
+  "6,400-yd career passer", "A relentless worker"), **`backstory`** (home state + stars + a trait tag), and
+  **`fanFavorite`** (an emergent Overachiever/Hometown-Hero/Homegrown-Star badge for an over-performing
+  controlled-team contributor). **Signature moments** (`p.moments`, sparse, controlled-team only): `captureMoments`
+  runs once per real advance beside `captureGameRecords`, so a monster single game ("504 pass yds, 7 TD vs KENN
+  (2026)") is **remembered** — and `legendSnap` carries it onto the Ring-of-Honor snapshot at graduation.
+  `playerRecMeta` gained a `pid` so the player sheet's **`playerLegacy`** section can show career totals +
+  **all-time records he holds** + his moments. UI: jersey # + nickname + fan-favorite badge on the roster row;
+  an identity header + Career & legacy block on the player sheet; nicknames/known-for + signature moments on the
+  Ring of Honor, plus a **retired-numbers** banner for a program's Immortal legends. Save **v41** (sparse
+  `p.moments`; `migrateState` v40→v41 is a structural no-op — everything else is derived, nothing to store). New
+  gate `npm run identitylab` (26 checks: jersey bands + determinism, the nickname gate + earned overlay + trench
+  awareness, knownFor/backstory always sensible, fan-favorite triggers); `qa` → 302 (jersey/nickname/known-for
+  render; a monster game is remembered + carries onto the legend). See "Phase 45 design — player identity" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -2635,6 +2656,69 @@ results-only (no brand/market model). This is a balance pass, not new systems.
 
 ---
 
+## Phase 45 design — player identity (nicknames · known-for · legacy · cult status)
+
+Decided 2026-07-01 with AJ ("introduce individualism — nicknames, being remembered for specific things"). The
+sim already remembers players *collectively* (Ring of Honor, record book, Heisman) but a player had no personal
+handle. The insight that keeps it lean (the "factory, not The Sims" constraint over 11k players): **derive
+individuality, don't store it.** A pure `IDENTITY ENGINE` computes a jersey number, nickname, "known for" line,
+and backstory from the player's id hash + traits + résumé — deterministic, so it's free and permanent. Built as
+four tiers on one shared engine block; only the signature-moment *capture* needs storage (one sparse field).
+
+### Pure `IDENTITY ENGINE` (fenced, lab before UI)
+`// === IDENTITY ENGINE (Phase 45) START/END ===` — depends only on `hashStr`/`clamp` + the TRAIT reads
+(`motVal`/`compVal`/`egoVal`) + data ON the player (honors/career/gs), so `test/identitylab.js` extracts the
+TRAIT + IDENTITY blocks and validates offline:
+- `jerseyNo(p)` — a number in a **position-plausible band** (`JERSEY_BANDS`: QB 1–18, TE 80–89, DT 90–99…),
+  deterministic from `hashStr(id)`.
+- `nickname(p)` — a **flavor** base from the player's *dominant trait* (`NICK_FLAVOR`: motor→"The Motor/Tank",
+  cool→"Ice/The General", boom→"Highlight/The Blur", swagger→"Prime/Money"; **trench positions** (OT/OG/C/DT) get
+  grit — "Anchor/Mauler/The Wall" — never speed flavor) picked within the pool by id; an **earned** overlay
+  (`nickEarned`) supersedes it once a real milestone lands (Heisman→"The Franchise", Bednarik→"The Enforcer",
+  8k career pass→"The General", 3.5k rush→"The Workhorse", 25 sacks→"The Closer"…). **Gated** by `isEstablished`
+  (real snaps / an honor / an upperclassman) so a freshman shows **no** nickname and *earns* one — an earned
+  progression beat, matching the trait-fog ethos.
+- `careerToDate(p)` = banked `p.career` + the live `p.gs`, so a monster season earns its identity NOW, not a
+  year late.
+- `knownFor(p)` — one earned descriptor: honors first (Heisman / All-America POS / conf POY), then a career
+  milestone ("6,400-yd career passer"), then a trait/rating fallback ("A relentless worker" / "Ice in his veins"
+  / a trench "anchor up front" — never "playmaker" for a lineman), never empty.
+- `backstory(p)` — home state + recruiting stars + a trait tag ("Blue-chip from TX — outworks everyone").
+- `fanFavorite(p, homeState)` — an emergent status label (Overachiever / Hometown Hero / Homegrown Star) for a
+  controlled-team **contributor** (starter/two-deep) beating his recruiting billing or a local kid made good.
+
+### Signature moments (the one thing captured — sparse, controlled team)
+The sim wipes `p.gs` each rollover, so a big single game can't be reconstructed later (like records/legends).
+`captureMoments(boxes)` runs **once per real advance** (beside `captureGameRecords`, in all three real paths —
+never on a determinism re-sim), scanning the controlled team's box lines against `MOMENT_TESTS` (350+ pass yds,
+175+ rush, 150+ rec, 3+ sacks, 2+ INT, 15+ tkl…) and stamping a lean string onto `p.moments` (keeps the best
+~6), tagged with the opponent + year + stage (title game / bowl). `legendSnap` carries the last few onto the
+Ring-of-Honor snapshot, so a legend's card reads like a real résumé. Controlled-team-only → cheap.
+
+### Being remembered (surfacing — mostly free)
+`playerRecMeta` gained a **`pid`** so `recordsHeldBy(pid)` can scan the Phase 41 record book by player; the
+player sheet's new **`playerLegacy`** section pulls together career totals + all-time records he holds + his
+signature moments — "remembered for specific things" is a query over data the sim already keeps.
+
+### UI
+Roster row: `#num Name "Nickname"` + a ★ fan-favorite badge. Player sheet: an identity header (known-for +
+backstory) + the Career & legacy block. Ring of Honor: nicknames/numbers on legend rows, a known-for line +
+signature moments on the legend sheet, and a **retired-numbers** banner for the program's Immortal legends.
+
+### Save & validation
+Save **v41** (sparse `p.moments`, auto-carried by the columnar codec's side-object; `migrateState` v40→v41 is a
+structural no-op — everything else is derived). New gate `npm run identitylab` (**26** checks: jersey bands +
+determinism, nickname gate + earned overlay + trench-awareness, knownFor/backstory always sensible + deterministic,
+fan-favorite triggers). `qa` → **302** (jersey #/nickname/known-for render on the row + sheet; a monster game is
+remembered + carries onto the legend). **Twenty-one gates** now (adds `identitylab`).
+
+### Deliberately out of scope (stays a factory)
+No free-text/editable names, no relationships or off-field storylines, no per-player dialogue — identity is
+*derived from what he does*. Retired numbers are honored (a banner) but not reissue-enforced on live rosters
+(that would compromise the derived-purity of `jerseyNo`). Moments/fan-favorite are controlled-team only.
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -3060,7 +3144,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **40**). v39→v40 (Phase 44) backfills `S.coach.jobOffers=null` (poach-up offers, regenerated
+  (currently **41**). v40→v41 (Phase 45) is a structural no-op — `p.moments` (signature single games) is a
+  sparse per-player field (absent = none); nickname/number/known-for are all derived, nothing to store.
+  v39→v40 (Phase 44) backfills `S.coach.jobOffers=null` (poach-up offers, regenerated
   each offseason) — the rest of the career-balance/economy pass is behavior-only. v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
   Phase 2 season fields (`schedule`/`lastPlayedWeek`, per-team `rec`); v3→v4 is a structural
   no-op (per-player `p.gs` stats); v4→v5 backfills `weeklyHonors`; v5→v6 backfills
@@ -3338,9 +3424,9 @@ National Signing Day → transfer portal** → rollover (graduate/enshrine/**dra
 settle → carousel → facilities/series — closes across multiple years, and the **hot seat** means a sustained
 slump can end your tenure; your stars leave a permanent mark on the program both on its Ring of Honor and on
 its pro-pipeline reputation.
-**Twenty green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
+**Twenty-one green gates:** `npm run` + `simlab` / `reclab` / `rolllab` / `econlab` / `awardlab` /
 `traitlab` / `schemelab` / `legacylab` / `postlab` / `draftlab` / `champlab` / `portallab` / `medialab` /
-`camplab` / `visitlab` / `rivalrylab` / `recordlab` / `contractlab` / `realignlab` / `qa`.
+`camplab` / `visitlab` / `rivalrylab` / `recordlab` / `contractlab` / `realignlab` / `identitylab` / `qa`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Recruiting signees **bank in `S.recruiting.pool`** (each `committedTo` = your team id) during

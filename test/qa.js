@@ -159,6 +159,34 @@ function startServer() {
   check('Player sheet shows Ceiling + Development', /Ceiling/.test(sheetTxt) && /Development/.test(sheetTxt));
   check('Player sheet shows Work ethic + Composure (Phase 10)', /Work ethic/.test(sheetTxt) && /Composure/.test(sheetTxt));
   check('Player sheet hides raw "Potential" number', !/Potential/.test(sheetTxt));
+  // Phase 45: player identity — jersey number + derived nickname + a "known for" line
+  const idUI = await page.evaluate(() => {
+    const jerseyOnRows = [...document.querySelectorAll('.lrow .nm')].some(n => /#\d+/.test(n.textContent));
+    const t = controlled();
+    // a starred upperclassman gets a nickname; knownFor/backstory always return a non-empty line
+    const vet = t.roster.slice().sort((a, b) => b.ov - a.ov)[0];
+    return {
+      jerseyOnRows,
+      jerseyBanded: jerseyNo({ id: 'z', pos: 'QB' }) <= 18 && jerseyNo({ id: 'z', pos: 'DT' }) >= 90,
+      nickDet: nickname(vet) === nickname(vet),
+      knownForNonEmpty: knownFor(vet).length > 0 && knownFor(t.roster[0]).length > 0,
+      sheetHasJersey: /#\d+/.test(document.querySelector('[data-tid="sheet"]').innerText),
+    };
+  });
+  check('Phase 45: jersey numbers render on roster rows + the sheet', idUI.jerseyOnRows && idUI.sheetHasJersey);
+  check('Phase 45: jersey numbers respect the position band', idUI.jerseyBanded);
+  check('Phase 45: nickname is deterministic + knownFor is never empty', idUI.nickDet && idUI.knownForNonEmpty);
+  // Phase 45c: a monster single game is REMEMBERED (p.moments) and carries onto the legend snapshot
+  const moments = await page.evaluate(() => {
+    const me = S.teamId, t = controlled(), p = t.roster[0];
+    const opp = S.world.teams.find(x => x.id !== me).id;
+    const box = {}; box[p.id] = { pYds: 420, pTD: 5, gp: 1 };
+    const before = (p.moments || []).length;
+    captureMoments([{ g: { home: me, away: opp }, box }]);
+    const snap = legendSnap(Object.assign({}, p, { peakOv: 90 }), S.year || 2026);
+    return { grew: (p.moments || []).length > before, vsOpp: (p.moments || []).some(m => / vs /.test(m)), onLegend: (snap.moments || []).length > 0 };
+  });
+  check('Phase 45c: a monster game is remembered + carries onto the legend', moments.grew && moments.vsOpp && moments.onLegend, JSON.stringify(moments));
   await shot(page, '08-player-sheet.png');
 
   // edit a clearly-backup player to a max rating → offense rating must rise
@@ -814,7 +842,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 40 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 41 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -831,7 +859,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v40)', mig.v === 40, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v41)', mig.v === 41, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -1303,7 +1331,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 40', roPost.version === 40, 'v' + roPost.version);
+  check('Rollover: save version bumped to 41', roPost.version === 41, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);

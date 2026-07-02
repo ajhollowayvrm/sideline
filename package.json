@@ -23,7 +23,8 @@
     "rivalrylab": "node test/rivalrylab.js",
     "recordlab": "node test/recordlab.js",
     "contractlab": "node test/contractlab.js",
-    "realignlab": "node test/realignlab.js"
+    "realignlab": "node test/realignlab.js",
+    "identitylab": "node test/identitylab.js"
   },
   "devDependencies": {
     "playwright": "^1.61.1"
