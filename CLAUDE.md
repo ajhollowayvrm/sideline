@@ -725,6 +725,28 @@ plain static files so Pages still serves it with zero config.
   gate `npm run identitylab` (26 checks: jersey bands + determinism, the nickname gate + earned overlay + trench
   awareness, knownFor/backstory always sensible, fan-favorite triggers); `qa` → 302 (jersey/nickname/known-for
   render; a monster game is remembered + carries onto the legend). See "Phase 45 design — player identity" below.
+- **Phase 46 — In-game screen (individual play-calling, tendencies, halftime).** ✅ DONE. A deeper coach-your-game
+  layer over the Phase 22–31 play-calling core, all **opt-in** so AI/defer games stay byte-identical (simlab 82).
+  **(1) Call individual plays** — the Run/Pass/Heavy/Spread (and defensive Base/Blitz/Cover/Run-stop) buttons now
+  open a **playbook picker** of named concepts, each with a hand-rolled **SVG play-art diagram** (`PLAYBOOK` +
+  `playDiagram`/`defArt`; routes/blocks/run-paths/coverage shells). A concept maps to an engine token — plain
+  `run`/`pass`/`heavy`/`spread` **or** a tendency-aware **variant** (`pass:pa`/`screen`/`deep`, `run:draw`), parsed
+  in `simEngine` (`type:variant`). **(2) Live tendencies** — the decide ctx now surfaces `defTend` (the defense's
+  base/blitz/cover/run mix, snapshotted pre-snap) on offense and `offTend` (the offense's run/pass mix) on defense;
+  the UI reads them (`offTendHint`/`defTendHint`) — e.g. "Defense has been stacking the box → Play Action is live",
+  and **Play Action** mechanically punishes a run-committed front (bonus vs `dcall==='run'`, penalty vs cover),
+  Screen beats the blitz, the Deep shot is boom/bust, the Draw beats pressure. **(3) 15-minute quarters** — the sim
+  already ran 900s/quarter; the display now shows a per-quarter clock (`quarterClock`). **(4) Halftime** — a
+  driver/UI pause at the top of the 2nd half (no engine change) to make major adjustments, then "Start 2nd half".
+  **(5) Both-way field** — the field is fixed-orientation (you defend the LEFT end zone), so YOUR drives animate →
+  and the opponent's ← (`fieldSVG` directional + a reduced-motion-safe ball slide). **(6) Play past 0:00** — key-mode
+  prompting is now quarter-relative and no longer stops at `clock>0`, so you keep calling the final drive's snaps
+  past 0:00. **(7) Field goal any time** — `doFG` is factored out of the 4th-down block; the offensive play decide
+  accepts an any-down `fg` token (in range), surfaced as a 🥅 FG button. All variants/FG/calls ride in the existing
+  optional `g.calls` stream (replay on commit → watch == commit). Save **v42** (no-op migration — the richer call
+  tokens ride in `g.calls`). `simlab` → 82 (FG-anytime, the variant effects + directional/determinism, tendency
+  reads exposed); the qa in-game smoke covers the playbook picker + field + halftime. See "Phase 46 design —
+  in-game screen" below.
 - **Deliberate non-goals** (out of scope unless we revisit): no live viewer for *arbitrary* games
   (only the controlled team's game is watchable/replayable/coachable, so advancing a week stays fast). This is
   a design choice, not a backlog.
@@ -2729,6 +2751,65 @@ No free-text/editable names, no relationships or off-field storylines, no per-pl
 
 ---
 
+## Phase 46 design — in-game screen (individual play-calling, tendencies, halftime)
+
+Decided 2026-07-02 with AJ — a deepening of the game-day screen on top of the Phase 22–31 play-calling core.
+Seven asks: call individual plays with play-art; live offensive/defensive tendencies (a run-committed D → Play
+Action); 15-minute quarters; a halftime adjustment period; the mini-field animating both directions; play past
+0:00; a field goal on any down. The governing constraint (as always): `simEngine` is pure + deterministic and the
+validated envelope only checks AI/defer games, so **every mechanic is opt-in** — plain `run`/`pass`/`heavy`/
+`spread`/defer/AI is byte-identical (simlab's parity check proves it), and the new tokens/reads add football-sane
+effects on top.
+
+### Engine (all opt-in; AI/defer byte-identical)
+- **FG on any down** — `doFG(dd,fgDist)` is factored out of the 4th-down block (the 4th-down rng draws are
+  unchanged → an AI game is byte-identical). The offensive play decide accepts an any-down `fg` token: in range →
+  `doFG`, out of range → ignored (play on). `fgDist`/`inFgRange` are computed at the top of the play loop and
+  exposed in the play ctx.
+- **Play-concept variants** — the offensive decide token may carry a variant (`type:variant`, parsed by `split(':')`):
+  `pass:pa` (Play Action), `pass:screen`, `pass:deep`, `run:draw`. A tiny `vComp/vYds/vSack/vBoom` bag keys off the
+  **defensive call this snap** (`dcall`) — PA punishes a run-committed front (+comp/+yds vs run-stop, −comp/−yds vs
+  cover), Screen beats the blitz + fewer sacks, the Deep shot is boom/bust (−comp, bigger explosive, +sacks), the
+  Draw beats pressure. **All deltas are 0 when `variant===''`** (plain/defer/AI), so the sim is byte-identical.
+- **Tendency reads** — the play ctx exposes `defTend` (a **pre-snap snapshot** of the defense's base/blitz/cover/run
+  mix, taken before this snap's call is recorded → no current-call leak; allocated only for the controlled offense),
+  and the def ctx exposes `offTend` (the offense's run/pass mix so far). No effect on the sim — pure surfacing.
+
+### Driver + UI (app layer)
+- **15-minute quarters** — the engine already ran 900s/quarter; `quarterClock(q,clock)` converts the engine's
+  total-game clock to the on-field per-quarter clock for display.
+- **Play past 0:00** — `shouldPromptCtx` is now quarter-relative (2-minute drill in Q2/Q4 keyed on `rem≤120`,
+  every OT snap) and **no longer gates on `clock>0`**, so key-mode keeps prompting through the final drive's snaps
+  at 0:00 (the drive plays out, as the engine already allowed).
+- **Halftime** — a pure driver pause (no engine change, no rng): the interactive driver throws at the first
+  2nd-half snap (`ctx.q>=3`, unless auto/simRest) and the render shows a halftime screen (score + the in-game
+  adjustments sheet + "Start 2nd half"); `resumeHalf` sets `halfShown` and picks the flow back up. Replay-safe
+  because halftime touches nothing the sim reads.
+- **Both-way field** — `fieldSVG` is fixed-orientation (the controlled team defends the LEFT end zone): YOUR drives
+  map `los→X(los)` (attack →, ▸) and the opponent's map `los→X(100-los)` (attack ←, ◂); the ball SMIL-slides
+  between snaps (skipped under `prefers-reduced-motion`).
+- **Playbook + play-art** — `PLAYBOOK` (offense run/pass/heavy/spread + defense base/blitz/cover/run) with per-concept
+  diagram specs; `playDiagram(art)` renders a hand-rolled top-down SVG (OL/skill dots, red-X defenders, accent pass
+  routes, green run paths, gray blocks, dashed coverage zones/rush arrows via `defArt`). The play-call buttons open a
+  category picker (`openPlaySheet`) of concept cards; tapping one calls its token.
+
+### Save & validation
+Save **v42** — the richer call tokens (`pass:pa`, any-down `fg`, …) ride in the existing optional `g.calls` array,
+so `migrateState` v41→v42 is a structural no-op. `simlab` → **82** (10 new Phase 46 checks: FG-anytime records
+attempts + changes the game + replays deterministically; the ctx exposes fgDist/defTend/offTend; PA out-gains a
+plain dropback, Screen completes more with fewer sacks, the Deep shot is higher yards-per-catch + more sacks; mixing
+in PA beats a one-dimensional ground game vs the scheming AI DC). The qa in-game section (play-picker flow + field +
+adjustments) is updated for the new picker; all other gates unchanged (20/21 green in-repo; the browser qa gate is
+otherwise unaffected by this change).
+
+### Deliberately out of scope
+Variants are a small opt-in tuning layer, not a full route tree/protection scheme; the diagrams are illustrative
+(not literal per-defender assignment art); AI teams don't call variant concepts or packages (kept envelope-safe);
+halftime reuses the existing in-game adjustments (no separate "game-plan install" sim). The field animation is a
+ball slide, not a full 22-man play animation (only the controlled team's game is coachable — advancing stays fast).
+
+---
+
 ## Phase 3.5 design — watchable game + weekly honors
 
 Decided 2026-06-27 with AJ. Two features, both consumers of the Phase 3 sim.
@@ -3154,7 +3235,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **41**). v40→v41 (Phase 45) is a structural no-op — `p.moments` (signature single games) is a
+  (currently **42**). v41→v42 (Phase 46) is a structural no-op — the in-game screen's richer play-call tokens
+  (`pass:pa`/`screen`/`deep`, `run:draw`, any-down `fg`) ride in the existing optional `g.calls` array.
+  v40→v41 (Phase 45) is a structural no-op — `p.moments` (signature single games) is a
   sparse per-player field (absent = none); nickname/number/known-for are all derived, nothing to store.
   v39→v40 (Phase 44) backfills `S.coach.jobOffers=null` (poach-up offers, regenerated
   each offseason) — the rest of the career-balance/economy pass is behavior-only. v1→v2 backfills staff tiers/boosts via `normalizeStaff`; v2→v3 adds
