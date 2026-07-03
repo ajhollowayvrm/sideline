@@ -403,6 +403,55 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Phase 31: spread takes more sacks (fewer blockers — a real trade-off)', spSk > paSk, `${spSk} vs ${paSk} sacks`);
 }());
 
+// Phase 46 — individual play-calling (FG anytime, play-concept variants, tendency reads). All OPT-IN:
+// plain run/pass/defer/AI is byte-identical (the parity check above already proves it), and these add
+// directional, football-sane effects on top.
+(function () {
+  const w = genWorld(4646), O = w.teams[3], D = w.teams[9], N = 40;
+  const base = ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : ctx.ocCall;
+  // --- the decide ctx surfaces the new reads (fg distance/range on offense, tendency both ways) ---
+  let sawFg = false, sawDefTend = false, sawOffTend = false;
+  simEngine(O, D, 55, { decideFor: O.id, decide: ctx => {
+    if (ctx.phase === 'play') { if (typeof ctx.fgDist === 'number' && typeof ctx.inFgRange === 'boolean') sawFg = true; if (ctx.defTend && typeof ctx.defTend.blitz === 'number') sawDefTend = true; }
+    return base(ctx); } });
+  simEngine(O, D, 55, { decideFor: D.id, decide: ctx => { if (ctx.phase === 'def' && ctx.offTend && typeof ctx.offTend.run === 'number') sawOffTend = true; return base(ctx); } });
+  check('Phase 46: the offensive play ctx exposes FG distance/range', sawFg);
+  check('Phase 46: the offensive play ctx exposes the defense’s tendency (defTend)', sawDefTend);
+  check('Phase 46: the defensive ctx exposes the offense’s run/pass tendency (offTend)', sawOffTend);
+
+  // --- FG on any down: a coach who kicks whenever in range (not just on 4th) records more FG attempts,
+  //     changes the outcome vs the AI, and replays deterministically ---
+  const kicker = ctx => (ctx.phase === 'play' && ctx.inFgRange && ctx.down <= 3) ? 'fg' : base(ctx);
+  let coachFga = 0, aiFga = 0, calls = [];
+  const kres = simEngine(O, D, 77, { decideFor: O.id, decide: ctx => { const c = kicker(ctx); calls.push(c); return c; } });
+  const ares = simEngine(O, D, 77);
+  O.roster.concat(D.roster).forEach(p => { if (kres.box[p.id]) coachFga += kres.box[p.id].fga || 0; if (ares.box[p.id]) aiFga += ares.box[p.id].fga || 0; });
+  let i = 0; const krep = simEngine(O, D, 77, { decideFor: O.id, decide: () => calls[i++] });
+  check('Phase 46: a coach can kick a field goal on any down (not just 4th)', coachFga > aiFga, `${coachFga} vs ${aiFga} FGA`);
+  check('Phase 46: an early-down FG changes the game vs the OC autopilot', kres.hs !== ares.hs || kres.as !== ares.as);
+  check('Phase 46: play-calls incl. FG replay deterministically (watch == commit)', krep.hs === kres.hs && krep.as === kres.as && JSON.stringify(krep.box) === JSON.stringify(kres.box));
+
+  // --- play-concept variants vs a neutral (base) AI defense — no aiDefVs, so dcall stays 'base' ---
+  const off = tok => { let cmp = 0, yds = 0, sk = 0, att = 0; for (let s = 0; s < N; s++) { const seed = (hashStr('v' + tok + s) ^ 9) >>> 0;
+    const res = simEngine(O, D, seed, { decideFor: O.id, decide: ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : tok });
+    O.roster.forEach(p => { const b = res.box[p.id]; if (b) { cmp += b.pCmp || 0; yds += b.pYds || 0; att += b.pAtt || 0; } });
+    D.roster.forEach(p => { const b = res.box[p.id]; if (b) sk += b.sk || 0; }); }
+    return { cmp, yds, sk, ypc: cmp ? yds / cmp : 0 }; };
+  const plain = off('pass'), pa = off('pass:pa'), screen = off('pass:screen'), deep = off('pass:deep');
+  check('Phase 46: Play Action out-gains a plain dropback vs a run-neutral look', pa.yds > plain.yds, `${(pa.yds / N).toFixed(0)} vs ${(plain.yds / N).toFixed(0)} pass yd/g`);
+  check('Phase 46: the Screen completes more + takes fewer sacks (beats pressure, quick)', screen.cmp > plain.cmp && screen.sk < plain.sk, `cmp ${screen.cmp}/${plain.cmp}, sk ${screen.sk}/${plain.sk}`);
+  check('Phase 46: the Deep Shot is boom/bust — more yards per catch, more sacks', deep.ypc > plain.ypc && deep.sk > plain.sk, `ypc ${deep.ypc.toFixed(1)}/${plain.ypc.toFixed(1)}, sk ${deep.sk}/${plain.sk}`);
+
+  // --- tendency payoff: vs a scheming AI DC (aiDefVs), a run-heavy attack that mixes in Play Action on
+  //     early downs moves the ball through the air better than one that just runs (PA punishes the box) ---
+  let paY = 0, runY = 0;
+  for (let s = 0; s < N; s++) { const seed = (hashStr('pat' + s) ^ 11) >>> 0;
+    const mix = simEngine(O, D, seed, { decideFor: O.id, aiDefVs: O.id, decide: ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : (ctx.down <= 2 && ctx.togo >= 6 ? 'pass:pa' : 'run') });
+    const allRun = simEngine(O, D, seed, { decideFor: O.id, aiDefVs: O.id, decide: ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : 'run' });
+    O.roster.forEach(p => { if (mix.box[p.id]) paY += mix.box[p.id].pYds || 0; if (allRun.box[p.id]) runY += allRun.box[p.id].pYds || 0; }); }
+  check('Phase 46: mixing in Play Action beats a one-dimensional ground game through the air', paY > runY, `${(paY / N).toFixed(0)} vs ${(runY / N).toFixed(0)} pass yd/g`);
+}());
+
 // statistical realism across a full season
 const R = simSeason(2026);
 const meanPts = avg(R.scores);
