@@ -1,0 +1,671 @@
+# SIDELINE — design history: recruiting & the portal
+
+> Extracted from CLAUDE.md. Design records for recruiting, signing, transfers, visits.
+
+## Phase 4 recruiting design — the in-season recruiting loop
+
+> **Timing superseded by Phase 14:** the board-work still runs through the season, but a commitment is
+> now a **verbal**, and the class **signs in the offseason** (Early Signing Period + National Signing
+> Day), not at the regular-season's final week. The "Signing Day fires when the season ends" bits below
+> are historical — see "Phase 14 design — recruiting calendar."
+
+Decided 2026-06-27 with AJ. Recruiting runs **concurrently with the regular season** (weeks
+1–15), so it reuses the existing weekly cadence (`advanceWeek`) instead of needing new
+plumbing. It is the first system to actually **apply coach archetype/history** effects.
+
+### Why in-season, and where the class goes
+Real recruiting culminates on Signing Day in the offseason and the class joins the roster the
+*next* year — but **season rollover doesn't exist yet** (it's Phase 5, same blocker as
+non-conf series). So Phase 4 is a complete, self-contained *cycle within one season*: you work
+a prospect board across the 15 weeks, **Signing Day** fires when the season ends, and the
+signed class banks in `S.recruiting.pool` (each signee's `committedTo` = your team id). When
+the Phase 5 rollover lands, signees convert to freshman `Player`s (and promises are honored or
+broken). Until then the payoff is a **class ranking + grade** — honest, like the series
+deferral. No faked single-season roster injection.
+
+### The prospect pool (lean, top-heavy)
+> **Superseded by Phase 17:** the board is now the **full national class (~3,400)**, columnar-saved — the
+> top-300 limit + faked tail below are historical. See "Phase 17 design — full national board."
+
+`genRecruits(seed, teams)` builds **~300 contested blue-chip prospects** (≈ a top-300 board),
+deterministic from the world seed. We deliberately do *not* model all ~3000 national recruits:
+storing them would bloat the save, and only the contested ones create gameplay. Each prospect
+is lean: `{ id, fn, ln, pos, st (home state), stars, ov, pot, spd,str,awr, scout, prefs, iv,
+committedTo, signed, offered, visited, promise }`. `iv` is interest **keyed by suitor team id**
+(only a handful of suitors per prospect — 5★ draw ~6 blue-bloods, 3★ draw ~3 incl. mid-majors),
+so it stays small. Star mix ≈ a handful of 5★, ~70 4★, the rest 3★.
+
+A team's class is `pool.filter(r => r.committedTo === id)`. **Class score** = Σ landed-prospect
+value **+ a prestige baseline** (the ~20 two-/three-star signees every program lands that we
+don't simulate). The baseline keeps rankings realistic (blue-bloods who whiff on a few
+blue-chips still rank well; small schools aren't all tied at zero) without storing the long
+tail. The Class view shows your named blue-chip commits + a "+N projected 2–3★ depth" line.
+
+### Fog (scouting), reusing the Phase 3 pattern
+A prospect's true `ov/pot` is hidden behind the same fuzzy-ceiling read as players, but the
+uncertainty is driven by **your `rec.scout` confidence** (0→100) instead of age/class. Spending
+a **Scout** action sharpens the band; **prefs** (what the recruit values) start hidden and are
+revealed once scouted past a threshold. `recScouted(rec)` returns the banded tier; the
+**Analyst** history shrinks the band faster / scouts cheaper.
+
+### Weekly economy + the five actions
+You get a **weekly points** allotment (`weeklyPoints()` — base + coach mods + prestige), spent
+on board prospects. Use-it-or-mostly-lose-it each week to force engagement. Actions:
+- **Offer** (free, once) — enter the race: adds you as a suitor with a fit-based starting
+  interest (low if you're a poor fit chasing a 5★). Gated by **board slots**.
+- **Scout** — +scouting confidence (shrinks the ceiling fog, reveals prefs).
+- **Pitch (angle)** — pick an angle (Playing Time / NIL / Winning / Development / Home /
+  Academics); interest gain scales with how well the angle matches the recruit's top pref ×
+  coach mods. The core skill action.
+- **Visit** — big interest boost; **game-day visits** (a home game that week) boost more. Once.
+- **Promise** (e.g. immediate playing time) — largest boost, but records an **obligation** on
+  the signee for Phase 5 to honor/break. Once.
+
+### AI competition + commitment (`advanceRecruiting`)
+Each `advanceWeek`, after the games resolve: every suitor's interest in each uncommitted
+prospect grows by a **fit-based weekly increment + jitter** (the player team is treated like any
+suitor for *passive* growth — your actions are the lever on top). Then commitments resolve: a
+prospect commits to its **leading suitor** when `lead ≥ COMMIT_THRESH`, the lead margin over
+2nd `≥ LEAD_GAP`, and a **readiness ramp** roll passes (readiness rises over the season; higher
+stars are more patient and commit later). On the **final week** every still-uncommitted
+prospect signs with its current leader (or stays unsigned if no real suitor). Seeded per
+`(seed, week)` so a cycle is reproducible. Landing = a prospect commits to *you*.
+
+### Coach identity, finally wired (`coachMods(coach)`)
+Returns multipliers/bonuses used throughout: **Recruiter** (headline) → more points, more board
+slots, stronger interest per action; **Motivator** + **Former Player** → visits/pitches convert
+harder (player respect); **Manager** → NIL pitch weight + slight points; **NFL Transplant** →
+higher effective recruiting prestige but fewer board slots (thin network); **High School
+Legend** → strong **home-state** interest bonus (recruits whose `st` == `coach.homeState`);
+**Analyst** → sharper/cheaper scouting, slightly weaker relationship growth. (Offensive/
+Defensive Genius lean Phase-5 development; minor here.) AI teams have no coach identity — their
+fit is prestige-tier match + per-pair seeded pull (team home states don't exist yet, so AI
+geography is abstracted; the player feels geography through `coach.homeState`).
+
+### Save shape
+New top-level `S.recruiting = { cycle, points, pool, board:[recruitId], signed:bool }`. Bumps
+the save to **version 6**; `migrateState` v5→v6 backfills `S.recruiting = null` (recruiting is
+created at kickoff via `initRecruiting`, exactly like the schedule), so old in-progress seasons
+keep working and recruiting simply begins next kickoff.
+
+### Validation
+The pure engine is fenced (`// === RECRUIT ENGINE (Phase 4) START/END ===`) and extracted by
+`test/reclab.js` → **`npm run reclab`** (offline cycle lab): asserts a cycle **converges**
+(nearly all prospects sign by Signing Day), **better programs sign better classes**, the star
+distribution is top-heavy, **a player who actively pushes a target lands more than one who
+idles**, and determinism by seed. `npm run qa` drives the recruiting UI end-to-end (offer →
+pitch → advance → interest grows → a commit lands; Class tab grade; v6 migration + persistence).
+Three gates now: `npm run simlab` + `npm run reclab` + `npm run qa` — all green each phase.
+
+
+## Phase 14 design — recruiting calendar (signing in the offseason)
+
+Decided 2026-06-28 with AJ. The Phase 4 recruiting loop deliberately **signed the class at the end of the
+regular season** because rollover/offseason didn't exist yet — an honest compromise the design called out.
+Now the full offseason structure exists (Phases 5/12), so signing moves where it belongs: the **offseason**,
+in **two periods** (Early Signing Period + National Signing Day), like real college football.
+
+### The new calendar
+A new `S.recruiting.stage`: **`'open'`** (in-season) → **`'national'`** (offseason, after the Early Signing
+Period, Signing Day pending) → **`'closed'`**.
+- **Regular season:** you work the board exactly as before, but a commitment is now a **VERBAL**
+  (`committedTo` set, `signed` stays false). The class no longer closes at the final week — `finishRegular
+  Season` just decides awards + starts the postseason.
+- **Offseason entry (`enterOffseason`, after the bowls/playoff):** the **Early Signing Period** fires
+  automatically — every recruit who already knows where he's going (the verbal commits) signs (`earlySigning
+  Period`). The genuine toss-ups (close two-way races — by definition the ones who *didn't* clear the
+  in-season commit gap) hold off. A final offseason recruiting-points budget is granted for the push window.
+- **National Signing Day** (a distinct offseason advance from Home): `nationalSigningDay` runs the engine's
+  **finalize pass** (`advanceRecruiting(..., finalize=true, bar=30)`) — the contested recruits make their
+  final call (sign with their leader, or go unsigned), every commit becomes binding, and the class **closes**.
+- **Rollover** then enrolls the signed class (unchanged — it reads `committedTo`).
+
+The split lands ~⅓ early / ~⅔ on Signing Day — so **Signing Day keeps real drama**: the undecided battles
+are exactly the ones you can still flip in the push window. (A lift to the in-season commit rate would shift
+more to the Early Period; left as-is on purpose because a meaningful Signing Day is better gameplay.)
+
+### Engine change (kept reclab-green)
+`advanceRecruiting` gained a `finalize` flag (+ optional `signBar`/`gapBar`): in-season passes are
+**verbal-only** (`signed` stays false), and only a finalize pass turns verbals into signatures + force-resolves
+the undecided. `reclab` passes `finalize` on its last week, so the engine's validated convergence is unchanged
+(still 100% signed by Signing Day). The app simply controls **when** the finalize happens (now National
+Signing Day, in the offseason) instead of the regular-season's final week.
+
+### UI & save
+The Home advance button gains a `Hold National Signing Day →` step in the offseason; the recruiting view +
+class tab read the stage (Recruiting points → **Final push** → CLOSED; Verbals → Signed), with an Early-Signing
+recap line and a verbal-vs-signed label on each commit; the on-the-clock card walks Early Signing Period →
+National Signing Day → roll over. Save **v16** (`S.recruiting.stage`); `migrateState` v15→v16 derives a stage
+for any in-progress class (`signed?'closed':'open'`). No new lab (it's a timing/sequencing change validated by
+`qa` end-to-end + the unchanged `reclab`). **Deliberately out of scope (at the time):** no per-recruit
+signing-date calendar — two periods, a push window, and the class closes. *(The "no transfer portal" and
+"no flips of commits" limits here were later reversed — see Phases 16 & 18.)*
+
+---
+
+
+## Phase 16 design — decommits (verbal flips)
+
+Decided 2026-06-28 with AJ (Phases 15–18 batch). Recruiting was static once a prospect committed; now a
+**verbal** pledge is genuinely contestable until it signs — a rival can flip it, and so can you. House
+discipline: the change is contained to the pure RECRUIT ENGINE + validated by `reclab` before any UI.
+
+### Engine (`advanceRecruiting`, RECRUIT ENGINE)
+Two changes, both seeded by the existing `(seed, week)` rng so a cycle stays reproducible:
+- **Passive interest now grows for verbal commits too** (was: uncommitted only). Signed prospects are
+  frozen. So rival programs keep pushing on a kid who's only verballed.
+- **A flip pass** (added between growth and the new-commitment pass) runs **in-season only** — never on a
+  `finalize` pass, because firm verbals lock at the Early Signing Period. For each verbal (unsigned) commit,
+  it finds the strongest *other* suitor (respecting the class cap) and, if that rival leads the committed
+  school by ≥ `REC.DECOMMIT_GAP` (18), flips with a probability that scales with the gap (`clamp((lead−gap)
+  /40, .04, .5)`). A flip retags `committedTo`, fixes the per-team class counts, and stamps a transient
+  `rec._flipped={from,to}`. **Signed players never flip** (that's the transfer portal, Phase 18). Returned
+  in the week's commit list so the app can react.
+
+### App layer
+`offerRecruit` no longer blocks a committed-but-**unsigned** prospect (only a *signed* one) — you can open
+a verbal elsewhere on your board and out-recruit for him. The prospects board lists all unsigned prospects
+(verbals elsewhere included, shown with a "→ ABBR" badge), and the recruit sheet shows a "just a verbal —
+flip him before Signing Day" prompt + enables the action rail on a flippable verbal (`canAct` =
+unsigned-and-not-mine). `resolveRecruitingWeek` toasts the swings: 🎉 new verbals to you, 🔁 flips you stole,
+⚠ verbals you lost.
+
+### Save & validation
+Save **v18** (behaviour-only; `migrateState` v17→v18 is a no-op — `rec._flipped` is recomputed weekly).
+`reclab` grew to 26 (a verbal flips when a rival pulls ahead; a small gap does NOT flip; a signed commit
+never flips; a finalize pass never flips; determinism) and confirms the cycle **still converges to 100%
+signed**. `qa` (199) drives the integrated engine (flip happens / signed-locked / finalize-locked) + the
+relaxed offer. **No new gate** (reclab covers it). **Deliberately out of scope:** no flips of *signed*
+players, no negative-recruiting "decommit" action that directly drops a rival's commit (you flip by
+out-recruiting), no decommit of your *own* signed class.
+
+---
+
+## Phase 17 design — full national recruit board (~3,400)
+
+Decided 2026-06-28 with AJ (Phases 15–18 batch). The Phase 4 board was deliberately **top-300 only** (the
+2–3★ tail faked by a `classScore` prestige baseline + generated filler freshmen at rollover). Phase 17
+reverses that: the **entire national class is individually modeled**, so every program signs a real class
+from a real board.
+
+### Generation (`genRecruits`, RECRUIT ENGINE)
+`REC.POOL=3400` (≈ 134 teams × a ~25-man class). Star mix is top-heavy: ~30 5★, ~350 4★, ~1,520 3★, then a
+new **2★ tier** (~1,500) filling the tail. `ovBase`/`target` extend to 2★ (`recruitFit` + the suitor
+`target` both span the prestige range: 5★→88, 4★→70, 3★→50, 2★→32). Suitor counts widened (every recruit
+draws 4–6 suitors) and the suitor score carries **more noise** (`r()*1.1`) so no tier of programs is wildly
+over- or under-subscribed — each program needs a reachable pool to fill its class. The per-recruit id keying
+for traits/rebel is unchanged. ~90% of the pool signs by Signing Day; the capacity-limited tail backfills as
+walk-ons at rollover (the bottom ~20 programs lean on that, which is realistic).
+
+### Knock-on changes
+- `classScore` drops the faked prestige baseline (kept only as a tiny tiebreaker) — class scores are now the
+  real sum of landed value.
+- `rolloverRoster` gains a **scholarship cap** (`ROSTER_CAP=85`): a full class would otherwise balloon a
+  roster, so it trims the weakest **depth beyond each position's target** (lowest ov first, never a captain)
+  down toward 85. Every position stays ≥ its target (rolllab's depth check holds). `genFreshman` backfill
+  still serves programs that under-sign.
+- **Columnar pool codec:** `RECRUIT_PKEYS` + `encPool`/`decPool` mirror the roster codec; `encodeState`/
+  `decodeState` encode `recruiting.pool` as `_cp` under the existing `_sv` envelope (the transient
+  `_flipped` is dropped). A mid-season save stays ~2.5 MB. Decode reads both the old plain pool and the new
+  `_cp` form (back-compat).
+- **Board UI:** `recruitProspects` gains home-state + availability filters (incl. "verbals — flippable")
+  and **pagination** (Load more, 80/page) so 3,400 rows stay usable; the Class view's old "+N projected
+  depth" line becomes a real "X of 25 class spots filled" note.
+
+### Save & validation
+Save **v19** (no-op migration — pool recreated at kickoff; codec is back-compatible). `reclab` (27) updated
+for the full pool: ~3,400 size, top-heavy mix with a 2★ tail, the cycle converges (≥88% sign), most programs
+land a substantial class (≥100 of 134 fill ≥18), class cap respected. `qa` (200) adds a **columnar
+recruit-pool round-trip** (all ~3,400 recruits byte-exact). **No new gate** (reclab + qa cover it).
+**Deliberately out of scope:** still no sub-2★ / preferred-walk-on individuals (the genFreshman backfill
+stands in for the deepest tail), no JUCO/FCS recruiting, no early-enrollee timing.
+
+---
+
+## Phase 18 design — transfer portal (full two-way)
+
+Decided 2026-06-28 with AJ (Phases 15–18 batch). The last reversed non-goal: players can now move between
+programs in an offseason **transfer portal** — you lose your own, you sign others', and the AI churns.
+House discipline: a pure fenced engine + node lab before UI, a save bump, all gates green.
+
+### Timing
+The portal opens **after National Signing Day**, before rollover (`nationalSigningDay` → `openPortal`). The
+Home advance walks: Hold National Signing Day → **Close the transfer portal** → Roll over. `S.portal` is
+created here and nulled at rollover (like the postseason / Championship Week).
+
+### Pure `PORTAL ENGINE` (fenced, lab before UI)
+Depends only on `rng/clamp/hashStr` (no DOM, no S), so `test/portallab.js` validates it offline:
+- `portalLeaveProb(p, opts)` — a player's odds of entering the portal (0..0.8): **buried** depth (`so≥2`)
+  and a **broken playing-time promise** push him out; captains, starters, and **stars on winning teams**
+  stay; `opts.retention` (coach identity) lowers it. Bounded.
+- `portalTarget(tr)`/`portalFit(team, tr)` — a transfer's tier from his overall, and a program's pull:
+  a positional **need** + prestige proximity. (The app passes lightweight team views with a computed
+  needs map, so the engine stays pure.)
+- `advancePortal(pool, teams, seed, finalize)` — a recruiting-like loop: suitors grow interest, transfers
+  commit to their leader; a finalize pass signs every transfer with a real suitor (the rest go unsigned,
+  i.e. leave the modeled league). Deterministic.
+
+### App layer
+- `openPortal` runs `portalLeaveProb` over **every** roster (skipping graduating seniors), removes the
+  leavers into `S.portal.pool` as **Transfers** (a real Player snapshot — keeps yr/age/ov, NOT reset to a
+  freshman — plus `iv` suitors), runs one opening AI round, recomputes ratings/ranks.
+- `pursueTransfer` spends portal points to become a suitor / raise your interest.
+- `closePortal` finalizes, then drops each committed transfer onto his new roster (`fromTransfer:true`);
+  `rolloverSeason`'s **scholarship cap** (Phase 17, trims depth beyond each position's target to ~85)
+  absorbs any net inflow. **Broken-promise departures now flow through the portal** — `resolvePromises` was
+  simplified to just clear obligations (the portal models the exits).
+- Retention: a **Motivator** / **Former Player** coach keeps more of his own players (`portalRetentionMult`).
+
+### UI & save
+A **Portal** view (`renderPortal`: your departures + the available-transfer board with position/availability
+filters + pagination; `pursueTransfer` per row), a Home **portal card**, and **Portal in / Portal out** lines
+in the offseason recap. `renderNav`'s whitelist gains `'portal'`. Save **v20** (`S.portal`, per-player
+`fromTransfer`); `migrateState` v19→v20 backfills `portal:null`. New gate `npm run portallab` (17 checks);
+`qa` (207) drives open → pursue → close → enroll → cleared-at-rollover. **Deliberately out of scope:** no
+in-season portal window, no NIL bidding war / tampering mechanic, no scholarship-count micromanagement beyond
+the roster cap, no coach-to-portal poaching of *signed* recruits.
+
+---
+
+
+## Phase 33 design — recruiting rework (intent queue + scouting facility + AI brain)
+
+Decided 2026-06-29 with AJ. The Phase 4 loop applied recruiting actions **immediately** (click pitch →
+interest jumps now) and the AI only did **flat passive growth** on every suitor. AJ's reframe: each week you
+have a points budget from your **scouting facilities**, you **set an intended action** on a recruit (one per
+recruit/week, barring a special), and at the **week change** the game calculates **all** the actions toward
+that recruit — yours *and* every AI program's — and recomputes his interest, so the resolution sees the whole
+competitive picture at once. Two forks settled up front: points are driven by a **new `fac.scouting`
+facility** (not prestige), and the AI takes **discrete weekly actions** (a real recruiting brain), not just
+passive growth.
+
+### The hard constraints (what could NOT move)
+The fenced `RECRUIT ENGINE` is lab-validated (`reclab`) for **convergence** (~92% sign by Signing Day), a
+**class cap**, **prestige sensitivity**, **decommits**, and **determinism**. The rework had to preserve all
+of that. So the engine change is **additive**: passive growth stays exactly as-is (the convergence machinery
+is untouched), and the AI brain layers a *concentrated* push on top. The player's actions stay in the **app**
+(reusing the existing tuned pitch/visit/promise/alumni/scout effect math) and are applied to `iv` **before**
+the engine runs each week, so the engine only had to learn (a) AI discrete actions and (b) to skip the
+human's team.
+
+### The scouting facility (drives the budget — both sides)
+- New `fac.scouting` (1–10) — generated in `genWorld` scaled by prestige (like stadium/strength), upgradable
+  via the existing `facilityUpgradeCost`/`applyFacilityUpgrade` path (`FAC_BASE.scouting`), shown on the
+  Program facility list + the team-browser, in the import schema/template, and backfilled by the v29→v30
+  migration (`clamp(round(prestige/11),1,10)`).
+- `weeklyPoints()` = `max(4, round(REC.BASE_POINTS + scouting*1.6 + coachMods.points))` — scouting-dominant,
+  the prestige term **removed**, the coach-archetype term kept so **Recruiter** still matters. `REC.BASE_POINTS`
+  dropped 12→6 so scouting carries the budget.
+
+### The intent queue (player side — app layer)
+- `S.recruiting.intents = { [recruitId]: { action, angle?/legendId?, cost, gain?/scoutDelta?, label } }`.
+- `setRecIntent(rec, action, opt)` validates (on board, not signed/committed-to-you, once-flags for
+  visit/promise/alumni), **reserves** the point cost up front, and **captures the full effect at set-time**
+  (so the **game-day visit bonus** + coach mods are locked in even though the game is played before the week
+  resolves). A second action on the same recruit **replaces** the first (refund-then-charge). `clearRecIntent`
+  refunds. `RECRUIT_COSTS` unchanged (scout 2 / pitch 3 / visit 5 / promise 4 / alumni 4; offer is still a
+  free board slot).
+- `applyPlayerIntents()` lands every queued intent (bump interest / sharpen scouting / set the once-flag /
+  spend a legend appearance), then clears the queue. Called at the in-season week change (`resolveRecruitingWeek`,
+  before `advanceRecruiting`) **and** at National Signing Day (before the finalize pass), so a final-push intent
+  still counts. The Early Signing Period clears the queue when it grants the push budget.
+
+### The AI recruiting brain (engine — `advanceRecruiting`)
+`advanceRecruiting(... , playerTeamId)` — after passive growth, a new **1.5) concentrated-effort** pass (only
+when `!finalize`): bucket the pool by suitor (skipping `playerTeamId`), then for each AI team spend an
+`aiBudget(team)` (`REC.AI_BASE + scouting*REC.AI_PER`, `REC.AI_COST` per action; fac-less lab teams default to
+5) on its highest-`aiPriority` targets (`fit*12 + traction*0.12 + need`), each a deterministic `aiActionGain`
+push. It chases the **uncommitted + rivals' flippable verbals** (never its own verbal — passive growth defends
+those). The AI is a literal **no-op on the finalize pass and on the player's team**, so the validated envelope
+(convergence/cap/decommit) holds; a limited budget spread thinly across a big board keeps it from
+over-committing (the decommit "small gap doesn't flip" scenario still holds because each AI team only acts on a
+few recruits/week).
+
+### UI
+The recruit-sheet action rail now **sets/replaces a queued intent** instead of applying immediately (the
+selected action is highlighted with a ✓; pitch/alumni still open their angle/legend picker, which queues). A
+**"This week's plan"** card (`planCard`) on the recruiting view lists every queued action + the points reserved,
+each with a clear (✕) button; the board row shows a **⏳ <action>** chip; the Home recruiting card shows a
+**⏳ N queued** count.
+
+### The scouting payoff + AI scout action
+Scouting was the player's fog-clearer only, so the AI had no reason to scout. To make the AI scout action
+*mean* something, scouting now has a **recruiting-effectiveness payoff for everyone**: `recScoutMult(rec) =
+1 + 0.3 × scout/100` (×1.0 unscouted → ×1.3 fully scouted — **pure upside**, so the scout=0 baseline is
+byte-identical to the pre-payoff envelope) multiplies the interest gain of an action — folded into the
+player's queued pitch/visit/promise/alumni gains (captured at set-time) **and** the AI's `aiActionGain`. So
+both sides have a real **scout-then-pitch tempo** choice (evaluate first → land harder, vs. spam pitches now).
+The **AI brain** spends a minority of its weekly budget scouting (`REC.AI_SCOUT_P` of its under-evaluated
+targets get a `REC.AI_SCOUT_GAIN` bump toward `REC.AI_SCOUT_TGT`, the rest pitch) — raising the **shared**
+`rec.scout`. Because many suitors chase the same blue-chips, **5★/top recruits get well-evaluated** by the
+field (the player gets free intel on them, and his fogged read sharpens), while the **deep 2★/3★ tail stays
+foggy** (the player keeps his scouting edge there — that's where scouting your own targets pays). Tuned so the
+budget stays mostly on pitches (a strong-scouting program still out-recruits a weak one **16→8** head-to-head)
+and convergence holds (~90% signed). No new save field — `rec.scout` already exists.
+
+### Save & validation
+Save **v30** (per-team `fac.scouting`, `S.recruiting.intents`; `migrateState` v29→v30 backfills the scouting
+level from prestige + an empty intent queue). `reclab` → 35 (the AI concentrated effort + scout actions don't
+break convergence/cap/decommits; a **better-scouting program out-recruits an equal-prestige rival** 16→8 of 24
+head-to-head; the AI weekly budget scales with the facility; the AI scout action concentrates on blue-chips +
+is bounded + deterministic; the `recScoutMult` payoff is monotonic upside). `qa` → 257 (scouting drives the
+budget; setting Scout queues + reserves; a later action replaces it — one per recruit/week; resolving applies
+the queued action and clears the queue; the full season cycle still ends in verbals; the AI scout action
+evaluates blue-chips over a season). **Fifteen gates** (Phase 33 extends `reclab` + `qa`).
+
+### Deliberately out of scope (v1)
+The **"use a special to take two actions on one recruit"** perk (AJ's parenthetical) is deferred — v1 is a
+strict one-intent-per-recruit. The AI's pitch math doesn't model specific pitch *angles* (the player's does),
+and there's no per-recruit signing calendar beyond the existing Early/National periods.
+
+---
+
+## Phase 34 design — recruiting legibility (the weekly board report)
+
+Decided 2026-06-30 with AJ — the first of the "improve recruiting week to week" ideas. Phase 33's loop was
+mechanically complete (queue intents → resolve with the AI brain → commits/flips) but **informationally
+flat**: every week you poked interest numbers and waited. The highest value-per-effort fix is **legibility** —
+surface *what moved and why* each week so the player can read a developing story and react, which also makes
+the AI brain + scouting work you can already feel. Envelope-safe by construction: it's pure surfacing of data
+the resolution already produces (no change to `iv`/commit math, no rng).
+
+### The pure read (`recruitReaction`, in the RECRUIT ENGINE block)
+`recruitReaction(c)` — depends only on the diff context `c` the app computes (no rng, no DOM, no `S`), returns
+`{text, tone}` with `tone ∈ 'good'|'bad'|'warn'|'neutral'`. A **headline ladder** puts the urgent/decisive
+events first so the one line you see is the one that matters: (1) committed to you / flipped to you → good;
+(2) decommitted/flipped away → bad; (3) a **rival surging ahead** (`rivalDelta ≥ 10 && rivalLeads && myDelta <
+rivalDelta`) → warn ("⚠️ Cooling — ABC is pushing hard"); (4) **your action's result** keyed on `prefMatch`
+(pitch on his top priority that moved him → "🔥 Loved your NIL pitch — exactly what he wants"; off-priority →
+"didn't move the needle — not his priority"; visit/promise/alumni/scout each get their own line); (5) drift if
+you didn't act (climbed to #1 / slipped a spot / trending up / quiet week). `reclab` validates the ladder
+(tones correct per scenario, decisive events outrank a same-week action, always returns text + a known tone).
+
+### The app diff (`recruitPreSnaps` + `buildRecruitReport`, in `resolveRecruitingWeek`)
+- `recruitPreSnaps()` — **before** resolution, snapshot each board recruit: my interest, my rank, a **copy of
+  the full suitor `iv` map**, my committed-to-me flag, and my queued intent (action + angle). Captured before
+  `applyPlayerIntents` clears the queue.
+- After `advanceRecruiting`, `buildRecruitReport(snaps, week)` diffs each board recruit against the resolved
+  state: my interest Δ, rank change, the **biggest rival mover** (max `iv` gain among other suitors + whether
+  he now leads), and commit/flip state (`committedMine`/`flippedAway` from the snapshot, `flippedToMe` from the
+  transient `rec._flipped`). It calls `recruitReaction`, keeps only **notable** rows (you acted, or a
+  commit/flip/rival-surge/big-Δ), sorts by urgency (commits/flips → cooling → good → neutral; then star, then
+  |Δ|), and stores the top 10 on `S.recruiting.report = {week, reactions:[{id,name,pos,stars,text,tone,myDelta}]}`.
+
+### UI
+A **"Last week's board report"** card (`reportCard`) on the recruiting view, placed **above** the plan card
+(read what happened → then set this week's plan): each row is a recruit + a tone-colored reaction line + your
+interest Δ (green/red), and opens the recruit sheet. The Home recruiting card gets a one-line **teaser** of the
+top reaction. Hidden once the class closes.
+
+### Save & validation
+**No save bump** — `S.recruiting.report` is transient (rebuilt every in-season week, absent-safe, and
+`S.recruiting` is recreated at kickoff), so there's nothing to migrate. `reclab` → 44 (the reaction ladder +
+robustness), `qa` → 259 (a weekly report with readable reactions is generated over a full season; the report
+card renders on the recruiting view). **Fifteen gates** (Phase 34 extends `reclab` + `qa`).
+
+### Deliberately out of scope (this pass)
+Legibility only — no new *mechanics*. The national blue-chip commit news stays in the Phase 19 media feed (this
+report is **your board**, not the country). The other "week to week" ideas — **season results rippling into
+weekly recruiting** + **commitment-date windows** (drama), **weekly action scarcity** (capped official visits,
+the double-down special, diminishing returns), and **interest decay-on-neglect** — are separate follow-ups, not
+part of this pass.
+
+---
+
+## Phase 35 design — week-to-week recruiting depth (drama + scarcity + upkeep)
+
+Decided 2026-06-30 with AJ — "implement all of your week-to-week recruiting ideas." The four remaining items
+from the Phase 34 list, built as one batch. The governing constraint (as always): the fenced RECRUIT ENGINE is
+`reclab`-validated for convergence/cap/decommits, so anything that could move those is either **player-only**
+(the AI/league dynamics are untouched) or **envelope-neutral by construction**.
+
+### (1) Season ripple — your Saturday matters to recruits
+Pure `gameRecruitVibe(my,opp,myRank,oppRank)` (in the RECRUIT block): a signed interest nudge from the
+controlled team's result — a **ranked statement win** is the biggest boost, a **blowout loss** stings, bounded
+to [−6, +9]. The app (`applyGameRipple`, in `resolveRecruitingWeek` after the game is simmed) reads the
+controlled team's game that week and applies the vibe to **your board's** interest, scaled by proximity
+(**in-state recruits feel it ~2× the out-of-state**). Player-only (only `rec.iv[me]` moves), so the league
+envelope is untouched. Surfaced as a one-line **note** on the weekly report ("📈 Your win over ABC energized
+your board").
+
+### (2) Commitment windows — a decision date, with one last push
+In the fenced commit pass: when a **blue-chip (4★+)** first passes the readiness/threshold/roll to commit
+(mid-season), instead of committing he **announces a decision a week out** (`rec.decideWeek = week+1`). When the
+window elapses (`week ≥ decideWeek`, checked *before* the threshold gate so a cooled recruit still decides) he
+**commits to whoever LEADS then** — so a rival or the player can flip the race during the window. The finalize
+(Signing Day) pass commits any pending window immediately. Envelope-neutral: it only **delays/announces** a
+commit the engine would have made, consuming no extra rng (the commit roll already happened), and the **2★/3★
+tail never windows** — so `reclab` convergence holds (~90%). The report calls it out ("🗓️ Announced his
+decision — commits Week N (you lead!)"), and the board row + recruit sheet show the date.
+
+### (3) Weekly scarcity — the choice is now a tradeoff
+The intent queue (`S.recruiting.intents[recId]`) became an **array of ≤2 actions**:
+- **Double-down** (`R.doubles`, granted weekly, +1 for a **Recruiter**) — a token that lets you stack a **2nd
+  action** on one recruit (e.g. scout *and* pitch the same week). Without a token, a 2nd action **replaces** the
+  first (the old one-per-recruit rule). `setRecIntent` is now a **toggle** (clicking a queued action removes it,
+  refunding points + the token if it was the stacked 2nd).
+- **Official-visit cap** (`visitCap`, 1 / 2 for a Recruiter) — you can only host so many visits per week across
+  the whole board, so you choose *who* to bring in (NCAA-realistic), independent of points.
+- **Diminishing returns** (`repeatFalloff(n)`, pure) — repeating the **same pitch** on a recruit pays less each
+  time (tracked on `rec.hits`), so varying your approach beats spamming one angle.
+
+### (4) Decay-on-neglect — relationships need upkeep
+`decayNeglect(actedOn)` (app, player-only): a board recruit you **didn't work that week** cools on you a little
+(`REC.NEGLECT_DECAY`, roughly cancelling a week's passive growth, so a neglected target stagnates while active
+rivals climb). Skips recruits committed elsewhere (not your relationship to keep), but **your own verbals decay
+too** — neglect one and a rival can flip him (pairs with the Phase 16 decommit logic). Player-only, so the
+engine envelope is untouched.
+
+### Save & validation
+Save **v31** — `S.recruiting.intents` values are now arrays + `S.recruiting.doubles`; sparse `rec.decideWeek`
+and `rec.hits` ride in the columnar pool's per-recruit side-object (auto-persisted, no codec change).
+`migrateState` v30→v31 converts any old single-object intents to arrays + backfills `doubles`. `reclab` → 53
+(windows announce + resolve + still converge, tail never windows; `gameRecruitVibe` ordering + bounds;
+`repeatFalloff` monotonic/floored), `qa` → 262 (a double-down stacks a 2nd action; the visit cap holds; decay
+cools a neglected recruit; a commitment window opens over a season). **Fifteen gates** (Phase 35 extends
+`reclab` + `qa`).
+
+### Deliberately out of scope (this batch)
+The AI doesn't schedule visits or react to its *own* results (its weekly effort is still the Phase 33 budget +
+the Phase 33 scout action). No top-N **finalist list** per recruit, no NIL bidding, no per-recruit official-
+visit *calendar* beyond the weekly cap. These are the obvious next polish if the loop proves fun. *(The first
+three landed in Phase 36 below.)*
+
+---
+
+## Phase 36 design — AI recruiting depth + finalist lists
+
+Decided 2026-06-30 with AJ — the polish phase from the Phase 35 note: make the AI match the player's new depth
+(it should schedule visits + react to its results), and add the headline drama the player's loop was missing —
+a recruit **narrowing to a finalist shortlist**. Same constraint: the fenced RECRUIT ENGINE is `reclab`-validated
+for convergence, so every change is envelope-safe.
+
+### Finalists (the headline)
+`rec.finalists` — a shortlist of his top suitors. The new **pass 0** in `advanceRecruiting`: an uncommitted
+recruit who has **matured** (`readiness ≥ REC.FINAL_READY` *and* his lead interest ≥ `REC.FINAL_BAR`, with more
+suitors than the cut size) narrows to his **top `REC.FINALISTS`(4)** by interest, set once. A pure
+`isFinalist(rec,tid)` then gates **every later pass** — growth, the AI brain, decommits, and commitment — so a
+**cut suitor freezes** (no growth) and **cannot win or flip** him. The catch that preserves convergence: the
+**finalize (Signing Day) pass ignores the shortlist** (`last || isFinalist`), so a recruit whose finalists all
+stagnated still signs with his best available suitor instead of going unsigned — freezing the field mid-season
+was dropping ~8% of signings until this. App/UI: being **cut** blocks `offerRecruit`/`setRecIntent` **in the open
+race only** (a committed-elsewhere verbal is still chaseable — the Phase 16 flip path, which the engine already
+restricts to finalists); the report emits "✅ Made his top 4" / "✂️ Cut from his finalists"; the board row shows a
+🎯/✂️ chip and the sheet a finalists card.
+
+### AI visits (matching the player)
+In the AI brain loop: with probability `REC.AI_VISIT_P`, a team makes a big **concentrated push** on its **top
+target** — two actions' budget for ~**2.2×** a normal pitch's gain (a well-scouted target only). It's a visible
+interest spike that mirrors the player's official visit and reads in his report as a rival "pushing hard."
+Budget-bounded (it's concentration, not extra interest), so convergence is unchanged.
+
+### AI momentum (reacting to its results)
+`aiBudget(team)` gains a **season-record** multiplier from `team.rec` — a hot program (high win%) recruits with a
+bigger weekly budget, a cold one with less — **centered at .500, bounded to ±20%**, and **guarded** (`if(team.rec
+&& games≥3)`), so the rec-less synthetic teams in `reclab` are unaffected and the validated convergence cycle is
+byte-identical. So the AI "reacts to its results" at the season level (a hot team is a hot recruiter), available
+in-engine without needing per-game data.
+
+### Save & validation
+Save **v32** — `rec.finalists` rides sparsely in the columnar pool side-object (auto-persist, no codec change);
+`migrateState` v31→v32 is a structural no-op (absent = no shortlist yet; momentum/visits are derived). `reclab`
+→ 60 (finalists narrow to a shortlist + cut suitors freeze + a meaningful share get one + the cycle still
+converges ~91%; the AI visit produces an outsized single-week push; `aiBudget` momentum responds to the record
+and is neutral for rec-less teams), `qa` → 264 (recruits narrow to a shortlist over a season; a cut recruit
+can't be offered/worked). **Fifteen gates** (Phase 36 extends `reclab` + `qa`). Tuning that mattered: freezing
+cut suitors dropped convergence 90→82% until the finalize pass was made to **ignore the shortlist**; settled on
+`FINALISTS=4` / `FINAL_BAR=58` / `FINAL_READY=0.55` → 91%.
+
+### Deliberately out of scope (this phase)
+The AI still doesn't react to *individual* game results the way the player's `applyGameRipple` does (its momentum
+is season-record-level, to avoid a per-game league-wide ripple the lab can't validate). No **NIL bidding**, no
+**official-visit calendar** beyond the weekly cap, no recruit **re-opening** a closed shortlist. *(The first
+three landed in Phase 37 below.)*
+
+---
+
+## Phase 37 design — recruiting polish (AI ripple · NIL bidding · visit calendar)
+
+Decided 2026-06-30 with AJ — the three loose ends noted at the end of Phase 36, closing the recruiting-depth
+thread (Phases 33–37). All three are **app-layer**: the fenced RECRUIT ENGINE + `reclab` envelope are untouched
+(the only engine addition is the pure `nilGain` helper), so the validated convergence cycle is byte-identical.
+
+### (1) AI reacts to individual game results — league-wide ripple
+The player's Phase 35 `applyGameRipple` is generalized to **`applyLeagueRipple(week)`**: it computes every team's
+`gameRecruitVibe` for the week and nudges the interest of the recruits each team is chasing (in-state most,
+respecting finalists, skipping recruits committed elsewhere). It returns the **player's** note for the weekly
+report. The asymmetry that keeps convergence: a **win energizes** every team's board, but a **loss only cools the
+PLAYER's** board (his drama) — the **league-wide AI ripple is positive-only** and **skips marginal (<30) suitor
+relationships**, so it never compounds negatively across the league and pushes the long tail below the
+Signing-Day bar. Kept light (a board nudge, not a deciding factor).
+
+### (2) NIL bidding — a money lever (ties to the finances loop)
+A new **`nil`** action that pays from **`team.budget`** (not recruiting points): `NIL_TIERS`
+(Modest $0.6M / Strong $1.8M / Blockbuster $4.5M) → interest via the pure **`nilGain(amountM, nilWeight)`**
+(a saturating money curve), where `nilWeight` = how much the recruit values NIL (`nilWeightOf`: top priority →
+1.5, secondary → 1.0, else 0.45) and the program's **NIL collective** amplifies (`nilFacMult` off `fac.nil`). It
+rides in the Phase 35 intent array (reserve on set, refund on clear via `it.nilSpend`; a 2nd action still needs a
+double-down). **AI programs bid too** (`applyAINil`, app-layer, in `resolveRecruitingWeek`): the strongest
+non-player suitor of a NIL-valuing recruit spends a small, bounded slice of its budget (rich collectives bid
+more), so the player must **out-bid rivals** on NIL kids — and it's reclab-safe (lab teams have no budget → it's
+a no-op). UI: a 💰 **NIL offer** button + a tier picker showing your budget, collective level, and the est. boost.
+
+### (3) Official-visit calendar — a season visit budget
+`S.recruiting.visitsLeft` (`SEASON_VISITS`=12), decremented when a **visit resolves** (`applyPlayerIntents`), on
+top of the existing weekly `visitCap` — so official visits are a resource you ration across the whole cycle, not
+just per week. The action rail + plan card show **weekly and season** remaining; a visit is blocked when either
+is exhausted. Granted fresh at kickoff (recruiting is recreated each cycle), backfilled by migration for in-flight
+saves.
+
+### Save & validation
+Save **v33** — `S.recruiting.visitsLeft` (migration v32→v33 backfills it) + the NIL `nilSpend` field on intents
+(absent-safe). `reclab` → 63 (the pure `nilGain`: monotonic in $, lands harder on a NIL-valuing recruit,
+saturates at a huge bid). `qa` → 267 (a NIL bid reserves budget + raises interest; the season-visit budget spends
+down; a team's game result ripples to the board it recruits). **Fifteen gates** (Phase 37 extends `reclab` +
+`qa`). Tuning note: the league ripple + NIL wars make recruiting **more contested** (more recruits stay in play
+to Signing Day), so the full-pool sign rate settles **~80%** — the larger uncommitted tail backfills as walk-ons
+at rollover, exactly as the capacity-limited pool always has. The cycle's "aggressive push lands the target" qa
+check was re-pointed at a recruit the program **fits** (a 3★ it already recruits) and now accepts "you lead him
+into Signing Day," since the supercharged winning rivals can keep a *poached* 4★ contested all the way to NSD.
+
+### Deliberately out of scope
+No in-engine NIL **economy** (collective fundraising/management, a per-recruit bidding *war* resolved at NSD) —
+NIL here is a money→interest lever, not an auction. The AI's per-game ripple is positive-only by design (the
+negative side is a player-only feel). *(The "no official-visit weekend scheduler" limit here was reversed in
+Phase 38 below.)*
+
+---
+
+## Phase 38 design — official-visit weekend scheduler
+
+Decided 2026-06-30 with AJ — the deferred Phase 37 loose end. Official visits move from an abstract
+**season count** (`visitsLeft`, 12) + a per-week **intent** (with a flat ×1.5 if you happened to host a home
+game) to a real **calendar**: home-game weekends are the visit slots, and a marquee weekend is worth planning
+around. AJ's three scoping calls: the scheduler **replaces** the per-week visit action; visits are **home-
+weekends only** (the stadium-atmosphere hook); a weekend's boost scales with **opponent quality + my form +
+rivalry/marquee** (no rivalry data in `TEAMS`, so "marquee" is rank-based — both teams ranked). House
+discipline: a pure fenced engine + node lab before UI, a save bump, all gates green.
+
+### Pure `VISIT ENGINE` (fenced, lab before UI)
+`// === VISIT ENGINE (Phase 38) START/END ===` (depends only on `clamp` — no rng/DOM/S, so `test/visitlab.js`
+extracts + evals it like camplab):
+- `weekendQuality({myRank, oppRank, oppPrestige})` → a multiplier **centered ≈ 1.0**, bounded **[0.6, 1.7]**:
+  base 1.0 + opponent **stage** (`rankPull(oppRank)` up to +0.45 at #1, fading out past ~25; + an `oppPrestige`
+  term ±0.15 around ~60) + my **form** (`rankPull(myRank)` up to +0.2) + a **marquee** bump (+0.25 when both
+  teams are top-15). The neutral case (unranked opp, mid prestige, unranked me) is exactly 1.0, and the **mean
+  over a representative home slate ≈ 1.0** — so it *replaces* the old flat ×1.5 game-day bonus without moving
+  the visit-interest envelope (lab-asserted, not hand-waved).
+- `weekendTier(q)` → `VISIT_TIERS` (Quiet · Solid · Big · Marquee) for the UI.
+The interest gain itself stays app-side: `20 × weekendQuality × m.visit × recScoutMult × homeStateBonus` — a
+marquee weekend (~1.6) ≈ 32 vs a quiet home game (~0.8) ≈ 16, a real spread.
+
+### App layer
+- `S.recruiting.visitPlan = {week:[recruitId]}` — recruits booked per home weekend; `visitsLeft` (the season
+  budget, still 12) is **reserved at booking** and refunded on unbooking (the points-reservation pattern).
+- `homeWeekends()` / `weekendInfo(week)` (live quality/tier/slots) / `weekendCap()` (per-weekend host cap — 2,
+  or 3 for a Recruiter; the repurposed `visitCap`) / `bookVisit`/`unbookVisit`/`canBookVisit`.
+- `applyWeekendVisits(week)` — in `resolveRecruitingWeek` (the existing week-change resolver): boosts each
+  booked recruit by the gain above, sets `visited`, bumps `rec.hits.visit`, clears `visitPlan[week]`, and
+  returns a one-line note woven into the weekly board report (the per-recruit interest jump also shows as the
+  report's `myDelta`). A booked recruit is added to `actedOn` so the Phase 35 neglect-decay skips him.
+- The **old visit path is removed**: `'visit'` dropped from `RECRUIT_COSTS`; the `visit` branch deleted from
+  `buildIntent`/`applyPlayerIntents`/`setRecIntent`; `isGameDayVisit`/`queuedVisits` removed.
+- **AI is unchanged** — AI "visits" stay the engine's Phase 36 concentrated push (no AI weekend calendar), so
+  the fenced engine + `reclab` envelope are untouched.
+
+### UI
+A new recruiting **Visits** tab (`recruitVisits`): a header (visits-left + per-weekend cap), then one card per
+upcoming home weekend — week + "vs OPP", a colored **tier badge** + the multiplier, booked recruits (removable),
+and "+ Book a recruit" → a per-weekend picker (`visitBookSheet`). The recruit sheet's old Visit button becomes
+**"🏟️ Schedule visit"** → a weekend-picker (`visitSheet`, each option showing tier + est. boost + slots). Visit
+counts surface on the plan card + the Home recruiting card.
+
+### Save & validation
+Save **v34** (`S.recruiting.visitPlan`; `migrateState` v33→v34 backfills `{}` — recruiting is recreated at
+kickoff, so this only patches an in-flight in-season save). `visitPlan` rides plainly on `S.recruiting` (only
+`recruiting.pool` is columnar), so it round-trips with no codec change. New gate **`npm run visitlab`** (20
+checks: quality monotonic in opponent/prestige/form, marquee needs both top-15, bounded across a grid,
+neutral≈1.0, **mean over a representative slate≈1.0**, tier ladder ordered, `rankPull` saturation, determinism +
+no input mutation). `qa` → **273** (book onto a home weekend with the cap held, a season slot reserved, a non-
+home week blocked, a weekend has a tier, resolving raises interest + marks visited + clears the plan, an
+exhausted budget blocks booking, the Visits tab renders, v34 migration + a `visitPlan` codec round-trip).
+**Sixteen gates** now (adds `visitlab`).
+
+### Deliberately out of scope
+No **AI weekend calendar** (AI visits stay the Phase 36 concentrated push); no off-season/road/bye visits (home
+weekends only); no dated multi-day visit *slots* (a weekend hosts up to `weekendCap` recruits, not timed).
+
+---
+
+
+## Planned: non-conference series scheduling (Phase 8)
+
+Players (and AI schools) book the **non-conference** part of the schedule by agreeing to
+series with other programs. Either side can initiate — an AI school offers you, or you offer
+one. Conference games stay auto-assigned; only non-conf openings are player-fillable.
+
+**Why it waited (now Phase 8):** a series is inherently multi-year (a home-and-home is two games
+across two seasons), so it depends on **season rollover** — which now exists (Phase 5), unblocking
+it. Deferring kept the data model honest instead of faking single-season "series." It also pairs
+naturally with the **buy-game payout** (real money out of `budget`), so it benefits from the
+Phase 6 finances loop landing first. Decided 2026-06-27; re-slotted to Phase 8 on 2026-06-28.
+
+Series types to support:
+- **Home-and-home** — two games, alternating hosts, across two seasons.
+- **2-for-1** — bigger school hosts twice, smaller once (three games / three seasons).
+- **Neutral-site / kickoff** — one-off at a neutral venue (e.g. a season-opening showcase).
+- **Guarantee / buy game** — pay a smaller school a payout to visit for one game; ties into
+  the finances system (the guarantee is real money out of `budget`).
+
+**Data model (sketch):** a top-level `S.series = [ Series ]`, where a `Series` is a multi-year
+agreement: `{ id, type, a: teamId, b: teamId, legs: [ { year, home, away, neutralSite? } ],
+guarantee? }`. AI willingness to accept keys off prestige proximity, scheduling philosophy,
+and (for buy games) the guarantee offered.
+
+**Contract change this forces on `genSchedule`** (today it auto-fills the *whole* slate):
+generation must become two-phase — (1) seed the matchup graph with **locked** edges
+(this year's series legs + conference games), then (2) auto-fill each team up to ~12 games
+and edge-color locked + filled games into weeks together. Phase 3 work should avoid
+assuming the schedule is fully engine-generated. (`startSeason` will pull each series' leg
+whose `year` matches the season being generated.)
+
