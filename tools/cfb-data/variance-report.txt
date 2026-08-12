@@ -1,0 +1,21 @@
+
+========================================================================================================
+WHERE THE SIM'S VARIANCE COMES FROM — sweeping the per-game `form` term
+========================================================================================================
+  TARGET (real FBS):       SD  13.26   kurt  +0.32   pts/tm  26.9   blowout-upsets/season   5.8   fav loses @10.5-14   9.5%
+
+  form ×0                  SD  13.53   kurt   0.00   pts/tm  23.0   blowout-upsets/season  10.6   fav loses @10.5-14  14.4%
+  form ×2                  SD  14.09   kurt  -0.04   pts/tm  22.9   blowout-upsets/season  13.8   fav loses @10.5-14  14.4%
+  form ×4                  SD  14.69   kurt   0.06   pts/tm  23.1   blowout-upsets/season  14.5   fav loses @10.5-14  16.1%
+  form ×6                  SD  15.41   kurt   0.13   pts/tm  23.1   blowout-upsets/season  15.3   fav loses @10.5-14  14.8%
+  form ×8  (SHIPPING)      SD  16.31   kurt  -0.04   pts/tm  23.3   blowout-upsets/season  17.3   fav loses @10.5-14  19.7%
+  form ×10                 SD  17.58   kurt  -0.04   pts/tm  23.4   blowout-upsets/season  25.2   fav loses @10.5-14  18.5%
+
+  A MIXTURE instead of one Gaussian — calm core + a rare blow-up game:
+  (p = chance a team has a wild day; the draw uses the same 3 uniforms, so no new rng)
+
+  mix p=0.05 wild=22 calm=4 SD  15.97   kurt   0.26   pts/tm  23.2   blowout-upsets/season  18.9   fav loses @10.5-14  16.3%
+  mix p=0.07 wild=20 calm=4 SD  16.43   kurt   0.64   pts/tm  23.3   blowout-upsets/season  18.1   fav loses @10.5-14  15.2%
+  mix p=0.1 wild=18 calm=3.5 SD  16.25   kurt   0.19   pts/tm  23.2   blowout-upsets/season  19.3   fav loses @10.5-14  18.1%
+  mix p=0.12 wild=16 calm=3.5 SD  16.22   kurt   0.17   pts/tm  23.2   blowout-upsets/season  18.5   fav loses @10.5-14  19.2%
+

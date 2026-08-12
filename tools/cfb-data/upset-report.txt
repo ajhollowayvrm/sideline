@@ -1,0 +1,82 @@
+================================================================================================
+A) SHAPE OF THE MISS — favourite-perspective residual (negative = favourite underperformed)
+================================================================================================
+  If real CFB has FAT TAILS, "actual" beats "if normal" at the extremes and the fix is not
+  simply narrowing the sim — it is narrowing the middle while keeping the tail.
+
+  REAL FBS
+    n=3944   mean 2.25   SD 13.26   skew 0.130   excess kurtosis 0.319
+    THRESHOLD                      ACTUAL  IF NORMAL   RATIO
+    favourite misses by 14+ pts        9.53%     11.03%    0.86
+    favourite misses by 21+ pts        3.14%      3.98%    0.79
+    favourite misses by 28+ pts        1.19%      1.13%    1.06
+    favourite misses by 35+ pts        0.46%      0.25%    1.83
+    favourite misses by 42+ pts        0.10%      0.04%    2.39
+    favourite exceeds by 28+ pts       3.04%      2.61%    1.17
+    favourite exceeds by 35+ pts       0.96%      0.68%    1.43
+    favourite exceeds by 42+ pts       0.30%      0.14%    2.24
+
+================================================================================================
+B) HOW OFTEN IS THERE A PURDUE GAME?  — league-wide counts per season
+================================================================================================
+  DEFINITION                            TOTAL  PER SEASON  % OF ALL GAMES
+  favourite by 7+ loses outright          229        45.8           5.81%
+  favourite by 7+ loses by 14+             29         5.8           0.74%
+  favourite by 14+ loses outright          40         8.0           1.01%
+  favourite by 14+ loses by 14+             1         0.2           0.03%
+  favourite by 14+ loses by 21+             0         0.0           0.00%
+  favourite by 21+ loses outright           2         0.4           0.05%
+  favourite by 21+ loses by 14+             0         0.0           0.00%
+
+  The biggest upsets in the sample (by how far the favourite missed):
+    2022 wk13   NMSU 49, LIB   14   (LIB favoured by 13.3, missed by 48.3)
+    2023 wk 1    USF 45, SYR    0   (SYR favoured by 2.7, missed by 47.7)
+    2023 wk 7    FAU 56, USF   14   (USF favoured by 4.3, missed by 46.3)
+    2023 wk11    UCF 45, OKST   3   (OKST favoured by 1.3, missed by 43.3)
+    2022 wk12    HOU 42, ECU    3   (ECU favoured by 2.4, missed by 41.4)
+    2022 wk 9    CLT 56, RICE  23   (RICE favoured by 6.8, missed by 39.8)
+    2021 wk 3    USC 45, WSU   14   (WSU favoured by 7.9, missed by 38.9)
+    2024 wk 7    WIS 42, RUTG   7   (RUTG favoured by 3.6, missed by 38.6)
+    2024 wk12   TULN 35, NAVY   0   (NAVY favoured by 2.5, missed by 37.5)
+    2021 wk12    WYO 44, USU   17   (USU favoured by 10.4, missed by 37.4)
+    2024 wk 1    CCU 55, JVST  27   (JVST favoured by 8.2, missed by 36.2)
+    2022 wk 7    NIU 39, EMU   10   (EMU favoured by 7.0, missed by 36.0)
+
+================================================================================================
+C) THE UPSET CURVE — P(favourite loses) and P(favourite is blown out), by spread
+================================================================================================
+  SPREAD            n |      FAV LOSES  real/sim |     LOSES BY 10+  real/sim |     LOSES BY 17+  real/sim
+  --------------------------------------------------------------------------------------------
+  0–3             731 |            44.7% / 44.1% |              17.1% / 23.9% |               7.3% / 11.5%
+  3–7             906 |            32.3% / 34.1% |               9.1% / 18.2% |               3.0% / 11.1%
+  7–10.5          631 |            21.9% / 26.7% |               5.7% / 11.8% |                2.5% / 3.6%
+  10.5–14         539 |             9.5% / 19.7% |                2.2% / 8.8% |                0.7% / 3.5%
+  14–17.5         425 |              6.4% / 9.3% |                0.5% / 3.3% |                0.0% / 0.5%
+  17.5–24         427 |              2.6% / 7.3% |                0.2% / 3.0% |                0.0% / 1.3%
+  24–31           210 |              1.0% / 1.4% |                0.0% / 0.0% |                0.0% / 0.0%
+  31–+             75 |              0.0% / 0.0% |                0.0% / 0.0% |                0.0% / 0.0%
+
+
+  SIDELINE simEngine
+    n=2010   mean 2.27   SD 16.31   skew 0.012   excess kurtosis -0.036
+    THRESHOLD                      ACTUAL  IF NORMAL   RATIO
+    favourite misses by 14+ pts       15.32%     15.92%    0.96
+    favourite misses by 21+ pts        7.86%      7.68%    1.02
+    favourite misses by 28+ pts        3.43%      3.17%    1.08
+    favourite misses by 35+ pts        1.14%      1.12%    1.03
+    favourite misses by 42+ pts        0.30%      0.33%    0.90
+    favourite exceeds by 28+ pts       5.52%      5.74%    0.96
+    favourite exceeds by 35+ pts       2.64%      2.24%    1.18
+    favourite exceeds by 42+ pts       0.95%      0.74%    1.27
+
+  Real SD 13.26  vs  sim SD 16.31
+  Per-season blowout-upset counts (scaled to a 790-game FBS season):
+  DEFINITION                            REAL/SEASON   SIM/SEASON
+  favourite by 7+ loses outright               45.8         71.5
+  favourite by 7+ loses by 14+                  5.8         17.3
+  favourite by 14+ loses outright               8.0         14.9
+  favourite by 14+ loses by 14+                 0.2          2.8
+  favourite by 14+ loses by 21+                 0.0          0.4
+  favourite by 21+ loses outright               0.4          2.8
+  favourite by 21+ loses by 14+                 0.0          0.4
+

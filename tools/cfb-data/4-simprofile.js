@@ -200,3 +200,30 @@ console.log(`  ${out.all.pts.toFixed(1)} pts, ${out.all.yds.toFixed(0)} yds, ${o
   }));
   console.log(`  residual SD ${sd.toFixed(1)} pts`);
 }
+
+/* favourite-perspective residuals + blowout-upset counts, for 7-upsets.js */
+{
+  const rows = gameRows.map(g => { const favHome = g.exp > 0, spread = Math.abs(g.exp);
+    const favMargin = favHome ? (g.hs - g.as) : (g.as - g.hs);
+    return { resid: favMargin - spread, spread, favMargin }; });
+  const DEFS = [
+    r => r.spread >= 7 && r.favMargin < 0,
+    r => r.spread >= 7 && r.favMargin <= -14,
+    r => r.spread >= 14 && r.favMargin < 0,
+    r => r.spread >= 14 && r.favMargin <= -14,
+    r => r.spread >= 14 && r.favMargin <= -21,
+    r => r.spread >= 21 && r.favMargin < 0,
+    r => r.spread >= 21 && r.favMargin <= -14,
+  ];
+  const BK = [[0, 3], [3, 7], [7, 10.5], [10.5, 14], [14, 17.5], [17.5, 24], [24, 31], [31, 99]];
+  fs.writeFileSync(__dirname + '/simupsets.json', JSON.stringify({
+    n: rows.length,
+    resid: rows.map(r => +r.resid.toFixed(2)),
+    rows: DEFS.map(f => rows.filter(f).length),
+    buckets: BK.map(([lo, hi]) => { const l = rows.filter(r => r.spread >= lo && r.spread < hi);
+      return { lo, hi, n: l.length,
+        lose: l.length ? l.filter(r => r.favMargin < 0).length / l.length * 100 : 0,
+        lose10: l.length ? l.filter(r => r.favMargin <= -10).length / l.length * 100 : 0,
+        lose17: l.length ? l.filter(r => r.favMargin <= -17).length / l.length * 100 : 0 }; }),
+  }));
+}

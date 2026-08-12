@@ -309,6 +309,104 @@ rather than a single-constant fix.
 
 ---
 
+## 6. Blowout upsets — the shape of the tail
+
+§5's "the sim is 23% too random" is true but too blunt to act on: narrowing a Gaussian would also
+flatten the Purdue-over-Ohio-State game, which is a real and load-bearing feature of the sport. So
+the question isn't the *width* of the miss distribution, it's the *shape*. Run
+`tools/cfb-data/7-upsets.js` and `8-variance.js`.
+
+Measured from the favourite's perspective: `residual = (favourite's margin) − (expected margin)`.
+Negative means the favourite underperformed; a big negative is a blowout upset.
+
+### Real college football is thin in the middle and fat at the very end
+
+| Favourite misses by | Actual | If perfectly normal | Ratio |
+|---|--:|--:|--:|
+| 14+ pts | 9.53% | 11.03% | **0.86** |
+| 21+ pts | 3.14% | 3.98% | **0.79** |
+| 28+ pts | 1.19% | 1.13% | 1.06 |
+| 35+ pts | 0.46% | 0.25% | **1.83×** |
+| 42+ pts | 0.10% | 0.04% | **2.39×** |
+
+Real FBS: SD 13.26, skew +0.130, **excess kurtosis +0.319**. College football is *more* predictable
+than a bell curve through the ordinary range and **~2.4× more explosive at the extreme**. That is
+exactly the "on paper the better team, and they got blown out" phenomenon — rare, but far more
+common than a normal distribution allows. The upside mirrors it (+42 or better runs 2.24× normal),
+so it's genuine tail weight, not a one-sided upset effect.
+
+**Sideline is a pure Gaussian: SD 16.31, skew +0.012, excess kurtosis −0.036.** Every tail ratio is
+≈1.0. It has no fat tail at all — just a wide bell.
+
+### The league produces upsets constantly; any one game rarely does
+
+| Definition | Per season, league-wide | % of all games |
+|---|--:|--:|
+| Favourite by 7+ loses outright | **45.8** | 5.81% |
+| Favourite by 7+ loses by 14+ | **5.8** | 0.74% |
+| Favourite by 14+ loses outright | 8.0 | 1.01% |
+| Favourite by 14+ loses by 14+ | 0.2 | 0.03% |
+| Favourite by 21+ loses outright | 0.4 | 0.05% |
+
+Both things are true at once: roughly **four upsets a week** somewhere in the country, and a
+blowout upset about **every other week** — while any individual mid-sized favourite is safe ~90% of
+the time. A season-long career sim needs the league-wide rate to feel alive and the per-game rate to
+feel fair.
+
+### But the sim already over-produces them, by ~3×
+
+| Spread | Fav loses (real / sim) | Loses by 10+ | Loses by 17+ |
+|---|---|---|---|
+| 0–3 | 44.7% / 44.1% | 17.1% / 23.9% | 7.3% / 11.5% |
+| 3–7 | 32.3% / 34.1% | 9.1% / **18.2%** | 3.0% / **11.1%** |
+| 7–10.5 | 21.9% / 26.7% | 5.7% / **11.8%** | 2.5% / 3.6% |
+| 10.5–14 | 9.5% / **19.7%** | 2.2% / **8.8%** | 0.7% / 3.5% |
+| 17.5–24 | 2.6% / **7.3%** | 0.2% / 3.0% | 0.0% / 1.3% |
+
+Toss-ups are right (44.1% vs 44.7%). Everything above a touchdown is roughly **twice** as upset-prone
+as reality, and blowout upsets run **17.3 per season against a real 5.8**. So "keep the blowout
+upsets" and "stay close to the averages" are not in tension — the sim needs **fewer upsets, with a
+weirder tail**, which is a different change from either "more chaos" or "less chaos".
+
+> **Caveat.** Both sides are measured against their own retrodictive rating, which is fit on the
+> games it scores and therefore shrinks residuals. The **3× ratio is sound** (identical method both
+> sides); the absolute "5.8 per season" is a floor — measured against a true pre-game forecast, real
+> blowout upsets are more common than that.
+
+### Where the sim's variance actually lives
+
+Sweeping the per-game `form` term (`(r()+r()+r()-1.5)*8`, shipping value 8):
+
+| `form` multiplier | Residual SD | Kurtosis | Blowout upsets/season | Fav loses @ 10.5–14 |
+|---|--:|--:|--:|--:|
+| **Real target** | **13.26** | **+0.32** | **5.8** | **9.5%** |
+| 0 (form removed) | 13.53 | 0.00 | 10.6 | 14.4% |
+| 4 | 14.69 | +0.06 | 14.5 | 16.1% |
+| 8 (shipping) | 16.31 | −0.04 | 17.3 | 19.7% |
+| 10 | 17.58 | −0.04 | 25.2 | 18.5% |
+
+**Deleting `form` entirely still leaves 10.6 blowout upsets a season and a 14.4% mid-spread upset
+rate.** The excess chaos is in the play-by-play engine, not the hot/cold term — so `form` is the
+wrong knob to reach for first.
+
+The likely mechanical cause ties straight back to §4(b): the sim runs **9.9 drives per team against a
+real 11.8**. Fewer possessions means fewer independent trials per game, and fewer trials means a
+wider spread of outcomes. **Fixing the possession model should tighten the variance for free**, and
+it's already the top item for being 3.6 points light on scoring. That makes the ordering clear:
+
+1. **Fix possessions first** (9.9 → 11.8 drives). Addresses the scoring shortfall *and* should pull
+   SD down mechanically. Re-measure before touching anything else.
+2. **Then trim play-level explosive variance** if SD is still above ~13.3 — the big-play branches
+   (`compDraw*42` on 18% of completions, `compDraw*30` on 11% of runs) are the candidates.
+3. **Then reshape `form` into a mixture** to install the fat tail. A mostly-calm draw with a rare
+   blow-up reproduces the right shape — `p=0.07, wild=20, calm=4` measured **+0.64 kurtosis** vs the
+   real +0.32, at essentially unchanged SD. This is what buys the Purdue game back, deliberately,
+   after the core has been tightened.
+
+Doing (3) before (1) and (2) would just make a too-wide distribution wider.
+
+---
+
 ## Reproducing
 
 ```
@@ -318,6 +416,8 @@ node tools/cfb-data/3-analyze.js                          # real-data tables (se
 node tools/cfb-data/4-simprofile.js                       # run simEngine, same metric set
 node tools/cfb-data/5-compare.js                          # side-by-side
 node tools/cfb-data/6-rankings.js                         # poll vs measured strength (section 5)
+node tools/cfb-data/7-upsets.js                           # blowout-upset rate + tail shape (section 6)
+node tools/cfb-data/8-variance.js                         # where the sim's variance comes from
 ```
 
 Data source is ESPN's public `site.api.espn.com` CFB endpoints. `2-harvest.js` caches to
