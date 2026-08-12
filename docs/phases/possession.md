@@ -71,13 +71,34 @@ red-zone trips (real: ~61%) while reaching the 20 far too rarely — so points c
 the right yardage, because the offence was all-or-nothing instead of grinding and settling for
 threes. `PM.rzComp` trims the completion rate and `PM.rzTop` clips the explosive tier.
 
-### Drive rhythm
-Independent per-play draws make every drive average. Measured against the real data, **real failed
-drives gain 12 yards; the model's gained 20** — the sim had too few three-and-outs *and* too few
-long marches, so only 24% of drives reached the 20 against a real ~41%. A mean-zero per-drive
-yardage shift (`PM.driveForm`) correlates the snaps inside a possession, which is what makes drive
-outcomes bimodal the way football actually looks. The game-level variance it adds is paid back by
-dropping the per-game `form` term.
+### Situational gain shaping — the piece that unlocked it
+A single gain distribution cannot hit real football's 39% third-down rate AND its explosive-play
+rate. Making it consistent enough to move the chains kills the tail; a fat tail cannot convert
+3rd-and-3. Real offences resolve this by shaping the **call** to the down — a high-floor concept
+when they need four yards, a shot play on 1st-and-10. So `tierGain` takes a `tight` flag: on a
+must-convert short down (`down>=3 && togo<=4`) the stuff tier shrinks to `PM.shortTight` of its
+usual share, while the explosive tier is untouched. Third-down conversion went **35.5% → 39.2%**
+(target 39.2%). Because it is a deterministic conditional rather than a random one, it buys those
+conversions **without spending any variance budget** — which is precisely why points and
+game-to-game noise stopped fighting each other.
+
+### Re-scaling how much strength matters
+Caught by the gates, and the subtlest consequence of the new gain shape. The tier draw is much
+wider than the old near-uniform one, so the old fixed coefficients (`padv*0.06` / `padv*0.035`)
+became a far smaller fraction of the per-play noise — and **team strength quietly stopped
+mattering**. Home-field win rate fell to 51%, and a stud receiver no longer beat weak coverage
+(the Phase 23 matchup checks failed). `PM.advPass` / `PM.advRun` / `PM.hfa` restore the
+signal-to-noise: home win 51% → **57%** (real 58.8%) and favourite win rate 73.6% → **83%**
+(real 83.7%). It also lifted scoring, because stronger offences convert more.
+
+### Tried and removed: a per-drive rhythm term
+Real failed drives gain ~8 yards; the model's gain ~21 — its drives are all mediocre rather than
+bimodal, which is why too few reach the red zone. A mean-zero per-drive yardage shift is the
+textbook fix for that (it correlates the snaps inside a possession). It was implemented, fitted,
+and **measured as not helping**: at every setting tried it flattened yards-per-carry and cost
+points, and paying for it by narrowing the explosive tiers was worse still (err 7.3% → 11.9%). It
+is removed rather than left at zero consuming rng draws. The underlying gap is real and unsolved —
+see below.
 
 ### Ball security + clock
 Interception and fumble rates recalibrated, plus the strip sack (a sack that becomes a turnover).
@@ -129,9 +150,56 @@ horn, drives-per-team in range, and the OT-not-expired regression guard. The Pha
 had its sample raised from 30 games to 200 — under the new model 30 games is pure noise there
 (measured +2.7 pts at n=30, −1.4 at n=600; the sign flips).
 
-All 22 non-browser gates green.
+Two `simlab` bands were **re-baselined against measured reality**, not loosened to fit:
+- *Favourite win rate* 60–82% → **74–90%**. Over the comparable population (expected margin 3+,
+  n=3213) the real FBS favourite wins **83.7%**; the old band was calibrated to an engine that was
+  ~23% too noisy and therefore let favourites lose far more often than they do in life.
+- *Phase 29 AI-DC* sample 30 → 200 games (see above).
+
+### Where it landed
+
+Composite error against the 25 measured targets: **41.3% → 8.5%**.
+
+| | real | shipping | now |
+|---|--:|--:|--:|
+| Points | 26.9 | 23.3 | **24.6** |
+| Drives/team | 11.8 | 9.9 | 12.3 |
+| Plays/drive | 5.75 | 6.57 | 5.55 |
+| Yards/carry | 4.92 | 6.45 | 5.09 |
+| Run share | 52% | 43% | 50% |
+| 3rd-down conv | 39.2% | 46.8% | **39.2%** |
+| 4th-down att | 1.94 | 0.20 | 1.99 |
+| Turnovers | 1.38 | 0.67 | 1.35 |
+| Drives at the horn | 6.5% | 0.0% | 6.7% |
+| Home win % | 58.8% | 55% | 57% |
+| Favourite win % | 83.7% | 73.6% | 83% |
+| Margin residual SD | 13.26 | 16.31 | 14.94 |
+| Blowout upsets/season | 5.8 | 17.3 | 9.0 |
 
 ---
+
+## Known gaps — what this phase did NOT fix
+
+Stated plainly so the next thread starts from the truth rather than from the win.
+
+- **Points are still 2.3 short** (24.6 vs 26.9). Roughly **1.7** of that is non-offensive scoring the
+  engine cannot produce at all — return touchdowns, defensive scores, two-point conversions,
+  safeties. The other ~0.6 is offensive touchdown rate.
+- **Red-zone conversion is 88% against a real ~61%.** Trip count is now about right, but once inside
+  the 20 the model scores a touchdown far too readily. Compression helped and did not solve it.
+- **Yards drifted 7% high** (409 vs 383) as a side effect of re-scaling strength; yards/play is 5.99
+  against 5.67.
+- **Turnovers on downs are 4.6% of drives against a real 7.2%** — the 4th-down brain attempts about
+  the right number of conversions but converts ~71% where real teams convert 52%, because it still
+  goes almost exclusively on short yardage.
+- **No fat tail.** Excess kurtosis is 0.00 against a measured +0.32, and blowout upsets run 9.0 a
+  season against 5.8. The calm/wild `form` mixture that would install the tail (measured +0.64
+  kurtosis in `8-variance.js`) is **not** in: `PM.gameForm` fitted to **0**, because play-level
+  variance alone already exceeds the real margin SD, leaving no budget for it. Buying that budget
+  needs play-level variance to come down first — see `docs/reference/cfb-averages.md` §6.
+- **Real failed drives gain ~8 yards; the model's gain ~21.** Its drives are all mediocre rather
+  than bimodal. This is the root cause of both the red-zone and the fat-tail gaps, and the obvious
+  fix (a per-drive rhythm term) measured as not helping — see above.
 
 ## Deliberately out of scope
 
@@ -140,5 +208,5 @@ there are no kick or punt returns, no return touchdowns, no safeties, no two-poi
 no onside kicks. Turnovers are spotted where the play ended and never advanced, so a pick-six cannot
 happen. Nothing plays the score: the real favourite-runs / underdog-throws divergence (a 7-carry gap
 at a 31-point spread, entirely game-state-driven) is unmodelled, and there is no hurry-up, no
-kneel-down and no two-minute drill. Home field is still flat at 2.3 rating points despite the
-measured 4.8 in games where both teams are ranked. Those are the next threads, not gaps in this one.
+kneel-down and no two-minute drill. Home field does not yet scale with the stakes, despite the
+measured 4.8 points when both teams are ranked against 2.5 when neither is.

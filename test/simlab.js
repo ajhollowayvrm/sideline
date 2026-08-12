@@ -465,7 +465,11 @@ check('Avg points/team/game realistic (20–32)', meanPts >= 20 && meanPts <= 32
 check('Scores span a football range (p05 ≤ 14, p95 ≥ 38)', pct(R.scores, 0.05) <= 14 && pct(R.scores, 0.95) >= 38, `p05=${pct(R.scores, 0.05)} p50=${pct(R.scores, 0.5)} p95=${pct(R.scores, 0.95)} max=${Math.max(...R.scores)}`);
 check('No ties (OT logic decides games)', R.ties === 0, `${R.ties} ties`);
 check('Home-field edge present but modest (52–62% home wins)', R.homeWins / R.games > 0.52 && R.homeWins / R.games < 0.62, (100 * R.homeWins / R.games).toFixed(1) + '%');
-check('Better matchup usually wins (favorite win rate 60–80%)', R.favWins / R.favGames >= 0.60 && R.favWins / R.favGames <= 0.82, (100 * R.favWins / R.favGames).toFixed(1) + '% of ' + R.favGames);
+// Re-baselined in Phase 48 against measured reality: over the comparable population (games with a
+// real expected margin of 3+, n=3213) the FBS favourite wins 83.7% — see docs/reference/cfb-averages.md.
+// The old 60–82% band was calibrated to the pre-Phase-48 engine, which was ~23% too noisy and so let
+// favourites lose far more often than they do in life.
+check('Better matchup usually wins (favorite win rate 74–90%, real 83.7%)', R.favWins / R.favGames >= 0.74 && R.favWins / R.favGames <= 0.90, (100 * R.favWins / R.favGames).toFixed(1) + '% of ' + R.favGames);
 check('Shutouts rare (<6% of team-games)', R.shutouts / (R.games * 2) < 0.06, (100 * R.shutouts / (R.games * 2)).toFixed(2) + '%');
 
 // per-player stat leaders look like a real box score (12-game season)

@@ -1755,24 +1755,28 @@ const PM={
   // [p1,lo1,hi1, p2,lo2,hi2, lo3,hi3] over one compDraw. A flat distribution with the same mean
   // produces the right total yards but far too few touchdowns: real football banks a third of its
   // yardage in ~12% of snaps, and it's those snaps that turn a punt into a score.
-  runTier:[0.40,-3,2.5, 0.89,2.5,8.5, 8.5,34],    // ~22% of carries gain 0 or less; mean ~4.9
-  recTier:[0.35,-2,6,   0.80,6,15,    15,50],     // mean ~11.9 per completion
-  passBase:0.35,                    // base pass probability (→ ~52/48 run/pass by attempt)
-  cmpBase:0.615,                    // completion rate before situation
-  fgMax:52,                         // longest field goal the AI will try on a normal down
+  runTier:[0.38,-3,2.5, 0.89,2.5,8.25, 8.25,34],    // ~22% of carries gain 0 or less; mean ~4.9
+  recTier:[0.35,-2,6, 0.80,6,14.75, 14.75,51],     // mean ~11.9 per completion
+  passBase:0.350,                    // base pass probability (→ ~52/48 run/pass by attempt)
+  cmpBase:0.6200,                    // completion rate before situation
+  fgMax:50,                         // longest field goal the AI will try on a normal down
   intRate:0.068,                    // pick chance on an incompletion (→ ~0.82 INT/team-game)
   fumRate:0.0125, sackFumP:0.075,   // ball-security: on a carry / stripped on a sack
   // RED-ZONE COMPRESSION. Inside the 20 there is no field left to attack: no deep shot, defenders
   // sit on routes, the box is stacked. Without this the model finished 88% of its red-zone trips
   // (real: ~61%) while reaching the 20 far too rarely — points came out low even with the right
   // yardage, because the offence was all-or-nothing instead of grinding and settling for threes.
-  rzLos:80, rzComp:-0.05, rzTop:0.32,
-  // DRIVE RHYTHM. Independent per-play draws make every drive average, so failed drives still crawl
-  // 20 yards downfield — real ones die at 12 — and far too few reach the 20 (24% here vs ~41%).
-  // A mean-zero per-drive shift correlates the snaps within a possession, which is what makes drive
-  // outcomes bimodal: three-and-out or 70-yard march, the way football actually looks. Costs nothing
-  // in per-play means; the game-level variance it adds is paid back by dropping `form` below.
-  driveForm:5,
+  rzLos:80, rzComp:-0.060, rzTop:0.32,
+  gameForm:0,                       // per-game hot/cold. Fitted to 0: play-level variance alone
+                                    // already meets the real margin SD, so there is no budget left
+                                    // for it. Raising it re-inflates the upset rate (see the design doc).
+  shortTight:0.55,
+  // How hard team strength (and everything riding on it — home field, the Phase 23 individual
+  // matchup) presses on a gain. The tier draw is much wider than the old near-uniform one, so the
+  // OLD coefficients (0.06 / 0.035) were a far smaller share of the noise and strength stopped
+  // mattering: home win% fell to 51 and a stud receiver no longer beat weak coverage. Scaled to
+  // restore the signal-to-noise the envelope checks assume.
+  advPass:0.14, advRun:0.085, hfa:3.6,                  // must-convert short down: the stuff tier shrinks to this share
   // Game clock charged per snap. Real FBS runs ~135 plays in 3600s ≈ 26.7s a snap once you net out
   // the stopped clock on incompletions, out-of-bounds and changes of possession.
   secRun:32, secPass:30, secQuick:13, secIncomp:6, secSack:32,
@@ -1780,10 +1784,20 @@ const PM={
 // PM-END
 // One yardage draw, three tiers (see PM.runTier/recTier). `rz` clips the explosive tier — inside
 // the 20 there is no room for one. `xtop` extends it (Phase 46's deep shot). Pure → simlab-testable.
-function tierGain(u,t,rz,xtop){
+//
+// `tight` is the situational one, and it's what lets the model hit real football's 39% third-down
+// rate AND its explosive-play rate at the same time. A single gain distribution can't: making it
+// consistent enough to move the chains kills the tail, and a fat tail can't convert 3rd-and-3.
+// Real offences resolve that by shaping the CALL to the down — a high-floor concept when they need
+// four yards, a shot play on 1st-and-10. So on a must-convert short down the stuff tier shrinks
+// (offences are good at getting the two yards they need) while the explosive tier is untouched.
+// It is a deterministic conditional, not a random one, so it buys conversions without spending any
+// of the variance budget — which is the whole reason points and game-to-game noise stopped fighting.
+function tierGain(u,t,rz,xtop,tight){
+  const p1=tight?t[0]*PM.shortTight:t[0];
   const top=(rz?t[6]+(t[7]-t[6])*PM.rzTop:t[7])+(xtop||0);
-  return u<t[0] ? t[1]+(u/t[0])*(t[2]-t[1])
-       : u<t[3] ? t[4]+((u-t[0])/(t[3]-t[0]))*(t[5]-t[4])
+  return u<p1 ? t[1]+(u/p1)*(t[2]-t[1])
+       : u<t[3] ? t[4]+((u-p1)/(t[3]-p1))*(t[5]-t[4])
        : t[6]+((u-t[3])/(1-t[3]))*(top-t[6]);
 }
 // Phase 48 — the 4th-down brain. Modern CFB goes for it ~1.94 times a game and converts ~52%; the
@@ -1802,10 +1816,10 @@ function fourthCall(togo,los,fgDist,inFgRange,diff,secs,q){
   // protecting a lead in the last two minutes — never hand it back on downs
   if(q>=4&&secs<=120&&diff>0&&los<50)return 'punt';
   if(goalToGo&&togo<=2)return 'go';                // 4th-and-goal from the 3 or closer
-  if(togo<=2&&los>=42)return 'go';                 // short yardage past your own 42
+  if(togo<=2&&los>=38)return 'go';                 // short yardage past your own 38
   if(chip)return 'fg';                             // comfortable kick
   // no-man's-land: past midfield, too far for a good kick, too close to punt usefully
-  if(los>=58&&los<=72&&togo<=5)return 'go';
+  if(los>=55&&los<=74&&togo<=6)return 'go';
   if(fgDist<=PM.fgMax)return 'fg';                 // a 46-52 yd try beats a 25-yd punt; beyond that, don't
   if(togo<=1&&los>=35)return 'go';                 // 4th-and-inches is worth it almost anywhere
   return 'punt';
@@ -1863,10 +1877,10 @@ function simEngine(home,away,seed,opts){
   if(!pen[home.id])pen[home.id]={n:0,yds:0}; if(!pen[away.id])pen[away.id]={n:0,yds:0};
   const PEN_BASE=0.042;
   const penRate=(t,calm,q)=>{ let p=PEN_BASE*(1+(50-disc[t.id])/120); if(t!==home)p*=1.10; if(q>=4)p*=1.15; if(calm)p*=0.5; return clamp(p,0.01,0.10); };
-  const HFA=2.3;                                           // home-field, in rating points
+  const HFA=PM.hfa;                                           // home-field, in rating points
   // per-game "form": each team runs a little hot or cold tonight (std ≈ 4 pts), which lets
   // underdogs steal games and keeps the favorite from winning ~every time.
-  const form={[home.id]:(r()+r()+r()-1.5)*8, [away.id]:(r()+r()+r()-1.5)*8};
+  const form={[home.id]:(r()+r()+r()-1.5)*PM.gameForm, [away.id]:(r()+r()+r()-1.5)*PM.gameForm};
   const flipTo=spot=>100-clamp(spot,1,99);                 // mirror a spot for the opponent
   const nm=p=>p?((p.fn?p.fn[0]+'. ':'')+(p.ln||p.pos||'')).trim():'';
   const fpos=l=>l===50?'midfield':(l<50?'own ':'opp ')+(l<50?l:100-l);
@@ -1886,7 +1900,6 @@ function simEngine(home,away,seed,opts){
   function playDrive(off,def,startLos,clutch,clk0,half){
     const oP=pools[off.id], dP=pools[def.id];
     let adv=(off.ratings.off-def.ratings.def)+(off===home?HFA:0)+form[off.id]-form[def.id];
-    const dRhy=(r()+r()+r()-1.5)*PM.driveForm;          // Phase 48: this drive's rhythm, in yards/play (mean 0)
     if(clutch)adv+=compClutch(oP.qb);                   // late & close: the QB's composure shows (Phase 10)
     let los=startLos, down=1, togo=10, time=0, pens=0;
     const mine=decide&&off.id===decideFor;             // only the controlled offense ever prompts the coach
@@ -1910,6 +1923,7 @@ function simEngine(home,away,seed,opts){
       const bov=p=>p?(p.ov+((boost&&boost[p.id])||0)-fatg(p)):0;   // effective OVR (pep-talk + fatigue)
       const qb=(oP.qbList&&(oP.qbList.find(q=>!injured.has(q.id))||oP.qbList[0]))||oP.qb;   // healthy QB (backup if hurt)
       const dd=(down)+' & '+(togo>=(100-los)?'goal':togo);
+      const mustGet=down>=3&&togo<=4;                     // Phase 48: play the sticks, not the shot
       const fgDist=(100-los)+17, inFgRange=fgDist<=57;    // Phase 46: field-goal distance/range (usable on any down)
       // ---- pre-snap penalty (Phase 25) — capped per drive (each charges a little clock → terminates) ----
       if(pens<6){
@@ -1924,7 +1938,7 @@ function simEngine(home,away,seed,opts){
         // AI isn't robotic — 12% of the time it takes the conservative option instead.
         const diff=score[off.id]-score[def.id];
         let act=fourthCall(togo,los,fgDist,inFgRange,diff,clkNow(),L._q);
-        if(act==='go'&&r()<0.12)act=inFgRange?'fg':'punt';
+        if(act==='go'&&r()<0.08)act=inFgRange?'fg':'punt';
         if(mine){const pick=decide({phase:'fourth',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,fgDist,inFgRange,ocAct:act});
           if(pick==='fg'||pick==='punt'||pick==='go')act=pick;}
         if(act==='fg'&&!inFgRange)act='punt';               // illegal FG (out of range) → fall back to a punt
@@ -1986,7 +2000,7 @@ function simEngine(home,away,seed,opts){
           gain=-ri(r,4,9); time+=PM.secSack; const s=wpick(dP.rush4,r,injured); add(s&&s.id,'sk'); txt=nm(qb)+' sacked by '+nm(s)+' for '+gain;
           if(r()<PM.sackFumP){ turnover=true; txt=nm(qb)+' STRIP-SACKED by '+nm(s)+' — fumble lost'; }   // Phase 48: the strip sack
         } else if(r()<clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)+padv*0.007-ky*0.22+dComp+vComp+(pkg==='spread'?0.05:0),0.28,0.88)){    // completion (+ spread stresses coverage)
-          gain=Math.max(-3,Math.round(tierGain(compDraw(r,rec),PM.recTier,los>=PM.rzLos,vBoom*22)+dRhy+padv*0.06-ky*PASS_KEY+dPassY+vYds+(pkg==='spread'?3:0)));
+          gain=Math.max(-3,Math.round(tierGain(compDraw(r,rec),PM.recTier,los>=PM.rzLos,vBoom*22,mustGet)+padv*PM.advPass-ky*PASS_KEY+dPassY+vYds+(pkg==='spread'?3:0)));
           add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
           add(cov&&cov.id,'cvTgt'); add(cov&&cov.id,'cvCmp'); add(cov&&cov.id,'cvYds',gain);   // coverage targeted / allowed
@@ -2001,7 +2015,7 @@ function simEngine(home,away,seed,opts){
         const rb=wpick(oP.rush,r,injured)||qb;
         const fr=wpick(dP.front,r,injured);                  // the front defender he meets (Phase 23)
         const padv=adv+matchEdge(bov(rb),oP.rushAvg,bov(fr),dP.frontAvg);   // RB vs front matchup (mean-zero, pep-talk + fatigue aware)
-        gain=Math.max(-9,Math.round(tierGain(compDraw(r,rb),PM.runTier,los>=PM.rzLos,0)+dRhy*0.7+padv*0.035-ky*RUN_KEY+dRunY+vYds+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
+        gain=Math.max(-9,Math.round(tierGain(compDraw(r,rb),PM.runTier,los>=PM.rzLos,0,mustGet)+padv*PM.advRun-ky*RUN_KEY+dRunY+vYds+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
         time+=PM.secRun; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
         if(!scored && r()<PM.fumRate){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
