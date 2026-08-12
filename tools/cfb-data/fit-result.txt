@@ -1,0 +1,32 @@
+const PM={
+  runTier:[0.40,-3,2.5, 0.89,2.5,7.75, 7.75,35],
+  recTier:[0.35,-2,6.25, 0.80,6.25,14.25, 14.25,50],
+  passBase:0.350,
+  cmpBase:0.6150,
+  fgMax:52,
+  intRate:0.068,
+  fumRate:0.0125, sackFumP:0.075,
+  rzLos:80, rzComp:-0.020, rzTop:0.32,
+  driveForm:5.00,
+  secRun:32, secPass:30, secQuick:13, secIncomp:6, secSack:32,
+};
+
+// form multiplier: 7.5
+// params: {
+ "runP1": 0.4,
+ "runHi1": 2.5,
+ "runHi2": 7.75,
+ "runHi3": 35,
+ "recP1": 0.35,
+ "recHi1": 6.25,
+ "recHi2": 14.25,
+ "recHi3": 50,
+ "passBase": 0.35,
+ "cmpBase": 0.615,
+ "driveForm": 5,
+ "secScale": 1,
+ "formMult": 7.5,
+ "rzComp": -0.02,
+ "rzTop": 0.32,
+ "fgMax": 52
+}
