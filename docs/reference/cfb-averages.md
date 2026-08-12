@@ -75,8 +75,11 @@ Rank is **as of kickoff** (AP, then CFP once it starts). `x/y` = HI value / LO v
 Two results worth flagging:
 
 - **Top-10 vs Top-10 goes to the *lower*-ranked team 58.7% of the time.** Between genuine peers the
-  ranking carries almost no signal and home field decides it — the higher-ranked team is more often
-  the visitor in these games.
+  ranking carries almost no signal. It isn't a venue artifact — the higher-ranked team is actually
+  the *home* team more often than not in these games (24 of 80, vs 17 on the road). Half of them
+  (39 of 80) are neutral-site bowl/playoff games, where the higher-ranked team wins just 35.9%.
+  See §5 for the full breakdown; note the neutral-site cell is a thin sample and bowl opt-outs
+  plausibly cost the more NFL-stocked roster more.
 - **A No. 1 seed beating an unranked team is a 37–14 game, not a 50–3 game.** Blowouts in the poll
   sense are far more modest than intuition suggests. Even the largest bucket below tops out around 50.
 
@@ -208,6 +211,104 @@ personal fouls are in the mix.
 
 ---
 
+## 5. What the poll actually measures (and what "rising up" really is)
+
+The tables in §2 are indexed on rank, so it's worth being precise about what rank *is*. Run
+`tools/cfb-data/6-rankings.js`. Three results, in order of how much they should change the sim.
+
+### The poll is a coarse filter, not an ordering
+
+| Games | Poll picks the winner |
+|---|--:|
+| Ranked vs unranked | **80.7%** |
+| Ranked vs ranked | 55.1% |
+| Ranked, within 5 spots of each other | 44.2% |
+| Top-10 vs Top-10 | 41.3% |
+
+The poll is good at the coarse call — *is this team good?* — and carries almost nothing on the fine
+call — *which of these two good teams is better?* The cleanest version strips out home field
+entirely: **on a neutral field, in ranked-vs-ranked games, the higher-ranked team wins 48.2%**
+(n=85). A coin flip.
+
+The same set, split by venue, shows what *does* decide those games:
+
+| Ranked vs ranked | n | Higher-ranked team wins |
+|---|--:|--:|
+| Higher-ranked team at home | 100 | **74.0%** |
+| Neutral field | 85 | 48.2% |
+| Higher-ranked team on the road | 100 | **42.0%** |
+
+**Where you play swings the result 32 points; where you're ranked swings it ~0.**
+
+Two supporting numbers: when poll order and measured strength disagree (31.6% of ranked-vs-ranked
+games), the poll is right **17.8%** of the time; and in ranked-vs-unranked games the ranked team was
+measurably the *weaker* team **10.3%** of the time.
+
+> **Caveat on method.** The "measured strength" rating is retrodictive — fit on these same games,
+> including the one being predicted. Its 75–84% hit rate is an upper bound, not a fair forecast, and
+> it should not be read as "a model beats the poll." The hindsight-free claims are the neutral-site
+> coin flip, the venue split, and the disagreement rate.
+
+### It does work itself out
+
+| Week | corr(rank, measured strength) | Avg rank movement to next week |
+|--:|--:|--:|
+| 2 | 0.430 | 3.4 spots |
+| 5 | 0.474 | 2.8 |
+| 9 | 0.686 | 2.6 |
+| 12 | 0.702 | 1.8 |
+| 14 | **0.789** | 1.3 |
+
+Early-season rank is close to pure reputation — a preseason guess carried forward, correlating 0.43
+with how good the team actually turns out to be. By late November the poll is a decent instrument
+(0.79) and has stopped thrashing (1.3 spots/week vs 3.4). The self-correction is real and gradual.
+
+### "Rising up" is the crowd, not the motivation
+
+The intuition that teams elevate for big games shows up in the data — but the mechanism is the
+venue, not the locker room. The rating credits every home team a flat 2.4 points; measuring the
+home team's residual on top of that recovers what home field is *actually* worth:
+
+| Context | Home field is worth |
+|---|--:|
+| Both teams ranked | **4.8 pts** |
+| Every home game | 2.9 pts |
+| Neither team ranked | 2.5 pts |
+
+**A big game nearly doubles the value of home field.** Meanwhile the "underdog elevates against an
+elite opponent" effect does *not* appear — unranked teams underperform their own rating slightly
+*more* as the opponent gets better (−1.78 vs No. 16–25, −2.34 vs No. 6–15, −2.98 vs Top-5), though
+part of that gradient is the ±28 margin cap in the rating fit compressing genuine blowouts.
+
+**For the sim:** `simEngine` uses a flat `HFA = 2.3` for every game. The data says home field should
+scale with the stakes — roughly 2.5 in a nothing game, ~4.8 when both teams are ranked. Sideline
+already knows the stakes (`S.media.poll`, rivalry intensity, `postseason`), and HFA is applied in
+`playDrive` where it would be a contained change. This is also the honest way to deliver "my team
+plays up for big games" without inventing a motivation fudge factor.
+
+### The sim is 23% too random
+
+Same measurement on both sides — SD of (actual margin − expected margin), with each side's expected
+margin from a retrodictive rating fit on its own games:
+
+| | Real FBS | Sideline |
+|---|--:|--:|
+| SD of margin vs expectation | **13.4 pts** | **16.5 pts** |
+| \|residual\| > 14 pts | 28.0% | 38.8% |
+| \|residual\| > 21 pts | 11.4% | 20.2% |
+
+This is the missing explanation for §4's mismatch table, where the sim's favorite won less often than
+reality in *every* bucket (80% vs 91% at a 10.5–14 spread; 73% vs 78% at 7–10.5). It isn't that the
+sim's mismatches are too small — the scoring gaps are roughly right — it's that too much noise is
+layered on top, so the better team loses more often than it should. Upsets are ~1.8× too common at
+the tail.
+
+The per-game `form` term (`(r()+r()+r()-1.5)*8` per team, ≈4 pts SD each) is one contributor but not
+the whole story — play-level variance carries a large share, so this needs profiling before tuning
+rather than a single-constant fix.
+
+---
+
 ## Reproducing
 
 ```
@@ -216,6 +317,7 @@ node tools/cfb-data/2-harvest.js                          # box score + drives p
 node tools/cfb-data/3-analyze.js                          # real-data tables (sections 1-4 above)
 node tools/cfb-data/4-simprofile.js                       # run simEngine, same metric set
 node tools/cfb-data/5-compare.js                          # side-by-side
+node tools/cfb-data/6-rankings.js                         # poll vs measured strength (section 5)
 ```
 
 Data source is ESPN's public `site.api.espn.com` CFB endpoints. `2-harvest.js` caches to

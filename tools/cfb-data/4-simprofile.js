@@ -187,3 +187,16 @@ for (const [lo, hi] of GAPS) {
 fs.writeFileSync(__dirname + '/simprofile.json', JSON.stringify(out, null, 1));
 console.log(`sim: ${gameRows.length} games, ${recs.length} team-games → simprofile.json`);
 console.log(`  ${out.all.pts.toFixed(1)} pts, ${out.all.yds.toFixed(0)} yds, ${out.all.plays.toFixed(1)} plays, ${out.all.drives.toFixed(1)} drives, ${out.all.ppd.toFixed(2)} pts/drive`);
+
+/* residual spread — the "any given Saturday" number, computed identically to 6-rankings.js */
+{
+  const resid = gameRows.map(g => (g.hs - g.as) - g.exp);
+  const m = resid.reduce((a, b) => a + b, 0) / resid.length;
+  const sd = Math.sqrt(resid.reduce((s, x) => s + (x - m) ** 2, 0) / resid.length);
+  fs.writeFileSync(__dirname + '/simresid.json', JSON.stringify({
+    n: resid.length, sd,
+    p14: resid.filter(x => Math.abs(x) > 14).length / resid.length * 100,
+    p21: resid.filter(x => Math.abs(x) > 21).length / resid.length * 100,
+  }));
+  console.log(`  residual SD ${sd.toFixed(1)} pts`);
+}
