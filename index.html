@@ -1271,7 +1271,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:43,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:44,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      rivalries:null,rivalryHeat:null,records:null,lastRealign:null,
@@ -1547,6 +1547,11 @@ function migrateState(state){
     state.version=43;                  // (endpoint, career code, per-career watermarks) lives in its own
   }                                    // localStorage key, and a career's cloud id is DERIVED from createdAt+seed,
                                        // so an old save uploads unchanged and keeps one identity across devices.
+  if((state.version||1)<44){           // Phase 48: possession model. Games now carry g.eng = the sim model that
+    state.version=44;                  // resolved them. Deliberately NOT backfilled: an absent g.eng correctly
+  }                                    // marks a game as played on the old engine, so replay is refused for it
+                                       // instead of re-simming to a score that contradicts the record book.
+                                       // Scores, stats, standings and records are untouched.
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -3639,6 +3644,13 @@ function simSides(g,benched){
 // regardless of advance order. Sets g.hs/g.as/g.played and RETURNS the per-game box (player
 // id → stat deltas) for stat folding. Pure w.r.t. players/teams — re-simming a clone is safe.
 function gameSeed(g){return (hashStr(g.id)^(S.seed>>>0))>>>0;}
+// Phase 48: the possession model changed how simEngine resolves a game, so a game played on an
+// earlier model cannot be re-simmed faithfully — buildGameLog would show a different final score
+// than the one in the record book. Every game resolved from here on is stamped with the model that
+// produced it; replay is refused (not silently wrong) for anything older. Stored results, stats and
+// standings are untouched — only the play-by-play re-sim is unavailable.
+const SIM_MODEL=2;
+function gameReplayable(g){ return !!g && (!g.played || g.eng===SIM_MODEL); }
 // Phase 22: if the coach play-called this game, `g.calls` is the ordered list of his controlled-offense
 // decisions. Replaying it (the OC default fills any gap) reproduces the EXACT play-called result on
 // commit + on later replay (watch == commit holds). Absent → a pure AI game, unchanged.
@@ -3655,7 +3667,7 @@ function simGame(g){
   const benched=benchedFor(g); if(!g.out)g.out=[...benched];   // Phase 27: freeze who sat (faithful replay later)
   const {home,away}=simSides(g,benched);
   const res=simEngine(home,away,gameSeed(g),Object.assign({benched,aiDefVs:S.teamId,aiOffVs:S.teamId},gameDecideOpts(g)||{}));
-  g.hs=res.hs;g.as=res.as;g.played=true;
+  g.hs=res.hs;g.as=res.as;g.played=true;g.eng=SIM_MODEL;
   g._inj=res.inj;     // Phase 27: hurt players — applied ONCE per real game (in the advance), not on determinism re-sims
   return res.box;
 }
@@ -5158,6 +5170,7 @@ function findAnyGame(id){
 }
 function buildGameLog(gameId){
   const g=findAnyGame(gameId); if(!g)return null;
+  if(!gameReplayable(g))return null;                 // Phase 48: played on an older sim model
   const benched=benchedFor(g);
   const {home,away}=simSides(g,benched);
   const res=simEngine(home,away,gameSeed(g),Object.assign({log:true,benched,aiDefVs:S.teamId,aiOffVs:S.teamId},gameDecideOpts(g)||{}));
@@ -6444,7 +6457,7 @@ function bracketGameRow(g,t){
       <div class="row spread"><span style="font-weight:${hw?800:500}">${seedOf(g.home)}${home.abbr}</span><span class="cond">${g.played?g.hs:''}</span></div>
       <div class="row spread"><span style="font-weight:${aw?800:500}">${seedOf(g.away)}${away.abbr}</span><span class="cond">${g.played?g.as:''}</span></div>
       ${g.kind==='bowl'?'<div class="meta dim" style="margin-top:3px">'+g.name+'</div>':''}</div>`;
-  if(g.played){row.style.cursor='pointer';row.onclick=()=>openGameReplay(g.id);}
+  if(g.played&&gameReplayable(g)){row.style.cursor='pointer';row.onclick=()=>openGameReplay(g.id);}
   return row;
 }
 function seasonSchedule(v,t){
@@ -6643,7 +6656,7 @@ function seasonScores(v,t){
           <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${x.win.abbr} ${x.winScore}, ${x.lose.abbr} ${x.loseScore}</div>
           <div class="meta"><span class="tag accent" style="font-size:10px">${x.tag}</span> <span class="dim">WK ${x.g.week}</span></div></div>
         <span class="cond accent" style="font-size:18px;flex:none">▶</span>`;
-      row.onclick=()=>openGameReplay(x.g.id);
+      if(gameReplayable(x.g))row.onclick=()=>openGameReplay(x.g.id); else row.style.opacity=.62;
       v.append(row);
     });
   }

@@ -51,7 +51,7 @@ function pmText(v) {
   recTier:[${v.recP1.toFixed(2)},-2,${v.recHi1}, 0.80,${v.recHi1},${v.recHi2}, ${v.recHi2},${v.recHi3}],
   passBase:${v.passBase.toFixed(3)},
   cmpBase:${v.cmpBase.toFixed(4)},
-  fgMax:${v.fgMax},
+  fgMax:${Math.round(v.fgMax)},
   intRate:0.068,
   fumRate:0.0125, sackFumP:0.075,
   rzLos:80, rzComp:${v.rzComp.toFixed(3)}, rzTop:${v.rzTop.toFixed(2)},
@@ -84,7 +84,18 @@ const world = (() => { const r = rng(0x5eed), teams = [];
 const FULL = [];
 for (let i = 0; i < world.length; i++) for (let d = 1; d <= 15; d++)
   FULL.push({ id:'g'+i+'_'+d, home:world[i], away:world[(i+d)%world.length] });
-const SEARCH = FULL.filter((_, i) => i % 3 === 0);      // ~670 games while searching
+// Search slate: a subset of TEAMS, not of games. Subsampling games leaves each team ~10 results
+// to fit the retrodictive rating on, which then explains its own small sample almost perfectly —
+// residual SD and the upset rate collapse, the variance metrics go invisible to the fitter, and it
+// happily spends the slack elsewhere. Keeping whole teams preserves 30 games/team, so the rating is
+// as well-constrained as on the full slate and SD/blow/midUps mean the same thing in both.
+// stratified, not the first N — the world generator front-loads the elite tier (teams 0-15 get
+// +25 prestige, 16-39 get +12), so a head slice is 27% elite against the full world's 12% and would
+// hand the fitter a different mismatch distribution than the one it is being scored against.
+const SUB = world.filter((_, i) => i % 2 === 0);
+const SEARCH = [];
+for (let i = 0; i < SUB.length; i++) for (let d = 1; d <= 15; d++)
+  SEARCH.push({ id: 's' + i + '_' + d, home: SUB[i], away: SUB[(i + d) % SUB.length] });
 
 const T = { pts:26.9, plays:67.5, ypp:5.67, att:31.2, cmpPct:61.1, ypa:7.29, ratt:34.2, ypc:4.92,
   fd:20.2, d3:39.2, d4a:1.94, punts:4.32, fga:1.58, drives:11.8, pldr:5.75, ppd:2.28,
@@ -140,13 +151,14 @@ function evaluate(v, slate) {
     rows.push({ hid:g.home.id, aid:g.away.id, hs:res.hs, as:res.as });
   }
   const G = slate.length, TG = G*2, dn = A.drives||1;
-  const HFA = 2.4, R = {}; world.forEach(t=>R[t.id]=0);
+  const teams = [...new Set(rows.flatMap(g => [g.hid, g.aid]))];
+  const HFA = 2.4, R = {}; teams.forEach(t=>R[t]=0);
   const cap = x => Math.max(-28, Math.min(28, x));
-  for (let it=0; it<40; it++) { const s={},c={}; world.forEach(t=>{s[t.id]=0;c[t.id]=0;});
+  for (let it=0; it<40; it++) { const s={},c={}; teams.forEach(t=>{s[t]=0;c[t]=0;});
     for (const g of rows) { const m = cap(g.hs-g.as);
       s[g.hid]+=(m-HFA)+R[g.aid]; c[g.hid]++; s[g.aid]+=(-m+HFA)+R[g.hid]; c[g.aid]++; }
-    world.forEach(t=>{ if(c[t.id]) R[t.id]=s[t.id]/c[t.id]; });
-    const mu = world.reduce((a,t)=>a+R[t.id],0)/world.length; world.forEach(t=>R[t.id]-=mu); }
+    teams.forEach(t=>{ if(c[t]) R[t]=s[t]/c[t]; });
+    const mu = teams.reduce((a,t)=>a+R[t],0)/teams.length; teams.forEach(t=>R[t]-=mu); }
   const fav = rows.map(g => { const e = R[g.hid]-R[g.aid]+HFA, sp = Math.abs(e);
     const fm = e>0 ? g.hs-g.as : g.as-g.hs; return { resid:fm-sp, spread:sp, fm }; });
   const rs = fav.map(x=>x.resid), mu = rs.reduce((a,b)=>a+b,0)/rs.length;

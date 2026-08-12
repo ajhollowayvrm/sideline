@@ -11,8 +11,13 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > - `docs/phases/offseason.md` — rollover, program, postseason, draft, championships, camp, realignment (Phases 5, 6–9, 12, 13, 15, 18, 32, 39, 43, 44)
 > - `docs/phases/identity-media.md` — traits, morale, media, rivalries, records, contract, legends, identity (Phases 10, 11, 19, 20, 40, 41, 42, 45)
 > - `docs/phases/cloud.md` — cloud saves: AWS backend, career codes, sync/conflict model (Phase 47)
+> - `docs/phases/possession.md` — the possession model: clock, halves, 4th down, gain shape (Phase 48)
 >
-> **All roadmap phases 1–47 are DONE.** When a task touches a system, open its design doc for
+> **Measured reality:** `docs/reference/cfb-averages.md` holds real FBS averages computed from 3,944
+> games (2021–2025) — national, by rank matchup, and by mismatch size — plus where `simEngine` sits
+> against them. It is the tuning target for any sim work; `tools/cfb-data/` reproduces it.
+>
+> **All roadmap phases 1–48 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -87,6 +92,8 @@ still serves it with zero config.
 - **Phase 45 — Player identity.** Derived jersey #/nickname/known-for/backstory/fan-favorite + captured signature moments (`p.moments`); identity everywhere (45.1). Save v41. `identitylab`.
 - **Phase 46 — In-game screen.** Deeper opt-in play-calling over Phases 22–31: named play concepts + SVG play-art (`PLAYBOOK`), live off/def tendency reads (Play Action punishes a run-committed front), 15-min quarters, halftime, both-way field, play past 0:00, FG any down. AI/defer byte-identical. Save v42. *(→ `docs/phases/gameday.md`.)*
 - **Phase 47 — Cloud saves.** Opt-in cross-device continuation: a career mirrors to your own AWS stack (Lambda Function URL → DynamoDB slot index + private S3 blob), identified by a 60-bit **career code** (no accounts). `localStorage` stays the fast path; pushes are debounced behind `writeSlot`, and a genuine two-device divergence shows both saves and asks. Save v43 (structural no-op). `cloudlab`. *(→ `docs/phases/cloud.md`, `infra/README.md`.)*
+
+- **Phase 48 — Possession model.** The first sim change fitted to **measured** reality (`docs/reference/cfb-averages.md`, 3,944 real FBS games) rather than feel. Two 30-minute halves with drives that die at the horn; a real 4th-down brain (`fourthCall` — field position, distance, score, clock); three-tier gain draw (`tierGain` — stuff/normal/explosive, replacing near-uniform gains that converted far too much short yardage); red-zone compression; a per-drive rhythm term that makes drive outcomes bimodal; recalibrated ball security + the strip sack; tunable per-snap clock. Constants live in one fenced `PM` block fitted by `tools/cfb-data/10-fit.js`. **This is the first phase to deliberately change AI-game output** — games carry `g.eng` and pre-v44 games refuse replay rather than re-sim to a score that contradicts the record book. Save v44. *(→ `docs/phases/possession.md`.)*
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
@@ -163,7 +170,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   stored inside `state`. The pure decision (`cloudResolve`) is fenced as the CLOUD ENGINE and
   gated by `cloudlab`; the backend is `infra/` (SAM). See `docs/phases/cloud.md`.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **43**). Each step backfills the fields its phase added and re-derives
+  (currently **44**). Each step backfills the fields its phase added and re-derives
   ratings/ranks where needed; most recent steps are structural no-ops (sparse per-player
   fields / derived data read as their defaults). The full v1→v43 migration ladder is
   documented inline in `migrateState` in `index.html`, and each phase's design doc in
@@ -410,8 +417,13 @@ rec,reYds,reTD, tkl,sk,dInt, cvTgt,cvCmp,cvYds,cvTD, fga,fgm,xpa,xpm }` (only no
 object as `p.gs`, accumulated for **every** team, so league stat leaders are real. Empty stat
 objects aren't stored.
 
-**Validated envelope** (`test/simlab.js`, extracts the engine between the markers): ~24 pts/team,
-score spread ≈ 6–45 (p05–p95), ~54% home wins, ~77% favorite win rate, no ties. All S-dependent
+**Validated envelope** (`test/simlab.js`, extracts the engine between the markers): points/team,
+score spread, home-win and favorite-win rates, no ties, plus the Phase 48 possession checks (two
+halves, drives dying at the horn, 4th-down decisions, gain-tier shape). The envelope asserts
+*ranges*; the numbers it should be centred on are the measured ones in
+`docs/reference/cfb-averages.md` — **check a sim change against that file, not just against the
+gate**, since totals-and-leaders assertions passed for nine phases while run/pass balance and drive
+structure were badly wrong (the errors cancelled in the totals). All S-dependent
 in-game effects (coach edges, schemes, morale, matchups, adjustments, penalties, injuries,
 play-calling, AI coordinators) are applied in `simSides`/the app layer **outside** this block so
 the envelope holds — see `docs/phases/gameday.md` for how each layers on.

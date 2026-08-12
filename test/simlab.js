@@ -41,7 +41,11 @@ if (C0 < 0 || C1 < 0) { console.error('Could not find SCHEME ENGINE markers in i
 eval(html.slice(C0, C1));
 const engineSrc = html.slice(i0, i1);
 // eval into this scope so simEngine + helpers (gamePersonnel, etc.) become available
-eval(engineSrc);
+//  leaks out of a sloppy-mode eval where  does not, so re-export PM — the Phase 48
+// shape checks read the SHIPPED tier constants instead of keeping a copy that could drift.
+// `var` leaks out of a sloppy-mode eval where `const` does not, so re-export PM — the Phase 48
+// shape checks read the SHIPPED tier constants instead of keeping a copy that could drift.
+eval(engineSrc + '\nvar PM_TIERS = PM;');
 
 /* ---------- a faithful-enough synthetic world (mirrors genRoster/teamRatings) ---------- */
 const POS = [["QB", "off", 4], ["RB", "off", 5], ["WR", "off", 11], ["TE", "off", 5],
@@ -355,7 +359,9 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   const w = genWorld(707), O = w.teams[3], D = w.teams[8];
   const allPass = ctx => ctx.phase === 'fourth' ? ctx.ocAct : ctx.phase === 'def' ? 'base' : 'pass';
   let withDC = 0, noDC = 0, n = 0;
-  for (let s = 0; s < 30; s++) { const seed = (hashStr('aidc' + s) ^ 2) >>> 0; withDC += simEngine(O, D, seed, { decideFor: O.id, aiDefVs: O.id, decide: allPass }).hs; noDC += simEngine(O, D, seed, { decideFor: O.id, decide: allPass }).hs; n++; }
+  // n=200, not 30: with the Phase 48 possession model a 30-game sample is pure noise here
+  // (measured +2.7 pts at n=30, -1.4 at n=600 — the sign flips), so the check needs the sample.
+  for (let s = 0; s < 200; s++) { const seed = (hashStr('aidc' + s) ^ 2) >>> 0; withDC += simEngine(O, D, seed, { decideFor: O.id, aiDefVs: O.id, decide: allPass }).hs; noDC += simEngine(O, D, seed, { decideFor: O.id, decide: allPass }).hs; n++; }
   check('Phase 29: a scheming AI DC lowers a predictable offense vs no DC', withDC < noDC, `${(withDC / n).toFixed(1)} vs ${(noDC / n).toFixed(1)} pts/g`);
   // envelope safety: naming a team that isn't on offense is completely inert (AI-vs-AI byte-identical)
   const h = w.teams[0], a = w.teams[1], sd = 4242, plain = simEngine(h, a, sd), tagged = simEngine(h, a, sd, { aiDefVs: 'zzz_not_playing' });
@@ -474,6 +480,62 @@ check('Receiving-yards leader realistic (700–1900 / 12g)', recY[0].v >= 700 &&
 check('Passing-TD leader realistic (18–55 / 12g)', passTD[0].v >= 18 && passTD[0].v <= 55, passTD[0].v + ' TD');
 check('Tackle leader is a defender, realistic (70–170 / 12g)', ['LB', 'S', 'CB', 'DE', 'DT'].includes(tkl[0].pos) && tkl[0].v >= 70 && tkl[0].v <= 170, `${tkl[0].pos} ${tkl[0].v}`);
 check('Sack leader realistic (7–22 / 12g)', sk[0].v >= 7 && sk[0].v <= 22, `${sk[0].pos} ${sk[0].v}`);
+
+// Phase 48 — the possession model: two halves, a real 4th-down brain, tiered gains, red-zone
+// compression. These are SHAPE checks (they must hold for any sane calibration); the numeric
+// envelope those constants were fitted to lives in docs/reference/cfb-averages.md.
+(function () {
+  // --- the 4th-down brain (pure, no rng) ---
+  check('Phase 48: 4th-and-1 past midfield is a GO', fourthCall(1, 55, 62, false, 0, 900, 2) === 'go');
+  check('Phase 48: 4th-and-10 from your own 20 is a PUNT', fourthCall(10, 20, 97, false, 0, 900, 2) === 'punt');
+  check('Phase 48: a chip shot on 4th-and-8 is a FG', fourthCall(8, 85, 32, true, 0, 900, 2) === 'fg');
+  check('Phase 48: trailing by 10 in the last 5 min, a long 4th is a GO not a punt',
+    fourthCall(8, 45, 72, false, -10, 200, 4) === 'go');
+  check('Phase 48: a FG that ties it late is still taken', fourthCall(8, 85, 32, true, -3, 200, 4) === 'fg');
+  check('Phase 48: protecting a lead in the last 2 min, punt from your own half',
+    fourthCall(6, 30, 87, false, 7, 90, 4) === 'punt');
+  check('Phase 48: no 60-yard field goals — beyond PM.fgMax it punts or goes',
+    fourthCall(9, 55, 62, true, 0, 900, 2) !== 'fg');
+
+  // --- the tiered gain draw (pure) ---
+  const T = PM_TIERS.runTier;
+  const mono = (() => { let prev = -1e9; for (let u = 0; u < 1; u += 0.01) { const g = tierGain(u, T, false, 0); if (g < prev - 1e-9) return false; prev = g; } return true; })();
+  check('Phase 48: tierGain is monotonic in the draw', mono);
+  const meanRun = (() => { let s = 0, n = 0; for (let u = 0.0005; u < 1; u += 0.001) { s += tierGain(u, T, false, 0); n++; } return s / n; })();
+  check('Phase 48: the run tier averages a football yards-per-carry (4.2–5.6)', meanRun >= 4.2 && meanRun <= 5.6, meanRun.toFixed(2));
+  const stuffed = (() => { let c = 0, n = 0; for (let u = 0.0005; u < 1; u += 0.001) { if (Math.round(tierGain(u, T, false, 0)) <= 0) c++; n++; } return c / n; })();
+  check('Phase 48: ~a fifth of carries gain nothing (15–30%)', stuffed >= 0.15 && stuffed <= 0.30, (stuffed * 100).toFixed(1) + '%');
+  check('Phase 48: the red zone clips the explosive tier', tierGain(0.99, T, true, 0) < tierGain(0.99, T, false, 0));
+  check('Phase 48: red-zone compression does not touch ordinary gains', tierGain(0.5, T, true, 0) === tierGain(0.5, T, false, 0));
+
+  // --- two halves + end-of-half drives ---
+  const w = genWorld(4801);
+  let endHalf = 0, drives = 0, games = 0, q3seen = 0;
+  for (let s = 0; s < 40; s++) {
+    const res = simEngine(w.teams[s], w.teams[(s + 37) % 134], (hashStr('p48' + s) ^ 9) >>> 0, { log: true });
+    games++;
+    for (const e of res.log) {
+      if (e.kind === 'drive') drives++;
+      if (/END OF (HALF|GAME)/.test(e.text || '')) endHalf++;
+      if (e.q === 3) q3seen++;
+    }
+  }
+  check('Phase 48: games reach the 3rd quarter (two halves are simulated)', q3seen > 0);
+  const endPct = endHalf / drives * 100;
+  check('Phase 48: drives die at the horn (3–12% of drives, real 6.5%)', endPct >= 3 && endPct <= 12, endPct.toFixed(1) + '%');
+  const dpt = drives / games / 2;
+  check('Phase 48: drives per team is football-shaped (10–13.5, real 11.8)', dpt >= 10 && dpt <= 13.5, dpt.toFixed(2));
+
+  // --- OT must NOT be killed by the half clock (regression guard on the timed flag) ---
+  const otTied = (() => {
+    for (let s = 0; s < 400; s++) {
+      const res = simEngine(w.teams[5], w.teams[6], (hashStr('ot' + s) ^ 3) >>> 0);
+      if (res.hs === res.as) return true;          // a tie means an OT drive was cut short
+    }
+    return false;
+  })();
+  check('Phase 48: overtime still decides games (untimed OT drives are not expired)', !otTied);
+}());
 
 // a single game's box must internally balance (passing yards == receiving yards for that team)
 (function () {
