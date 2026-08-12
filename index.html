@@ -618,11 +618,304 @@ function writeSlot(n,state){
   const team=state.world.teams.find(t=>t.id===state.teamId);
   const meta={coach:state.coach.first+' '+state.coach.last,team:team?team.name:'—',
     teamAbbr:team?team.abbr:'',color:team?team.color:'#c9a227',
-    week:state.week,phase:state.phase,savedAt:state.lastSaved};
-  try{localStorage.setItem(slotKey(n),JSON.stringify({meta,state:encodeState(state)}));return true;}
+    week:state.week,phase:state.phase,savedAt:state.lastSaved,
+    careerId:cloudCareerId(state)};   // Phase 47: the cloud's identity for this career
+  try{localStorage.setItem(slotKey(n),JSON.stringify({meta,state:encodeState(state)}));}
   catch(e){toast('Save failed — storage full');return false;}
+  if(state===S)cloudQueue();          // Phase 47: local write first, cloud push debounced behind it
+  return true;
 }
 function deleteSlot(n){localStorage.removeItem(slotKey(n));}
+
+/* ============================================================
+   CLOUD SAVES (Phase 47) — continue a career on any device
+   ============================================================
+   localStorage stays the source of truth and the fast path: nothing here can slow down or
+   block a save. A write to a slot queues a debounced push; the cloud copy is a mirror the
+   other device pulls from. With no endpoint configured the whole layer is inert, so the
+   game is still a pure static file that works offline (see infra/README.md to deploy the
+   backend: Lambda Function URL → DynamoDB slot index + private S3 blob).
+
+   Identity is a "career code" — 60 bits minted in this browser, typed once on the other
+   device. No accounts, no email, matching the app's no-backend-account rule.
+
+   Concurrency: every career carries a monotonic `rev`. This device remembers the rev it
+   last pushed/pulled (its watermark) plus the `lastSaved` it had then; comparing that
+   triple — watermark, local save, cloud head — is the whole sync decision, and it's pure
+   (cloudResolve), so the node lab can walk the entire table offline. */
+const CLOUD_ENDPOINT='';                 // bake your Function URL in here to skip per-device setup
+const CLOUD_CFG_KEY='sideline_cloud';
+const CLOUD_DEBOUNCE=5000;               // ms of quiet after the last save before we push
+
+// === CLOUD ENGINE (Phase 47) START ===
+// Pure: code minting/normalizing, career identity, progress comparison, and the sync
+// decision. No DOM, no network, no S — everything that decides what happens lives here.
+const CLOUD_ALPHA='0123456789ABCDEFGHJKMNPQRSTVWXYZ';   // Crockford base32 — no I/L/O/U to misread
+const CLOUD_CODE_LEN=12;                                 // 12 chars × 5 bits = 60 bits of key
+const CLOUD_PHASE_ORD={'Preseason':0,'Regular Season':1,'Conference Championships':2,'Postseason':3,'Offseason':4,'Retired':5};
+function cloudMintCode(rand){let s='';for(let i=0;i<CLOUD_CODE_LEN;i++)s+=CLOUD_ALPHA[Math.floor(rand()*CLOUD_ALPHA.length)%CLOUD_ALPHA.length];return s;}
+// Accept anything a human might type back: lowercase, spaces, the SIDE- prefix, the dashes,
+// and the classic base32 lookalikes (I/L→1, O→0, U→V).
+function cloudNormCode(raw){
+  let s=String(raw==null?'':raw).toUpperCase().replace(/[^0-9A-Z]/g,'');
+  if(s.length===CLOUD_CODE_LEN+4&&s.slice(0,4)==='SIDE')s=s.slice(4);
+  return s.replace(/[IL]/g,'1').replace(/O/g,'0').replace(/U/g,'V');
+}
+function cloudValidCode(raw){
+  const s=cloudNormCode(raw);
+  return (s.length===CLOUD_CODE_LEN&&s.split('').every(c=>CLOUD_ALPHA.indexOf(c)>=0))?s:null;
+}
+function cloudFormatCode(code){const s=cloudNormCode(code);return 'SIDE-'+(s.match(/.{1,4}/g)||[]).join('-');}
+// A career's cloud id, derived from the state itself (never stored, never re-minted) so the
+// same career keeps one identity across devices, slots and reinstalls. Lowercase+dash only.
+function cloudCareerId(state){
+  return 'c'+Number(state&&state.createdAt||0).toString(36)+'-'+((state&&state.seed||0)>>>0).toString(36);
+}
+// How far along a save is, as one sortable number — used to say "Wk 8 vs Wk 5" in a conflict.
+function cloudProgress(meta){
+  if(!meta)return -1;
+  const ph=CLOUD_PHASE_ORD[meta.phase];
+  return (meta.year||0)*1000+(ph==null?1:ph)*100+(meta.week||0);
+}
+// The sync decision.
+//   mark  = this device's watermark: {rev, savedAt} it last pushed/pulled, or null
+//   local = the save in this browser right now: {savedAt}, or null
+//   cloud = the server's head: {rev, updatedAt, meta}, or null
+function cloudResolve(mark,local,cloud){
+  if(!local&&!cloud)return {action:'none',why:'nothing to sync'};
+  if(local&&!cloud)return {action:'push',why:'not backed up yet'};
+  if(!local&&cloud)return {action:'pull',why:'only in the cloud'};
+  const rev=mark?mark.rev:0;
+  const dirty=!mark||(local.savedAt||0)>(mark.savedAt||0);
+  if(rev>cloud.rev)return {action:'push',why:'cloud is behind this device'};
+  if(rev===cloud.rev)return dirty?{action:'push',why:'local changes not uploaded'}:{action:'insync',why:'up to date'};
+  return dirty?{action:'conflict',why:'both sides moved on'}:{action:'pull',why:'another device is ahead'};
+}
+// === CLOUD ENGINE (Phase 47) END ===
+
+/* ---------- config (endpoint + code + per-career watermarks) ---------- */
+function cloudCfg(){
+  let c={};try{c=JSON.parse(localStorage.getItem(CLOUD_CFG_KEY)||'null')||{};}catch(e){c={};}
+  return {endpoint:c.endpoint||CLOUD_ENDPOINT||'',code:c.code||'',auto:c.auto!==false,
+    device:c.device||(/Mobi|Android|iPhone/i.test(navigator.userAgent)?'Phone':'Desktop'),
+    careers:c.careers||{}};
+}
+function cloudSetCfg(patch){
+  const c=Object.assign(cloudCfg(),patch);
+  try{localStorage.setItem(CLOUD_CFG_KEY,JSON.stringify(c));}catch(e){}
+  return c;
+}
+function cloudLinked(){const c=cloudCfg();return !!(c.endpoint&&c.code);}
+function cloudMark(id){return cloudCfg().careers[id]||null;}
+function cloudSetMark(id,mark){
+  const c=cloudCfg(),m=Object.assign({},c.careers);
+  if(mark)m[id]=mark;else delete m[id];
+  cloudSetCfg({careers:m});
+}
+// Storage only — deliberately never touches UI, because the ?reset=1 hook calls this before
+// `let UI` is initialized (a TDZ reference there would take down the whole boot).
+function cloudDisconnect(){try{localStorage.removeItem(CLOUD_CFG_KEY);}catch(e){}}
+
+/* ---------- status (what the Cloud screen + menu line show) ---------- */
+const CLOUD_STATUS={state:'idle',msg:'',at:0};   // idle|pending|syncing|ok|offline|error|conflict
+function cloudSetStatus(state,msg){
+  CLOUD_STATUS.state=state;CLOUD_STATUS.msg=msg||'';CLOUD_STATUS.at=Date.now();
+  if(UI.view==='cloud')render();
+}
+const CLOUD_STATUS_LABEL={idle:'Connected',pending:'Changes queued',syncing:'Syncing…',ok:'In sync',
+  offline:'Offline — will retry',error:'Sync failed',conflict:'Needs a choice'};
+// Entry-point buttons only earn a status suffix when something is actually happening.
+function cloudStatusSuffix(){
+  if(!cloudLinked())return '';
+  return CLOUD_STATUS.state==='idle'?'':' — '+(CLOUD_STATUS_LABEL[CLOUD_STATUS.state]||'');
+}
+
+/* ---------- wire format: gzip + base64 (CompressionStream, with a raw fallback) ---------- */
+function cloudB64(u8){let s='';const CH=0x8000;for(let i=0;i<u8.length;i+=CH)s+=String.fromCharCode.apply(null,u8.subarray(i,i+CH));return btoa(s);}
+function cloudUnb64(b64){const bin=atob(b64),u8=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);return u8;}
+async function cloudPack(state){
+  const json=JSON.stringify({v:1,state:encodeState(state)});   // same columnar codec as a slot
+  if(typeof CompressionStream==='function'){
+    const buf=await new Response(new Blob([json]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
+    return {enc:'gz',blob:cloudB64(new Uint8Array(buf))};
+  }
+  return {enc:'raw',blob:cloudB64(new TextEncoder().encode(json))};
+}
+async function cloudUnpack(enc,b64){
+  const bytes=cloudUnb64(b64);
+  const text=enc==='gz'
+    ? await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).text()
+    : new TextDecoder().decode(bytes);
+  const o=JSON.parse(text);
+  return migrateState(decodeState(o&&o.state?o.state:o));
+}
+// The little card the other device's Load screen renders before it downloads anything.
+function cloudMetaFor(state){
+  const t=state.world.teams.find(x=>x.id===state.teamId);
+  return {coach:state.coach.first+' '+state.coach.last,team:t?t.name:'—',teamAbbr:t?t.abbr:'',
+    color:t?t.color:'#c9a227',week:state.week,phase:state.phase,year:state.year,
+    savedAt:state.lastSaved||Date.now(),wins:t&&t.rec?t.rec.w:0,losses:t&&t.rec?t.rec.l:0};
+}
+
+/* ---------- transport ---------- */
+async function cloudFetch(path,opts){
+  const c=cloudCfg();
+  if(!c.endpoint)throw new Error('No cloud endpoint set');
+  if(!c.code)throw new Error('No career code set');
+  const r=await fetch(c.endpoint.replace(/\/+$/,'')+path,Object.assign({},opts,{
+    headers:Object.assign({authorization:'Bearer '+c.code,'content-type':'application/json'},(opts&&opts.headers)||{})}));
+  let body=null;try{body=await r.json();}catch(e){}
+  if(!r.ok){const e=new Error((body&&(body.message||body.error))||('HTTP '+r.status));e.status=r.status;e.body=body;throw e;}
+  return body;
+}
+async function cloudList(){const r=await cloudFetch('/v1/careers');return (r&&r.careers)||[];}
+async function cloudPullCareer(id){
+  const head=await cloudFetch('/v1/careers/'+encodeURIComponent(id));
+  return {head,state:await cloudUnpack(head.enc,head.blob)};
+}
+async function cloudPushCareer(state,force){
+  const id=cloudCareerId(state),mark=cloudMark(id);
+  const savedAt=state.lastSaved||Date.now();       // captured BEFORE packing: a save during the
+  const pk=await cloudPack(state);                 // upload leaves the watermark stale → re-push
+  const r=await cloudFetch('/v1/careers/'+encodeURIComponent(id),{method:'PUT',body:JSON.stringify({
+    baseRev:force?0:(mark?mark.rev:0),force:!!force,meta:cloudMetaFor(state),
+    enc:pk.enc,blob:pk.blob,device:cloudCfg().device})});
+  cloudSetMark(id,{rev:r.rev,savedAt});
+  return r;
+}
+async function cloudRemove(id){await cloudFetch('/v1/careers/'+encodeURIComponent(id),{method:'DELETE'});cloudSetMark(id,null);}
+// Refresh the cached list the Load + Cloud screens read. Never throws — offline is normal.
+async function cloudRefresh(){
+  if(!cloudLinked())return null;
+  try{UI.cloudCareers=await cloudList();UI.cloudCareersAt=Date.now();
+    if(CLOUD_STATUS.state==='error'||CLOUD_STATUS.state==='offline')cloudSetStatus('idle','');
+    return UI.cloudCareers;}
+  catch(e){cloudSetStatus(navigator.onLine===false?'offline':'error',e.message);return null;}
+}
+
+/* ---------- the debounced push queue ---------- */
+let _cloudTimer=null,_cloudBusy=false,_cloudAgain=false,_cloudFails=0;
+function cloudQueue(){
+  const c=cloudCfg();
+  if(!S||!c.endpoint||!c.code||!c.auto)return;
+  if(CLOUD_STATUS.state==='conflict')return;              // frozen until the user picks a side
+  clearTimeout(_cloudTimer);_cloudTimer=setTimeout(()=>cloudFlush(),CLOUD_DEBOUNCE);
+  cloudSetStatus('pending','changes queued');
+}
+async function cloudFlush(manual){
+  clearTimeout(_cloudTimer);_cloudTimer=null;
+  if(!S||!cloudLinked())return null;
+  if(!manual&&CLOUD_STATUS.state==='conflict')return null;
+  if(_cloudBusy){_cloudAgain=true;return null;}
+  _cloudBusy=true;cloudSetStatus('syncing','uploading…');
+  try{
+    const r=await cloudPushCareer(S);
+    _cloudFails=0;cloudSetStatus('ok','saved to cloud');
+    if(UI.cloudCareers)UI.cloudCareers=null;              // list is stale now; refetch on demand
+    if(_cloudAgain){_cloudAgain=false;cloudQueue();}
+    return r;
+  }catch(e){
+    if(e.status===409){                                   // another device moved first
+      cloudSetStatus('conflict','another device is ahead');
+      cloudConflictSheet(e.body||{});
+      return null;
+    }
+    _cloudFails++;
+    cloudSetStatus(navigator.onLine===false?'offline':'error',e.message||'sync failed');
+    if(_cloudFails<6)_cloudTimer=setTimeout(()=>cloudFlush(),Math.min(60000,CLOUD_DEBOUNCE*Math.pow(2,_cloudFails)));
+    else if(manual)toast('Sync failed — '+(e.message||'try again later'));
+    return null;
+  }finally{_cloudBusy=false;}
+}
+// Status for one local slot (what badge the Load screen paints), or null when cloud is off.
+function cloudSlotStatus(slot){
+  if(!cloudLinked()||!slot||!slot.state)return null;
+  const id=(slot.meta&&slot.meta.careerId)||cloudCareerId(slot.state);
+  const c=(UI.cloudCareers||[]).find(x=>x.careerId===id)||null;
+  return Object.assign({careerId:id,cloud:c},
+    cloudResolve(cloudMark(id),{savedAt:slot.state.lastSaved||(slot.meta&&slot.meta.savedAt)||0},
+      c?{rev:c.rev,updatedAt:c.updatedAt,meta:c.meta}:null));
+}
+
+/* ---------- flows ---------- */
+// A push lost the race. Show both saves and let the coach pick — never silently overwrite.
+function cloudConflictSheet(head){
+  const body=el('div');
+  body.append(el('div','hint','This career was saved on another device after your last sync. Both versions still exist — choose which one continues.'));
+  const mine=cloudMetaFor(S),theirs=head.meta||{};
+  body.append(cloudCompareCard('On this device',mine,'Their save is '+(cloudProgress(theirs)>cloudProgress(mine)?'further along':'behind')));
+  body.append(cloudCompareCard('In the cloud'+(head.device?' ('+head.device+')':''),theirs,''));
+  const keepCloud=el('button','btn','Continue from the cloud');keepCloud.style.marginTop='14px';
+  keepCloud.onclick=async()=>{
+    closeSheet();toast('Downloading…');
+    try{
+      const id=cloudCareerId(S),{head:h,state}=await cloudPullCareer(id);
+      const n=findSlotFor(S)||cloudFirstFreeSlot()||1;
+      writeSlot(n,state);cloudSetMark(id,{rev:h.rev,savedAt:state.lastSaved});
+      S=state;cloudSetStatus('ok','using the cloud save');UI.view='home';render();toast('Loaded the cloud save');
+    }catch(e){cloudSetStatus('error',e.message);toast('Download failed — '+e.message);}
+  };
+  const keepMine=el('button','btn line','Keep this device’s save');keepMine.style.marginTop='9px';
+  keepMine.onclick=async()=>{
+    closeSheet();cloudSetStatus('syncing','overwriting the cloud…');
+    try{await cloudPushCareer(S,true);cloudSetStatus('ok','cloud overwritten');toast('Cloud updated from this device');}
+    catch(e){cloudSetStatus('error',e.message);toast('Upload failed — '+e.message);}
+  };
+  const later=el('button','btn ghost','Decide later');later.style.marginTop='9px';later.onclick=closeSheet;
+  body.append(keepMine,later);
+  openSheet('Two versions of this career',body);
+}
+function cloudCompareCard(title,meta,note){
+  const c=el('div','card');c.style.marginTop='10px';
+  const rec=(meta.wins!=null&&meta.losses!=null)?meta.wins+'–'+meta.losses:'';
+  c.innerHTML=`<div class="row spread"><div class="cond" style="font-weight:700">${title}</div>
+    <div class="meta dim">${meta.savedAt?timeAgo(meta.savedAt):''}</div></div>
+    <div class="meta">${meta.team||'—'} · ${meta.year||''} ${meta.phase||''}${meta.week?' · Wk '+meta.week:''}${rec?' · '+rec:''}</div>
+    ${note?'<div class="meta dim">'+note+'</div>':''}`;
+  return c;
+}
+function cloudFirstFreeSlot(){for(const n of SLOTS)if(!readSlot(n))return n;return null;}
+function cloudPickSlotSheet(title,sub,onPick){
+  const body=el('div');body.append(el('div','hint',sub));
+  SLOTS.forEach(n=>{
+    const ex=readSlot(n);
+    const b=el('button','btn '+(ex?'line':'ghost'),'Slot '+n+(ex?' — replace '+ex.meta.team:' — empty'));
+    b.style.marginTop='9px';
+    b.onclick=()=>{closeSheet();onPick(n);};
+    body.append(b);
+  });
+  const cancel=el('button','btn ghost','Cancel');cancel.style.marginTop='14px';cancel.onclick=closeSheet;
+  body.append(cancel);openSheet(title,body);
+}
+// Download a cloud career into a local slot (and load it if asked).
+async function cloudDownload(careerId,slotNo,thenLoad){
+  toast('Downloading…');cloudSetStatus('syncing','downloading…');
+  try{
+    const {head,state}=await cloudPullCareer(careerId);
+    writeSlot(slotNo,state);                       // stamps a fresh lastSaved…
+    cloudSetMark(careerId,{rev:head.rev,savedAt:state.lastSaved});   // …so mark it clean after
+    cloudSetStatus('ok','downloaded');
+    UI.cloudCareers=null;
+    if(thenLoad){S=state;UI.view='home';render();toast('Career loaded');}
+    else{render();toast('Saved to slot '+slotNo);}
+  }catch(e){cloudSetStatus('error',e.message);toast('Download failed — '+e.message);}
+}
+// Loading a slot the cloud has moved past: offer the newer copy instead of silently rewinding.
+function cloudLoadSlot(n,slot){
+  const open=()=>{S=migrateState(decodeState(slot.state));UI.view='home';render();};
+  const st=cloudSlotStatus(slot);
+  if(!st||st.action!=='pull'||!st.cloud){open();return;}
+  const body=el('div');
+  body.append(el('div','hint','A newer save for this career is in the cloud.'));
+  body.append(cloudCompareCard('In the cloud'+(st.cloud.device?' ('+st.cloud.device+')':''),st.cloud.meta||{},''));
+  body.append(cloudCompareCard('On this device',slot.meta||{},''));
+  const go=el('button','btn','Continue from the cloud');go.style.marginTop='14px';
+  go.onclick=()=>{closeSheet();cloudDownload(st.careerId,n,true);};
+  const local=el('button','btn line','Open this device’s save');local.style.marginTop='9px';
+  local.onclick=()=>{closeSheet();open();};
+  body.append(go,local);
+  openSheet('Continue where you left off?',body);
+}
 
 /* ---------- test hooks: deterministic seed / slot reset via URL ----------
    ?seed=N  → New Game uses seed N (reproducible world for screenshots/assertions)
@@ -631,7 +924,7 @@ function deleteSlot(n){localStorage.removeItem(slotKey(n));}
    #app carries data-screen / data-tab. S, UI, controlled() are global for evaluate(). */
 const _QS=new URLSearchParams(location.search);
 const TEST_SEED=_QS.has('seed')?((parseInt(_QS.get('seed'),10)||0)>>>0):null;
-if(_QS.get('reset')==='1')SLOTS.forEach(n=>deleteSlot(n));
+if(_QS.get('reset')==='1'){SLOTS.forEach(n=>deleteSlot(n));cloudDisconnect();}   // Phase 47: unlink too, so a test run is hermetic
 
 /* ---------- live game state ---------- */
 let S=null;            // current state
@@ -653,6 +946,7 @@ function render(){
   app.dataset.screen=UI.view; app.dataset.tab=UI.tab||'';   // test hooks
   if(UI.view==='menu')         return renderMenu(app);
   if(UI.view==='load')         return renderLoad(app);
+  if(UI.view==='cloud')        return renderCloud(app);   // Phase 47 — works with or without a live career
   if(UI.view==='newgame')      return renderNewGame(app);
   if(UI.view==='browse_pick')  return renderBrowse(app,true);
   // in-game views
@@ -684,21 +978,41 @@ function renderMenu(app){
   const ld=el('button','btn ghost','Load Game');
   ld.onclick=()=>{UI.view='load';render();};
   hero.append(nw,ld);
+  const cl=el('button','btn line',cloudLinked()?'Cloud saves — connected':'Cloud saves');   // Phase 47
+  cl.style.marginTop='9px';cl.dataset.tid='menu-cloud';
+  cl.onclick=()=>{UI.cloudBack='menu';UI.view='cloud';render();};
+  hero.append(cl);
   const any=SLOTS.some(n=>readSlot(n));
-  if(!any){const h=el('div','hint center');h.style.marginTop='22px';h.textContent='No saved careers yet. Start a new game to take over a program.';hero.append(h);}
+  if(!any){const h=el('div','hint center');h.style.marginTop='22px';h.textContent='No saved careers yet. Start a new game, or pull one down with a career code.';hero.append(h);}
   app.append(hero);
 }
 
 /* ---------- load / slot manager ---------- */
+// Phase 47: each slot also carries its cloud standing, and any career that lives only in the
+// cloud (started on another device) shows up underneath, one tap from being downloaded.
+function cloudBadge(st){
+  if(!st)return null;
+  const txt={insync:'☁ In sync',push:'☁ Not uploaded',pull:'☁ Newer in cloud',conflict:'☁ Two versions',none:''}[st.action]||'';
+  if(!txt)return null;
+  const b=el('span','meta');b.dataset.tid='cloud-badge';b.dataset.action=st.action;
+  b.style.cssText='font-weight:700;'+(st.action==='insync'?'opacity:.65':'color:var(--accent)');
+  b.textContent=txt;return b;
+}
 function renderLoad(app){
   applyAccent(null);
   const v=el('div','view');
   v.append(headerBar('Save Slots','Load, overwrite, or delete',()=>{UI.view='menu';render();}));
+  const cbtn=el('button','btn line',cloudLinked()?'Cloud saves'+cloudStatusSuffix():'Set up cloud saves');
+  cbtn.dataset.tid='load-cloud';
+  cbtn.onclick=()=>{UI.cloudBack='load';UI.view='cloud';render();};
+  v.append(cbtn);
+  const localIds=[];
   SLOTS.forEach(n=>{
     const slot=readSlot(n);
     const c=el('div','card');
     if(slot){
-      const m=slot.meta;
+      const m=slot.meta,st=cloudSlotStatus(slot);
+      if(st)localIds.push(st.careerId);
       c.innerHTML=`<div class="row spread">
         <div class="row">
           <div class="crest" style="background:${m.color};color:${textOn(m.color)}">${m.teamAbbr}</div>
@@ -706,17 +1020,185 @@ function renderLoad(app){
           <div class="meta">${m.coach} · ${m.phase} · Wk ${m.week}</div>
           <div class="meta dim">Saved ${timeAgo(m.savedAt)}</div></div>
         </div></div>`;
+      const badge=cloudBadge(st);
+      if(badge){const r=el('div');r.style.marginTop='6px';r.append(badge);c.append(r);}
       const br=el('div','btn-row');
       const load=el('button','btn sm','Load');
-      load.onclick=()=>{S=migrateState(decodeState(slot.state));UI.view='home';render();};
+      load.onclick=()=>cloudLoadSlot(n,slot);
       const del=el('button','btn sm danger','Delete');
-      del.onclick=()=>confirmSheet('Delete this career?',m.team+' — '+m.coach,()=>{deleteSlot(n);toast('Slot deleted');render();});
+      del.onclick=()=>cloudDeleteSlotSheet(n,slot,st);
       br.append(load,del);c.append(br);
     }else{
       c.innerHTML=`<div class="empty" style="padding:18px">Slot ${n} — empty</div>`;
     }
     v.append(el('h2','sec','Slot '+n),c);
   });
+  // careers that exist only in the cloud
+  const remote=(UI.cloudCareers||[]).filter(x=>localIds.indexOf(x.careerId)<0);
+  if(cloudLinked()&&remote.length){
+    v.append(el('h2','sec','In the cloud'));
+    remote.forEach(x=>v.append(cloudCareerCard(x,true)));
+  }
+  if(cloudLinked()&&!UI.cloudCareers)cloudRefresh().then(r=>{if(r&&UI.view==='load')render();});
+  app.append(v);
+}
+// One cloud career, rendered the same on the Load screen and the Cloud screen.
+function cloudCareerCard(x,withDownload){
+  const m=x.meta||{},c=el('div','card');c.dataset.id=x.careerId;
+  const rec=(m.wins!=null&&m.losses!=null)?' · '+m.wins+'–'+m.losses:'';
+  c.innerHTML=`<div class="row">
+      <div class="crest" style="background:${m.color||'#c9a227'};color:${textOn(m.color||'#c9a227')}">${m.teamAbbr||'??'}</div>
+      <div><div class="cond" style="font-size:18px;font-weight:700">${m.team||'—'}</div>
+      <div class="meta">${m.coach||''} · ${m.year||''} ${m.phase||''}${m.week?' · Wk '+m.week:''}${rec}</div>
+      <div class="meta dim">${x.device?x.device+' · ':''}rev ${x.rev} · ${x.updatedAt?timeAgo(x.updatedAt):''}${x.size?' · '+Math.round(x.size/1024)+' KB':''}</div></div>
+    </div>`;
+  const br=el('div','btn-row');
+  if(withDownload){
+    const dl=el('button','btn sm','Download');dl.dataset.tid='cloud-download';
+    dl.onclick=()=>{
+      const free=cloudFirstFreeSlot();
+      if(free)cloudDownload(x.careerId,free,false);
+      else cloudPickSlotSheet('Download to which slot?','All three slots are full — pick one to replace.',n=>cloudDownload(x.careerId,n,false));
+    };
+    br.append(dl);
+  }
+  const rm=el('button','btn sm danger','Remove');
+  rm.onclick=()=>confirmSheet('Remove from the cloud?',(m.team||'This career')+' stays on any device that already has it.',
+    async()=>{try{await cloudRemove(x.careerId);UI.cloudCareers=null;await cloudRefresh();render();toast('Removed from the cloud');}
+      catch(e){toast('Failed — '+e.message);}});
+  br.append(rm);c.append(br);
+  return c;
+}
+// Deleting a local slot: when the career is also in the cloud, "delete" is two different acts.
+function cloudDeleteSlotSheet(n,slot,st){
+  const m=slot.meta;
+  if(!st||!st.cloud){
+    confirmSheet('Delete this career?',m.team+' — '+m.coach,()=>{deleteSlot(n);toast('Slot deleted');render();});
+    return;
+  }
+  const body=el('div');
+  body.append(el('div','hint','This career is also saved in the cloud. Clearing the slot keeps the cloud copy, so you can download it again later.'));
+  const localOnly=el('button','btn line','Clear this slot only');localOnly.style.marginTop='14px';
+  localOnly.onclick=()=>{closeSheet();deleteSlot(n);render();toast('Slot cleared — cloud copy kept');};
+  const both=el('button','btn danger','Delete everywhere');both.style.marginTop='9px';
+  both.onclick=()=>{closeSheet();confirmSheet('Delete everywhere?',m.team+' — '+m.coach+'. This cannot be undone.',async()=>{
+    deleteSlot(n);
+    try{await cloudRemove(st.careerId);UI.cloudCareers=null;}catch(e){toast('Cloud copy not removed — '+e.message);}
+    render();toast('Career deleted');});};
+  const cancel=el('button','btn ghost','Cancel');cancel.style.marginTop='9px';cancel.onclick=closeSheet;
+  body.append(localOnly,both,cancel);
+  openSheet('Delete '+m.team+'?',body);
+}
+
+/* ---------- cloud screen (setup + status + the cloud's careers) ---------- */
+function renderCloud(app){
+  applyAccent(S?controlled():null);
+  const c=cloudCfg();
+  const v=el('div','view');
+  v.append(headerBar('Cloud Saves','Continue this career on any device',()=>{UI.view=UI.cloudBack||'menu';render();}));
+
+  // 1) endpoint
+  v.append(el('h2','sec','Endpoint'));
+  const ec=el('div','card');
+  if(!c.endpoint)ec.append(el('div','hint','Paste the API URL from your deployed backend (infra/README.md → sam deploy prints it as ApiUrl). Until then, saves stay on this device only.'));
+  let epDraft=c.endpoint;
+  const epIn=inputEl(c.endpoint,val=>{epDraft=val;},'https://….lambda-url.us-east-1.on.aws/','url');
+  epIn.dataset.tid='cloud-endpoint';
+  const epFld=fld('API URL',epIn);epFld.style.marginTop='12px';ec.append(epFld);
+  const save=el('button','btn sm',c.endpoint?'Update':'Connect');save.dataset.tid='cloud-connect';
+  save.onclick=async()=>{
+    const url=(epDraft||'').trim();
+    if(url&&!/^https?:\/\//i.test(url)){toast('That doesn’t look like a URL');return;}
+    cloudSetCfg({endpoint:url});UI.cloudCareers=null;
+    if(url&&cloudCfg().code)await cloudRefresh();
+    render();toast(url?'Endpoint saved':'Endpoint cleared');
+  };
+  const br0=el('div','btn-row');br0.append(save);ec.append(br0);
+  v.append(ec);
+
+  // 2) career code — the whole identity model
+  v.append(el('h2','sec','Career code'));
+  const cc=el('div','card');
+  if(c.code){
+    const shown=UI.cloudShowCode?cloudFormatCode(c.code):'SIDE-••••-••••-••••';
+    const box=el('div','cond');box.dataset.tid='cloud-code';
+    box.style.cssText='font-size:22px;font-weight:700;letter-spacing:2px;padding:8px 0';
+    box.textContent=shown;
+    cc.append(box,el('div','hint','Type this on your other device to reach the same careers. Anyone with it can load your saves — treat it like a password.'));
+    const br=el('div','btn-row');
+    const rev=el('button','btn sm',UI.cloudShowCode?'Hide':'Reveal');
+    rev.onclick=()=>{UI.cloudShowCode=!UI.cloudShowCode;render();};
+    const cp=el('button','btn sm','Copy');
+    cp.onclick=()=>{const t=cloudFormatCode(c.code);
+      if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t).then(()=>toast('Code copied'),()=>toast(t));
+      else{UI.cloudShowCode=true;render();toast(t);}};
+    const dc=el('button','btn sm danger','Disconnect');
+    dc.onclick=()=>confirmSheet('Disconnect this device?','Cloud copies stay put. You’ll need the code again to reconnect — make sure it’s written down.',
+      ()=>{cloudDisconnect();UI.cloudCareers=null;cloudSetStatus('idle','');render();toast('Disconnected');});
+    br.append(rev,cp,dc);cc.append(br);
+  }else{
+    cc.append(el('div','hint','Mint a code on the device you play on most, then enter that same code on your other devices.'));
+    const mint=el('button','btn sm','Create a career code');mint.dataset.tid='cloud-mint';
+    mint.onclick=()=>{
+      const rand=(window.crypto&&window.crypto.getRandomValues)
+        ? ()=>window.crypto.getRandomValues(new Uint32Array(1))[0]/4294967296
+        : Math.random;
+      cloudSetCfg({code:cloudMintCode(rand)});UI.cloudShowCode=true;UI.cloudCareers=null;
+      render();toast('Code created — write it down');
+      if(S)cloudFlush(true);
+    };
+    const brm=el('div','btn-row');brm.append(mint);cc.append(brm);
+    let codeDraft='';
+    const ci=inputEl('',val=>{codeDraft=val;},'SIDE-XXXX-XXXX-XXXX');ci.dataset.tid='cloud-code-input';
+    cc.append(fld('Or enter an existing code',ci));
+    const join=el('button','btn sm','Use this code');join.dataset.tid='cloud-join';
+    join.onclick=async()=>{
+      const code=cloudValidCode(codeDraft);
+      if(!code){toast('That code doesn’t look right — 12 letters/digits');return;}
+      if(!cloudCfg().endpoint){toast('Set the endpoint first');return;}
+      cloudSetCfg({code});UI.cloudCareers=null;UI.cloudShowCode=false;
+      const list=await cloudRefresh();render();
+      toast(list?(list.length?list.length+' career'+(list.length>1?'s':'')+' found':'Connected — no careers yet'):'Connected — couldn’t reach the cloud');
+    };
+    const br=el('div','btn-row');br.append(join);cc.append(br);
+  }
+  v.append(cc);
+
+  // 3) this device
+  if(cloudLinked()){
+    v.append(el('h2','sec','This device'));
+    const dc=el('div','card');
+    const row=el('div','row spread');
+    row.append(el('div','cond',CLOUD_STATUS_LABEL[CLOUD_STATUS.state]||'Idle'));
+    row.append(el('div','meta dim',CLOUD_STATUS.at?timeAgo(CLOUD_STATUS.at):''));
+    dc.append(row);
+    if(CLOUD_STATUS.msg)dc.append(el('div','meta dim',CLOUD_STATUS.msg));
+    dc.append(el('div','meta','Known here as “'+c.device+'”'));
+    const auto=el('button','btn sm'+(c.auto?'':' line'),c.auto?'Auto-sync: on':'Auto-sync: off');
+    auto.onclick=()=>{cloudSetCfg({auto:!c.auto});render();toast(c.auto?'Auto-sync off':'Auto-sync on');};
+    const now=el('button','btn sm','Sync now');now.dataset.tid='cloud-sync-now';
+    now.onclick=async()=>{
+      if(S)await cloudFlush(true);
+      UI.cloudCareers=null;await cloudRefresh();render();
+      toast(S?'Synced':'Cloud refreshed');
+    };
+    const br=el('div','btn-row');br.append(now,auto);dc.append(br);
+    if(!S)dc.append(el('div','hint','No career is open — “Sync now” just refreshes the list below.'));
+    v.append(dc);
+
+    // 4) what's up there
+    v.append(el('h2','sec','Careers in the cloud'));
+    const list=UI.cloudCareers;
+    if(!list){
+      v.append(el('div','card','<div class="empty" style="padding:18px">Loading…</div>'));
+      cloudRefresh().then(r=>{if(UI.view==='cloud')render();});
+    }else if(!list.length){
+      v.append(el('div','card','<div class="empty" style="padding:18px">Nothing here yet. Play a week — your career uploads automatically.</div>'));
+    }else{
+      const localIds=SLOTS.map(n=>readSlot(n)).filter(Boolean).map(s=>(s.meta&&s.meta.careerId)||cloudCareerId(s.state));
+      list.forEach(x=>v.append(cloudCareerCard(x,localIds.indexOf(x.careerId)<0)));
+    }
+  }
   app.append(v);
 }
 
@@ -789,7 +1271,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:42,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:43,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      rivalries:null,rivalryHeat:null,records:null,lastRealign:null,
@@ -1061,6 +1543,10 @@ function migrateState(state){
   if((state.version||1)<42){           // Phase 46: in-game screen — individual play-calling. A game's g.calls now
     state.version=42;                  // may hold play-concept variant tokens (pass:pa/screen/deep, run:draw) or an
   }                                    // any-down 'fg'; all ride in the existing optional g.calls array → no-op.
+  if((state.version||1)<43){           // Phase 47: cloud saves. Deliberately a structural no-op — the sync data
+    state.version=43;                  // (endpoint, career code, per-career watermarks) lives in its own
+  }                                    // localStorage key, and a career's cloud id is DERIVED from createdAt+seed,
+                                       // so an old save uploads unchanged and keeps one identity across devices.
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -7143,9 +7629,12 @@ function menuSheet(){
   save.onclick=()=>{const slot=findSlotFor(S);if(slot){writeSlot(slot,S);toast('Saved to slot '+slot);}else chooseSlotSheet();closeSheet();};
   const saveAs=el('button','btn ghost','Save to a slot…');saveAs.style.marginTop='9px';
   saveAs.onclick=()=>{closeSheet();chooseSlotSheet();};
+  const cloud=el('button','btn ghost','Cloud saves'+cloudStatusSuffix());
+  cloud.style.marginTop='9px';cloud.dataset.tid='menu-cloud';
+  cloud.onclick=()=>{closeSheet();UI.cloudBack='home';UI.view='cloud';render();};
   const quit=el('button','btn line','Quit to main menu');quit.style.marginTop='9px';
-  quit.onclick=()=>{closeSheet();confirmSheet('Quit to menu?','Unsaved progress is lost.',()=>{S=null;UI.view='menu';render();});};
-  body.append(save,saveAs,quit);
+  quit.onclick=()=>{closeSheet();cloudFlush();confirmSheet('Quit to menu?','Unsaved progress is lost.',()=>{S=null;UI.view='menu';render();});};
+  body.append(save,saveAs,cloud,quit);
   openSheet('Menu',body);
 }
 function findSlotFor(state){for(const n of SLOTS){const s=readSlot(n);if(s&&s.state&&s.state.createdAt===state.createdAt)return n;}return null;}
@@ -7193,6 +7682,12 @@ function confirmSheet(title,sub,onYes){
 
 /* ---------- boot ---------- */
 render();
+/* Phase 47: cloud sync is opt-in and never blocks boot. Flush a queued push when the tab
+   goes away (the 5s debounce is the only exposure), retry when the network comes back, and
+   warm the career list once so the Load screen can badge slots the moment it opens. */
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')cloudFlush();});
+window.addEventListener('online',()=>{if(CLOUD_STATUS.state==='offline'||CLOUD_STATUS.state==='error')cloudFlush();});
+if(cloudLinked())cloudRefresh().then(()=>{if(UI.view==='load'||UI.view==='cloud')render();});
 </script>
 </body>
 </html>

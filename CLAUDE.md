@@ -10,8 +10,9 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > - `docs/phases/recruiting.md` — recruiting, signing, portal, visits (Phases 4, 14, 16, 17, 33–38)
 > - `docs/phases/offseason.md` — rollover, program, postseason, draft, championships, camp, realignment (Phases 5, 6–9, 12, 13, 15, 18, 32, 39, 43, 44)
 > - `docs/phases/identity-media.md` — traits, morale, media, rivalries, records, contract, legends, identity (Phases 10, 11, 19, 20, 40, 41, 42, 45)
+> - `docs/phases/cloud.md` — cloud saves: AWS backend, career codes, sync/conflict model (Phase 47)
 >
-> **All roadmap phases 1–45 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–47 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -26,7 +27,10 @@ Currently a single self-contained file: `index.html`. To work on it:
   root). The hosted URL is a stable origin, so `localStorage` saves persist across visits.
 
 **Save data note:** saves are keyed to the origin. The file opened locally, the Pages URL,
-and a different host are *separate* save stores. This is expected.
+and a different host are *separate* save stores. This is expected. **Cloud saves (Phase 47)**
+are the way across that line *and* across devices — optional, off until you deploy `infra/`
+(one `sam deploy`) and paste the endpoint + a career code into Menu → Cloud saves. With no
+endpoint the game is exactly what it was: static, offline, `localStorage` only.
 
 If/when this is split into modules, keep the build output as plain static files so Pages
 still serves it with zero config.
@@ -82,6 +86,7 @@ still serves it with zero config.
 - **Phase 44 — Career-balance & economy pass.** Softened mandate/hot-seat curve, recruiting/portal autopilot floor, economy sink + prestige drift, carousel upward mobility, DC rng substream. Save v40.
 - **Phase 45 — Player identity.** Derived jersey #/nickname/known-for/backstory/fan-favorite + captured signature moments (`p.moments`); identity everywhere (45.1). Save v41. `identitylab`.
 - **Phase 46 — In-game screen.** Deeper opt-in play-calling over Phases 22–31: named play concepts + SVG play-art (`PLAYBOOK`), live off/def tendency reads (Play Action punishes a run-committed front), 15-min quarters, halftime, both-way field, play past 0:00, FG any down. AI/defer byte-identical. Save v42. *(→ `docs/phases/gameday.md`.)*
+- **Phase 47 — Cloud saves.** Opt-in cross-device continuation: a career mirrors to your own AWS stack (Lambda Function URL → DynamoDB slot index + private S3 blob), identified by a 60-bit **career code** (no accounts). `localStorage` stays the fast path; pushes are debounced behind `writeSlot`, and a genuine two-device divergence shows both saves and asks. Save v43 (structural no-op). `cloudlab`. *(→ `docs/phases/cloud.md`, `infra/README.md`.)*
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
@@ -151,10 +156,16 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - `recomputeRanks(world)` — re-sorts ranks after edits/imports.
 - Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
   Each slot stores `{ meta, state }`; `meta` powers the load screen.
+- **Cloud sync (Phase 47)** hangs off that same seam: `writeSlot` queues a debounced push
+  (`cloudQueue` → `cloudFlush`), never blocking the local write. Config lives in its own key
+  `sideline_cloud` (`{endpoint, code, auto, device, careers:{careerId:{rev,savedAt}}}`) — a
+  career's cloud id is *derived* (`cloudCareerId` = createdAt+seed), so nothing about sync is
+  stored inside `state`. The pure decision (`cloudResolve`) is fenced as the CLOUD ENGINE and
+  gated by `cloudlab`; the backend is `infra/` (SAM). See `docs/phases/cloud.md`.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **42**). Each step backfills the fields its phase added and re-derives
+  (currently **43**). Each step backfills the fields its phase added and re-derives
   ratings/ranks where needed; most recent steps are structural no-ops (sparse per-player
-  fields / derived data read as their defaults). The full v1→v42 migration ladder is
+  fields / derived data read as their defaults). The full v1→v43 migration ladder is
   documented inline in `migrateState` in `index.html`, and each phase's design doc in
   `docs/phases/` records its save-shape change. **Bump `version` + extend `migrateState`
   on any save-shape change.**
@@ -360,12 +371,14 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
 ### Gates (all must be green each phase)
-**Twenty-one green gates** via `npm run <name>`: `simlab` · `reclab` · `rolllab` · `econlab` ·
+**Twenty-three green gates** via `npm run <name>`: `simlab` · `reclab` · `rolllab` · `econlab` ·
 `awardlab` · `traitlab` · `schemelab` · `legacylab` · `postlab` · `draftlab` · `champlab` ·
 `portallab` · `medialab` · `camplab` · `visitlab` · `rivalrylab` · `recordlab` · `contractlab` ·
-`realignlab` · `identitylab` · `qa`. Each pure engine has an offline node lab that extracts the
-fenced block from `index.html`; `qa` is the in-browser end-to-end. Add per-phase checks to the
-relevant lab + `qa` on any change; bump the save `version` + `migrateState` on any save-shape change.
+`realignlab` · `identitylab` · `cloudlab` · `lambdalab` · `qa`. Each pure engine has an offline node lab
+that extracts the fenced block from `index.html`; `qa` is the in-browser end-to-end. `lambdalab` is the
+odd one out — it runs the cloud backend (`infra/lambda/index.mjs`, the only code that doesn't run in the
+browser) against in-memory DynamoDB/S3 stubs. Add per-phase checks to the relevant lab + `qa` on any
+change; bump the save `version` + `migrateState` on any save-shape change.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Non-controlled games are resolved instantly by `simEngine`; only the controlled team's game

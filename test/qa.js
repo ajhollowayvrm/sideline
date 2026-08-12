@@ -860,7 +860,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 42 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 43 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -877,7 +877,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v42)', mig.v === 42, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v43)', mig.v === 43, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -1349,7 +1349,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 42', roPost.version === 42, 'v' + roPost.version);
+  check('Rollover: save version bumped to 43', roPost.version === 43, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);
@@ -1536,6 +1536,106 @@ function startServer() {
   check('Phase 9: codec preserves top-level state (seed/year/awards/…)', codec.topOk);
   check('Phase 9: encoded save is meaningfully smaller', codec.encLen < codec.full * 0.78, `${(codec.full / 1024 | 0)}KB → ${(codec.encLen / 1024 | 0)}KB`);
   check('Phase 9: encode tags the blob, decode strips the tag', codec.encMarker && codec.decClean);
+
+  // ---------- PHASE 47: cloud saves (push → pull → conflict, against a mocked endpoint) ----------
+  // Stands up an in-memory implementation of the real API inside the page (same routes, same
+  // optimistic-rev semantics) so the whole client path is exercised — gzip pack, base64 wire
+  // format, watermarking, the 409 conflict sheet — with no AWS deploy in the loop.
+  const cloud = await page.evaluate(async () => {
+    const out = {};
+    const srv = {};                                  // careerId -> record, i.e. the DynamoDB item
+    const realFetch = window.fetch;
+    window.fetch = async (url, opts = {}) => {
+      const u = String(url), body = opts.body ? JSON.parse(opts.body) : null;
+      const method = opts.method || 'GET';
+      const hdr = opts.headers || {};
+      const J = (status, b) => new Response(JSON.stringify(b), { status, headers: { 'content-type': 'application/json' } });
+      if (!/^Bearer [0-9A-HJKMNP-TV-Z]{12}$/.test(hdr.authorization || '')) return J(401, { error: 'bad_code' });
+      const m = /\/v1\/careers\/([^/?]+)/.exec(u);
+      if (!m) return J(200, { careers: Object.keys(srv).map(k => { const { blob, ...rest } = srv[k]; return rest; }) });
+      const id = decodeURIComponent(m[1]), cur = srv[id];
+      if (method === 'GET') return cur ? J(200, cur) : J(404, { error: 'not_found' });
+      if (method === 'DELETE') { delete srv[id]; return J(200, { ok: true }); }
+      const base = Number(body.baseRev) || 0;
+      if (!body.force && base !== (cur ? cur.rev : 0)) { const { blob, ...rest } = cur || { rev: 0 }; return J(409, { error: 'conflict', ...rest }); }
+      const rev = (body.force ? (cur ? cur.rev : 0) : base) + 1;
+      srv[id] = { careerId: id, rev, meta: body.meta, enc: body.enc, blob: body.blob,
+        device: body.device, size: body.blob.length, updatedAt: Date.now() };
+      return J(200, { careerId: id, rev, updatedAt: srv[id].updatedAt });
+    };
+
+    // connect this "device"
+    cloudSetCfg({ endpoint: 'https://cloud.test', code: cloudMintCode(Math.random), device: 'QA' });
+    out.linked = cloudLinked();
+    const id = cloudCareerId(S);
+    out.idShape = /^[a-z0-9-]{1,64}$/.test(id);
+
+    // 1) first push
+    const r1 = await cloudPushCareer(S);
+    out.rev1 = r1.rev;
+    out.marked = JSON.stringify(cloudMark(id));
+    out.rawLen = JSON.stringify(encodeState(S)).length;
+    out.wireLen = srv[id].blob.length;
+    out.enc = srv[id].enc;
+    out.metaTeam = srv[id].meta.team === (controlled() || {}).name;
+
+    // 2) it lists, and pulls back as the same world
+    const list = await cloudList();
+    out.listed = list.length === 1 && list[0].careerId === id && list[0].blob === undefined;
+    const pulled = await cloudPullCareer(id);
+    const a = S, b = pulled.state;
+    const players = t => t.reduce((n, x) => n + x.roster.length, 0);
+    out.roundTrip = b.teamId === a.teamId && b.year === a.year && b.week === a.week && b.seed === a.seed &&
+      b.version === a.version && b.world.teams.length === a.world.teams.length &&
+      players(b.world.teams) === players(a.world.teams);
+    // Key-wise, not JSON.stringify: the codec rebuilds players in SAVE_PKEYS order, so key
+    // ORDER legitimately differs while every value must match (same rule as the Phase 9 check).
+    const eqp = (p, q) => { const kp = Object.keys(p), kq = Object.keys(q); return kp.length === kq.length && kp.every(k => JSON.stringify(p[k]) === JSON.stringify(q[k])); };
+    let exact = true, seen = 0;
+    a.world.teams.forEach((t, i) => t.roster.forEach((p, j) => { seen++; if (!eqp(p, b.world.teams[i].roster[j])) exact = false; }));
+    out.playerExact = exact; out.playersChecked = seen;
+
+    // 3) another device gets there first → the next push must 409 into a choice, not overwrite
+    srv[id].rev = 5; srv[id].meta = Object.assign({}, srv[id].meta, { week: (S.week || 0) + 3, savedAt: Date.now() });
+    srv[id].device = 'Phone';
+    S.lastSaved = Date.now() + 1000;                 // this device played too → genuinely divergent
+    await cloudFlush(true);
+    out.conflictStatus = CLOUD_STATUS.state;
+    out.conflictSheet = !!document.querySelector('[data-tid="sheet"]');
+    out.serverIntact = srv[id].rev === 5 && srv[id].device === 'Phone';   // loser never clobbers
+    closeSheet();
+
+    // 4) resolving by keeping this device's save forces past the conflict
+    const r2 = await cloudPushCareer(S, true);
+    out.forcedRev = r2.rev;
+    out.afterForce = cloudResolve(cloudMark(id), { savedAt: S.lastSaved }, { rev: srv[id].rev }).action;
+
+    // 5) the Cloud screen renders while connected
+    UI.cloudCareers = null;
+    UI.view = 'cloud'; render();
+    out.screen = !!document.querySelector('[data-tid="cloud-code"]') && !!document.querySelector('[data-tid="cloud-sync-now"]');
+
+    // 6) an unreachable endpoint degrades quietly instead of throwing
+    window.fetch = async () => { throw new TypeError('Failed to fetch'); };
+    out.offlineSafe = (await cloudRefresh()) === null && ['error', 'offline'].includes(CLOUD_STATUS.state);
+
+    // teardown — unlink so the rest of the gate runs exactly as before
+    window.fetch = realFetch;
+    cloudDisconnect(); cloudSetStatus('idle', '');
+    UI.view = 'home'; render();
+    out.torndown = !cloudLinked();
+    return out;
+  });
+  check('Phase 47: a career pushes to the cloud and is watermarked', cloud.linked && cloud.idShape && cloud.rev1 === 1 && /"rev":1/.test(cloud.marked));
+  check('Phase 47: the save gzips down for the wire', cloud.enc === 'gz' && cloud.wireLen < cloud.rawLen * 0.4,
+    `${(cloud.rawLen / 1024 | 0)}KB → ${(cloud.wireLen / 1024 | 0)}KB base64`);
+  check('Phase 47: the cloud list carries the meta card without the blob', cloud.listed && cloud.metaTeam);
+  check('Phase 47: a pulled save round-trips to the same world', cloud.roundTrip && cloud.playerExact, cloud.playersChecked + ' players checked');
+  check('Phase 47: a stale push conflicts instead of overwriting', cloud.conflictStatus === 'conflict' && cloud.conflictSheet && cloud.serverIntact);
+  check('Phase 47: keeping this device’s save resolves the conflict', cloud.forcedRev === 6 && cloud.afterForce === 'insync');
+  check('Phase 47: the Cloud screen renders when connected', cloud.screen);
+  check('Phase 47: an unreachable cloud fails soft (no throw)', cloud.offlineSafe);
+  check('Phase 47: disconnecting leaves the game local-only', cloud.torndown);
 
   // ---------- PHASE 19c: firing → coaching search (take a job) or retire ----------
   // (Runs last — it switches teamId / retires, so it must follow every teamId-dependent check above.)

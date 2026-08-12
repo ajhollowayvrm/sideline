@@ -24,7 +24,9 @@
     "recordlab": "node test/recordlab.js",
     "contractlab": "node test/contractlab.js",
     "realignlab": "node test/realignlab.js",
-    "identitylab": "node test/identitylab.js"
+    "identitylab": "node test/identitylab.js",
+    "cloudlab": "node test/cloudlab.js",
+    "lambdalab": "node test/lambdalab.js"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

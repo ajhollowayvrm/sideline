@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Sideline cloud saves — a Lambda Function URL in front of a DynamoDB slot index and a
+  private S3 blob store. Deploy once, paste the output URL into the game's Cloud screen.
+
+Parameters:
+  AllowOrigin:
+    Type: String
+    Default: '*'
+    Description: >
+      Browser origin allowed to call the API, e.g. https://yourname.github.io. Leave as *
+      while testing from file:// or localhost; tighten it once the game is on Pages.
+  MaxConcurrency:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 100
+    Description: Reserved Lambda concurrency — a hard ceiling on runaway cost.
+  MaxBlobChars:
+    Type: Number
+    Default: 5000000
+    Description: Largest accepted save, in base64 characters (~3.7 MB of gzip).
+
+Globals:
+  Function:
+    Runtime: nodejs24.x
+    Architectures: [arm64]
+    Timeout: 20
+    MemorySize: 512
+
+Resources:
+  # ---- save blobs (gzipped JSON, one object per revision, never public) ----------------
+  SaveBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }
+
+  # ---- slot index (rev + the little meta card the Load screen renders) -----------------
+  SaveTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: owner,  AttributeType: S }   # o#sha256(pepper:careerCode)
+        - { AttributeName: career, AttributeType: S }   # c#<careerId>
+      KeySchema:
+        - { AttributeName: owner,  KeyType: HASH }
+        - { AttributeName: career, KeyType: RANGE }
+      SSESpecification: { SSEEnabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+
+  SyncFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda/
+      Handler: index.handler
+      Description: Sideline cloud-save API (list / pull / push / delete).
+      ReservedConcurrentExecutions: !Ref MaxConcurrency
+      Environment:
+        Variables:
+          TABLE: !Ref SaveTable
+          BUCKET: !Ref SaveBucket
+          MAX_BLOB: !Ref MaxBlobChars
+          # Per-deploy pepper: career codes are hashed with it, so the table alone can never
+          # be turned back into working codes. StackId is unique and stable for this stack.
+          PEPPER: !Ref AWS::StackId
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref SaveTable }
+        - S3CrudPolicy: { BucketName: !Ref SaveBucket }
+      FunctionUrlConfig:
+        AuthType: NONE          # auth is the bearer career code, checked in the handler
+        Cors:
+          AllowOrigins: [!Ref AllowOrigin]
+          AllowMethods: [GET, PUT, DELETE]
+          AllowHeaders: [authorization, content-type]
+          MaxAge: 3600
+
+  # Keep logs cheap — saves are the durable thing here, not request logs.
+  SyncLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${SyncFunction}
+      RetentionInDays: 14
+
+Outputs:
+  ApiUrl:
+    Description: Paste this into the game — Menu → Cloud saves → Endpoint.
+    Value: !GetAtt SyncFunctionUrl.FunctionUrl
+  TableName:
+    Value: !Ref SaveTable
+  BucketName:
+    Value: !Ref SaveBucket

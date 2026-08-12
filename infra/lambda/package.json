@@ -1,0 +1,8 @@
+{
+  "name": "sideline-sync",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sideline cloud-save handler. Uses only the AWS SDK v3 bundled in the Node 24 Lambda runtime — no dependencies to install.",
+  "main": "index.mjs",
+  "dependencies": {}
+}

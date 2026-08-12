@@ -1,3 +1,5 @@
 node_modules/
 test/shots/
 package-lock.json
+infra/.aws-sam/
+infra/samconfig.toml
