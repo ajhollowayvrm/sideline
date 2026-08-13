@@ -39,11 +39,20 @@ eval(html.slice(T0, T1));
 const C0 = html.indexOf('// === SCHEME ENGINE (Phase 21) START ==='), C1 = html.indexOf('// === SCHEME ENGINE (Phase 21) END ===');
 if (C0 < 0 || C1 < 0) { console.error('Could not find SCHEME ENGINE markers in index.html'); process.exit(2); }
 eval(html.slice(C0, C1));
+// Phase 51: `ov` is a derived readout of six attributes, and the sim reads the attributes directly
+// through its own self-contained accessor. The engine block does not depend on this one at runtime,
+// but the checks below build synthetic players with real profiles, so pull it in for genAttrs/ovrIn.
+const A0 = html.indexOf('// === ATTRIBUTE ENGINE (Phase 51) START ==='), A1 = html.indexOf('// === ATTRIBUTE ENGINE (Phase 51) END ===');
+if (A0 < 0 || A1 < 0) { console.error('Could not find ATTRIBUTE ENGINE markers in index.html'); process.exit(2); }
+eval(html.slice(A0, A1) + '\nglobalThis.ATTRS = ATTRS; globalThis.POS_ATTR_W = POS_ATTR_W; globalThis.SCHEME_ATTR_W = SCHEME_ATTR_W;');
 const engineSrc = html.slice(i0, i1);
 // eval into this scope so simEngine + helpers (gamePersonnel, etc.) become available
 // `var` leaks out of a sloppy-mode eval where `const` does not, so re-export PM — the Phase 48
 // shape checks read the SHIPPED tier constants instead of keeping a copy that could drift.
-eval(engineSrc + '\nvar PM_TIERS = PM; globalThis.PN = PN;');
+// Phase 51: AT/SIM_ATTRS and the channel helpers are `const` inside the block, so re-export them the
+// same way PM/PN are — the checks below assert on the shipped constants rather than a drifting copy.
+eval(engineSrc + '\nvar PM_TIERS = PM; globalThis.PN = PN; globalThis.AT = AT; globalThis.SIM_ATTRS = SIM_ATTRS;'
+  + ' globalThis.tilt = tilt; globalThis.tailAdd = tailAdd; globalThis.floorAdd = floorAdd; globalThis.simAv = av;');
 
 /* ---------- a faithful-enough synthetic world (mirrors genRoster/teamRatings) ---------- */
 const POS = [["QB", "off", 4], ["RB", "off", 5], ["WR", "off", 11], ["TE", "off", 5],
@@ -57,12 +66,17 @@ function genRoster(r, prestige) {
   POS.forEach(([code, , n]) => { for (let i = 0; i < n; i++) {
     const base = prestige * 0.55 + ri(r, -9, 9) + 30;
     const ov = clamp(Math.round(base), 48, 99);
-    out.push({ id: 'p' + Math.floor(r() * 1e9).toString(36), pos: code, ov, so: 0 });
+    // Phase 51: a synthetic player carries a real six-attribute profile, exactly as the shipped
+    // generator does. Without one every attribute falls back to `ov`, which collapses all six
+    // channels onto the rating gap and makes them restate matchEdge six times over — the sim would
+    // look far more rating-determined here than it is in the real game.
+    out.push(Object.assign({ id: 'p' + Math.floor(r() * 1e9).toString(36), pos: code, ov, so: 0 }, genAttrs(r, ov, code)));
   } });
   const byPos = {}; out.forEach(p => (byPos[p.pos] = byPos[p.pos] || []).push(p));
   Object.values(byPos).forEach(arr => {
     arr.sort((a, b) => b.ov - a.ov);
-    arr.forEach((p, i) => { if (i >= 2) { const pen = Math.min(2 + (i - 2) * 2.6, 26); p.ov = clamp(Math.round(p.ov - pen), 44, 99); } p.so = i; });
+    // taper the ATTRIBUTES and read `ov` back off them, mirroring genRoster in index.html
+    arr.forEach((p, i) => { if (i >= 2) { const pen = Math.min(2 + (i - 2) * 2.6, 26); shiftAttrs(p, -pen); p.ov = clamp(ovrBase(p), 44, 99); } p.so = i; });
   });
   return out;
 }
@@ -218,15 +232,85 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
 (function () {
   const w = genWorld(321);
   const O = JSON.parse(JSON.stringify(w.teams[0]));
-  const wr1 = O.roster.filter(p => p.pos === 'WR').sort((a, b) => a.so - b.so)[0]; wr1.ov = 95;
+  // Phase 51: you no longer make a player good by writing to `ov` — `ov` is a READOUT of his six
+  // attributes, so re-centre the whole profile on the level you want and let the readout follow.
+  const setLevel = (p, ov) => { centerAttrs(p, ov, p.pos); p.ov = ovrBase(p); return p; };
+  const wr1 = setLevel(O.roster.filter(p => p.pos === 'WR').sort((a, b) => a.so - b.so)[0], 95);
   O.ratings = teamRatings(O.roster);
-  const mkDef = cbOv => { const D = JSON.parse(JSON.stringify(w.teams[1])); const cb1 = D.roster.filter(p => p.pos === 'CB').sort((a, b) => a.so - b.so)[0]; cb1.ov = cbOv; D.ratings = teamRatings(D.roster); return { D, cbId: cb1.id }; };
-  const weak = mkDef(55), strong = mkDef(95), seed = 4242;
-  const rw = simEngine(O, weak.D, seed), rs = simEngine(O, strong.D, seed);
-  const wrW = (rw.box[wr1.id] || {}).reYds || 0, wrS = (rs.box[wr1.id] || {}).reYds || 0;
-  check('Phase 23: a stud WR torches weak coverage more than strong', wrW > wrS, `${wrW} vs ${wrS} rec yds`);
-  const cbW = (rw.box[weak.cbId] || {}).cvYds || 0, cbS = (rs.box[strong.cbId] || {}).cvYds || 0;
-  check('Phase 23: the beaten corner gets cooked (more coverage yds allowed)', cbW > cbS, `${cbW} vs ${cbS} cv yds`);
+  const mkDef = cbOv => { const D = JSON.parse(JSON.stringify(w.teams[1])); const cb1 = setLevel(D.roster.filter(p => p.pos === 'CB').sort((a, b) => a.so - b.so)[0], cbOv); D.ratings = teamRatings(D.roster); return { D, cbId: cb1.id }; };
+  const weak = mkDef(55), strong = mkDef(95);
+  // Averaged over many games, not asserted from one. This is a claim about a MEAN effect, and Phase
+  // 51 put real per-play variance behind it (speed owns the tail, so a single game can hand the
+  // stud one 60-yard catch either way) — a one-seed sample flips on noise without the mechanism
+  // changing at all.
+  const N = 40; let wrW = 0, wrS = 0, cbW = 0, cbS = 0;
+  for (let s = 0; s < N; s++) {
+    const seed = (hashStr('m23_' + s) ^ 11) >>> 0;
+    const rw = simEngine(O, weak.D, seed), rs = simEngine(O, strong.D, seed);
+    wrW += (rw.box[wr1.id] || {}).reYds || 0; wrS += (rs.box[wr1.id] || {}).reYds || 0;
+    cbW += (rw.box[weak.cbId] || {}).cvYds || 0; cbS += (rs.box[strong.cbId] || {}).cvYds || 0;
+  }
+  check('Phase 23: a stud WR torches weak coverage more than strong', wrW > wrS, `${(wrW / N).toFixed(1)} vs ${(wrS / N).toFixed(1)} rec yds/gm`);
+  check('Phase 23: the beaten corner gets cooked (more coverage yds allowed)', cbW > cbS, `${(cbW / N).toFixed(1)} vs ${(cbS / N).toFixed(1)} cv yds/gm`);
+})();
+
+// Phase 51 — attributes are the ability model. The load-bearing property is that they REDISTRIBUTE
+// ability rather than add it: a team built on one attribute must not beat a team built on another.
+(function () {
+  const w = genWorld(5151);
+  const base = w.teams[0], opp = w.teams[1];
+  // Build three versions of one team at an IDENTICAL overall, specialised differently. centerAttrs
+  // re-centres each profile onto the same level, so any win-rate gap is the model adding ability.
+  const spec = (attr) => {
+    const T = JSON.parse(JSON.stringify(base));
+    T.roster.forEach(p => {
+      const lvl = p.ov;
+      ATTRS.forEach(k => { p[k] = clamp(av0(p, k) + (k === attr ? 14 : -3), 40, 99); });
+      centerAttrs(p, lvl, p.pos); p.ov = ovrBase(p);
+    });
+    T.ratings = teamRatings(T.roster);
+    return T;
+  };
+  const av0 = (p, k) => (p[k] != null ? p[k] : p.ov);
+  const fast = spec('spd'), strong = spec('str'), aware = spec('awr');
+  const ovrOf = T => T.ratings.ovr;
+  check('Phase 51: specialising a roster does not change its OVERALL (redistribution, not addition)',
+    ovrOf(fast) === ovrOf(strong) && ovrOf(strong) === ovrOf(aware),
+    `spd ${ovrOf(fast)} / str ${ovrOf(strong)} / awr ${ovrOf(aware)}`);
+  const winPct = T => { let win = 0, n = 60;
+    for (let s = 0; s < n; s++) { const seed = (hashStr('spec' + s) ^ 3) >>> 0; const r = simEngine(T, opp, seed); if (r.hs > r.as) win++; }
+    return win / n; };
+  const wf = winPct(fast), ws = winPct(strong), wa = winPct(aware);
+  check('Phase 51: a fast team does not beat a strong or aware one (attributes redistribute)',
+    Math.max(wf, ws, wa) - Math.min(wf, ws, wa) <= 0.14,
+    `spd ${(wf * 100).toFixed(0)}% / str ${(ws * 100).toFixed(0)}% / awr ${(wa * 100).toFixed(0)}%`);
+  // …but they must still CHANGE the game — same overall, different shape of production.
+  const prof = T => { let rush = 0, pass = 0, to = 0, n = 40;
+    for (let s = 0; s < n; s++) { const seed = (hashStr('prof' + s) ^ 9) >>> 0; const res = simEngine(T, opp, seed);
+      T.roster.forEach(p => { const b = res.box[p.id]; if (!b) return; rush += b.rYds || 0; pass += b.reYds || 0; to += (b.pInt || 0) + 0; }); }
+    return { rush: rush / n, pass: pass / n, to: to / n }; };
+  const pf = prof(fast), ps = prof(strong), pa = prof(aware);
+  check('Phase 51: attributes change HOW a team produces, not just how much',
+    Math.abs(pf.rush - ps.rush) > 3 || Math.abs(pf.pass - ps.pass) > 3,
+    `fast ${pf.rush.toFixed(0)}ru/${pf.pass.toFixed(0)}pa · strong ${ps.rush.toFixed(0)}ru/${ps.pass.toFixed(0)}pa`);
+  check('Phase 51: an aware team throws fewer interceptions than a fast one',
+    pa.to <= pf.to, `aware ${pa.to.toFixed(2)} vs fast ${pf.to.toFixed(2)} INT/gm`);
+  // Speed owns the TAIL, not the mean — that is the whole point of routing it there.
+  check('Phase 51: tailAdd is zero through the ordinary range and rises only at the top',
+    tailAdd(0.5, 20, AT.tailPass) === 0 && tailAdd(AT.tailU, 20, AT.tailPass) === 0 && tailAdd(0.99, 20, AT.tailPass) > 0);
+  check('Phase 51: floorAdd is zero in the ordinary range and rises only in the pile',
+    floorAdd(0.9, 20, AT.strRun) === 0 && floorAdd(AT.strFloorU, 20, AT.strRun) === 0 && floorAdd(0.01, 20, AT.strRun) > 0);
+  check('Phase 51: speed’s one-on-one clause is asymmetric (a deficit steepens, a surplus does not)',
+    AT.oneOnOneMul > 1 && AT.oneOnOne < 0);
+  // A player with a flat profile is the pre-phase player: every channel reads exactly zero.
+  const flat = { pos: 'WR', ov: 80, spd: 80, agi: 80, str: 80, awr: 80, bal: 80, dur: 80 };
+  check('Phase 51: a flat profile has no tilt in any attribute (pre-phase behaviour)',
+    SIM_ATTRS.every(k => Math.abs(tilt(flat, k)) < 1e-9));
+  check('Phase 51: ovrIn moves with the scheme while ovrBase does not', (() => {
+    const cb = { pos: 'CB', spd: 70, agi: 72, str: 60, awr: 92, bal: 88, dur: 70 };
+    const zone = ovrIn(cb, 'Tampa-2'), press = ovrIn(cb, 'Bear'), b1 = ovrBase(cb), b2 = ovrBase(cb);
+    return zone > press && b1 === b2 && b1 !== zone;
+  })());
 })();
 
 // Phase 24 — in-game adjustments: reassign coverage (shadow your stud onto their stud) + pep-talk

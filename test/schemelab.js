@@ -129,10 +129,19 @@ ok('rosterSchemeFit always within [-1/6, 1]', (() => { const r = rng(303); for (
 
 /* ---- 8. the best players still win: scheme can't out-weigh a real OVR gap ---- */
 {
-  // worst-case scheme tilt for the underdog: max favorable edge + full fit, both directions
-  const maxOffSwing = 3 + SCHEME_FIT_W; // |edge| max is 3, |fit boost| max is SCHEME_FIT_W
-  const maxTotalSwing = maxOffSwing + SCHEME_FIT_W; // off boost + opponent def boost against you
+  // Phase 51: roster FIT no longer rides in schemeDelta — scheme aptitude is expressed inside each
+  // player's OVERALL (ovrIn weights his attributes by the system), so counting it here too would
+  // double it. All that is left in the delta is the rock-paper-scissors matchup edge, max |3|.
+  const maxTotalSwing = 3;
   ok('max total scheme swing < a 15-pt OVR gap (OVR dominates)', maxTotalSwing < 15, maxTotalSwing.toFixed(2));
+  ok('SCHEME_FIT_W is no longer folded into schemeDelta (Phase 51: it would double-count ovrIn)', (() => {
+    // two teams identical but for roster fit: all-matching vs all-mismatching. The delta must not move.
+    const allFit = mkTeam('fitA', 'Air Raid', '4-3', 0, 0);      // every player prefers the scheme run
+    const noFit = mkTeam('fitB', 'Air Raid', '4-3', 3, 3);       // nobody does
+    const opp = mkTeam('opp', 'Smashmouth', 'Bear', 1, 1);
+    const a = schemeDelta(allFit, opp), b = schemeDelta(noFit, opp);
+    return a.off === b.off && a.def === b.def && a.def === 0;
+  })());
 }
 
 /* ---- 9. defaults + determinism ---- */

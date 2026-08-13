@@ -436,9 +436,15 @@ function rosterSchemeFit(roster,side,schemeIdx){
 // The mean-zero scheme rating delta for ONE direction (offTeam has the ball vs defTeam): the
 // matchup edge + the offense's roster fit boost off.off; the defense's roster fit boosts def.def.
 // Returns { off, def } rating-point adds. (Coach buy-in is layered on in the app's simSides.)
+// Phase 51: the roster-FIT term is gone from here. Scheme aptitude is now expressed directly in each
+// player's OVERALL (ovrIn weights his attributes by the system he plays in), so folding a team-level
+// fit bonus in on top would count the same thing twice — once inside every rating the sim reads, and
+// again as a rating delta. What survives is the pure rock-paper-scissors MATCHUP edge, which is
+// about the two schemes meeting each other and not about who is on the roster.
+// schemeFit/rosterSchemeFit/playerSchemeIdx remain: they are a player's PREFERENCE (what he likes to
+// run, surfaced as a fogged chip), which is a different thing from what he is good at.
 function schemeDelta(offTeam,defTeam){
-  return { off: schemeEdge(offTeam.offScheme,defTeam.defScheme) + SCHEME_FIT_W*rosterSchemeFit(offTeam.roster,'off',offSchemeIdx(offTeam.offScheme)),
-           def: SCHEME_FIT_W*rosterSchemeFit(defTeam.roster,'def',defSchemeIdx(defTeam.defScheme)) };
+  return { off: schemeEdge(offTeam.offScheme,defTeam.defScheme), def: 0 };
 }
 // === SCHEME ENGINE (Phase 21) END ===
 
@@ -711,7 +717,7 @@ function decRoster(enc){
 // Phase 17: the recruit pool is now the full national class (~3,400), so it serializes columnar too —
 // scalar fields become a flat tuple, the sparse extras (prefs[], iv{}, promise, alumni) ride in a side
 // object (the transient _flipped tag is dropped). Mirrors encRoster/decRoster exactly.
-const RECRUIT_PKEYS=['id','fn','ln','pos','st','stars','ov','pot','spd','str','awr','mot','comp','rebel','scout','committedTo','signed','offered','visited','ego','agi','bal','dur'];
+const RECRUIT_PKEYS=['id','fn','ln','pos','st','stars','ov','pot','spd','str','awr','mot','comp','rebel','scout','committedTo','signed','offered','visited','ego','agi','bal','dur','svc'];
 function encPool(pool){
   return pool.map(p=>{
     const core=RECRUIT_PKEYS.map(k=>p[k]);
@@ -1404,7 +1410,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:46,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:47,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      rivalries:null,rivalryHeat:null,records:null,lastRealign:null,
@@ -1415,7 +1421,8 @@ function finishNewGame(ng){
   S.coach.contract=initialContract((teamById(S.teamId)||{}).prestige); S.coach.mandate=null; S.coach.extensionOffer=null; S.coach.jobOffers=null;   // Phase 44: poach-up job offers
   // Phase 21: install the coach's preferred schemes onto the program he takes over (buy-in on day one;
   // the roster only fits as well as the players' instincts do — a project to recruit/develop into).
-  const me=teamById(S.teamId); if(me){if(S.coach.offScheme)me.offScheme=S.coach.offScheme; if(S.coach.defScheme)me.defScheme=S.coach.defScheme;}
+  const me=teamById(S.teamId); if(me){if(S.coach.offScheme)me.offScheme=S.coach.offScheme; if(S.coach.defScheme)me.defScheme=S.coach.defScheme;
+    reRateRoster(me);recomputeRanks(S.world);}   // Phase 51: the inherited roster re-rates for the system you install
   initRivalries();   // Phase 40: seed the world's famous rivalries (persist across seasons)
   S.records=emptyRecords();   // Phase 41: an empty all-time record book (fills from played games)
   // choose a save slot
@@ -1466,7 +1473,7 @@ function mergeRosters(ng,data){
     if(roster.length){const byPos={};roster.forEach(p=>(byPos[p.pos]=byPos[p.pos]||[]).push(p));
       Object.values(byPos).forEach(a=>{a.sort((x,y)=>y.ov-x.ov);a.forEach((p,i)=>p.so=i);});}
     if(t){ // override existing
-      if(roster.length){t.roster=roster;t.ratings=teamRatings(roster,t.staff);}
+      if(roster.length){t.roster=roster;reRateRoster(t);}   // Phase 51: imported players rate for THIS team's system
       if(td.facilities)Object.assign(t.fac,td.facilities);
       if(td.prestige!=null)t.prestige=td.prestige;
       if(td.color)t.color=td.color;
@@ -1709,6 +1716,38 @@ function migrateState(state){
     state.version=46;                  // (plays made under pressure) is another sparse box key. SIM_MODEL is 5,
   }                                    // so pre-Phase-50 games decline replay instead of re-simming: the clutch
                                        // terms change late-game play, which would move a finished score.
+  if((state.version||1)<47){
+    // Phase 51: attributes become the ability model and OVERALL becomes a derived readout of them.
+    // NOT a structural no-op like the last three steps — this is a real mutation of every player on
+    // every team (~11.3k) plus the recruit pool, and it has to be, because a pre-v47 player has only
+    // spd/str/awr and those were `ov ± noise` that nothing ever read.
+    //
+    // Each player keeps the `ov` he already had: the profile is generated deterministically from his
+    // id and then RE-CENTRED onto that value, so nobody's strength changes, depth charts hold, and
+    // the record book still agrees with the roster. What he gains is a shape — which of his six
+    // attributes carry that ability — and from here on the sim reads the shape.
+    const fill=o=>{
+      if(!o||!o.pos)return;
+      const target=clamp(+o.ov||60,40,99);
+      if(ATTRS.every(k=>o[k]!=null)){centerAttrs(o,target,o.pos);return;}   // already has all six
+      // Seed from the id so a save re-migrated twice lands identically. Where the old three
+      // attributes exist they are kept as the starting shape, so an imported roster's real speed
+      // and strength survive; the three new ones are drawn around them.
+      const gen=genAttrs(rng(hashStr('a51|'+(o.id||'')+'|'+o.pos)),target,o.pos);
+      for(const k of ATTRS)if(o[k]==null)o[k]=gen[k];
+      centerAttrs(o,target,o.pos);
+    };
+    (state.world.teams||[]).forEach(t=>{
+      (t.roster||[]).forEach(fill);
+      if(t.offScheme==null)t.offScheme=defaultOffScheme(t.id);
+      if(t.defScheme==null)t.defScheme=defaultDefScheme(t.id);
+      reRateRoster(t);                 // OVERALL is scheme-weighted from here on
+    });
+    if(state.recruiting&&state.recruiting.pool)state.recruiting.pool.forEach(fill);
+    if(state.portal&&state.portal.pool)state.portal.pool.forEach(fill);
+    recomputeRanks(state.world);
+    state.version=47;                  // SIM_MODEL is 6, so pre-Phase-51 games decline replay rather
+  }                                    // than re-simming: attribute channels move play outcomes.
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1833,6 +1872,79 @@ function startSeason(){
 // by mirroring (opp los = 100 - los). Efficiency is driven by (offense.off - defense.def)
 // in rating points, plus a small home-field bump to the home offense.
 
+// === Phase 51 — the attribute channels. `ov` is a derived readout of six attributes, so the Phase 23
+// matchEdge already carries "who is better" in aggregate. These channels do NOT restate that; each one
+// targets a part of a play that had NO per-matchup term at all before, so nothing is counted twice:
+//
+//   SPEED      the TAIL of the gain draw — it never raises the average gain, it lengthens the good
+//              ones — plus separation on deep routes. Speed does not make you gain more often; it
+//              makes the ones you do gain hurt.
+//   AGILITY    the short area: separation underneath, mirroring in coverage, elusiveness.
+//   STRENGTH   the FLOOR (stuffs, short yardage, power through contact) and pass PROTECTION — before
+//              this the offensive line touched no run or pass outcome at all, only penalties.
+//   AWARENESS  mistakes ONLY, never yardage: interceptions, sacks taken, fumbles — and it blunts the
+//              Phase 46 play-concept bonuses, so a sharp defender is not fooled by play action.
+//   BALL SKILLS the catch point and the takeaway.
+//   DURABILITY injury resistance and how late fatigue bites — both were flat for every player.
+//
+// Deliberately NOT wired: penalties. Phase 49 keys foul propensity off composure ALONE because
+// measured discipline is flat across team quality (top-10 5.87 flags, unranked 5.99). Awareness
+// correlates with quality, so letting it in would recreate "good teams are clean teams" — which the
+// measurement forbids. See docs/reference/cfb-penalties.md.
+//
+// Self-contained (its own attribute list + accessor) so the SIM block keeps its "depends only on
+// rng/clamp/ri" property and the node labs can still extract it standalone.
+const SIM_ATTRS=['spd','agi','str','awr','bal','dur'];
+const av=(p,k)=>{const v=p&&p[k];return v!=null?v:((p&&p.ov)!=null?p.ov:60);};
+// A player's tilt: how much of a specialist he is, measured against HIS OWN attribute mean. Used for
+// singletons like the QB, the kicker and the punter, who have no depth-weighted pool to sit in.
+// Deliberately relative to his own profile rather than to `p.ov`: `ov` is a DERIVED readout, and
+// anything that moves it independently (legacy data, a scheme change, a test bumping ratings) would
+// otherwise leak straight into these channels and let raw rating buy things it must not — notably
+// discipline, which the measurement says is flat across team quality. The six deviations sum to zero
+// by construction, so this is mean-zero per player with no dependence on the readout at all.
+const tilt=(p,k)=>{ if(!p)return 0; let s=0; for(const j of SIM_ATTRS)s+=av(p,j); return av(p,k)-s/SIM_ATTRS.length; };
+// AT-START
+const AT={
+  // SPEED — top end. Owns the tail, not the mean.
+  tailU:0.86, tailRun:0.40, tailPass:0.35,
+  // The one-on-one clause: "a lack of speed can be overcome, but in certain one-on-one situations it
+  // can't be." A speed DEFICIT past this, isolated on a deep ball or in man coverage, steepens; a
+  // surplus is unchanged. The single place a channel is deliberately asymmetric.
+  oneOnOne:-6, oneOnOneMul:1.9,
+  deepCmp:0.0012,               // separation → completion, weighted toward the deep buckets
+  // AGILITY — short area.
+  agiCmp:0.0011, agiRun:0.045,
+  // STRENGTH — the floor and the pocket. Deliberately the smallest per-unit coefficients of the six:
+  // strength reaches a play through THREE routes at once (the carrier, his line against the front,
+  // and the pocket), so equal coefficients would make a strength build strictly the best one. The
+  // simlab build-vs-build check is what caught that — it ran 68% against an aware team's 48%.
+  strFloorU:0.30, strRun:0.15, strSack:-0.0018, strLine:0.45,
+  // AWARENESS — errors only.
+  awrInt:-0.0022, awrSack:-0.0024, awrFum:-0.00028, awrVariant:0.020,
+  // BALL SKILLS — the catch point and the takeaway.
+  balCmp:0.0013, balInt:0.0014, balFum:-0.00020,
+  // DURABILITY — how often you get hurt, and how late you fade.
+  durInj:0.011, durFat:0.22,
+  // THE KICKING GAME — leg (strength) is range, technique (awareness) is accuracy, and a punter's leg
+  // is net yards. Previously distance was the ONLY input and a 90-rated specialist did nothing at all.
+  kLeg:0.010, kAcc:0.0016, puntLeg:0.16,
+};
+// AT-END
+// A mean-zero attribute channel: how far this offensive player sits above his group in attribute k,
+// minus how far his defender sits above his. Identical construction to matchEdge (Phase 23).
+const AD=(o,oA,d,dA,k)=>((av(o,k)-oA[k])-(av(d,k)-dA[k]));
+// The unit-vs-unit form — one whole group against another (the line against the rush).
+const AU=(oA,dA,k)=>oA[k]-dA[k];
+// SPEED is a TAIL property: nothing through the ordinary range, ramping to full at the very top of
+// the draw. A burner turns a 15-yard gain into a 40; a plodder gets run down from behind at 22.
+const tailAdd=(u,d,w)=>u<=AT.tailU?0:w*d*((u-AT.tailU)/(1-AT.tailU));
+// STRENGTH is a FLOOR property: it works at the bottom of the draw, in the pile, where plays are
+// stuffed — which is why it decides short yardage and the goal line rather than the highlight reel.
+const floorAdd=(u,d,w)=>u>=AT.strFloorU?0:w*d*((AT.strFloorU-u)/AT.strFloorU);
+// DURABILITY: how likely this player is to get hurt, for his level. The deviation is mean-zero, so
+// league-wide injury volume is unchanged — it just stops landing uniformly on everyone.
+const injMul=p=>clamp(1-AT.durInj*tilt(p,'dur'),0.35,2.0);
 // Depth-weighted usage pools for one team-game (starters get the lion's share of touches).
 function gamePools(team,benched){
   // Phase 27: injured players sit. `benched` (a Set of ids, frozen per game) is used when given so a
@@ -1844,20 +1956,27 @@ function gamePools(team,benched){
   const dep=p=>1/Math.pow((p.so||0)+1,1.35);              // so 0 ≫ so 1 ≫ deep backups
   const W=(codes,base)=>{const out=[];codes.forEach(([c,m])=>(byPos[c]||[]).forEach(p=>out.push([p,base*m*dep(p)])));return out;};
   const wavg=pool=>{let t=0,w=0;pool.forEach(([p,wt])=>{t+=p.ov*wt;w+=wt;});return w?t/w:60;}; // weighted mean (Phase 23)
+  // Phase 51: the same depth-weighted mean, per ATTRIBUTE. Every attribute channel below is measured
+  // as a deviation from these, exactly as Phase 23's matchEdge is measured from `wavg` — which is
+  // what keeps each channel mean-zero across the league and the scoring envelope intact.
+  const wavgA=(pool,k)=>{let t=0,w=0;pool.forEach(([p,wt])=>{t+=av(p,k)*wt;w+=wt;});return w?t/w:60;};
+  const avgA=pool=>{const o={};for(const k of SIM_ATTRS)o[k]=wavgA(pool,k);return o;};
   const recv=W([['WR',1.15],['TE',0.75],['RB',0.55]],1);
   const rush=W([['RB',1.0]],1);
   const cover=W([['CB',1.15],['S',0.75],['LB',0.4]],1);   // who covers the pass (weights mirror `recv`)
   const front=W([['DT',1.0],['DE',0.9],['LB',0.7]],1);    // who meets the run
+  const ol=W([['OT',1.0],['OG',0.95],['C',0.8]],1);       // Phase 49: who false-starts — Phase 51: and who blocks
+  const rush4=W([['DE',1.0],['DT',0.7],['LB',0.5]],1);    // pass rush (sacks)
   const byso=c=>(byPos[c]||[]).slice().sort((a,b)=>(a.so||0)-(b.so||0));
   return {
+    // Phase 51 attribute means, per pool — the baselines the channels deviate from.
+    recvA:avgA(recv), covA:avgA(cover), rushA:avgA(rush), frontA:avgA(front), olA:avgA(ol), rush4A:avgA(rush4),
     qb:(byPos.QB||[])[0]||null,
     qbList:byso('QB'),                                     // Phase 26: depth at QB (the backup if your starter goes down)
     k:(byPos.K||[])[0]||(byPos.QB||[])[0]||null,
-    rush, recv,
-    ol:W([['OT',1.0],['OG',0.95],['C',0.8]],1),            // Phase 49: the five up front — who false-starts and holds
+    pu:(byPos.P||[])[0]||(byPos.K||[])[0]||null,           // Phase 51: the punter enters the sim at last
+    rush, recv, ol, rush4,                                 // ol: who false-starts (Phase 49) AND who blocks (Phase 51)
     tkl:W([['LB',1.0],['S',0.8],['CB',0.7],['DE',0.55],['DT',0.45]],1),
-    rush4:W([['DE',1.0],['DT',0.7],['LB',0.5]],1),         // pass rush (sacks)
-    hawk:W([['CB',1.0],['S',0.85],['LB',0.4]],1),          // ball-hawks (INTs)
     // Phase 23 per-matchup resolution: assign a coverage man (by depth) to the targeted receiver, a
     // front defender to the run, and measure each as a deviation from his side's WEIGHTED mean — so the
     // matchup edge is mean-zero (the envelope holds) but a stud-on-scrub mismatch tilts the play.
@@ -1881,7 +2000,10 @@ const MATCH_W=0.42;
 function matchEdge(offOv,offAvg,defOv,defAvg){return MATCH_W*((offOv-offAvg)-(defOv-defAvg));}
 // Phase 26 fatigue: a heavily-used ball-carrier fades in the 4th quarter. Zero until late + over a
 // workload threshold, then a small bounded OVR cost (rewards rotation). Pure → unit-tested in simlab.
-function fatigueCost(touches,q){ return (q<4||touches<=18)?0:Math.min((touches-18)*0.4,6); }
+// Phase 51: `durEdge` (a ball-carrier's durability tilt) moves the workload threshold — a bell cow
+// carries more before he fades. Omitted/0 reproduces the pre-Phase-51 curve exactly, which is what
+// the existing simlab fatigue checks call it with.
+function fatigueCost(touches,q,durEdge){ const th=18+(durEdge||0)*AT.durFat; return (q<4||touches<=th)?0:Math.min((touches-th)*0.4,6); }
 // Phase 27 injury duration — FUTURE games (weeks) the player misses. Most are day-to-day (0, back next
 // week); a tail are multi-week. Pure (rng). 0 = he finished hurt but is fine next week (no weeks out).
 function injDur(r){ const x=r(); return x<0.45?0 : x<0.75?1 : x<0.90?2 : x<0.97?ri(r,3,4) : ri(r,5,8); }
@@ -2174,7 +2296,7 @@ function simEngine(home,away,seed,opts){
   // ball-carrier fades late (fatigueCost). Mean-neutral-ish (symmetric across teams) → envelope holds.
   const injured=new Set(), touches={}, injOut=(opts&&opts.injInto)||[];
   const INJ_RATE=0.0055;
-  const fatg=p=>p?fatigueCost(touches[p.id]||0,L._q):0;
+  const fatg=p=>p?fatigueCost(touches[p.id]||0,L._q,tilt(p,'dur')):0;
   const hurt=(p,team)=>{ if(!p||injured.has(p.id))return; injured.add(p.id); const out=injDur(r);   // out = future weeks missed (Phase 27)
     injOut.push({id:p.id,team:team.id,pos:p.pos,name:nm(p),out}); L(team,'play','🩹 '+nm(p)+' ('+p.pos+') injured'+(out?' — out ~'+out+(out===1?' wk':' wks'):' — day-to-day'),' ',true); };
 
@@ -2216,8 +2338,13 @@ function simEngine(home,away,seed,opts){
     const pressNow=()=>timed?pressure(half,clkNow(),score[off.id]-score[def.id]):1;
     // Phase 46: a field-goal attempt, factored out of the 4th-down block so the coach can call one on ANY
     // down (the OC/AI still only kicks on 4th → the 4th-down rng draws below are unchanged → AI byte-identical).
+    // Phase 51: the kicker finally matters. LEG (strength) flattens the distance curve — range — and
+    // TECHNIQUE (awareness) lifts the whole curve — accuracy. Both are tilts, so an average kicker
+    // reproduces the measured curve exactly and league-wide FG% is unchanged. Deliberately NOT
+    // pressure-sensitive: docs/reference/cfb-clutch.md measured that kickers do not choke.
     const doFG=(dd,fgDist)=>{ time+=8; add(oP.k&&oP.k.id,'fga');
-      if(r()<clamp(0.965-(fgDist-20)*0.013,0.40,0.985)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; L(off,'score',nm(oP.k)+' '+fgDist+'-yd field goal is GOOD',dd,true); return {nextLos:25,time}; }
+      const kk=oP.k, slope=0.013*clamp(1-AT.kLeg*tilt(kk,'str'),0.55,1.5);
+      if(r()<clamp(0.965+AT.kAcc*tilt(kk,'awr')-(fgDist-20)*slope,0.40,0.99)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; L(off,'score',nm(oP.k)+' '+fgDist+'-yd field goal is GOOD',dd,true); return {nextLos:25,time}; }
       L(off,'play',nm(oP.k)+' '+fgDist+'-yd field goal MISSED',dd); return {nextLos:flipTo(los),time}; };
     L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los));
     while(true){
@@ -2257,7 +2384,8 @@ function simEngine(home,away,seed,opts){
         if(act==='fg'){                                      // field-goal attempt
           return doFG(dd,fgDist);
         } else if(act==='punt'){                             // punt (net ~42; into EZ → touchback @20)
-          time+=10; L(off,'play','Punt',dd); return {nextLos:clamp(flipTo(los+ri(r,38,46)),20,99),time};
+          time+=10; L(off,'play','Punt',dd);
+          return {nextLos:clamp(flipTo(los+ri(r,38,46)+Math.round(AT.puntLeg*tilt(oP.pu,'str'))),20,99),time};   // Phase 51: his leg is worth field position
         } // else: go for it → fall through and run a normal play
       }
 
@@ -2317,21 +2445,35 @@ function simEngine(home,away,seed,opts){
         // corner. Mean-zero across the league (composure is centred at 50 on both sides), bounded by
         // PC.mean, and the only channel allowed to bias a close game at all.
         const padv=adv+mEdge+(compClutch(qb)+compClutch(rec)-compClutch(cov))*PC.mean*press;
-        if(r()<clamp(0.062-adv*0.0012+ky*0.05+dSack+vSack+(pkg==='spread'?(dcall==='blitz'?0.08:0.02):0),0.02,0.25)){  // sack (+ spread = fewer blockers, exposed to the blitz)
+        // ---- Phase 51 attribute channels, all mean-zero against the pools they come from ----
+        const dAGI=AD(rec,oP.recvA,cov,dP.covA,'agi'), dBAL=AD(rec,oP.recvA,cov,dP.covA,'bal');
+        const dPRO=AU(oP.olA,dP.rush4A,'str');               // the line against the rush — the pocket
+        const qAWR=tilt(qb,'awr');                           // does he see it coming
+        let dSPD=AD(rec,oP.recvA,cov,dP.covA,'spd');
+        // The one-on-one clause: isolated deep or in man, a speed DEFICIT is not something technique
+        // covers, so it steepens past the threshold. A surplus is left alone — this is the only
+        // deliberately asymmetric channel, and it is what makes speed kill rather than merely count.
+        const iso=(variant==='deep'||togo>=11)&&dcall!=='cover';
+        if(iso&&dSPD<AT.oneOnOne)dSPD=AT.oneOnOne+(dSPD-AT.oneOnOne)*AT.oneOnOneMul;
+        const deepW=variant==='deep'?1.6:togo>=11?1.3:togo>=7?1.0:0.6;
+        // A sharp cover man is not fooled by the play concept (play action, screen); a poor one bites.
+        const vD=clamp(1-AT.awrVariant*(av(cov,'awr')-dP.covA.awr),0.4,1.6);
+        if(r()<clamp(0.062-adv*0.0012+ky*0.05+dSack+vSack*vD+AT.strSack*dPRO+AT.awrSack*qAWR+(pkg==='spread'?(dcall==='blitz'?0.08:0.02):0),0.02,0.25)){  // sack (+ spread = fewer blockers, exposed to the blitz)
           gain=-ri(r,4,9); time+=PM.secSack; const s=wpick(dP.rush4,r,injured); add(s&&s.id,'sk'); txt=nm(qb)+' sacked by '+nm(s)+' for '+gain;
-          if(r()<PM.sackFumP){ turnover=true; txt=nm(qb)+' STRIP-SACKED by '+nm(s)+' — fumble lost'; }   // Phase 48: the strip sack
-        } else if(r()<clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)+padv*0.007-ky*0.22+dComp+vComp-PC.cmp*press+(pkg==='spread'?0.05:0),0.28,0.88)){    // completion (+ spread stresses coverage)
-          gain=Math.max(-3,Math.round(qGain(compDraw(r,rec,vAmp),PM.recQ[distKey(togo)],vBoom*8)+padv*PM.advPass-ky*PASS_KEY+dPassY+vYds-PC.ya*press+(pkg==='spread'?3:0)));
+          if(r()<clamp(PM.sackFumP+AT.balFum*tilt(qb,'bal')*4,0.01,0.20)){ turnover=true; txt=nm(qb)+' STRIP-SACKED by '+nm(s)+' — fumble lost'; }   // Phase 48: the strip sack
+        } else if(r()<clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)+padv*0.007-ky*0.22+dComp+vComp*vD-PC.cmp*press+AT.deepCmp*dSPD*deepW+AT.agiCmp*dAGI+AT.balCmp*dBAL+(pkg==='spread'?0.05:0),0.28,0.88)){    // completion (+ spread stresses coverage)
+          const u=compDraw(r,rec,vAmp);                      // Phase 51: keep the draw — speed reads its TAIL
+          gain=Math.max(-3,Math.round(qGain(u,PM.recQ[distKey(togo)],vBoom*8)+padv*PM.advPass-ky*PASS_KEY+dPassY+vYds*vD-PC.ya*press+tailAdd(u,dSPD,AT.tailPass)+(pkg==='spread'?3:0)));
           hero=rec;
           add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
           add(cov&&cov.id,'cvTgt'); add(cov&&cov.id,'cvCmp'); add(cov&&cov.id,'cvYds',gain);   // coverage targeted / allowed
           time+=(r()<0.28?PM.secQuick:PM.secPass); txt=nm(qb)+' pass to '+nm(rec)+' for '+gain+(cov?' (vs '+nm(cov)+')':'');
           if(los+gain>=100){ scored=true; add(qb&&qb.id,'pTD'); add(rec&&rec.id,'reTD'); add(cov&&cov.id,'cvTD'); }
-          if(r()<INJ_RATE)hurt(rec,off); if(r()<INJ_RATE*0.7)hurt(cov,def);   // injuries on contact (Phase 26)
+          if(r()<INJ_RATE*injMul(rec))hurt(rec,off); if(r()<INJ_RATE*0.7*injMul(cov))hurt(cov,def);   // injuries on contact (Phase 26, Phase 51 durability)
         } else {                                            // incomplete (maybe picked)
           time+=PM.secIncomp; tackled=false; add(qb&&qb.id,'pAtt'); add(cov&&cov.id,'cvTgt'); txt=nm(qb)+' incomplete';
-          if(r()<clamp((PM.intRate-adv*0.0008)*(1+PC.intMul*press),0.020,0.14)){ turnover=true; add(qb&&qb.id,'pInt'); add(cov&&cov.id,'dInt');
+          if(r()<clamp((PM.intRate-adv*0.0008)*(1+PC.intMul*press)+AT.awrInt*qAWR+AT.balInt*(av(cov,'bal')-dP.covA.bal),0.020,0.14)){ turnover=true; add(qb&&qb.id,'pInt'); add(cov&&cov.id,'dInt');
             if(press>=0.5)add(cov&&cov.id,'cl');           // a pick in a big moment is a clutch play
             txt=nm(qb)+' INTERCEPTED by '+nm(cov); }
         }
@@ -2340,11 +2482,18 @@ function simEngine(home,away,seed,opts){
         const fr=wpick(dP.front,r,injured);                  // the front defender he meets (Phase 23)
         // Phase 50: the ball-carrier's nerve against the man who has to bring him down
         const padv=adv+matchEdge(bov(rb),oP.rushAvg,bov(fr),dP.frontAvg)+(compClutch(rb)-compClutch(fr))*PC.mean*press;   // RB vs front matchup (mean-zero, pep-talk + fatigue aware)
-        gain=Math.max(-9,Math.round(qGain(compDraw(r,rb,vAmp),PM.runQ[distKey(togo)],0)+padv*PM.advRun-ky*RUN_KEY+dRunY+vYds-PC.yc*press+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
+        // ---- Phase 51 channels. The run is where STRENGTH finally gives the offensive line a job:
+        // the back's own power plus his line against the front decides what happens in the pile.
+        const dSPDr=AD(rb,oP.rushA,fr,dP.frontA,'spd'), dAGIr=AD(rb,oP.rushA,fr,dP.frontA,'agi');
+        const dSTRr=AD(rb,oP.rushA,fr,dP.frontA,'str')+AU(oP.olA,dP.frontA,'str')*AT.strLine;
+        const vDr=clamp(1-AT.awrVariant*(av(fr,'awr')-dP.frontA.awr),0.4,1.6);
+        const u=compDraw(r,rb,vAmp);                         // Phase 51: speed reads the tail, strength the floor
+        gain=Math.max(-9,Math.round(qGain(u,PM.runQ[distKey(togo)],0)+padv*PM.advRun-ky*RUN_KEY+dRunY+vYds*vDr-PC.yc*press
+          +tailAdd(u,dSPDr,AT.tailRun)+floorAdd(u,dSTRr,AT.strRun)+AT.agiRun*dAGIr+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
         time+=PM.secRun; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain; hero=rb;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
-        if(!scored && r()<PM.fumRate*(1+PC.fumMul*press)){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
-        if(r()<INJ_RATE)hurt(rb,off); if(r()<INJ_RATE*0.7)hurt(fr,def);     // injuries on contact (Phase 26)
+        if(!scored && r()<clamp(PM.fumRate*(1+PC.fumMul*press)+AT.awrFum*AD(rb,oP.rushA,fr,dP.frontA,'awr')+AT.balFum*AD(rb,oP.rushA,fr,dP.frontA,'bal'),0.002,0.05)){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
+        if(r()<INJ_RATE*injMul(rb))hurt(rb,off); if(r()<INJ_RATE*0.7*injMul(fr))hurt(fr,def);     // injuries on contact (Phase 26, Phase 51 durability)
       }
 
       // ---- live-ball penalty (Phase 49) — the flag that comes out after the snap, 51% of real ones.
@@ -2519,6 +2668,13 @@ function genRecruits(seed,teams){
     const ovBase=stars===5?92:stars===4?85:stars===3?77:68;
     const ov=clamp(ovBase+ri(r,-4,5),58,99);
     const pot=clamp(ov+ri(r,3,13),ov,99);
+    // Phase 51 (directive 2): the recruiting services over-rank a ceiling. An exceptional gap between
+    // where a prospect is and where he could get lifts him a tier on their published board. This is
+    // deliberately a SEPARATE field from `stars`: the star rating drives real mechanics here
+    // (commitment windows are a blue-chip behaviour, interest targets key off the tier), and a
+    // service ranking that moved those would not be a ranking any more — it would be ability. `svc`
+    // is what the board shows you; `stars` remains what he actually is.
+    const svc=(pot-ov>=13&&stars<5)?stars+1:stars;
     const pos=pick(r,posPool), st=pick(r,STATES);
     const p1=pick(r,PREFS); let p2=pick(r,PREFS),guard=0; while(p2===p1&&guard++<6)p2=pick(r,PREFS);
     const target=stars===5?88:stars===4?70:stars===3?50:32;
@@ -2539,12 +2695,15 @@ function genRecruits(seed,teams){
     // (Phase 13). Keyed on a per-recruit rng (NOT the pool stream), so the board stays byte-identical.
     const rebel=rng((hashStr(rid+'reb'))>>>0)()<0.12;
     pool.push(Object.assign({id:rid,
-      fn:pick(r,FN),ln:pick(r,LN),pos,st,stars,ov,pot,
+      fn:pick(r,FN),ln:pick(r,LN),pos,st,stars,svc,ov,pot,
       mot:tr.mot,comp:tr.comp,ego:tr.ego,rebel,
       scout:0,prefs:[p1,p2],iv,committedTo:null,signed:false,offered:false,visited:false,promise:null},
       // Phase 51: a prospect is scouted on his profile and carries it to campus. Drawn from a
-      // per-recruit rng keyed on the id (NOT the pool stream) for the same reason the traits above
-      // are — the board stays byte-identical, and the profile is just along for the ride.
+      // per-recruit rng keyed on the id (NOT the pool stream), for the same reason the traits above
+      // are — so the profile adds no draws and every prospect's stars/ov/pot/suitors are decided
+      // independently of it. The three inline `ri(r,…)` draws the old spd/str/awr consumed are gone
+      // though, so the board does shift ONCE at this phase boundary — the same one-time change
+      // genPlayer makes to generated worlds. It is stable per seed from here on.
       genAttrs(rng(hashStr(rid+'attr')),ov,pos)));
   }
   return pool;
@@ -3694,7 +3853,10 @@ function draftProjection(snap){
   const hon=20*(honorSum/(honorSum+100));                   // decorated players climb boards (up to ~20)
   const cs=careerScore(snap.career);
   const car=10*(cs/(cs+40));                                // production matters a little (up to ~10)
-  return Math.round(clamp(peak+hon+car,0,100));
+  // Phase 51 (directive 2): pro scouts draft the CEILING as well as the tape. Room still on the table
+  // — a ceiling he never reached in college — lifts a board grade the way traits do in a real draft.
+  const up=clamp(((snap.pot||0)-(snap.peakOv||0))/14,0,1)*8;
+  return Math.round(clamp(peak+hon+car+up,0,100));
 }
 // Run the league-wide draft on a pool of graduate snaps. The top DRAFT_ROUNDS*DRAFT_PER_ROUND by grade
 // (with a small seeded jitter so it's not pure chalk) are drafted; returns ordered picks. Deterministic.
@@ -4028,7 +4190,7 @@ function gameSeed(g){return (hashStr(g.id)^(S.seed>>>0))>>>0;}
 // than the one in the record book. Every game resolved from here on is stamped with the model that
 // produced it; replay is refused (not silently wrong) for anything older. Stored results, stats and
 // standings are untouched — only the play-by-play re-sim is unavailable.
-const SIM_MODEL=5;   // 5 = Phase 50 (big moments); 4 = Phase 49 (roster-driven penalties); 3 = Phase 48.1 (measured gain tables)
+const SIM_MODEL=6;   // 6 = Phase 51 (attributes are the ability model); 5 = Phase 50 (big moments); 4 = Phase 49 (roster-driven penalties); 3 = Phase 48.1 (measured gain tables)
 function gameReplayable(g){ return !!g && (!g.played || g.eng===SIM_MODEL); }
 // Phase 22: if the coach play-called this game, `g.calls` is the ordered list of his controlled-offense
 // decisions. Replaying it (the OC default fills any gap) reproduces the EXACT play-called result on
@@ -4772,7 +4934,10 @@ function closePortal(){
     if(t.id===S.teamId)arrivals.push({name:player.fn+' '+player.ln,pos:player.pos,ov:player.ov});
   });
   P.stage='closed'; P.arrivals=arrivals;
-  S.world.teams.forEach(t=>t.ratings=teamRatings(t.roster,t.staff));
+  // Phase 51: a transfer arrives carrying the OVERALL he earned in his old program's system. Re-rate
+  // every roster so he is valued for the one he just joined — the same corner really is worth more
+  // in a zone team than a press one, and the portal is where that bites hardest.
+  S.world.teams.forEach(reRateRoster);
   recomputeRanks(S.world);
   const signed=P.pool.filter(tr=>tr.committedTo).length;
   if(arrivals.length){const c=controlled();mediaEvent(S.week,'portal',c.abbr+' adds '+arrivals.length+' from the transfer portal',
@@ -4863,6 +5028,7 @@ function enshrineLegends(team,graduated,toYear){
 }
 // Phase 13: a lean draft-pool snapshot of a graduating player (peak OVR + honors + career drive the grade).
 function draftSnap(p,t){return {id:p.id,name:p.fn+' '+p.ln,pos:p.pos,peakOv:p.peakOv||p.ov||0,
+  pot:p.pot||p.ov||0,   // Phase 51: unrealized ceiling feeds the board grade
   honors:p.honors||[],career:p.career||{},teamId:t.id,abbr:t.abbr,color:t.color};}
 // Apply a draft class to program factory reputations: decay every team's standing first (so it reflects
 // RECENT production), then add this year's picks. Tiny entries are dropped to keep the map lean.
@@ -4925,7 +5091,7 @@ function rolloverSeason(){
     if(inc){t.prestige=clamp((t.prestige||50)+inc,20,99);t._pp-=inc;} });
   S.year=(S.year||2026)+1;
   applyRealignment();                  // Phase 43: conference realignment waves (risers get poached up)
-  S.world.teams.forEach(t=>{t.rec=emptyRec();t.ratings=teamRatings(t.roster,t.staff);});
+  S.world.teams.forEach(t=>{t.rec=emptyRec();reRateRoster(t);});   // Phase 51: development moved attributes — re-derive OVR
   S.schedule=null;S.lastPlayedWeek=0;S.weeklyHonors=[];S.recruiting=null;S.postseason=null;S.champWeek=null;S.portal=null;S.media=null;
   S.week=0;S.phase='Preseason';
   S.seriesOffers=genSeriesOffers(S.seed,S.year,me);   // a fresh wave of scheduling offers each offseason
@@ -6247,7 +6413,16 @@ function installSchemeSheet(t){
     group('Offense',OFF_SCHEMES,'off',offSchemeIdx,co.offScheme);
     group('Defense',DEF_SCHEMES,'def',defSchemeIdx,co.defScheme);
     const apply=el('button','btn','Install schemes');apply.style.marginTop='14px';
-    apply.onclick=()=>{t.offScheme=draft.off;t.defScheme=draft.def;closeSheet();render();toast('Schemes installed');};
+    apply.onclick=()=>{
+      const was=t.ratings.ovr;
+      t.offScheme=draft.off;t.defScheme=draft.def;
+      // Phase 51: OVERALL is scheme-weighted, so installing a system genuinely re-rates the roster —
+      // the players who fit it play up and the ones who don't play down, visibly, right here.
+      reRateRoster(t);recomputeRanks(S.world);
+      const d=t.ratings.ovr-was;
+      closeSheet();render();
+      toast('Schemes installed'+(d?' — team OVR '+(d>0?'+':'')+d:''));
+    };
     body.append(apply);
     openSheet('Install schemes',body);
   };
@@ -7250,7 +7425,10 @@ function reportCard(v){
   });
   v.append(c);
 }
-function recruitStarChip(rec){return `<div class="pos" style="width:auto;color:var(--accent);font-size:12.5px;letter-spacing:-1px">${'★'.repeat(rec.stars)}</div>`;}
+// Phase 51: the board shows the SERVICES' ranking (`svc`), which over-rates a big ceiling by a tier.
+// `recStars` is the single place that choice lives, so the true `stars` never leaks into a display.
+function recStars(rec){return (rec&&rec.svc!=null)?rec.svc:((rec&&rec.stars)||0);}
+function recruitStarChip(rec){return `<div class="pos" style="width:auto;color:var(--accent);font-size:12.5px;letter-spacing:-1px">${'★'.repeat(recStars(rec))}</div>`;}
 function recruitRow(rec){
   const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=rec.id;
   const sc=recScouted(rec), mi=myInterest(rec), rank=myRank(rec), nS=suitorList(rec).length, committed=rec.committedTo, mine=committed===S.teamId;
@@ -7295,7 +7473,7 @@ function recruitVisits(v){
       const row=el('div','row spread');row.style.cssText='margin-top:7px;gap:8px';
       const b=el('button','lrow');b.style.cssText='flex:1;min-width:0;text-align:left;padding:6px 8px';b.dataset.id='visit-booked-'+rec.id;
       b.innerHTML=`<div style="min-width:0"><div class="nm" style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rec.fn} ${rec.ln} <span class="dim" style="font-weight:400">${rec.pos} · ${rec.st}</span></div>
-        <div class="meta accent">${'★'.repeat(rec.stars)} · interest ${myInterest(rec)}%</div></div>`;
+        <div class="meta accent">${'★'.repeat(recStars(rec))} · interest ${myInterest(rec)}%</div></div>`;
       b.onclick=()=>recruitSheet(rec);
       const x=el('button','btn sm line','✕');x.style.cssText='flex:none;padding:6px 10px';
       x.onclick=()=>{unbookVisit(rec);render();toast('Visit unbooked');};
@@ -7401,12 +7579,13 @@ function recruitSheet(rec){
   const projTag=!traitRevealed?'':(motVal(rec)>=70?' — outworks everyone':egoVal(rec)>=72?' — plays with swagger':compVal(rec)>=70?' — unflappable':(compVal(rec)<=36&&!isTrench(rec))?' — boom-or-bust':'');
   const proj=projHead+' '+rec.pos+' out of '+rec.st+projTag;
   body.innerHTML=`<div class="row spread" style="margin-bottom:8px">
-      <span class="tag accent">${'★'.repeat(rec.stars)} ${rec.stars}-STAR</span>
+      <span class="tag accent">${'★'.repeat(recStars(rec))} ${recStars(rec)}-STAR</span>
       <span class="meta">${posName(rec.pos)} · ${rec.st}</span></div>
     <div class="card" style="margin-bottom:8px"><div class="cond accent" style="font-size:14px;font-weight:800">Projects as: ${proj}</div>${traitRevealed?'':'<div class="muted" style="font-size:11px;margin-top:2px">Scout him to project his temperament.</div>'}</div>
     <div class="kv"><span class="k">Ceiling</span><span>${sc.text}</span></div>
     <div class="kv"><span class="k">Scouting</span><span>${rec.scout}% · pitches +${Math.round((recScoutMult(rec)-1)*100)}%${sc.revealed?'':' · scout to sharpen'}</span></div>
-    <div class="kv"><span class="k">Speed / Strength / Awareness</span><span>${rec.spd} · ${rec.str} · ${rec.awr}</span></div>
+    <div class="kv" style="display:block"><span class="k" style="display:block;margin-bottom:4px">Attributes <span class="dim" style="font-weight:400">— weighted for your ${sideOfPos(rec.pos)==='off'?controlled().offScheme:sideOfPos(rec.pos)==='def'?controlled().defScheme:'special teams'}</span></span>
+      ${attrRowsHTML(rec,sideOfPos(rec.pos)==='off'?controlled().offScheme:sideOfPos(rec.pos)==='def'?controlled().defScheme:null)}</div>
     <div class="kv"><span class="k">Work ethic</span><span>${traitRead('mot',rec.id,motVal(rec),rec.scout).text}</span></div>
     <div class="kv"><span class="k">Composure</span><span>${traitRead('comp',rec.id,compVal(rec),rec.scout).text}</span></div>
     <div class="kv"><span class="k">Ego (media)</span><span>${traitRead('ego',rec.id,egoVal(rec),rec.scout).text}</span></div>
@@ -7741,6 +7920,24 @@ function statBlock(p){
 }
 // Phase 49: a repeat-offender tag on the roster row. Only for a real habit (3+ flags AND ~one a
 // game), so it marks the guy who is actually costing you drives rather than anyone unlucky once.
+// Phase 51: the attribute readout. These six ARE the player now — `ov` is just their weighted mean
+// for the system he plays in — so they get a real block instead of the old inert
+// "Speed / Strength / Awareness" line that no formula ever read. Each is shown against the weighting
+// his position (and scheme) puts on it, because a 92 Speed means something very different at corner
+// than at guard, and that weighting is exactly what decides his OVERALL.
+function attrRowsHTML(p,scheme){
+  const w=scheme?schemeAttrW(p.pos,scheme):posAttrW(p.pos);
+  const top=Math.max(...ATTRS.map(k=>w[k]));
+  return ATTRS.map(k=>{
+    const v=attrVal(p,k), key=w[k]>=top-0.001, pct=clamp(Math.round((v-40)/59*100),0,100);
+    return `<div class="row spread" style="margin:3px 0;gap:8px;align-items:center">
+      <span class="meta ${key?'accent':'dim'}" style="min-width:88px;font-weight:${key?700:400}">${ATTR_LABEL[k]}</span>
+      <span style="flex:1;height:5px;background:rgba(255,255,255,.10);border-radius:3px;overflow:hidden">
+        <span style="display:block;width:${pct}%;height:100%;background:${key?'var(--accent)':'rgba(255,255,255,.34)'}"></span></span>
+      <span class="cond" style="min-width:26px;text-align:right;font-weight:700">${v}</span>
+      <span class="meta dim" style="min-width:34px;text-align:right">${Math.round(w[k]*100)}%</span></div>`;
+  }).join('');
+}
 function penFlag(p){
   const s=p.gs; if(!s||!s.pen||s.pen<3||!(s.pen/(s.gp||1)>=0.9))return '';
   return ` <span class="tag" style="font-size:9px;background:#6b2020;color:#fff">🚩 ${s.pen} PEN</span>`;
@@ -7806,7 +8003,8 @@ function playerSheet(p,t){
     <div class="kv"><span class="k">Ego (media)</span><span>${traitRead('ego',p.id,egoVal(p),rosterTraitConf(p)).text}</span></div>
     ${schemeKV(playerSchemeName(p),rosterTraitConf(p),sideOfPos(p.pos)==='off'?t.offScheme:t.defScheme)}
     ${p.morale!=null?`<div class="kv"><span class="k">Locker room</span><span>${moraleMood(p.morale)} ${p.morale>=60?'buzzing':p.morale>=46?'good':p.morale>=34?'low':'unhappy'} (${p.morale})</span></div>`:''}
-    <div class="kv"><span class="k">Speed / Strength / Awareness</span><span>${p.spd} · ${p.str} · ${p.awr}</span></div>
+    <div class="kv" style="display:block"><span class="k" style="display:block;margin-bottom:4px">Attributes <span class="dim" style="font-weight:400">— weighted for ${sideOfPos(p.pos)==='off'?t.offScheme:sideOfPos(p.pos)==='def'?t.defScheme:'special teams'}</span></span>
+      ${attrRowsHTML(p,sideOfPos(p.pos)==='off'?t.offScheme:sideOfPos(p.pos)==='def'?t.defScheme:null)}</div>
     ${p.dev>0?`<div class="kv"><span class="k">Developed (last offseason)</span><span class="good">▲ +${p.dev} OVR</span></div>`:''}
     ${(p.honors&&p.honors.length)?`<div class="kv"><span class="k">Honors</span><span>${p.honors.map(h=>h.year+' '+h.award).join('; ')}</span></div>`:''}
     ${statBlock(p)}`;
