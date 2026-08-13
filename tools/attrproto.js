@@ -86,13 +86,18 @@ const ARCHETYPES = {
   QB: [
     { n:'Pocket Passer',  f:22, x:'Joe Burrow',          w:{tha:10, thp:7, iq:3, str:3, elu:2, spd:-10, acc:-9, agi:-7, tor:-4} },
     { n:'Field General',  f:18, x:'Alex Smith',          w:{iq:12, awr:11, car:4, tha:2, thp:-10, spd:-6, acc:-5, elu:-4, tor:-4} },
-    { n:'Gunslinger',     f:15, x:'Brett Favre',         w:{thp:10, tor:6, elu:3, agi:3, spd:2, tha:-5, awr:-6, iq:-5} },
+    // What defines a gunslinger is not the arm, it is the RISK — he throws the one nobody else
+    // would. `car` crashing is the separation from the Cannon, who is simply strong-armed.
+    { n:'Gunslinger',     f:15, x:'Brett Favre',         w:{thp:9, car:-11, awr:-7, iq:-5, tha:-2, elu:4, agi:3, tor:3, spd:2} },
     // NOT a lesser Field General: he protects the ball rather than elevating the offence, so `car`
     // is his one elite trait and `iq` sits BELOW average. Without that he was a Field General copy.
     { n:'Game Manager',   f:13, x:'AJ McCarron',         w:{car:13, awr:3, tha:2, thp:-9, iq:-5, spd:-5, acc:-4, elu:-4, agi:-3, tor:-3} },
     { n:'Dual-Threat',    f:13, x:'Lamar Jackson',       w:{spd:11, acc:9, agi:7, elu:5, tor:4, tha:-6, thp:-3, iq:-5} },
     { n:'Scrambler',      f:12, x:'Johnny Manziel',      w:{tor:8, elu:9, agi:6, acc:3, iq:-6, awr:-5, thp:-2, str:-3} },
-    { n:'Cannon',         f:7,  x:'Josh Allen (Wyoming)',w:{thp:14, tor:5, tha:-8, awr:-6, iq:-6, car:-4} },
+    // A statue with a howitzer. Must point AWAY from the Gunslinger, not merely further along him —
+    // both were thp+/tor+/tha-/awr- and measured 0.94 cosine, i.e. Cannon was just a high-purity
+    // Gunslinger, which is what `purity` already expresses. The mobility signs are the separation.
+    { n:'Cannon',         f:7,  x:'Josh Allen (Wyoming)',w:{thp:16, str:4, tha:-9, awr:-6, iq:-6, car:-4, tor:-3, agi:-4, elu:-4, spd:-3} },
   ],
   RB: [
     { n:'Receiving Back', f:20, x:'Christian McCaffrey', w:{cth:10, rte:9, pbk:5, awr:4, btk:-6, str:-6} },
@@ -107,15 +112,15 @@ const ARCHETYPES = {
     { n:'Slot Technician',f:18, x:'Wes Welker',          w:{rte:10, agi:9, acc:5, awr:4, str:-8, btk:-7} },
     { n:'Deep Threat',    f:17, x:'Henry Ruggs III',     w:{spd:11, acc:9, rte:3, str:-6, cth:-4, btk:-6} },
     { n:'Contested X',    f:15, x:'Mike Evans',          w:{str:11, cth:5, btk:6, agi:-7, acc:-6, elu:-6, spd:-7} },
-    { n:'YAC Weapon',     f:14, x:'Deebo Samuel',        w:{elu:10, btk:9, acc:5, rte:-6, cth:-5, awr:-4} },
-    { n:'Gadget',         f:9,  x:'Cordarrelle Patterson', w:{elu:10, btk:5, acc:6, spd:6, cth:-9, rte:-10} },
+    { n:'YAC Weapon',     f:14, x:'Deebo Samuel',        w:{btk:12, elu:9, str:6, rte:-6, cth:-3, awr:-4, spd:-7} },
+    { n:'Gadget',         f:9,  x:'Cordarrelle Patterson', w:{spd:12, acc:9, elu:6, cth:-11, rte:-12, awr:-4} },
     { n:'Blocking WR',    f:7,  x:'Hines Ward',          w:{str:10, awr:6, cth:-7, rte:-6, elu:-4, acc:-3} },
   ],
   TE: [
-    { n:'Receiving F',    f:24, x:'Kyle Pitts',          w:{cth:10, rte:9, spd:5, rbk:-9, pbk:-7, str:-5} },
+    { n:'Receiving F',    f:24, x:'Kyle Pitts',          w:{cth:12, rte:11, rbk:-9, pbk:-7, str:-5, spd:-4} },
     { n:'Move H-Back',    f:22, x:'Evan Engram',         w:{agi:6, acc:6, cth:4, rbk:3, elu:3, str:-6, btk:-4} },
     { n:'Blocking Y',     f:22, x:'Marcedes Lewis',      w:{rbk:10, pbk:9, str:5, cth:-7, rte:-8, spd:-5, elu:-4} },
-    { n:'Seam Stretcher', f:16, x:'Vernon Davis',        w:{spd:11, cth:5, rte:5, rbk:-10, pbk:-6, str:-6} },
+    { n:'Seam Stretcher', f:16, x:'Vernon Davis',        w:{spd:15, acc:5, rbk:-9, pbk:-6, str:-7, cth:-3, awr:-3} },
     { n:'Complete TE',    f:16, x:'George Kittle',       w:{cth:2, rbk:2, pbk:2, rte:1, str:1, spd:-2, elu:-3, btk:-2} },
   ],
   OT: [
@@ -142,15 +147,15 @@ const ARCHETYPES = {
     { n:'Speed Rusher',   f:25, x:'Von Miller',          w:{prs:9, acc:9, agi:6, spd:5, str:-8, rst:-7} },
     { n:'Bull Rusher',    f:23, x:'J.J. Watt',           w:{str:10, prs:5, rst:5, acc:-7, agi:-6, spd:-5} },
     { n:'Run Stopper',    f:22, x:'Calais Campbell',     w:{rst:10, str:5, tkl:6, prs:-8, acc:-5} },
-    { n:'Edge Bender',    f:17, x:'Dwight Freeney',      w:{agi:10, acc:9, prs:5, str:-10, rst:-7} },
+    { n:'Edge Bender',    f:17, x:'Dwight Freeney',      w:{agi:13, prs:4, acc:2, spd:-6, str:-9, rst:-6} },
     { n:'Hand Fighter',   f:13, x:'Cameron Jordan',      w:{awr:11, prs:5, rst:4, acc:-6, agi:-5, str:-5} },
   ],
   DT: [
     { n:'Nose Tackle',    f:25, x:'Vince Wilfork',       w:{str:8, rst:9, prs:-7, acc:-6, agi:-6, spd:-4} },
     { n:'3-Tech',         f:23, x:'Warren Sapp',         w:{prs:10, acc:8, agi:6, str:-6, rst:-6} },
-    { n:'Two-Gap Anchor', f:22, x:'Haloti Ngata',        w:{str:5, rst:5, awr:6, tkl:4, acc:-4, agi:-4} },
+    { n:'Two-Gap Anchor', f:22, x:'Haloti Ngata',        w:{awr:9, tkl:8, rst:2, prs:-3, str:-3, acc:-4, agi:-4} },
     { n:'Interior Freak', f:16, x:'Ndamukong Suh',       w:{str:10, acc:9, prs:5, awr:-10, rst:-4} },
-    { n:'Technician',     f:14, x:'Grady Jarrett',       w:{awr:11, rst:5, str:-6, acc:-5, agi:-4} },
+    { n:'Technician',     f:14, x:'Grady Jarrett',       w:{rst:11, prs:6, agi:4, str:-8, acc:-5, tkl:-4} },
   ],
   LB: [
     { n:'Thumper',        f:22, x:'Patrick Willis',      w:{tkl:9, str:8, rst:6, zcv:-7, mcv:-7, spd:-4, acc:-4} },
@@ -164,7 +169,7 @@ const ARCHETYPES = {
     { n:'Burner',         f:22, x:'Deion Sanders',       w:{spd:10, acc:8, mcv:4, tkl:-6, str:-6, awr:-6} },
     { n:'Press Corner',   f:22, x:'Jalen Ramsey',        w:{mcv:9, str:7, agi:5, zcv:-8, awr:-5} },
     { n:'Slot Corner',    f:18, x:'Chris Harris Jr.',    w:{agi:10, tkl:6, zcv:5, awr:4, spd:-7, str:-6} },
-    { n:'Ball Hawk',      f:14, x:'Trevon Diggs',        w:{cth:11, zcv:5, awr:5, mcv:-6, tkl:-6, str:-4} },
+    { n:'Ball Hawk',      f:14, x:'Trevon Diggs',        w:{cth:13, spd:5, awr:-6, zcv:-4, tkl:-6, str:-4} },
   ],
   FS: [
     { n:'Center Fielder', f:30, x:'Earl Thomas',         w:{zcv:9, spd:8, awr:5, tkl:-7, str:-6, mcv:-5} },
@@ -174,7 +179,7 @@ const ARCHETYPES = {
   ],
   SS: [
     { n:'Box Enforcer',   f:30, x:'Kam Chancellor',      w:{tkl:9, str:9, zcv:-7, spd:-5, cth:-6} },
-    { n:'Hybrid LB/S',    f:26, x:'Derwin James',        w:{tkl:6, mcv:5, str:5, iq:5, spd:-5, zcv:-6} },
+    { n:'Hybrid LB/S',    f:26, x:'Derwin James',        w:{iq:10, mcv:7, acc:4, agi:4, str:-5, tkl:-4, zcv:-5} },
     { n:'Coverage SS',    f:24, x:'Justin Simmons',      w:{mcv:9, zcv:6, cth:6, str:-7, tkl:-7} },
     { n:'Deep Half',      f:20, x:'Jessie Bates III',    w:{zcv:10, spd:6, awr:5, tkl:-8, str:-6, mcv:-5} },
   ],
@@ -443,6 +448,28 @@ console.log('7. archetypes are weighted-mean-zero under their own position row')
     }
   }
   console.log(`   ${n} archetypes across ${POSITIONS.length} positions, max |weighted mean| = ${worst.toExponential(1)}`);
+}
+
+// 7b. NO TWO ARCHETYPES AT A POSITION MAY POINT THE SAME WAY.
+//     Once purity exists, an archetype that differs from a neighbour only in MAGNITUDE is redundant
+//     by definition — a 1.5-purity Gunslinger IS a Cannon. So the invariant is on DIRECTION. This is
+//     the gate that keeps the set from silently rotting as archetypes are added: measured before it
+//     existed, 14 of 147 pairs sat above 0.5 cosine and QB Gunslinger/Cannon reached 0.94.
+console.log('7b. no two archetypes at a position share a direction');
+{
+  const MAXCOS = 0.70;
+  let worst = 0, worstN = '';
+  for (const pos of POSITIONS) {
+    const keys = Object.keys(posAttrW(pos)), L = ARCHETYPES[pos];
+    for (let i = 0; i < L.length; i++) for (let j = i + 1; j < L.length; j++) {
+      let dot = 0, n1 = 0, n2 = 0;
+      for (const k of keys) { dot += L[i].off[k] * L[j].off[k]; n1 += L[i].off[k] ** 2; n2 += L[j].off[k] ** 2; }
+      const c = dot / Math.sqrt(n1 * n2);
+      if (c > worst) { worst = c; worstN = `${pos} ${L[i].n} vs ${L[j].n}`; }
+      ok(c <= MAXCOS, `${pos}: "${L[i].n}" and "${L[j].n}" point the same way (cosine ${c.toFixed(2)} > ${MAXCOS}) — differentiate them or delete one; purity already covers "the same but more"`);
+    }
+  }
+  console.log(`   worst pair ${worst.toFixed(2)} (${worstN}), ceiling ${MAXCOS}`);
 }
 
 // 8. an archetype survives generation, and round-trips through the classifier
