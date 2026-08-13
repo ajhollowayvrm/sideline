@@ -11,3 +11,6 @@ play-profile.json
 quantiles.json
 fit.log
 plays.log
+pen-cache.json
+pen-profile.json
+pens.log

@@ -1,0 +1,23 @@
+====================================================================================================
+SIDELINE simEngine — penalties, 2010 games / 4020 team-games
+====================================================================================================
+
+  per team-game   7.37 penalties (sd 2.71) for 36.8 yards
+  yards/penalty   5.00
+  distribution    0:0.1%  1:0.6%  2:1.6%  3:4.4%  4:7.1%  5:12.3%  6:13.8%  7:14.4%  8:13.5%  9:11.2%  10:8.9%  11:5.2%  12:3.5%  13:1.5%  14:1.3%  15:0.4%  16:0.2%
+  only two fouls exist:  false start 3.68/team-game (real 1.26) · offside 3.69/team-game (real 0.43)
+  charged to the offense 49.9% · to the defense 50.1%   (real 61.1% / 32.2%)
+  per scrimmage snap 8.82%  (83.5 logged plays/team-game)
+  home 7.00 · road 7.73  → road premium 10.5%
+
+  TEAM-SEASON SPREAD (134 teams × 30 games)
+    mean 7.37 · sd 0.52
+    p05 6.43  p25 7.00  median 7.37  p75 7.70  p95 8.27
+    range 6.00–8.70
+    game-to-game sd within a team: 2.71   TRUE team-level sd: 0.17   (real: 2.54 / 0.95)
+    least-disciplined quintile 8.09 vs most 6.62 → observed gap 1.47
+
+  team composure (starter mean) spread: 42.4–59.4, sd 3.45
+    least composed quintile → 7.67 pen/game
+    most composed quintile  → 7.24 pen/game
+    composure effect: 0.43 penalties/game between the tails

@@ -1,0 +1,105 @@
+========================================================================================================================
+REAL PENALTY AVERAGES — 3944 FBS-vs-FBS games, 7888 team-games (2021–2025)
+========================================================================================================================
+
+1. NATIONAL — per team, per game
+   penalties      5.98  (sd 2.81)   p10 3  median 6  p90 10  max 18
+   yards          52.4  (sd 26.7)   p10 20  median 50  p90 88  max 216
+   yards/penalty  8.76
+   per own scrimmage play  8.86%   (67.5 plays/team-game)
+   per drive           0.50
+   both teams combined 12.0 penalties for 105 yards per game
+
+   team-game distribution:
+     0:0.8%  1:2.6%  2:5.7%  3:9.8%  4:12.9%  5:15.1%  6:14.1%  7:12.2%  8:9.1%  9:6.6%  10:4.5%  11:2.8%  12:1.7%  13:1.0%  14:0.6%  15:0.3%  16:0.1%  
+     ≤2 flags 9.1% of team-games · ≥10 flags 11.1%
+
+2. HOME vs ROAD
+   home  5.81 for 51.7 yds
+   road  6.15 for 53.1 yds
+   road penalty premium: 5.7% more flags, 2.8% more yards
+
+3. BY SEASON
+   2021   6.13 for 53.6 yds   (1540 team-games)
+   2022   5.99 for 52.4 yds   (1552 team-games)
+   2023   5.82 for 50.9 yds   (1584 team-games)
+   2024   5.96 for 52.3 yds   (1596 team-games)
+   2025   6.00 for 52.7 yds   (1616 team-games)
+
+4. TEAM-SEASON DISCIPLINE — the spread a composure rating has to span
+   664 team-seasons (≥8 games)
+   mean 5.99 pen/game · sd 1.20
+   p05 4.08  p25 5.23  median 5.92  p75 6.83  p95 7.92
+   most disciplined 2.42 · least 9.83  →  full range 2.42–9.83 pen/game
+   the middle 90% of team-seasons live in 4.08–7.92
+   game-to-game sd WITHIN a team-season: 2.54   true team-level sd: 0.95
+   → only 12.2% of the variance in a single team-game is the TEAM; the rest is that night.
+   least-disciplined quintile 7.68 vs most-disciplined 4.32 pen/game  → observed gap 3.37
+   year-over-year repeatability (team's pen/game, season N vs N+1): r = 0.464  (528 pairs)
+
+5. DOES IT COST YOU THE GAME?
+   by penalty differential (your flags − theirs):
+     you −5 or fewer       815 team-games   win  54.0%   margin    1.7
+     you −4..−3           1086 team-games   win  51.0%   margin   -0.4
+     you −2..−1           1606 team-games   win  50.3%   margin    0.1
+     even                  874 team-games   win  50.0%   margin    0.0
+     you +1..+2           1606 team-games   win  49.7%   margin   -0.1
+     you +3..+4           1086 team-games   win  49.0%   margin    0.4
+     you +5 or more        815 team-games   win  46.0%   margin   -1.7
+   correlation, penalty-yard differential vs point margin: r = 0.047
+   correlation, own penalty yards vs own points:           r = 0.098
+
+6. BY QUALITY (AP rank at kickoff)
+   top-10                 5.87 for 51.6 yds   (650 team-games)
+   ranked 11–25           5.95 for 51.8 yds   (911 team-games)
+   unranked               5.99 for 52.6 yds   (6327 team-games)
+   ranked vs unranked     5.86 for 52.2 yds   (991 team-games)
+   unranked vs ranked     5.84 for 48.8 yds   (991 team-games)
+
+========================================================================================================================
+7. THE MIX — which flags actually get thrown (3866 games of play-by-play, 36957 penalty plays logged)
+========================================================================================================================
+   play-by-play logs 9.56 penalties/game vs 11.95 in the box score → 80.0% coverage
+   (the gap is declined/offsetting flags and kick-game fouls ESPN folds into the play text)
+
+   penalty                                    share  per tm-gm  avg yds   on OFF  →1st dn
+   False Start                                26.3%       1.26      4.9     100%       0%
+   Offensive Holding                          18.1%       0.86      7.6      88%      17%
+   Pass Interference (side n/s)               11.8%       0.57        —      12%      88%
+   Offside / Encroachment / NZI                9.1%       0.43      4.4       3%      24%
+   Delay of Game                               6.3%       0.30      4.8      90%       3%
+   Personal Foul / Unnecessary Roughness       6.1%       0.29     12.9      35%      60%
+   Illegal Formation / Shift / Motion          3.6%       0.17      3.4      98%       1%
+   Unsportsmanlike Conduct                     3.3%       0.16     12.5      49%      41%
+   Face Mask                                   2.5%       0.12     12.8      15%      83%
+   Ineligible Downfield / Illegal Touching     2.4%       0.12      2.2     100%       1%
+   Roughing the Passer                         2.2%       0.10     13.9       1%      95%
+   Illegal Substitution / 12 Men               2.0%       0.09      4.4      42%      16%
+   Defensive Pass Interference                 1.4%       0.07     11.7       1%      96%
+   Illegal Block / Clip / Blindside            0.9%       0.04     10.2      90%       5%
+   Defensive Holding                           0.8%       0.04      8.0       7%      85%
+   Unclassified                                0.8%       0.04      7.1      65%      25%
+   Intentional Grounding                       0.8%       0.04      2.5      99%       0%
+   Targeting                                   0.6%       0.03     13.8       3%      95%
+   Roughing / Running into Kicker              0.4%       0.02        —       1%      67%
+   Offensive Pass Interference                 0.3%       0.02     10.4      93%       3%
+   Sideline / Equipment / Admin                0.2%       0.01      5.4      29%      18%
+   Horse Collar                                0.1%       0.01        —       2%      98%
+   Illegal Use of Hands / Hands to Face        0.1%       0.01        —      44%      61%
+   Kick-game foul                              0.0%       0.00        —        —      25%
+   Illegal Contact                             0.0%       0.00        —        —       0%
+
+   pre-snap (dead-ball) 47.1%  ·  live-ball 52.9%
+   flagged team had the ball 61.1%  ·  was on defense 32.2%  ·  unattributed 6.7%
+   home team flagged 48.9%  ·  road team 51.1%
+   penalty produced a first down: 28.8% of all flags (1.37 per team-game)
+
+   by quarter:  Q1 22.2%  Q2 28.3%  Q3 23.9%  Q4 25.4%
+   by down:     1 37.9%  2 27.4%  3 23.9%  4 10.8%
+
+8. IS IT A PLAYER PROPERTY? — how a team-season's flags spread across its players
+   59.2% of logged penalties name the player who committed them
+   over 296 team-seasons: 21.8 different players flagged per season (of ~43 named flags)
+   the most-flagged player accounts for 24.4% of his team's flags · the top three for 41.8%
+   FALSE STARTS only (332 team-seasons, 13.6 per season): 6.7 different offenders
+   the worst one commits 44.7% of his team's false starts · the top three 71.4%

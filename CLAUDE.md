@@ -16,6 +16,9 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > **Measured reality:** `docs/reference/cfb-averages.md` holds real FBS averages computed from 3,944
 > games (2021–2025) — national, by rank matchup, and by mismatch size — plus where `simEngine` sits
 > against them. It is the tuning target for any sim work; `tools/cfb-data/` reproduces it.
+> `docs/reference/cfb-penalties.md` does the same for **penalties** off the same 3,944 games — rate,
+> yardage, type mix, when they're thrown, how much team discipline really varies (and how little it
+> decides games), plus the measured gap to the Phase 25 penalty model.
 >
 > **All roadmap phases 1–48 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
