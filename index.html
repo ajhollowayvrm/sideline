@@ -1448,8 +1448,11 @@ function chooseSlotSheet(){
 const TEMPLATE={format:"sideline-roster",version:1,teams:[{
   name:"Example State",nickname:"Mockingbirds",abbr:"EXST",conference:"SEC",division:"",color:"#1b5e20",
   prestige:74,facilities:{stadium:8,strength:7,training:7,academics:6,nil:7,scouting:7},
+  // Phase 51: all six attributes are OPTIONAL. Supply a subset and the rest are generated from the
+  // player's identity; supply none and he gets a full profile. Whatever you give is re-centred so its
+  // weighted mean equals `overall`, so an all-90s profile on a 75-overall player is still a 75.
   players:[{first:"John",last:"Smith",pos:"QB",year:"JR",age:21,homeState:"TX",stars:4,overall:88,potential:92,
-    spd:80,str:70,awr:86,captain:true}]}]};
+    spd:80,agi:78,str:70,awr:86,bal:82,dur:74,captain:true}]}]};
 function downloadTemplate(){
   const blob=new Blob([JSON.stringify(TEMPLATE,null,2)],{type:'application/json'});
   const a=el('a');a.href=URL.createObjectURL(blob);a.download='sideline-roster-template.json';a.click();

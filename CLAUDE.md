@@ -14,6 +14,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > - `docs/phases/possession.md` — the possession model: clock, halves, 4th down, gain shape (Phase 48)
 > - `docs/phases/penalties.md` — penalties: the roster-driven foul model, catalog, culprits (Phase 49)
 > - `docs/phases/clutch.md` — big moments: pressure, clutch-as-variance, what the data forbids (Phase 50)
+> - `docs/phases/attributes.md` — the six-attribute ability model, OVR as a scheme-weighted readout (Phase 51)
 >
 > **Measured reality:** `docs/reference/cfb-averages.md` holds real FBS averages computed from 3,944
 > games (2021–2025) — national, by rank matchup, and by mismatch size — plus where `simEngine` sits
@@ -25,7 +26,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > (r=0.078) so there is no such thing as a clutch team, that late-and-close football genuinely
 > tightens, and that kickers measurably do not choke.
 >
-> **All roadmap phases 1–50 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–51 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -135,6 +136,32 @@ still serves it with zero config.
   composure extremes — and turning the phase OFF makes close games *more* rating-determined, not
   less. `p.gs.cl` surfaces as "In the clutch". Save v46, `SIM_MODEL` 5. *(→ `docs/phases/clutch.md`.)*
 
+- **Phase 51 — Attributes become the ability model.** `p.ov` used to *be* the ability model, while
+  `spd`/`str`/`awr` sat on every player as the headline display numbers and were **read by no formula
+  anywhere**. Inverted: six attributes (speed, agility, strength, awareness, ball skills, durability)
+  are the truth, and **Overall is a derived readout of them weighted by the SYSTEM the player is in** —
+  `ovrBase` (scheme-agnostic, the cross-team currency for stars/draft/records) vs `ovrIn` (stored on
+  `p.ov`, what the roster and sim see). Installing a scheme genuinely re-rates the roster: two corners
+  who read 78/79 in the abstract swing to 75/84 in a Bear front and 80/75 in Tampa-2. The rule is the
+  house one from Phases 10/21/23/50 — **attributes redistribute ability, they never add it** — enforced
+  at two levels (a profile is its owner's ability plus a weighted-mean-zero tilt; every sim channel is a
+  deviation from its pool's mean), because there is **no measurement to fit attribute effects against**.
+  Each channel targets a part of a play that had no per-matchup term before, so nothing double-counts
+  the `matchEdge` that `ov` already carries: speed owns the gain **tail** (never the mean) plus an
+  asymmetric one-on-one clause; strength owns the **floor** and pass protection — **the offensive line
+  previously affected no run or pass outcome at all**; awareness owns mistakes only and blunts the
+  Phase 46 concept bonuses; ball skills the catch point; durability injury and fatigue. Kickers and
+  punters finally enter the sim (range = leg, accuracy = technique, not pressure-sensitive because
+  kickers measurably don't choke). Penalties stay composure-only by design. Phase 21's roster-fit term
+  was **retired from `schemeDelta`** (now double-counted by `ovrIn`); `playerSchemeIdx` survives as
+  *preference*, not aptitude. Six inconsistent generation sites collapsed into one honest path — which
+  fixed deep backups carrying a speed rating 26 points above their overall, blue-chips arriving rated
+  below their own attributes, and imported rosters having no spread at all. Also (directive 2)
+  potential now lifts an NFL board grade and a recruit's *services* ranking (`svc`, deliberately
+  separate from `stars`, which drives mechanics). Save v47, `SIM_MODEL` 6 — pre-v6 games decline
+  replay; the migration is a **real mutation** of ~11.3k players, each keeping the `ov` he had.
+  *(→ `docs/phases/attributes.md`, incl. the measured post-phase drift and what the tuning pass owns.)*
+
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
 stays fast). This is a design choice, not a backlog. Per-doc "Deliberately out of scope"
@@ -210,9 +237,11 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   stored inside `state`. The pure decision (`cloudResolve`) is fenced as the CLOUD ENGINE and
   gated by `cloudlab`; the backend is `infra/` (SAM). See `docs/phases/cloud.md`.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **46**). Each step backfills the fields its phase added and re-derives
+  (currently **47**). Each step backfills the fields its phase added and re-derives
   ratings/ranks where needed; most recent steps are structural no-ops (sparse per-player
-  fields / derived data read as their defaults). The full v1→v45 migration ladder is
+  fields / derived data read as their defaults) — **v47 is the exception**: it genuinely mutates
+  every player, deriving a six-attribute profile re-centred onto the `ov` he already had. The full
+  v1→v47 migration ladder is
   documented inline in `migrateState` in `index.html`, and each phase's design doc in
   `docs/phases/` records its save-shape change. **Bump `version` + extend `migrateState`
   on any save-shape change.**
@@ -253,7 +282,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   world: { teams: [ Team, ... ] }
 }
 
-// Recruit: { id, fn, ln, pos, st, stars, ov, pot, spd,str,awr, mot,comp, rebel, scout, prefs:[primary,secondary],
+// Recruit: { id, fn, ln, pos, st, stars, svc, ov, pot, spd,agi,str,awr,bal,dur, mot,comp, rebel, scout, prefs:[primary,secondary],
+//   svc = the recruiting SERVICES' star ranking (Phase 51) — over-rates a big ceiling by a tier and is
+//   what the board displays via `recStars()`; `stars` stays the true tier that drives mechanics.
 //   iv:{ [teamId]: interest }, committedTo: teamId|null, signed, offered, visited, promise, alumni?, decideWeek?, hits?, finalists?, _flipped? }
 //   decideWeek = a blue-chip's announced commitment week — he commits to the leader then (Phase 35 window).
 //   hits = {action:count} of the player's repeated actions on him (Phase 35 diminishing returns).
@@ -313,12 +344,17 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 
 ### Player object (kept lean for storage)
 ```
-{ id, fn, ln, pos, yr, age, st, stars, ov, pot, cap, spd, str, awr, so,
+{ id, fn, ln, pos, yr, age, st, stars, ov, pot, cap, spd, agi, str, awr, bal, dur, so,
   mot?, comp?, ego?, morale?, inj?, rs?, gs?, dev?, honors?, career?, peakOv?, moments? }   // trailing fields are sparse (absent = default)
 //   rs = redshirt status (Phase 39; 'on' = redshirting this season → held out of games; 'used' = already
 //        redshirted. At rollover a sat 'on' designee advances onto the RS class track, preserving a year.)
 //   inj = weeks out injured (Phase 27; absent/0 = healthy; set by the app after a game, healed weekly + at rollover)
 //   so = depth order within position (0 = starter); cap = captain
+//   spd/agi/str/awr/bal/dur = THE ABILITY MODEL (Phase 51). `ov` is a DERIVED readout of these,
+//   weighted by position AND the scheme the player's team runs — `ovrIn` is what's stored on p.ov
+//   and what the sim/roster see; `ovrBase` is the scheme-agnostic value used for anything comparing
+//   players across programs (stars, draft grade, records, peakOv). Never write to `p.ov` to make a
+//   player better — re-centre his profile (`centerAttrs`) and let the readout follow.
 //   pot = TRUE ceiling (0..99). The UI never shows it raw — `scoutedCeiling(p)` renders a
 //   fuzzy tier/band whose uncertainty shrinks with scouting confidence. `devStage(p)` buckets the ov→pot gap.
 //   mot/comp/ego = fogged temperament traits (Phase 10 + Ego, Phase 20); morale = persistent per-player
@@ -362,7 +398,7 @@ is **added**. Partial files are fine — supply only the teams you have real dat
       "players": [
         { "first": "John", "last": "Smith", "pos": "QB", "year": "JR", "age": 21,
           "homeState": "TX", "stars": 4, "overall": 88, "potential": 92,
-          "spd": 80, "str": 70, "awr": 86, "captain": true }
+          "spd": 80, "agi": 78, "str": 70, "awr": 86, "bal": 82, "dur": 74, "captain": true }
       ]
     }
   ]
@@ -370,6 +406,13 @@ is **added**. Partial files are fine — supply only the teams you have real dat
 ```
 
 The "Download blank roster template" button in the wizard emits this exact shape.
+
+All six attributes are **optional**. Supply any subset and the rest are generated deterministically
+from the player's identity; supply none and he gets a full generated profile (rather than the old
+flat `spd=str=awr=overall`, which left imported leagues with no spread for the sim to read). Whatever
+you supply is **re-centred** so its weighted mean equals the `overall` you gave — a file handing us
+all-90s attributes on a 75-overall player doesn't collect the difference for free. Omit `overall` and
+it defaults to 60, so give it if you want the level to be yours.
 
 ---
 
