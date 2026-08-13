@@ -340,9 +340,14 @@ function motorMult(p){return clamp(1+(motVal(p)-50)/333,0.85,1.15);}
 // their middle (consistent); comp<50 pushes them to the extremes (boom/bust). At comp==50 the
 // exponent is 1 and compReshape is the identity, so a trait-less player is byte-identical to the
 // pre-Phase-10 sim (keeps simlab envelopes + determinism intact).
-function compExp(p){return clamp(1+(compVal(p)-50)/100,0.5,1.5);}     // comp0→0.5 streaky … comp100→1.5 steady
+// `amp` (Phase 50) scales how hard composure presses: 1 on a routine snap, up to 1+PC.varAmp when
+// the game is on the line. The reshape is mean-PRESERVING at any amp (compReshape is symmetric
+// about 0.5), so amplifying it in the clutch changes WHO wobbles, never the league's scoring mean —
+// which is what the measured "one-score win% doesn't repeat (r=0.078)" finding demands.
+// Absent amp === 1 → byte-identical to the pre-Phase-50 draw (the clamp never binds there).
+function compExp(p,amp){return clamp(1+((compVal(p)-50)/100)*(amp==null?1:amp),0.25,1.75);}  // comp0→0.5 streaky … comp100→1.5 steady
 function compReshape(x,g){const d=2*x-1;return 0.5+0.5*(d<0?-1:1)*Math.pow(Math.abs(d),g);}
-function compDraw(r,p){return compReshape(r(),compExp(p));}           // one rng draw, reshaped by comp
+function compDraw(r,p,amp){return compReshape(r(),compExp(p,amp));}   // one rng draw, reshaped by comp
 // Clutch: a tiny rating nudge applied to the OFFENSE's key man only when the game is "late &
 // close". High composure tightens up, low composure wobbles. Small by design (±~1.6 pts) so it
 // sways tight games without moving the season-long favorite/home win envelopes.
@@ -1271,7 +1276,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:45,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:46,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      rivalries:null,rivalryHeat:null,records:null,lastRealign:null,
@@ -1564,6 +1569,10 @@ function migrateState(state){
   }                                    // when absent, and the codec carries p.gs generically. SIM_MODEL is now 4,
                                        // so a game resolved by the old penalty model declines replay (same
                                        // contract as Phase 48) rather than re-simming to a different score.
+  if((state.version||1)<46){           // Phase 50: big moments. Structural no-op for the same reason — p.gs.cl
+    state.version=46;                  // (plays made under pressure) is another sparse box key. SIM_MODEL is 5,
+  }                                    // so pre-Phase-50 games decline replay instead of re-simming: the clutch
+                                       // terms change late-game play, which would move a finished score.
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1888,6 +1897,58 @@ function foulPool(P,key){
        : key==='dl'?(P.rush4||[]) : key==='cov'?(P.cover||[]) : (P.tkl||[]);
 }
 // PN-END
+// === Phase 50 — big moments. Fitted to docs/reference/cfb-clutch.md (the same 3,944 games).
+//
+// The measurement drove the design, and it says two things that pull against each other:
+//
+//   1. THE SITUATION IS REAL. Late and within one score, offense gets measurably harder — and it
+//      survives standardizing to a common down/distance mix (completion −3.25pp raw vs −3.52
+//      unstandardized), so it is not just "trailing teams throw on 3rd-and-long". Inside 5 minutes
+//      it reaches −5.55pp completion, −0.77 Y/A, −1.18 Y/C, with interceptions up ~30%.
+//
+//   2. CLUTCH IS NOT A TRAIT. A team's one-score win% has a year-over-year correlation of 0.078,
+//      against 0.482 for its blowout win%. Being good repeats; winning close games does not. So a
+//      rating must NOT be allowed to systematically decide close games.
+//
+// Hence: composure's clutch effect is mostly VARIANCE, not mean. Under pressure the Phase 10
+// reshape is amplified — an ice-veined player's outcomes tighten toward his mean, a streaky one's
+// fly apart — which is mean-preserving by construction, so it changes who makes the play in the
+// moment without making "clutch teams" that beat the measured 50/50. A small mean nudge rides on
+// top, drawn from the actual matchup (this receiver vs this corner), and it is deliberately bounded.
+//
+// Deliberately NOT modelled: kicker pressure. Controlling for distance, clutch field goals are
+// made at the same rate as any other (<30: 92.1% → 91.1%; 30s: 81.1% → 81.2%). Kickers don't choke.
+// PC-START
+const PC={
+  // Measured at FULL pressure, standardized to the normal down/distance mix, then fitted so the
+  // sim's Q4-within-one-score bucket reproduces the real one (tools/cfb-data/17-simclutch.js).
+  cmp:0.0340,             // completion probability, absolute — the one real passing effect
+  ya:0,                   // yards per COMPLETION is flat in the clutch: real Y/A falls 7.18 → 6.84
+                          // only because completions do (11.64 → 11.71 yds each). Charging a yardage
+                          // penalty on top of the completion drop would double-count it.
+  yc:0.933,               // rushing genuinely is squeezed — stacked boxes, no room, clock pressure
+  intMul:0.32,            // interceptions run ~30% hotter (real ratio 1.30, sim 1.27 before fitting).
+                          // Fitted on the RATIO, not the absolute: the reference sheet's INT baseline
+                          // undercounts (ESPN types some picks outside the set the harvest matches).
+  fumMul:0.15,
+  varAmp:1.6,             // how much harder composure presses at full pressure (Phase 10 reshape)
+  mean:1.5,               // multiplier on compClutch for the per-matchup mean nudge — the ONLY
+                          // channel that can bias a close game, so it is kept small on purpose
+  twoScore:0.30,          // a two-score game late still carries some tension, but much less
+};
+// How much this snap is worth, 0..1. Measured shape: nothing before the 4th quarter, ramping
+// through it (quadratic, so the last minutes dominate) and saturating inside 5 minutes. Overtime is
+// always 1. `secs` = seconds left in the half, `diff` = the offense's margin. Pure → simlab-testable.
+function pressure(half,secs,diff){
+  if(!(half>=2))return 0;
+  const m=Math.abs(diff), close=m<=8?1:m<=16?PC.twoScore:0;
+  if(!close)return 0;
+  if(secs<=300)return close;                 // crunch time — saturated
+  if(secs>=900)return 0;                     // still the 3rd quarter
+  const t=(900-secs)/600;                    // 15:00 → 5:00
+  return close*t*t;
+}
+// PC-END
 // Phase 48 — the 4th-down brain. Modern CFB goes for it ~1.94 times a game and converts ~52%; the
 // old rule (only inside the opponent's 42 on 4th-and-2) went for it 0.20 times and left 96% of the
 // real "turnover on downs" drives unmodelled. Pure: no rng, no globals → unit-tested in simlab.
@@ -2007,14 +2068,16 @@ function simEngine(home,away,seed,opts){
 
   // One possession, start at `startLos` (offense's own yard line). Returns the spot the
   // opponent takes over (mutates `score` + `box`); ~drive time charged to the caller's clock.
-  function playDrive(off,def,startLos,clutch,clk0,half){
+  function playDrive(off,def,startLos,clk0,half){
     const oP=pools[off.id], dP=pools[def.id];
     let adv=(off.ratings.off-def.ratings.def)+(off===home?HFA/2:-HFA/2)+form[off.id]-form[def.id];
-    if(clutch)adv+=compClutch(oP.qb);                   // late & close: the QB's composure shows (Phase 10)
     let los=startLos, down=1, togo=Math.min(10,100-startLos), time=0, pens=0;
     const mine=decide&&off.id===decideFor;             // only the controlled offense ever prompts the coach
     const clkNow=()=>Math.max(0,(clk0||0)-time);
     const timed=(clk0||0)>0;                            // OT drives are untimed (clk0 === 0) — never expire them
+    // Phase 50: how much this snap is worth, recomputed every play (the score can change mid-drive).
+    // An untimed drive is overtime, which is always the whole game.
+    const pressNow=()=>timed?pressure(half,clkNow(),score[off.id]-score[def.id]):1;
     // Phase 46: a field-goal attempt, factored out of the 4th-down block so the coach can call one on ANY
     // down (the OC/AI still only kicks on 4th → the 4th-down rng draws below are unchanged → AI byte-identical).
     const doFG=(dd,fgDist)=>{ time+=8; add(oP.k&&oP.k.id,'fga');
@@ -2102,6 +2165,11 @@ function simEngine(home,away,seed,opts){
       else if(variant==='draw'){ vYds+=(dcall==='blitz'?6:-2); }
       let gain=0, turnover=false, scored=false, tackled=true, txt='';
       jr=[];        // Phase 49: start journalling this play's stat lines — a flag can wipe them
+      // Phase 50: what this snap is worth. `vAmp` amplifies the composure reshape (mean-preserving,
+      // so it moves WHO wobbles, not the league's scoring); the rest are the measured situational
+      // deltas, applied to both teams alike so the moment tightens without favouring anyone.
+      const press=pressNow(), vAmp=1+PC.varAmp*press;
+      let hero=null;                                       // whoever made the play, for clutch credit
 
       if(wantPass){                                          // dropback (sacks aren't pass attempts)
         const rec=wpick(oP.recv,r,injured);                  // intended target (pre-snap read; skip the injured)
@@ -2109,12 +2177,16 @@ function simEngine(home,away,seed,opts){
         // Phase 24: a coverage reassignment — you put a specific defender on this receiver slot.
         if(plan&&plan.shadow&&def.id===adjustFor){const did=plan.shadow[rec&&(rec.pos+(rec.so||0))];if(did&&!injured.has(did)){const d=def.roster.find(p=>p.id===did);if(d)cov=d;}}
         const mEdge=matchEdge(bov(rec),oP.recvAvg,bov(cov),dP.covAvg); // mean-zero WR-vs-coverage matchup (pep-talk aware)
-        const padv=adv+mEdge;
+        // Phase 50: the mean nudge, drawn from THIS matchup — his QB and his receiver against their
+        // corner. Mean-zero across the league (composure is centred at 50 on both sides), bounded by
+        // PC.mean, and the only channel allowed to bias a close game at all.
+        const padv=adv+mEdge+(compClutch(qb)+compClutch(rec)-compClutch(cov))*PC.mean*press;
         if(r()<clamp(0.062-adv*0.0012+ky*0.05+dSack+vSack+(pkg==='spread'?(dcall==='blitz'?0.08:0.02):0),0.02,0.25)){  // sack (+ spread = fewer blockers, exposed to the blitz)
           gain=-ri(r,4,9); time+=PM.secSack; const s=wpick(dP.rush4,r,injured); add(s&&s.id,'sk'); txt=nm(qb)+' sacked by '+nm(s)+' for '+gain;
           if(r()<PM.sackFumP){ turnover=true; txt=nm(qb)+' STRIP-SACKED by '+nm(s)+' — fumble lost'; }   // Phase 48: the strip sack
-        } else if(r()<clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)+padv*0.007-ky*0.22+dComp+vComp+(pkg==='spread'?0.05:0),0.28,0.88)){    // completion (+ spread stresses coverage)
-          gain=Math.max(-3,Math.round(qGain(compDraw(r,rec),PM.recQ[distKey(togo)],vBoom*8)+padv*PM.advPass-ky*PASS_KEY+dPassY+vYds+(pkg==='spread'?3:0)));
+        } else if(r()<clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)+padv*0.007-ky*0.22+dComp+vComp-PC.cmp*press+(pkg==='spread'?0.05:0),0.28,0.88)){    // completion (+ spread stresses coverage)
+          gain=Math.max(-3,Math.round(qGain(compDraw(r,rec,vAmp),PM.recQ[distKey(togo)],vBoom*8)+padv*PM.advPass-ky*PASS_KEY+dPassY+vYds-PC.ya*press+(pkg==='spread'?3:0)));
+          hero=rec;
           add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
           add(cov&&cov.id,'cvTgt'); add(cov&&cov.id,'cvCmp'); add(cov&&cov.id,'cvYds',gain);   // coverage targeted / allowed
@@ -2123,16 +2195,19 @@ function simEngine(home,away,seed,opts){
           if(r()<INJ_RATE)hurt(rec,off); if(r()<INJ_RATE*0.7)hurt(cov,def);   // injuries on contact (Phase 26)
         } else {                                            // incomplete (maybe picked)
           time+=PM.secIncomp; tackled=false; add(qb&&qb.id,'pAtt'); add(cov&&cov.id,'cvTgt'); txt=nm(qb)+' incomplete';
-          if(r()<clamp(PM.intRate-adv*0.0008,0.020,0.12)){ turnover=true; add(qb&&qb.id,'pInt'); add(cov&&cov.id,'dInt'); txt=nm(qb)+' INTERCEPTED by '+nm(cov); }
+          if(r()<clamp((PM.intRate-adv*0.0008)*(1+PC.intMul*press),0.020,0.14)){ turnover=true; add(qb&&qb.id,'pInt'); add(cov&&cov.id,'dInt');
+            if(press>=0.5)add(cov&&cov.id,'cl');           // a pick in a big moment is a clutch play
+            txt=nm(qb)+' INTERCEPTED by '+nm(cov); }
         }
       } else {                                              // run
         const rb=wpick(oP.rush,r,injured)||qb;
         const fr=wpick(dP.front,r,injured);                  // the front defender he meets (Phase 23)
-        const padv=adv+matchEdge(bov(rb),oP.rushAvg,bov(fr),dP.frontAvg);   // RB vs front matchup (mean-zero, pep-talk + fatigue aware)
-        gain=Math.max(-9,Math.round(qGain(compDraw(r,rb),PM.runQ[distKey(togo)],0)+padv*PM.advRun-ky*RUN_KEY+dRunY+vYds+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
-        time+=PM.secRun; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain;
+        // Phase 50: the ball-carrier's nerve against the man who has to bring him down
+        const padv=adv+matchEdge(bov(rb),oP.rushAvg,bov(fr),dP.frontAvg)+(compClutch(rb)-compClutch(fr))*PC.mean*press;   // RB vs front matchup (mean-zero, pep-talk + fatigue aware)
+        gain=Math.max(-9,Math.round(qGain(compDraw(r,rb,vAmp),PM.runQ[distKey(togo)],0)+padv*PM.advRun-ky*RUN_KEY+dRunY+vYds-PC.yc*press+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
+        time+=PM.secRun; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain; hero=rb;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
-        if(!scored && r()<PM.fumRate){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
+        if(!scored && r()<PM.fumRate*(1+PC.fumMul*press)){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
         if(r()<INJ_RATE)hurt(rb,off); if(r()<INJ_RATE*0.7)hurt(fr,def);     // injuries on contact (Phase 26)
       }
 
@@ -2167,6 +2242,7 @@ function simEngine(home,away,seed,opts){
       jr=null;
       // ---- resolve the play ----
       if(scored){
+        if(press>=0.5){ add(hero&&hero.id,'cl'); if(wantPass)add(qb&&qb.id,'cl'); }   // Phase 50: made it when it mattered
         score[off.id]+=6;
         add(oP.k&&oP.k.id,'xpa'); const xp=r()<0.965; if(xp){ add(oP.k&&oP.k.id,'xpm'); score[off.id]+=1; }
         L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true);
@@ -2176,6 +2252,7 @@ function simEngine(home,away,seed,opts){
       if(turnover){ L(off,'play',txt,dd,true); return {nextLos:flipTo(clamp(los+gain,1,99)),time}; }
 
       const wasFirst=togo-gain<=0;
+      if(wasFirst&&press>=0.5){ add(hero&&hero.id,'cl'); if(wantPass)add(qb&&qb.id,'cl'); }   // Phase 50
       los=clamp(los+gain,1,99); togo-=gain;
       L(off,'play',txt+(wasFirst?' — 1ST DOWN':''),dd,false,togo0);
       if(togo<=0){ down=1; togo=Math.min(10,100-los); }     // first down (goal-to-go aware)
@@ -2194,8 +2271,7 @@ function simEngine(home,away,seed,opts){
     let clock=1800;
     while(clock>10){                                    // don't start a drive on a dead clock
       L._q=half*2-(clock>900?1:0);
-      const clutch=half===2&&clock<600&&Math.abs(score[home.id]-score[away.id])<=8;   // late & close (Phase 10)
-      const d=playDrive(off,def,startLos,clutch,clock,half);
+      const d=playDrive(off,def,startLos,clock,half);
       clock-=Math.max(d.time,12); startLos=d.nextLos;
       const swap=off; off=def; def=swap;
     }
@@ -2204,7 +2280,7 @@ function simEngine(home,away,seed,opts){
   let ot=0;
   while(score[home.id]===score[away.id] && ot++<25){
     L._q='OT'+ot;
-    playDrive(home,away,75,true,0); playDrive(away,home,75,true,0);   // OT is always late & close
+    playDrive(home,away,75,0); playDrive(away,home,75,0);   // OT is untimed — and always full pressure
   }
   L(null,'final','Final',null,true);
 
@@ -3806,7 +3882,7 @@ function gameSeed(g){return (hashStr(g.id)^(S.seed>>>0))>>>0;}
 // than the one in the record book. Every game resolved from here on is stamped with the model that
 // produced it; replay is refused (not silently wrong) for anything older. Stored results, stats and
 // standings are untouched — only the play-by-play re-sim is unavailable.
-const SIM_MODEL=4;   // 4 = Phase 49 (roster-driven penalty model); 3 = Phase 48.1 (measured gain tables + play-call mix)
+const SIM_MODEL=5;   // 5 = Phase 50 (big moments); 4 = Phase 49 (roster-driven penalties); 3 = Phase 48.1 (measured gain tables)
 function gameReplayable(g){ return !!g && (!g.played || g.eng===SIM_MODEL); }
 // Phase 22: if the coach play-called this game, `g.calls` is the ordered list of his controlled-offense
 // decisions. Replaying it (the OC default fills any gap) reproduces the EXACT play-called result on
@@ -7504,6 +7580,8 @@ function statLines(p){
   // Phase 49: his flags. Shown for anyone who's been called for one — it's the stat that makes a
   // low-composure starter a visible, benchable problem instead of an invisible team-wide tax.
   if(s.pen) L.push(['Penalties',`${s.pen} for ${s.penYds||0} yds${(s.gp&&s.pen/s.gp>=1.2)?' ⚠':''}`]);
+  // Phase 50: what he did when the game was on the line — conversions and scores under real pressure.
+  if(s.cl) L.push(['In the clutch',`${s.cl} play${s.cl===1?'':'s'} in big moments`]);
   return L.length?{gp:s.gp||0,lines:L}:null;
 }
 // "Stats (this year)" block for the player sheet: preseason → placeholder; in-season → the

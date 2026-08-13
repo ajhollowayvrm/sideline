@@ -13,6 +13,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > - `docs/phases/cloud.md` — cloud saves: AWS backend, career codes, sync/conflict model (Phase 47)
 > - `docs/phases/possession.md` — the possession model: clock, halves, 4th down, gain shape (Phase 48)
 > - `docs/phases/penalties.md` — penalties: the roster-driven foul model, catalog, culprits (Phase 49)
+> - `docs/phases/clutch.md` — big moments: pressure, clutch-as-variance, what the data forbids (Phase 50)
 >
 > **Measured reality:** `docs/reference/cfb-averages.md` holds real FBS averages computed from 3,944
 > games (2021–2025) — national, by rank matchup, and by mismatch size — plus where `simEngine` sits
@@ -20,8 +21,11 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > `docs/reference/cfb-penalties.md` does the same for **penalties** off the same 3,944 games — rate,
 > yardage, type mix, when they're thrown, how much team discipline really varies (and how little it
 > decides games), plus where the Phase 49 penalty model lands against it.
+> `docs/reference/cfb-clutch.md` covers **big moments** — that one-score records don't repeat
+> (r=0.078) so there is no such thing as a clutch team, that late-and-close football genuinely
+> tightens, and that kickers measurably do not choke.
 >
-> **All roadmap phases 1–49 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–50 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -116,6 +120,21 @@ still serves it with zero config.
   Imported rosters now get temperaments (`normPlayer`). Save v45, `SIM_MODEL` 4 — pre-v4 games
   decline replay. *(→ `docs/phases/penalties.md`.)*
 
+- **Phase 50 — Big moments.** Deepens Phase 10's near-invisible clutch term (±1.6 rating pts, the QB
+  only) into a graded `pressure(half,secs,diff)` 0..1 — nothing before the 4th quarter, quadratic
+  through it, saturated inside 5 minutes, 1 in overtime. The measurement
+  (`docs/reference/cfb-clutch.md`) drove the design and mostly said *don't*: one-score win% has a
+  year-over-year r of **0.078** against 0.482 for blowouts, so a rating must not decide close games.
+  Hence clutch is modelled as **variance, not a bonus** — under pressure the Phase 10 composure
+  reshape is amplified, which is mean-preserving by construction, so it changes who makes the play
+  without creating clutch teams. A small mean nudge rides on top, drawn from the actual matchup (QB +
+  receiver vs the corner, back vs the front) and now including the defense. The measured situational
+  tightening applies to both teams (completion −3.4pp, rush −0.93 Y/C, INTs ×1.32 at full pressure);
+  yards per *completion* are untouched because real ones don't fall, and **kickers are untouched
+  because they measurably don't choke**. Nets out at one-score win% 50.1% ±1.0 between realistic
+  composure extremes — and turning the phase OFF makes close games *more* rating-determined, not
+  less. `p.gs.cl` surfaces as "In the clutch". Save v46, `SIM_MODEL` 5. *(→ `docs/phases/clutch.md`.)*
+
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
 stays fast). This is a design choice, not a backlog. Per-doc "Deliberately out of scope"
@@ -191,9 +210,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   stored inside `state`. The pure decision (`cloudResolve`) is fenced as the CLOUD ENGINE and
   gated by `cloudlab`; the backend is `infra/` (SAM). See `docs/phases/cloud.md`.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **45**). Each step backfills the fields its phase added and re-derives
+  (currently **46**). Each step backfills the fields its phase added and re-derives
   ratings/ranks where needed; most recent steps are structural no-ops (sparse per-player
-  fields / derived data read as their defaults). The full v1→v44 migration ladder is
+  fields / derived data read as their defaults). The full v1→v45 migration ladder is
   documented inline in `migrateState` in `index.html`, and each phase's design doc in
   `docs/phases/` records its save-shape change. **Bump `version` + extend `migrateState`
   on any save-shape change.**
@@ -441,7 +460,9 @@ objects aren't stored.
 **Validated envelope** (`test/simlab.js`, extracts the engine between the markers): points/team,
 score spread, home-win and favorite-win rates, no ties, the Phase 48 possession checks (two halves,
 drives dying at the horn, 4th-down decisions, gain-tier shape), and the Phase 49 penalty checks
-(rate, yardage, side/pre-snap splits, culprit attribution, and that rating does NOT buy discipline). The envelope asserts
+(rate, yardage, side/pre-snap splits, culprit attribution, and that rating does NOT buy discipline),
+and the Phase 50 clutch checks (pressure shape, a mean-preserving amplified reshape, kickers not
+choking, and that composure does NOT decide one-score games). The envelope asserts
 *ranges*; the numbers it should be centred on are the measured ones in
 `docs/reference/cfb-averages.md` — **check a sim change against that file, not just against the
 gate**, since totals-and-leaders assertions passed for nine phases while run/pass balance and drive

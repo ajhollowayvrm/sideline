@@ -1,0 +1,49 @@
+========================================================================================================
+BIG MOMENTS, MEASURED — 3944 FBS-vs-FBS games, 2021–2025
+========================================================================================================
+
+1. IS "CLUTCH" A REPEATABLE TEAM TRAIT?
+   38.4% of all games are decided by 8 or fewer.
+
+   year-over-year repeatability (season N → N+1):
+     overall win%           r = 0.458   (n=528)
+     blowout win%  (>8)     r = 0.482   (n=513)
+     ONE-SCORE win% (≤8)    r = 0.078   (n=291)
+
+   within one season, blowout win% vs one-score win%:  r = 0.193  (n=471)
+   → being good repeats. Winning close games does not. There is no "clutch team" in the data;
+     a model that lets a rating decide one-score games is modelling something that is not there.
+
+2. DOES THE SITUATION CHANGE THE FOOTBALL?
+   3866 games of play-by-play. "clutch" = Q4+ within one score; "crunch" = that, last 5 min or OT.
+
+   bucket                   plays     cmp%    Y/A   sack%    int%    Y/C    fum%    3rd%     FG%
+   everywhere else         471629    61.7%    7.18    5.94%    1.64%    5.13    0.99%    40.2%    75.9%
+   clutch (Q4, ≤8)          53102    58.1%    6.82    5.93%    1.82%    4.54    1.12%    38.1%    75.7%
+   crunch (last 5)          22138    55.6%    6.39    5.45%    2.13%    3.85    1.14%    34.7%    73.4%
+     …offense ahead         28300    62.0%    7.30    5.48%    1.36%    4.30    0.87%    38.1%    79.0%
+     …offense behind        24802    55.6%    6.49    6.22%    2.13%    4.98    1.58%    38.1%    68.4%
+
+   clutch minus normal:
+     completion %   -3.52
+     yards/attempt  -0.36
+     sack rate      -0.01
+     INT rate       0.18
+     yards/carry    -0.59
+     3rd-down conv  -2.10
+     field goal %   -0.22
+
+   STANDARDIZED to the normal down/distance mix — the confound removed:
+     bucket                     cmp%      Y/A      Y/C
+     everywhere else            61.7     7.18     5.13
+     clutch (Q4, ≤8)            58.4     6.84     4.57
+     crunch (last 5)            56.1     6.41     3.95
+     clutch − normal:          -3.25    -0.34    -0.56
+     crunch − normal:          -5.55    -0.77    -1.18
+     (raw, unstandardized:     -3.52    -0.36    -0.59 )
+
+   field goals by distance (make %):
+     bucket                          <30          30s          40s          50+
+     everywhere else        92.1% (2912) 81.1% (3326) 65.7% (3266) 49.1% (1160)
+     clutch (Q4, ≤8)         91.1% (440)  81.2% (467)  63.8% (453)  51.5% (165)
+     crunch (last 5)         91.7% (205)  76.9% (234)  62.7% (241)  53.0% (100)

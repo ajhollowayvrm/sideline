@@ -369,6 +369,90 @@ function withTraits(w, seed) { const tr = rng(seed);
   check('Phase 49: penalties stay deterministic', A.hs === B.hs && A.as === B.as && JSON.stringify(A.box) === JSON.stringify(B.box), `${A.hs}-${A.as}`);
 }());
 
+// Phase 50 — big moments. Two halves, and the second one is the important one:
+//   (1) the SITUATION is real — late and within one score, offense measurably tightens;
+//   (2) CLUTCH IS NOT A TRAIT — real one-score win% has a YoY r of 0.078, so composure must not be
+//       allowed to decide close games. See docs/reference/cfb-clutch.md.
+(function () {
+  const P = (h, s, d) => pressure(h, s, d);
+  check('Phase 50: no pressure in the first half', P(1, 100, 0) === 0);
+  check('Phase 50: no pressure in a blowout', P(2, 60, 24) === 0, String(P(2, 60, 24)));
+  check('Phase 50: no pressure before the 4th quarter', P(2, 1200, 3) === 0);
+  check('Phase 50: saturates inside 5 minutes of a one-score game', P(2, 300, 7) === 1 && P(2, 60, 0) === 1);
+  check('Phase 50: ramps through the 4th quarter', P(2, 800, 3) > 0 && P(2, 800, 3) < P(2, 500, 3) && P(2, 500, 3) < 1,
+    `${P(2, 800, 3).toFixed(2)} → ${P(2, 500, 3).toFixed(2)}`);
+  check('Phase 50: a two-score game carries less', P(2, 60, 14) > 0 && P(2, 60, 14) < P(2, 60, 7), String(P(2, 60, 14)));
+  // the load-bearing property: amplifying composure must not move the MEAN of the draw, or the
+  // clutch would quietly re-scale scoring
+  const grid = Array.from({ length: 2001 }, (_, i) => i / 2000);
+  const meanAt = (comp, amp) => grid.reduce((s, x) => s + compReshape(x, compExp({ comp }, amp)), 0) / grid.length;
+  let ok = true;
+  for (const comp of [0, 15, 50, 85, 100]) for (const amp of [1, 1.8, 2.6]) if (Math.abs(meanAt(comp, amp) - 0.5) > 0.004) ok = false;
+  check('Phase 50: the composure reshape stays mean-preserving at every amplification', ok,
+    `${meanAt(0, 2.6).toFixed(4)} / ${meanAt(100, 2.6).toFixed(4)}`);
+  check('Phase 50: amp=1 is the pre-Phase-50 reshape exactly', compExp({ comp: 20 }) === compExp({ comp: 20 }, 1));
+}());
+(function () {
+  // the situation tightens, and kickers do NOT choke (measured: FG% is flat once you control distance)
+  const w = withTraits(genWorld(5000), 5000), N = w.teams.length;
+  let cN = 0, cC = 0, aN = 0, aC = 0, fgaN = 0, fgmN = 0, fgaC = 0, fgmC = 0, cl = 0;
+  const ddN = {}, ddC = {};
+  // 900 games, not 90: only ~5 pass attempts per game land in the clutch bucket. A 90-game sample
+  // has a standard error of ~2.4pp against a ~2pp effect — it measured the wrong SIGN — and even
+  // 300 reads it at barely 1 se. This is the cost of an emergent check; the authoritative
+  // measurement is tools/cfb-data/17-simclutch.js over a full 2,010-game slate.
+  for (let s = 0; s < 900; s++) {
+    const h = w.teams[s % N], a = w.teams[(s + 7) % N]; if (h === a) continue;
+    const box = {}, res = simEngine(h, a, (hashStr('clu' + s) ^ 5) >>> 0, { log: true, boxInto: box });
+    for (const l of res.log || []) {
+      if (l.kind !== 'play' && l.kind !== 'score') continue;
+      const hot = String(l.q).indexOf('OT') === 0 || (l.q >= 4 && Math.abs((l.hs || 0) - (l.as || 0)) <= 8);
+      const t = l.text || '';
+      if (/field goal/i.test(t)) { if (hot) { fgaC++; if (/GOOD/.test(t)) fgmC++; } else { fgaN++; if (/GOOD/.test(t)) fgmN++; } }
+      const cmp = /pass to .+ for /.test(t), inc = /incomplete|INTERCEPTED/.test(t);
+      if (cmp || inc) {
+        if (hot) { aC++; if (cmp) cC++; } else { aN++; if (cmp) cN++; }
+        // also bucket by down & distance so the comparison can be STANDARDIZED — the raw delta
+        // mixes the pressure effect with "clutch means more 3rd-and-long", and that mix is noisy
+        const m = String(l.dd || '').match(/^(\d) & (\d+|goal)$/);
+        if (m) { const d = m[2] === 'goal' ? 10 : +m[2];
+          const key = m[1] + '|' + (d <= 1 ? '1' : d <= 3 ? '2-3' : d <= 6 ? '4-6' : d <= 10 ? '7-10' : '11+');
+          const c = (hot ? ddC : ddN)[key] = (hot ? ddC : ddN)[key] || [0, 0];
+          c[0]++; if (cmp) c[1]++; }
+      }
+    }
+    for (const id in box) cl += box[id].cl || 0;
+  }
+  // re-weight the clutch cells by the NORMAL mix
+  let wSum = 0, cSum = 0, nSum = 0;
+  for (const k in ddN) { const n = ddN[k], c = ddC[k]; if (!c || n[0] < 150 || c[0] < 20) continue;
+    wSum += n[0]; cSum += n[0] * (c[1] / c[0]); nSum += n[0] * (n[1] / n[0]); }
+  const dropped = wSum ? (nSum - cSum) / wSum : 0;
+  check('Phase 50: completions are harder late and close, standardized (real −3.25pp)', dropped > 0.008 && dropped < 0.075, `${(dropped * 100).toFixed(2)}pp`);
+  const fgGap = Math.abs(fgmN / fgaN - fgmC / fgaC);
+  check('Phase 50: kickers do NOT choke — clutch FG% matches (measured flat)', fgGap < 0.06, `${(fgmN / fgaN * 100).toFixed(1)}% vs ${(fgmC / fgaC * 100).toFixed(1)}%`);
+  check('Phase 50: clutch plays are credited to players', cl > 0, `${cl} credited`);
+}());
+(function () {
+  // THE CONSTRAINT. Identical rosters, composure the only difference, at the spread the league
+  // actually produces (team starter composure spans ~42–59). Home/away alternated so HFA cancels.
+  const w = genWorld(5001), base = w.teams[0];
+  const mk = comp => { const t = JSON.parse(JSON.stringify(base)); t.roster.forEach(p => p.comp = comp); return t; };
+  const HI = mk(59), LO = mk(42); HI.id = 'HI'; LO.id = 'LO';
+  let cw = 0, cn = 0, hw = 0, n = 0;
+  for (let s = 0; s < 700; s++) {
+    const seed = (hashStr('constraint' + s) ^ 9) >>> 0, even = s % 2 === 0;
+    const res = even ? simEngine(HI, LO, seed) : simEngine(LO, HI, seed);
+    const a = even ? res.hs : res.as, b = even ? res.as : res.hs;
+    n++; if (a > b) hw++;
+    if (Math.abs(a - b) <= 8) { cn++; if (a > b) cw++; }
+  }
+  const close = cw / cn * 100;
+  check('Phase 50: composure does NOT decide one-score games (real YoY r=0.078)', Math.abs(close - 50) < 6,
+    `${close.toFixed(1)}% of ${cn} one-score games (±${(50 / Math.sqrt(cn)).toFixed(1)})`);
+  check('Phase 50: …and its overall edge stays modest at a realistic spread', hw / n * 100 < 60, `${(hw / n * 100).toFixed(1)}% overall`);
+}());
+
 // Phase 26 — injuries (in-game): occur at a low rate, are deterministic, and force the backup in.
 (function () {
   const w = genWorld(2200), N = w.teams.length;
