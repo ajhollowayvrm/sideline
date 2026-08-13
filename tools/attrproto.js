@@ -63,6 +63,133 @@ const TECH_BASIS = {
 };
 const TECH_W = 0.55;   // share of a technique stat driven by its basis
 
+/* ---------------------------------------------------------------- archetypes
+   A named SHAPE in attribute space. Authored as raw preferences and then auto-balanced to weighted
+   mean zero under the position's own row (see balanceArch), so picking an archetype changes WHAT a
+   player is and never HOW GOOD he is — the same construction as SCHEME_ATTR_W. Hand-balancing 48
+   vectors would be unmaintainable and would silently rot the moment a weight is tuned.
+
+   `freq` is relative draw weight: pocket passers are common, true dual-threats are not.
+
+   These are the legible face of the floor/tail rule (§9a). A Pocket Passer has a high floor and no
+   tail; a Gunslinger is boom-or-bust. Same Overall, different distribution — which is what makes the
+   league a MIXTURE and buys the measured excess kurtosis honestly. */
+const ARCHETYPES = {
+  QB: [
+    { n:'Pocket Passer',  f:32, w:{tha:9, thp:4, iq:4, str:3, elu:2, spd:-9, acc:-8, agi:-6, tor:-3} },
+    { n:'Gunslinger',     f:22, w:{thp:10, tor:6, elu:3, agi:3, spd:2, tha:-5, awr:-6, iq:-5} },
+    { n:'Dual-Threat',    f:20, w:{spd:11, acc:9, agi:7, elu:5, tor:4, tha:-6, thp:-3, iq:-5} },
+    { n:'Field General',  f:26, w:{iq:10, awr:9, tha:5, car:3, thp:-6, spd:-6, acc:-5, elu:-4} },
+  ],
+  RB: [
+    { n:'Power Back',     f:26, w:{str:9, btk:10, rbk:4, pbk:4, spd:-6, acc:-4, agi:-6, elu:-7} },
+    { n:'Scat Back',      f:24, w:{elu:10, agi:9, acc:6, str:-8, btk:-8, pbk:-4} },
+    { n:'Home-Run Hitter',f:20, w:{spd:12, acc:8, elu:4, str:-5, awr:-5, pbk:-5, car:-4} },
+    { n:'Receiving Back', f:30, w:{cth:10, rte:9, pbk:5, awr:4, btk:-6, str:-6} },
+  ],
+  WR: [
+    { n:'Deep Threat',    f:24, w:{spd:11, acc:9, rte:3, str:-6, cth:-4, btk:-6} },
+    { n:'Possession',     f:28, w:{cth:9, rte:8, awr:5, spd:-7, acc:-6, elu:-4} },
+    { n:'Slot Technician',f:26, w:{rte:10, agi:9, acc:5, awr:4, str:-8, btk:-7} },
+    { n:'Contested X',    f:22, w:{str:11, cth:5, btk:6, agi:-7, acc:-6, elu:-6, spd:-7} },
+  ],
+  TE: [
+    { n:'Blocking Y',     f:32, w:{rbk:10, pbk:9, str:5, cth:-7, rte:-8, spd:-5, elu:-4} },
+    { n:'Receiving F',    f:34, w:{cth:10, rte:9, spd:5, rbk:-9, pbk:-7, str:-5} },
+    { n:'Move H-Back',    f:34, w:{agi:6, acc:6, cth:4, rbk:3, elu:3, str:-6, btk:-4} },
+  ],
+  OT: [
+    { n:'Pass Protector', f:34, w:{pbk:9, agi:7, awr:4, str:-6, rbk:-7} },
+    { n:'Mauler',         f:33, w:{str:9, rbk:9, agi:-7, pbk:-5, acc:-5} },
+    { n:'Zone Athlete',   f:33, w:{agi:8, acc:8, spd:5, rbk:4, str:-8, pbk:-3} },
+  ],
+  OG: [
+    { n:'Mauler',         f:38, w:{str:8, rbk:9, agi:-8, acc:-7} },
+    { n:'Puller',         f:30, w:{agi:9, acc:9, spd:5, str:-6, rbk:-3} },
+    { n:'Anchor',         f:32, w:{pbk:9, str:4, awr:5, spd:-5, agi:-6} },
+  ],
+  C: [
+    { n:'Field General',  f:36, w:{iq:9, awr:7, pbk:4, str:-6, agi:-3} },
+    { n:'Mauler',         f:32, w:{str:8, rbk:9, iq:-6, agi:-6} },
+    { n:'Zone Snapper',   f:32, w:{agi:8, acc:6, iq:3, str:-7, rbk:-4} },
+  ],
+  DE: [
+    { n:'Speed Rusher',   f:34, w:{prs:9, acc:9, agi:6, spd:5, str:-8, rst:-7} },
+    { n:'Bull Rusher',    f:33, w:{str:10, prs:5, rst:5, acc:-7, agi:-6, spd:-5} },
+    { n:'Run Stopper',    f:33, w:{rst:10, str:5, tkl:6, prs:-8, acc:-5} },
+  ],
+  DT: [
+    { n:'Nose Tackle',    f:34, w:{str:8, rst:9, prs:-7, acc:-6, agi:-6, spd:-4} },
+    { n:'3-Tech',         f:33, w:{prs:10, acc:8, agi:6, str:-6, rst:-6} },
+    { n:'Two-Gap Anchor', f:33, w:{str:5, rst:5, awr:6, tkl:4, acc:-4, agi:-4} },
+  ],
+  LB: [
+    { n:'Thumper',        f:26, w:{tkl:9, str:8, rst:6, zcv:-7, mcv:-7, spd:-4, acc:-4} },
+    { n:'Coverage LB',    f:26, w:{zcv:9, mcv:9, cth:5, spd:5, acc:4, str:-7, rst:-6, tkl:-5} },
+    { n:'Blitzer',        f:22, w:{prs:11, acc:7, str:4, zcv:-7, mcv:-7, cth:-4} },
+    { n:'Field General',  f:26, w:{iq:10, awr:9, rst:4, spd:-5, prs:-6, acc:-4} },
+  ],
+  CB: [
+    { n:'Press Corner',   f:32, w:{mcv:9, str:7, agi:5, zcv:-8, awr:-5} },
+    { n:'Zone Corner',    f:34, w:{zcv:9, awr:8, cth:5, mcv:-7, str:-5, spd:-3} },
+    { n:'Burner',         f:34, w:{spd:10, acc:8, mcv:4, tkl:-6, str:-6, awr:-6} },
+  ],
+  FS: [
+    { n:'Center Fielder', f:36, w:{zcv:9, spd:8, awr:5, tkl:-7, str:-6, mcv:-5} },
+    { n:'Ball Hawk',      f:32, w:{cth:10, zcv:5, awr:5, iq:4, tkl:-7, str:-6} },
+    { n:'Nickel Hybrid',  f:32, w:{mcv:10, agi:6, acc:6, zcv:-6, str:-5, tkl:-4} },
+  ],
+  SS: [
+    { n:'Box Enforcer',   f:36, w:{tkl:9, str:9, zcv:-7, spd:-5, cth:-6} },
+    { n:'Hybrid LB/S',    f:32, w:{tkl:6, mcv:5, str:5, iq:5, spd:-5, zcv:-6} },
+    { n:'Coverage SS',    f:32, w:{mcv:9, zcv:6, cth:6, str:-7, tkl:-7} },
+  ],
+  K: [
+    { n:'Big Leg',        f:50, w:{kpw:9, kac:-6} },
+    { n:'Precision',      f:50, w:{kac:7, kpw:-9} },
+  ],
+  P: [
+    { n:'Boomer',         f:50, w:{kpw:8, kac:-8} },
+    { n:'Coffin Corner',  f:50, w:{kac:9, kpw:-7} },
+  ],
+};
+/* Subtract each vector's WEIGHTED mean so an archetype is mean-zero under its own position row:
+   choosing one changes what a player is, never how good he is. Asserted below. */
+function balanceArch() {
+  for (const pos in ARCHETYPES) {
+    const w = posAttrW(pos), keys = Object.keys(w);
+    const sw = keys.reduce((s, k) => s + w[k], 0) || 1;
+    for (const a of ARCHETYPES[pos]) {
+      for (const k of Object.keys(a.w)) if (w[k] == null) throw new Error(`${pos}/${a.n}: ${k} is not carried by ${pos}`);
+      let m = 0; for (const k of keys) m += w[k] * (a.w[k] || 0);
+      m /= sw;
+      a.off = {}; for (const k of keys) a.off[k] = (a.w[k] || 0) - m;
+    }
+  }
+}
+balanceArch();
+function pickArch(r, pos) {
+  const list = ARCHETYPES[pos]; if (!list) return null;
+  const tot = list.reduce((s, a) => s + a.f, 0);
+  let x = r() * tot;
+  for (const a of list) { x -= a.f; if (x <= 0) return a; }
+  return list[list.length - 1];
+}
+/* Classify an EXISTING profile to its nearest archetype — needed for imported rosters, the v48
+   migration, and for a player whose development has drifted him away from where he started. */
+function classifyArch(p) {
+  const list = ARCHETYPES[p.pos]; if (!list) return null;
+  const w = posAttrW(p.pos), keys = Object.keys(w);
+  const sw = keys.reduce((s, k) => s + w[k], 0) || 1;
+  let mean = 0; for (const k of keys) mean += w[k] * attrVal(p, k); mean /= sw;
+  let best = null, bestD = Infinity;
+  for (const a of list) {
+    let d = 0; for (const k of keys) { const dev = attrVal(p, k) - mean; d += w[k] * (dev - a.off[k]) ** 2; }
+    if (d < bestD) { bestD = d; best = a; }
+  }
+  return best;
+}
+
 const ATTR_DEF = 60;
 const attrVal = (p, k) => { const v = p && p[k]; return v != null ? v : ((p && p.ov) != null ? p.ov : ATTR_DEF); };
 function ovrWith(p, w) { let t = 0, s = 0; for (const k in w) { t += w[k] * attrVal(p, k); s += w[k]; } return clamp(Math.round(t / (s || 1)), 40, 99); }
@@ -83,14 +210,18 @@ function anchorOff(w, keys, k) {
    as he was asked to be and the spread only decides WHAT KIND of good.
    Order matters: anchor → draw the tilt → blend technique toward its basis → THEN re-centre, so
    neither the anchoring nor the correlation can smuggle ability in. */
-function genAttrs(r, ov0, pos, spread) {
+function genAttrs(r, ov0, pos, spread, arch) {
   const w = posAttrW(pos), keys = Object.keys(w), sp = spread == null ? 15 : spread;
   const t = {};
+  // The archetype supplies the SHAPE; the individual draw supplies the variation around it. Shrink
+  // the free draw when an archetype is in play, or the noise would wash the archetype out and every
+  // Gunslinger would look like every Pocket Passer.
+  const ind = arch ? 0.55 : 1;
   for (const k of keys) {
     const rel = clamp(w[k] * keys.length, 0, 2);
     // an attribute the position barely uses also barely VARIES — nobody develops it either way
-    const s = sp * (0.35 + 0.65 * Math.min(rel, 1.4) / 1.4);
-    t[k] = anchorOff(w, keys, k) + (r() + r() - 1) * s;
+    const s = sp * (0.35 + 0.65 * Math.min(rel, 1.4) / 1.4) * ind;
+    t[k] = anchorOff(w, keys, k) + (arch ? arch.off[k] : 0) + (r() + r() - 1) * s;
   }
   for (const k of keys) {                                          // technique follows athleticism
     const basis = TECH_BASIS[k]; if (!basis) continue;
@@ -202,17 +333,70 @@ console.log('6. a smart build and an explosive build can share an Overall');
   ok(smart.awr > fast.awr && fast.spd > smart.spd, 'the two builds did not separate as intended');
 }
 
-// 7. sample sheets — the eyeball test
-console.log('\n7. sample generated players (prestige-78 program)\n');
+// 7. archetypes are mean-zero: picking one changes WHAT you are, never HOW GOOD
+console.log('7. archetypes are weighted-mean-zero under their own position row');
 {
-  const r = rng(2026);
+  let worst = 0, n = 0;
   for (const pos of POSITIONS) {
-    const ov = clamp(Math.round(78 * 0.55 + ri(r, -9, 9) + 30), 48, 99);
-    const p = Object.assign({ pos }, genAttrs(r, ov, pos));
-    const shown = posAttrs(pos).filter(k => k !== 'adp')
-      .sort((a, b) => posAttrW(pos)[b] - posAttrW(pos)[a])
-      .map(k => `${k} ${String(p[k]).padStart(2)}`).join('  ');
-    console.log(`   ${pos.padEnd(3)} ov ${String(ovrBase(p)).padStart(2)}  adp ${String(p.adp).padStart(2)} | ${shown}`);
+    const w = posAttrW(pos), keys = Object.keys(w);
+    const sw = keys.reduce((s, k) => s + w[k], 0);
+    ok((ARCHETYPES[pos] || []).length >= 2, `${pos} has fewer than 2 archetypes`);
+    for (const a of ARCHETYPES[pos] || []) {
+      let m = 0; for (const k of keys) m += w[k] * a.off[k];
+      worst = Math.max(worst, Math.abs(m / sw)); n++;
+      ok(Math.abs(m / sw) < 1e-9, `${pos}/${a.n} is not mean-zero (${(m / sw).toFixed(4)})`);
+    }
+  }
+  console.log(`   ${n} archetypes across ${POSITIONS.length} positions, max |weighted mean| = ${worst.toExponential(1)}`);
+}
+
+// 8. an archetype survives generation, and round-trips through the classifier
+console.log('8. generation honours the archetype, and the classifier recovers it');
+{
+  const r = rng(0xD00D);
+  let hit = 0, tot = 0, worstOv = 0;
+  for (const pos of POSITIONS) for (const a of ARCHETYPES[pos]) for (let i = 0; i < 300; i++) {
+    const ov = ri(r, 50, 95);
+    const p = Object.assign({ pos }, genAttrs(r, ov, pos, 15, a));
+    worstOv = Math.max(worstOv, Math.abs(ovrBase(p) - ov));
+    if (classifyArch(p) === a) hit++; tot++;
+  }
+  ok(worstOv === 0, `ovrBase drifted by ${worstOv} when generating from an archetype`);
+  const pct = hit / tot * 100;
+  ok(pct > 70, `classifier only recovered the source archetype ${pct.toFixed(1)}% of the time`);
+  console.log(`   ${tot} players, ovrBase drift ${worstOv}, classifier recovers ${pct.toFixed(1)}%`);
+}
+
+// 9. the directive's two quarterbacks
+console.log('9. Gunslinger vs Pocket Passer separate as described');
+{
+  const r = rng(0x1234);
+  const A = ARCHETYPES.QB, gun = A.find(a => a.n === 'Gunslinger'), poc = A.find(a => a.n === 'Pocket Passer');
+  const avg = (a, k) => { let s = 0; for (let i = 0; i < 600; i++) s += genAttrs(r, 80, 'QB', 15, a)[k]; return s / 600; };
+  const g = { thp: avg(gun,'thp'), tha: avg(gun,'tha'), spd: avg(gun,'spd'), agi: avg(gun,'agi'), elu: avg(gun,'elu'), awr: avg(gun,'awr') };
+  const p = { thp: avg(poc,'thp'), tha: avg(poc,'tha'), spd: avg(poc,'spd'), agi: avg(poc,'agi'), elu: avg(poc,'elu'), awr: avg(poc,'awr') };
+  const row = (l, o) => `   ${l.padEnd(15)} thp ${o.thp.toFixed(0)}  tha ${o.tha.toFixed(0)}  spd ${o.spd.toFixed(0)}  agi ${o.agi.toFixed(0)}  elu ${o.elu.toFixed(0)}  awr ${o.awr.toFixed(0)}`;
+  console.log(row('Gunslinger', g)); console.log(row('Pocket Passer', p));
+  ok(g.thp > p.thp, 'Gunslinger should out-throw the Pocket Passer on arm strength');
+  ok(p.tha > g.tha, 'Pocket Passer should be the more accurate');
+  ok(g.spd > p.spd && g.agi > p.agi, 'Gunslinger should be the more mobile');
+  ok(p.awr > g.awr, 'Pocket Passer should read it better (the Gunslinger pays for his arm)');
+}
+
+// 10. archetype CENTRES — the eyeball test. Averaged over many draws at a fixed Overall, so this
+//     shows the archetype's true signature rather than one noisy player.
+console.log('\n10. archetype centres — every player below is an identical 80 Overall\n');
+{
+  const r = rng(2026), N = 500;
+  for (const pos of POSITIONS) {
+    const keys = posAttrs(pos).filter(k => k !== 'adp').sort((x, y) => posAttrW(pos)[y] - posAttrW(pos)[x]);
+    console.log(`   ${pos}`);
+    for (const a of ARCHETYPES[pos]) {
+      const acc = {}; keys.forEach(k => acc[k] = 0);
+      for (let i = 0; i < N; i++) { const p = genAttrs(r, 80, pos, 15, a); keys.forEach(k => acc[k] += p[k]); }
+      const shown = keys.map(k => `${k} ${String(Math.round(acc[k] / N)).padStart(2)}`).join(' ');
+      console.log(`     ${a.n.padEnd(15)} ${String(a.f).padStart(2)}% | ${shown}`);
+    }
   }
 }
 

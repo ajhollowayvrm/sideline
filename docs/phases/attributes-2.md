@@ -431,6 +431,57 @@ but it is the widest-surface item in the phase and should land on its own commit
 
 ---
 
+## 9c. Archetypes — 47 named shapes
+
+> *"A Gunslinger QB has good throw power and good elusiveness and agility and some speed… A Pocket
+> Passer has elite accuracy and even arm strength and maybe good strength and elusiveness but no
+> speed, acceleration or real agility. Should we maybe have these archetypes for each position?"*
+
+Yes — and it solves a problem free tilts cannot. **A random draw produces incoherent players**: a QB
+with elite arm strength who cannot throw on the run, a corner with press-man skills and no strength
+to press with. Archetypes guarantee football-real *combinations*, not merely football-real numbers.
+
+An archetype is a **named shape in attribute space** — authored as raw preferences, then
+auto-balanced to weighted mean zero under the position's own row. Picking one changes *what* a
+player is and never *how good* he is; it is the same construction as `SCHEME_ATTR_W`. Balancing is
+computed rather than hand-authored, because 47 hand-balanced vectors would rot the moment a weight
+is tuned.
+
+Three things they buy:
+
+1. **Legibility.** *"We're starting a Gunslinger behind a young line"* is a readable strategic
+   statement. It also makes recruiting expressible — *"I need a Pocket Passer for this Air Raid"*.
+2. **The §9a floor/tail rule becomes visible.** Pocket Passer = high floor, no tail. Gunslinger =
+   boom-or-bust. Same Overall, different outcome *distribution*.
+3. **Clustering, which strengthens the mixture.** Archetypes put players in clusters rather than a
+   smooth cloud, so team-level variance genuinely differs by roster construction — the mechanism §9a
+   relies on for excess kurtosis.
+
+Both directions are needed and both are cheap:
+
+- `pickArch` — **generate from** an archetype (coherence), with `freq` weights so pocket passers are
+  common and true dual-threats are not.
+- `classifyArch` — **classify to** the nearest archetype in weighted attribute space. Required for
+  imported rosters, the v48 migration, and for a player whose development has drifted him away from
+  where he started. Round-trips at **79.9%**; the remaining 20% are genuine tweeners, which is
+  correct rather than a defect.
+
+Storage is one small field, `p.arch`.
+
+Validated in `tools/attrproto.js` (292 checks): every archetype mean-zero to 1e-15, `ovrBase` drift 0
+across 14,100 archetype-generated players.
+
+### Known soft spots to tune before shipping
+
+- **LB Blitzer is under-expressed.** `prs` carries weight `.03` at LB, so the low-weight anchor
+  (−9.2) largely cancels the archetype's +11. Net spread against a Thumper is only ~7 points. Either
+  lift LB `prs` weight or let archetype offsets partially bypass the anchor.
+- **FS Center Fielder vs Ball Hawk**, and **SS Box Enforcer vs Hybrid LB/S**, separate by only 3–7
+  points on their defining attributes. Both pairs want pushing further apart.
+- **K/P** swing ~8 points between Big Leg and Precision, which may be too subtle to notice in play.
+
+---
+
 ## 10. Suggested sequencing
 
 | Step | Contents | Why this order |
