@@ -157,8 +157,19 @@ Grouped by what they are, with the directive text that motivated each.
 | `zcv` | Zone Coverage | Spacing and passing off. `zcv + awr + agi +` a little `spd` |
 | `tkl` | Tackling | Bringing him down; limiting YAC |
 
-**Kickers and punters** keep Phase 51's mapping — leg power is `str`, placement is `awr`. Not
-expanded here to hold scope. **Open question — confirm.**
+### Kicking
+
+| Key | Name | Owns |
+|---|---|---|
+| `kpw` | Kick Power | Range — the distance a FG stays live, and punt net |
+| `kac` | Kick Accuracy | Placement — FG% at range, punt directional/coffin-corner |
+
+Phase 51 mapped these onto `str` and `awr`, which was defensible when specialists had no attributes
+of their own but leaves a 90-rated kicker indistinguishable from a 70 on anything but those two. They
+now get their own pair. Per `cfb-clutch.md`, **neither is pressure-sensitive — kickers measurably do
+not choke.**
+
+**Total: 25 attributes across 15 positions.**
 
 ---
 
@@ -181,10 +192,17 @@ player even has* — weight 0 means the field is not stored. Rows still sum to 1
 | DT | spd acc agi str awr dur adp · prs rst tkl | 10 |
 | LB | spd acc agi str awr **iq** dur adp · prs rst tkl · mcv zcv cth | 14 |
 | CB | spd acc agi str awr dur adp · mcv zcv cth tkl | 11 |
-| S | spd acc agi str awr **iq** dur adp · mcv zcv cth tkl | 12 |
-| K/P | spd agi str awr dur adp | 6 |
+| **FS** | spd acc agi str awr **iq** dur adp · mcv **zcv** cth tkl | 12 |
+| **SS** | spd acc agi str awr **iq** dur adp · **mcv** zcv cth **tkl** | 12 |
+| K | str awr dur adp · **kpw kac** | 6 |
+| P | str awr dur adp · **kpw kac** | 6 |
 
 Average ≈ 12 against Phase 51's 6.
+
+**FS vs SS carry the same list, weighted very differently** — the directive: *"A free safety needs
+speed and awareness as they zone cover a lot of space. Strong safeties are more about tackling and
+occasionally coverage."* So FS tilts `spd`/`awr`/`iq`/`zcv`; SS tilts `tkl`/`str`/`mcv`. Same
+same-list-different-row pattern as OT vs OG.
 
 ### Within-position weighting carries real directive detail
 
@@ -229,20 +247,31 @@ central-limit trap as §1.
 Phase 51 listed position changes as explicitly out of scope: *"`ovrBase` depends on `p.pos`, so
 moving a player between positions would re-rate him — potentially interesting, not modelled."*
 
-`adp` is the enabler. Moving a player to a new position re-derives his OVR under the new row, and
-`adp` governs how much of his profile carries. Concretely:
+`adp` is the enabler, and per the directive it is deliberately simple:
 
-- Attributes the new position needs and the old one had → carry fully.
-- Attributes the new position needs that he never developed (a S moved to LB has no `prs`/`rst`) →
-  seeded from his physical basis, discounted by `(1 − adp)`.
-- High `adp` = a tweener who slides along the line or from S to LB cheaply. Low `adp` = a specialist
-  who is only what he is.
+> *"Adaptability is basically just a multiplier or a divider on how good someone is away from their
+> original position."*
 
-This is a **new roster-management feature** with real UI (a "change position" action, a projected-OVR
-preview) and real depth in recruiting — a high-`adp` prospect is worth more than his stars suggest.
-It also gives `S` its FS/SS answer for free.
+So there is no profile-carry model. Moving a player to a new position re-derives his Overall under
+the new `POS_ATTR_W` row — which already penalizes him naturally, since a safety's profile scores
+badly against a linebacker's weighting — and `adp` **scales that penalty**:
 
-Scope note: this is the one item here that is not a sim change at all. It could ship independently.
+```
+ovrAt(p, newPos) = ovrBase(p, newPos) − posPenalty(p.pos → newPos) × (1 − adpScale(p))
+```
+
+`adpScale` runs ~0 for a rigid specialist to ~1 for a true tweener. Attributes the new position needs
+that he never carried are seeded from his physical basis at the same discount, so nothing is free.
+
+Position distance matters: S→LB or OG→OT is cheap, WR→DT is not. A small `POS_DIST` table, or simply
+the cosine distance between the two `POS_ATTR_W` rows — which is free, already normalized, and stays
+correct automatically as the rows are tuned. **Recommend the derived version.**
+
+This is a **new roster-management feature** with real UI (a "change position" action with a projected
+Overall preview) and real depth in recruiting — a high-`adp` prospect is worth more than his stars say.
+
+Scope note: this is the one item with no sim dependency at all. It can ship independently, before or
+after the rest.
 
 ---
 
@@ -336,16 +365,69 @@ Also needed:
 
 ---
 
-## 9. Open questions
+## 9. Decisions (all settled)
 
-1. **Football IQ** — split from awareness as proposed, or keep one `awr`? (Recommend split; §2.)
-2. **Carrying** — add `car` for ball security? Not in the directive. (Recommend yes; fumbles have no
-   owner today.)
-3. **FS/SS** — real position codes, or archetypes within one `S` row? (Recommend one row this phase;
-   §5's position-change mechanic covers the intent.)
-4. **Kicker/punter** — keep `str`=leg / `awr`=accuracy, or give them `kpw`/`kac`? (Recommend keep.)
-5. **Sequencing** — is Adaptability (§5) part of this phase or its own? It is the only item with no
-   sim dependency and could ship first as a self-contained feature.
+1. **Football IQ** — **split** from awareness. See §9a, which turned out to be the most important
+   design point in the phase.
+2. **Carrying** — **yes**, `car` ships.
+3. **FS/SS** — **real position codes.** `S` splits into `FS` and `SS`. Cost is in §9b.
+4. **Kicker/punter** — **give them `kpw`/`kac`.** Leg power and placement stop borrowing `str`/`awr`.
+5. **Adaptability** — *"basically just a multiplier or a divider on how good someone is away from his
+   original position."* Simpler than §5's profile-carry model: `adp` scales the OVR penalty for
+   playing out of position, and §5 is amended to that.
+
+### 9a. Awareness and IQ own the FLOOR. Athleticism owns the TAIL.
+
+> *"Those two ARE really important, so a player with lower technique and abilities can have more
+> awareness and still contribute but isn't as explosive."*
+
+This maps onto structure the engine already has. `AT` distinguishes two ends of the gain draw:
+
+- `floorAdd(u,d,w)` — bites at **low `u`**, the bottom of the draw, where plays get stuffed.
+- `tailAdd(u,d,w)` — bites at **high `u`**, the top, where they break.
+
+So the rule is:
+
+| Owns | Attributes | Effect |
+|---|---|---|
+| **The floor** | `awr`, `iq` (+ `str`, `rbk`/`rst` at the point of attack) | Fewer stuffs, fewer negative plays, fewer mistakes. **Explicitly no tail contribution** |
+| **The tail** | `spd`, `acc`, `elu`, `thp`, `rte` | Explosive plays. **No floor contribution** |
+
+A smart, slow player **rarely loses a play and never breaks one.** A raw, explosive player is
+boom-or-bust. Both can carry the same Overall, and they are genuinely different footballers.
+
+**This is also the fix for the tail problem in §1 and §11.** If roster construction determines the
+*shape* of a team's outcome distribution and not merely its mean, the league becomes a **mixture of
+distributions** — and a mixture has excess kurtosis by construction. Veteran, high-IQ rosters produce
+narrow, boring games; young, explosive, low-`awr` rosters produce wild ones.
+
+`cfb-averages.md` §6 arrived at the same shape from the data side and proposed faking it on the
+per-game `form` term: *"a mostly-calm draw with a rare blow-up reproduces the right shape — p=0.07,
+wild=20, calm=4 measured +0.64 kurtosis vs the real +0.32."* That would be an invented mixture with
+no cause. This one is **earned from the roster**, which is the same reasoning Phase 50 used to reject
+a clutch *rating* in favour of clutch as variance, and Phase 49 used to make discipline a roster
+property rather than a flat tax.
+
+Consequence for the gates: a "tail shape" check is not enough. There must be a check that **two
+rosters at equal Overall produce different outcome variance** in the predicted direction — the direct
+analogue of Phase 49's team-level SD check (measured 0.94 against a real 0.95).
+
+### 9b. What the FS/SS split costs
+
+`S` is a single-letter code threaded through roster generation, pools, coverage assignment, imports,
+the draft, awards, records and every lab. Concretely it touches:
+
+- `POS` / position lists and per-position roster counts (8 `S` → 4 `FS` + 4 `SS`)
+- `POS_ATTR_W` — two rows: FS tilts `spd`/`awr`/`iq`/`zcv`; SS tilts `tkl`/`str`/`mcv`
+- `gamePools` — `cover` (S ×0.75) and `tkl` (S ×0.8) split into two entries each
+- `coverDef` — the TE → S → LB assignment ladder
+- `posSide`, the import schema's position validation, the blank template
+- **Migration v48** — every existing `S` on 134 rosters is assigned FS or SS, deterministically from
+  his own profile (a fast/aware safety becomes FS, a strong/tackling one SS) so depth charts survive
+- Position filters and labels across the roster, recruit, draft and award screens
+
+Worth doing — the two are genuinely different positions and the directive describes them as such —
+but it is the widest-surface item in the phase and should land on its own commit.
 
 ---
 
