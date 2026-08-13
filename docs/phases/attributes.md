@@ -201,12 +201,36 @@ are gone, so a generated board shifts **once** at this phase boundary (as does a
 The phase was built under an explicit *build first, measure after* decision, with the envelope refit
 deferred. Measured over 2,010 games (`4-simprofile.js` → `7-upsets.js`):
 
-| | Real | Pre-51 | **Post-51** |
-|---|--:|--:|--:|
-| Margin residual SD | 13.26 | 14.66 | **14.97** |
-| Excess kurtosis | +0.32 | +0.245 | **+0.044** |
-| Blowout upsets / season | 5.8 | 7.1 | **7.5** |
-| Favourite by 7+ loses outright | 45.8 | 40.9 | **43.6** |
+> ### ⚠️ Correction (Phase 52 prep) — these numbers were measured on a league with no attributes
+>
+> `test/simlab.js` was updated in this phase to build synthetic players with real profiles
+> (`genAttrs`, line 73), for the reason its own comment gives: *"Without one every attribute falls
+> back to `ov`, which collapses all six channels onto the rating gap and makes them restate matchEdge
+> six times over."*
+>
+> **`tools/cfb-data/4-simprofile.js` was never given the same fix.** Every number in the table below
+> was therefore measured on a league where `spd = agi = str = awr = bal = dur = ov` for all 11.3k
+> players — the exact degenerate case the gate was hardened against. The profiler now generates real
+> profiles (`FLAT=1` reproduces the old behaviour); the corrected column is on the right.
+>
+> Only the post-51 column can be re-measured — recovering the pre-51 figures would mean reverting
+> `index.html`, so they are left as originally recorded and should be read as flat-league too.
+
+| | Real | Pre-51 | Post-51 *(flat, as shipped in this doc)* | **Post-51 corrected** |
+|---|--:|--:|--:|--:|
+| Margin residual SD | 13.26 | 14.66 | 14.97 | **14.60** |
+| Excess kurtosis | +0.32 | +0.245 | +0.044 | **−0.136** |
+| Skew | +0.130 | — | +0.105 | **−0.017** |
+| Blowout upsets / season | 5.8 | 7.1 | 7.5 | **6.7** |
+| Favourite by 7+ loses outright | 45.8 | 40.9 | 43.6 | **46.4** |
+| Favourite by 14+ loses outright | 8.0 | — | 8.6 | **11.4** |
+
+**The correction sharpens the finding rather than softening it.** Giving players genuine attribute
+spread moves SD and the upset rate *toward* reality (14.97 → 14.60; 43.6 → 46.4 against a real 45.8)
+— but drives excess kurtosis from +0.044 to **−0.136**, further from the measured +0.32 and now
+below a pure Gaussian. Real independent specialization makes the distribution *more* normal, not
+less, which is the central-limit mechanism §9 already suspected, now measured directly rather than
+inferred. It is the empirical case for the Phase 52 architecture (`attributes-2.md` §1).
 
 Read honestly:
 

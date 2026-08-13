@@ -10,7 +10,15 @@ const html = fs.readFileSync(require('path').join(__dirname, '..', '..', 'index.
 const grab = (a, b) => { const i = html.indexOf(a), j = html.indexOf(b); return html.slice(i, j); };
 eval(grab('// === TRAIT ENGINE (Phase 10) START ===', '// === TRAIT ENGINE (Phase 10) END ==='));
 eval(grab('// === SCHEME ENGINE (Phase 21) START ===', '// === SCHEME ENGINE (Phase 21) END ==='));
+// Phase 51's attribute engine — needed so the synthetic league carries REAL six-attribute profiles.
+// See the FLAT note in genRoster below for why this matters to every number this tool prints.
+eval(grab('// === ATTRIBUTE ENGINE (Phase 51) START ===', '// === ATTRIBUTE ENGINE (Phase 51) END ==='));
 eval(grab('// === SIM ENGINE (Phase 3) START ===', '// === SIM ENGINE (Phase 3) END ==='));
+
+/* `FLAT=1 node 4-simprofile.js` reproduces the pre-fix behaviour — players with NO attribute
+   profile, so every attribute falls back to `ov`. Kept as a toggle because the Phase 51 drift
+   table in docs/phases/attributes.md §9 was measured that way, and the comparison is the point. */
+const FLAT = process.env.FLAT === '1';
 
 /* synthetic world — mirrors test/simlab.js exactly */
 const POS = [["QB", "off", 4], ["RB", "off", 5], ["WR", "off", 11], ["TE", "off", 5],
@@ -21,11 +29,23 @@ const sideOf = {}; POS.forEach(([c, s]) => sideOf[c] = s);
 function genRoster(r, prestige) {
   const out = [];
   POS.forEach(([code, , n]) => { for (let i = 0; i < n; i++) {
-    out.push({ id: 'p' + Math.floor(r() * 1e9).toString(36), pos: code, ov: clamp(Math.round(prestige * 0.55 + ri(r, -9, 9) + 30), 48, 99), so: 0 });
+    const ov = clamp(Math.round(prestige * 0.55 + ri(r, -9, 9) + 30), 48, 99);
+    const p = { id: 'p' + Math.floor(r() * 1e9).toString(36), pos: code, ov, so: 0 };
+    // Phase 51: a player carries a real six-attribute profile, exactly as the shipped generator
+    // does — the same fix test/simlab.js took at its line 73. Without one, every attribute falls
+    // back to `ov`, collapsing all six sim channels onto the rating gap so they restate matchEdge
+    // six times over. That makes the league look FAR more rating-determined than the real game is,
+    // and it is the world every number in docs/phases/attributes.md §9 was measured on.
+    out.push(FLAT ? p : Object.assign(p, genAttrs(r, ov, code)));
   } });
   const byPos = {}; out.forEach(p => (byPos[p.pos] = byPos[p.pos] || []).push(p));
   Object.values(byPos).forEach(arr => { arr.sort((a, b) => b.ov - a.ov);
-    arr.forEach((p, i) => { if (i >= 2) p.ov = clamp(Math.round(p.ov - Math.min(2 + (i - 2) * 2.6, 26)), 44, 99); p.so = i; }); });
+    // taper the ATTRIBUTES and read `ov` back off them, mirroring genRoster in index.html
+    arr.forEach((p, i) => {
+      if (i >= 2) { const pen = Math.min(2 + (i - 2) * 2.6, 26);
+        if (FLAT) p.ov = clamp(Math.round(p.ov - pen), 44, 99);
+        else { shiftAttrs(p, -pen); p.ov = clamp(ovrBase(p), 44, 99); } }
+      p.so = i; }); });
   return out;
 }
 function teamRatings(roster) {
