@@ -63,6 +63,14 @@ const TECH_BASIS = {
 };
 const TECH_W = 0.55;   // share of a technique stat driven by its basis
 
+/* GENETIC vs COACHABLE. The five below are what a player showed up with; everything else in the
+   vocabulary is technique or recognition and can be taught. The distinction drives two things: how a
+   profile fills in as a player approaches elite (see genAttrs), and — once this ships — development,
+   where a 22-year-old should get smarter and more technically sound rather than faster. */
+const PHYSICAL = { spd:1, acc:1, agi:1, str:1, dur:1 };
+const PHYS_ABSORB = 0.18;   // how much of an upward correction a physical attribute will take
+const ELITE_DIV = 2.6;      // how hard an archetype shape amplifies with ability on low-weight attrs
+
 /* ---------------------------------------------------------------- archetypes
    A named SHAPE in attribute space. Authored as raw preferences and then auto-balanced to weighted
    mean zero under the position's own row (see balanceArch), so picking an archetype changes WHAT a
@@ -243,11 +251,23 @@ function genAttrs(r, ov0, pos, spread, arch) {
   // the free draw when an archetype is in play, or the noise would wash the archetype out and every
   // Gunslinger would look like every Pocket Passer.
   const ind = arch ? 0.55 : 1;
+  // ELITE DIVERGENCE. An elite player cannot carry a hole in something his position is BUILT on —
+  // a 97 quarterback is never an inaccurate one, because `tha` is 20% of the row and the weighted
+  // mean would not survive it. But he can be genuinely, famously slow, because `spd` is 5% and the
+  // mean barely notices. That is exactly why Brady's forty time was irrelevant to his rating and his
+  // accuracy was not.
+  //
+  // So the archetype's shape AMPLIFIES with ability, and only where the row can afford it: strongly
+  // on low-weight attributes, not at all on the defining ones. Without this the offsets are absolute
+  // (~±10) while the level scales, so every attribute tracks Overall and elite players converge into
+  // the same complete player — measured spread collapsing 26.9 -> 12.2 from ov 75 to 97.
+  const elite = clamp((ov0 - 72) / 27, 0, 1);
   for (const k of keys) {
     const rel = clamp(w[k] * keys.length, 0, 2);
     // an attribute the position barely uses also barely VARIES — nobody develops it either way
     const s = sp * (0.35 + 0.65 * Math.min(rel, 1.4) / 1.4) * ind;
-    t[k] = anchorOff(w, keys, k) + (arch ? arch.off[k] : 0) + (r() + r() - 1) * s;
+    const amp = 1 + elite * ELITE_DIV * Math.max(0, 1 - rel);
+    t[k] = (anchorOff(w, keys, k) + (arch ? arch.off[k] : 0)) * amp + (r() + r() - 1) * s;
   }
   for (const k of keys) {                                          // technique follows athleticism
     const basis = TECH_BASIS[k]; if (!basis) continue;
@@ -260,16 +280,34 @@ function genAttrs(r, ov0, pos, spread, arch) {
   }
   // Centre so the WEIGHTED mean is exactly ov0. Iterated, because clamping at 40/99 eats part of the
   // correction — the residual is redistributed onto the attributes that still have room.
+  //
+  // ...but NOT evenly. As a player approaches elite his best attributes hit the 99 ceiling and the
+  // residual has to land somewhere; left alone it lands on whatever has room, which is always the
+  // physical attributes. That turned a 97-overall Pocket Passer into a 88-speed athlete — measured
+  // spread collapsing 26.9 -> 12.2 between ov 75 and 97. Half of that is real (the weighted row must
+  // average to his Overall, so nobody reaches 97 carrying a genuine hole) and half is an artifact of
+  // the ceiling.
+  //
+  // Elite players converge on what is LEARNABLE — accuracy, technique, recognition. They do not
+  // converge on what is GENETIC. Brady never got fast. So physical attributes resist absorbing the
+  // residual, and the holes fill in on the coachable side first. This is the generation-time twin of
+  // the directive behind Phase 51's one-on-one clause: "a lack of speed can be overcome, but in
+  // certain one-on-one situations it can't be."
   const out = {};
   for (const k of keys) out[k] = ov0 + t[k];
   const sw = keys.reduce((s, k) => s + w[k], 0) || 1;
-  for (let pass = 0; pass < 6; pass++) {
+  for (let pass = 0; pass < 8; pass++) {
     let m = 0; for (const k of keys) m += w[k] * clamp(out[k], 40, 99);
     const err = ov0 - m / sw;
     if (Math.abs(err) < 1e-6) break;
-    let room = 0; for (const k of keys) { const v = clamp(out[k], 40, 99); if ((err > 0 && v < 99) || (err < 0 && v > 40)) room += w[k]; }
+    // share of the correction this attribute is willing to take. Physical attributes take only
+    // PHYS_ABSORB of a LIFT (they stay where the archetype put them); everything absorbs a drop
+    // normally, since being worse is not a genetic question.
+    const share = k => (err > 0 && PHYSICAL[k]) ? PHYS_ABSORB : 1;
+    let room = 0;
+    for (const k of keys) { const v = clamp(out[k], 40, 99); if ((err > 0 && v < 99) || (err < 0 && v > 40)) room += w[k] * share(k); }
     if (!room) break;
-    for (const k of keys) { const v = clamp(out[k], 40, 99); if ((err > 0 && v < 99) || (err < 0 && v > 40)) out[k] = v + err * sw / room; }
+    for (const k of keys) { const v = clamp(out[k], 40, 99); if ((err > 0 && v < 99) || (err < 0 && v > 40)) out[k] = v + err * sw * share(k) / room; }
   }
   for (const k of keys) out[k] = clamp(Math.round(out[k]), 40, 99);
   // adp is weighted 0, so it never enters the centring — draw it independently

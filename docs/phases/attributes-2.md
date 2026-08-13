@@ -482,6 +482,59 @@ across 14,100 archetype-generated players.
 
 ---
 
+## 9d. Can an elite player be every archetype at once?
+
+> *"Let's say you have an elite QB or RB. Can they potentially be all of them?"*
+
+Measured, the first answer was **yes, and wrongly so** — archetype spread collapsed as ability rose
+(Pocket Passer 26.9 → 12.2 between ov 75 and 97; Power Back 20.0 → 4.9). A 97-overall pocket passer
+was generating at `spd 88`. Two causes, one legitimate and one not:
+
+- **Legitimate.** The weighted row must average to the player's Overall. With `tha/thp/iq/awr`
+  clamped at 99 — 60% of the QB row — the remaining 40% is *forced* to average 94. **Nobody reaches
+  97 carrying a real hole.** That is what elite means and it should not be fixed.
+- **Not legitimate.** Archetype offsets were absolute (~±10) while the level scaled, so every
+  attribute tracked Overall and each archetype drifted into the same complete player.
+
+### The fix: a player may be lopsided exactly to the extent his position doesn't care
+
+Archetype shape now **amplifies with ability**, and only where the row can afford it — strongly on
+low-weight attributes, not at all on defining ones (`ELITE_DIV`).
+
+| | ov 75 | ov 85 | ov 92 | ov 97 |
+|---|--:|--:|--:|--:|
+| QB Pocket Passer spread | 29.5 | **37.8** | **37.6** | 21.2 |
+| RB Power Back spread | 20.0 | 17.8 | 11.1 | 4.2 |
+
+A **92-overall Pocket Passer is now `tha 99 / iq 99 / awr 99` with `acc 61`** — elite and immobile.
+That works because `spd` is 5% of the QB row and the mean barely notices, while `tha` is 20% and
+never would.
+
+The **Power Back still converges**, and correctly: RB weights are flat (`elu .16 spd .14 acc .12
+agi .12 btk .12`), so there is no cheap attribute to sacrifice. Elite running backs do not have
+holes; elite quarterbacks routinely do.
+
+**Concentrated-weight positions (QB, OT, OG, DT, K) breed specialists. Flat-weight positions (RB, WR,
+LB, CB) force completeness.** Above ~95 everyone converges regardless — which is a reasonable
+definition of generational.
+
+### Genetic vs coachable
+
+`spd / acc / agi / str / dur` are what a player showed up with; everything else in the vocabulary is
+technique or recognition. Physical attributes now resist absorbing upward corrections
+(`PHYS_ABSORB`), so when an elite player's holes fill in they fill in on the **coachable** side.
+Brady never got fast.
+
+This is the generation-time twin of the directive behind Phase 51's one-on-one clause, and it sets up
+**development**: a 22-year-old should get smarter and more technically sound, not faster. `devRateFor`
+should apply the same split when this ships.
+
+**Tuning knobs**, both flagged as un-fitted judgment: `ELITE_DIV` (2.6) and `PHYS_ABSORB` (0.18).
+`ELITE_DIV` may be slightly hot at mid-range — an 85-overall Pocket Passer averaging `acc 58` is a
+true statue, and that is only right because he is 22% of quarterbacks rather than all of them.
+
+---
+
 ## 10. Suggested sequencing
 
 | Step | Contents | Why this order |
