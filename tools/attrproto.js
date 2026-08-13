@@ -210,16 +210,39 @@ function pickArch(r, pos) {
   return list[list.length - 1];
 }
 /* Classify an EXISTING profile to its nearest archetype — needed for imported rosters, the v48
-   migration, and for a player whose development has drifted him away from where he started. */
+   migration, and for a player whose development has drifted him away from where he started.
+
+   Uses COSINE similarity between the player's deviation vector and the archetype's offset vector,
+   not weighted Euclidean distance. Weighted distance was measured badly wrong: because it scales
+   each term by POS_ATTR_W, the defining attributes drown out exactly the low-weight ones that
+   separate neighbours — an LB Blitzer is a Blitzer because of `prs`, which carries weight .03. The
+   result was archetypes classifying to literally 0% (Run Stopper, Blitzer, YAC Weapon, Gadget) while
+   central ones swallowed the field (Complete TE took 63% against an intended 16%).
+
+   Cosine is direction-only, so it asks "is this the SHAPE of a Blitzer?" rather than "is this player
+   near the Blitzer point?", and it is scale-invariant — which matters now that purity (below) makes
+   shape magnitude a per-player property. */
 function classifyArch(p) {
   const list = ARCHETYPES[p.pos]; if (!list) return null;
   const w = posAttrW(p.pos), keys = Object.keys(w);
   const sw = keys.reduce((s, k) => s + w[k], 0) || 1;
   let mean = 0; for (const k of keys) mean += w[k] * attrVal(p, k); mean /= sw;
-  let best = null, bestD = Infinity;
+  // Subtract the POSITIONAL BASELINE first. Every quarterback carries the same anchor shape (low
+  // str/car/btk, high tha/iq) whatever his archetype, and that shared component dominates a raw
+  // cosine — measured, it dragged recovery of a strongly-expressed archetype down to 54.8%. What
+  // identifies an archetype is the residual AFTER the position's own shape is removed.
+  const elite = clamp((mean - 72) / 27, 0, 1);
+  const amp = {};
+  for (const k of keys) { const rel = clamp(w[k] * keys.length, 0, 2); amp[k] = 1 + elite * ELITE_DIV * Math.max(0, 1 - rel); }
+  const dev = {}; let dn = 0;
+  for (const k of keys) { dev[k] = attrVal(p, k) - mean - anchorOff(w, keys, k) * amp[k]; dn += dev[k] * dev[k]; }
+  dn = Math.sqrt(dn) || 1;
+  let best = null, bestS = -Infinity;
   for (const a of list) {
-    let d = 0; for (const k of keys) { const dev = attrVal(p, k) - mean; d += w[k] * (dev - a.off[k]) ** 2; }
-    if (d < bestD) { bestD = d; best = a; }
+    let dot = 0, an = 0;
+    for (const k of keys) { const e = a.off[k] * amp[k]; dot += dev[k] * e; an += e * e; }
+    const s = dot / (dn * (Math.sqrt(an) || 1));
+    if (s > bestS) { bestS = s; best = a; }
   }
   return best;
 }
@@ -244,13 +267,21 @@ function anchorOff(w, keys, k) {
    as he was asked to be and the spread only decides WHAT KIND of good.
    Order matters: anchor → draw the tilt → blend technique toward its basis → THEN re-centre, so
    neither the anchoring nor the correlation can smuggle ability in. */
-function genAttrs(r, ov0, pos, spread, arch) {
+function genAttrs(r, ov0, pos, spread, arch, purity) {
   const w = posAttrW(pos), keys = Object.keys(w), sp = spread == null ? 15 : spread;
   const t = {};
-  // The archetype supplies the SHAPE; the individual draw supplies the variation around it. Shrink
-  // the free draw when an archetype is in play, or the noise would wash the archetype out and every
-  // Gunslinger would look like every Pocket Passer.
-  const ind = arch ? 0.55 : 1;
+  // PURITY — how strongly this player embodies his archetype. Without it the only within-archetype
+  // variation is independent per-attribute noise, so every Pocket Passer is the SAME SHAPE at a
+  // different level and the archetype list is 71 fixed templates scaled up and down.
+  //
+  // Purity makes the variation run ALONG the archetype axis instead: a 0.5 Pocket Passer is a
+  // quarterback who merely leans that way and can move a bit, a 1.5 is an immobile savant. It also
+  // explains tweeners honestly — a low-purity player genuinely sits between two archetypes rather
+  // than being a mis-generated one — and it feeds the mixture argument in §9a, since high-purity
+  // extremes are what give a roster a distinctive outcome variance.
+  const pur = purity != null ? purity : (arch ? clamp(0.35 + (r() + r() + r()) / 3 * 1.5, 0.3, 1.7) : 0);
+  // The independent draw shrinks, because purity now carries most of the within-archetype spread.
+  const ind = arch ? 0.42 : 1;
   // ELITE DIVERGENCE. An elite player cannot carry a hole in something his position is BUILT on —
   // a 97 quarterback is never an inaccurate one, because `tha` is 20% of the row and the weighted
   // mean would not survive it. But he can be genuinely, famously slow, because `spd` is 5% and the
@@ -267,7 +298,7 @@ function genAttrs(r, ov0, pos, spread, arch) {
     // an attribute the position barely uses also barely VARIES — nobody develops it either way
     const s = sp * (0.35 + 0.65 * Math.min(rel, 1.4) / 1.4) * ind;
     const amp = 1 + elite * ELITE_DIV * Math.max(0, 1 - rel);
-    t[k] = (anchorOff(w, keys, k) + (arch ? arch.off[k] : 0)) * amp + (r() + r() - 1) * s;
+    t[k] = (anchorOff(w, keys, k) + (arch ? arch.off[k] * pur : 0)) * amp + (r() + r() - 1) * s;
   }
   for (const k of keys) {                                          // technique follows athleticism
     const basis = TECH_BASIS[k]; if (!basis) continue;
@@ -418,20 +449,25 @@ console.log('7. archetypes are weighted-mean-zero under their own position row')
 console.log('8. generation honours the archetype, and the classifier recovers it');
 {
   const r = rng(0xD00D);
-  let hit = 0, tot = 0, worstOv = 0;
-  for (const pos of POSITIONS) for (const a of ARCHETYPES[pos]) for (let i = 0; i < 300; i++) {
-    const ov = ri(r, 50, 95);
-    const p = Object.assign({ pos }, genAttrs(r, ov, pos, 15, a));
-    worstOv = Math.max(worstOv, Math.abs(ovrBase(p) - ov));
-    if (classifyArch(p) === a) hit++; tot++;
-  }
+  let worstOv = 0;
+  // Recovery is measured BY PURITY, because purity is what "how much of this archetype is he?"
+  // means. A 0.4-purity Pocket Passer is a genuine tweener and SHOULD often classify elsewhere;
+  // demanding otherwise would just be demanding that purity do nothing.
+  const band = pur => {
+    let hit = 0, tot = 0;
+    for (const pos of POSITIONS) for (const a of ARCHETYPES[pos]) for (let i = 0; i < 200; i++) {
+      const ov = ri(r, 50, 95);
+      const p = Object.assign({ pos }, genAttrs(r, ov, pos, 15, a, pur));
+      worstOv = Math.max(worstOv, Math.abs(ovrBase(p) - ov));
+      if (classifyArch(p) === a) hit++; tot++;
+    }
+    return hit / tot * 100;
+  };
+  const pure = band(1.4), mid = band(1.0), vague = band(0.4);
   ok(worstOv === 0, `ovrBase drifted by ${worstOv} when generating from an archetype`);
-  const pct = hit / tot * 100;
-  // Recovery falls as the set gets denser (79.9% at 47 archetypes, ~68% at 71) — with 7 QB shapes,
-  // chance alone is 14%. The residual is genuine tweeners sitting between two neighbours, which is
-  // realistic and wanted. The floor guards against archetypes so overlapping they mean nothing.
-  ok(pct > 60, `classifier only recovered the source archetype ${pct.toFixed(1)}% of the time`);
-  console.log(`   ${tot} players, ovrBase drift ${worstOv}, classifier recovers ${pct.toFixed(1)}%`);
+  console.log(`   recovery by purity — 1.4: ${pure.toFixed(1)}%   1.0: ${mid.toFixed(1)}%   0.4: ${vague.toFixed(1)}%`);
+  ok(pure > 75, `a STRONGLY expressed archetype only classified back ${pure.toFixed(1)}% of the time`);
+  ok(pure > vague + 15, `purity barely changed recognisability (${pure.toFixed(1)}% vs ${vague.toFixed(1)}%) — it is not doing its job`);
 }
 
 // 9. the directive's two quarterbacks

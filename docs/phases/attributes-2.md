@@ -535,6 +535,71 @@ true statue, and that is only right because he is 22% of quarterbacks rather tha
 
 ---
 
+## 9e. Purity — how MUCH of an archetype a player is
+
+> *"Will the spread of players created be more aligned with the percentages of the archetypes or
+> will they be totally random and dynamic? Because we can have many archetypes but what separates
+> them is just how good of that archetype they are."*
+
+Measured over a full 134-team league (11,256 players), the answer split in two.
+
+### The generated mix does track the percentages
+
+`pickArch` draws proportionally to `freq`, and the realized league matches intent to within
+**3.7 points** at worst across all 71. The mix is a design dial, not an emergent accident.
+
+### But the archetypes were templates, not tendencies
+
+The second half of the question identified a real gap. Within-archetype variation was independent
+per-attribute noise, which means **every Pocket Passer was the same shape at a different level** — 71
+fixed templates scaled up and down.
+
+**Purity** fixes it: a per-player multiplier (~0.3 … 1.7) on the archetype's offset vector, so
+variation runs *along the archetype axis* rather than orthogonal to it.
+
+- **0.4 purity** — a quarterback who merely leans pocket-passer and can move a bit.
+- **1.4 purity** — an immobile savant.
+
+Three things it buys beyond variety:
+
+1. **Tweeners become real, not accidental.** A low-purity player genuinely sits between two
+   archetypes instead of being a mis-generated one.
+2. **It is scoutable.** Purity is the natural basis for a "prototypical / textbook" vs "hybrid" tag,
+   and a fogged one at that.
+3. **It sharpens §9a's mixture.** High-purity extremes are what give a roster a distinctive outcome
+   variance; a league of 1.0-purity players would be far more uniform.
+
+Recovery is therefore measured **by purity**, since demanding that a 0.4 classify correctly would be
+demanding that purity do nothing:
+
+| Purity | Classifier recovers |
+|--:|--:|
+| 1.4 | **93.9%** |
+| 1.0 | 91.6% |
+| 0.4 | 67.8% |
+
+### The classifier had to be rebuilt to measure any of this
+
+The first classifier was badly biased, and the league census is what exposed it. Weighting distance
+by `POS_ATTR_W` meant the defining attributes drowned out the low-weight ones that actually separate
+neighbours — an LB Blitzer is a Blitzer because of `prs`, which carries weight `.03`.
+
+**Four archetypes classified to literally 0%** (DE Run Stopper, LB Blitzer, WR YAC Weapon, WR Gadget)
+while central ones swallowed the field — Complete TE took **63.3%** against an intended 16%.
+
+Rebuilt on **cosine similarity against the positional baseline**: direction-only, so it asks *"is
+this the shape of a Blitzer?"* rather than *"is this player near the Blitzer point?"*, and
+scale-invariant, which is required now that purity makes shape magnitude a per-player property.
+Subtracting the baseline mattered as much as the metric — every quarterback carries the same anchor
+shape whatever his archetype, and that shared component alone held recovery down to 54.8%.
+
+| | before | after |
+|---|--:|--:|
+| Worst classification drift | 48.8 pts | **19.3 pts** |
+| Archetypes classifying to ~0% | 4 | **0** |
+
+---
+
 ## 10. Suggested sequencing
 
 | Step | Contents | Why this order |
