@@ -43,7 +43,7 @@ const engineSrc = html.slice(i0, i1);
 // eval into this scope so simEngine + helpers (gamePersonnel, etc.) become available
 // `var` leaks out of a sloppy-mode eval where `const` does not, so re-export PM — the Phase 48
 // shape checks read the SHIPPED tier constants instead of keeping a copy that could drift.
-eval(engineSrc + '\nvar PM_TIERS = PM;');
+eval(engineSrc + '\nvar PM_TIERS = PM; globalThis.PN = PN;');
 
 /* ---------- a faithful-enough synthetic world (mirrors genRoster/teamRatings) ---------- */
 const POS = [["QB", "off", 4], ["RB", "off", 5], ["WR", "off", 11], ["TE", "off", 5],
@@ -294,6 +294,79 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   const calmPlan = { adjustFor: t.id, adjusts: [{ at: 0, plan: { shadow: {}, boost: {}, calm: true } }] };
   for (let s = 0; s < 25; s++) { const seed = (hashStr('calm' + s) ^ 1) >>> 0; normal += simEngine(t, opp, seed).pen[t.id].n; calm += simEngine(t, opp, seed, calmPlan).pen[t.id].n; }
   check('Phase 25: "calm them down" reduces your team\'s penalties', calm < normal, `${calm} vs ${normal}`);
+}());
+
+// Phase 49 — the penalty model, fitted to docs/reference/cfb-penalties.md. The league MEAN is a
+// constant (5.98 flags for 52.4 yards per team-game); the SPREAD is the roster. These assert the
+// measured shape: rate, yardage, the offense/defense and pre-snap/live-ball splits, that a flag is
+// charged to a real player, and that a wiped play leaves nothing behind in the box score.
+// The synthetic rosters above carry no temperament, and foulProp is exponential in composure, so a
+// trait-less league sits ~20% under a real one. Stamp real traits on the penalty worlds (the shipped
+// genRoster always does) so these assert against the league the game actually simulates.
+function withTraits(w, seed) { const tr = rng(seed);
+  w.teams.forEach(t => t.roster.forEach(p => { const g = genTraits(tr); p.mot = g.mot; p.comp = g.comp; p.ego = g.ego; }));
+  return w; }
+(function () {
+  const w = withTraits(genWorld(4900), 4900), N = w.teams.length;
+  let flags = 0, yds = 0, games = 0, off = 0, pre = 0, typed = 0;
+  const FAM = {}; PN.fouls.forEach(f => FAM[f[0]] = { side: f[2], phase: f[3] });
+  for (let s = 0; s < 60; s++) {
+    const h = w.teams[s % N], a = w.teams[(s + 5) % N]; if (h === a) continue;
+    const res = simEngine(h, a, (hashStr('pen49_' + s) ^ 3) >>> 0);
+    for (const t of [h, a]) { const p = res.pen[t.id]; flags += p.n; yds += p.yds;
+      for (const k in (p.t || {})) { typed += p.t[k];
+        if (FAM[k].side === 'off') off += p.t[k];
+        if (FAM[k].phase === 'pre') pre += p.t[k]; } }
+    games++;
+  }
+  const perTeam = flags / games / 2, ydsPer = yds / games / 2;
+  check('Phase 49: penalty rate matches measured FBS (5.98 ± 1.2 per team/game)', perTeam >= 4.8 && perTeam <= 7.2, perTeam.toFixed(2) + ' /team');
+  check('Phase 49: penalty yardage matches measured FBS (52.4 ± 10 per team/game)', ydsPer >= 42 && ydsPer <= 63, ydsPer.toFixed(1) + ' yds');
+  check('Phase 49: yards per penalty is realistic (7–10)', yds / flags >= 7 && yds / flags <= 10, (yds / flags).toFixed(2));
+  check('Phase 49: every flag carries a type', typed === flags, `${typed} of ${flags}`);
+  check('Phase 49: the offense draws ~65% of flags (real 65.1%)', off / typed > 0.58 && off / typed < 0.72, (off / typed * 100).toFixed(1) + '%');
+  check('Phase 49: ~49% of flags are pre-snap (real 49.1%)', pre / typed > 0.42 && pre / typed < 0.56, (pre / typed * 100).toFixed(1) + '%');
+}());
+(function () {
+  // the spread is the ROSTER: same opponent, same seeds, two versions of one team that differ only
+  // in the composure of the men who actually commit fouls.
+  const w = genWorld(4901), opp = w.teams[1];
+  const lo = JSON.parse(JSON.stringify(w.teams[0])), hi = JSON.parse(JSON.stringify(w.teams[0]));
+  lo.roster.forEach(p => p.comp = 18); hi.roster.forEach(p => p.comp = 88);
+  let loN = 0, hiN = 0;
+  for (let s = 0; s < 40; s++) { const seed = (hashStr('spread' + s) ^ 7) >>> 0;
+    loN += simEngine(lo, opp, seed).pen[lo.id].n; hiN += simEngine(hi, opp, seed).pen[hi.id].n; }
+  check('Phase 49: a composed roster is meaningfully cleaner (≥1.5 flags/game)', (loN - hiN) / 40 >= 1.5, `${(loN / 40).toFixed(2)} vs ${(hiN / 40).toFixed(2)} per game`);
+  // ...but discipline must NOT be a proxy for quality — real top-10 teams (5.87) foul about as
+  // often as unranked ones (5.99), so overall rating must not leak into the rate.
+  const good = JSON.parse(JSON.stringify(w.teams[0])), bad = JSON.parse(JSON.stringify(w.teams[0]));
+  good.roster.forEach(p => { p.ov = Math.min(99, p.ov + 18); p.awr = Math.min(99, (p.awr || 60) + 18); });
+  bad.roster.forEach(p => { p.ov = Math.max(40, p.ov - 18); p.awr = Math.max(40, (p.awr || 60) - 18); });
+  let gN = 0, bN = 0;
+  for (let s = 0; s < 40; s++) { const seed = (hashStr('qual' + s) ^ 7) >>> 0;
+    gN += simEngine(good, opp, seed).pen[good.id].n; bN += simEngine(bad, opp, seed).pen[bad.id].n; }
+  check('Phase 49: rating does not buy discipline (±0.5 flags/game)', Math.abs(gN - bN) / 40 < 0.5, `${(gN / 40).toFixed(2)} vs ${(bN / 40).toFixed(2)} per game`);
+}());
+(function () {
+  // a penalty is charged to a PLAYER, and a play wiped out by a flag leaves no stats behind.
+  const w = withTraits(genWorld(4902), 4902), h = w.teams[3], a = w.teams[9];
+  let charged = 0, seen = 0, sane = true;
+  // yardage stats legitimately go negative (a back can finish under zero); COUNTS never can.
+  const COUNTS = ['gp', 'pAtt', 'pCmp', 'pTD', 'pInt', 'rAtt', 'rTD', 'rec', 'reTD', 'tkl', 'sk', 'dInt', 'cvTgt', 'cvCmp', 'cvTD', 'fga', 'fgm', 'xpa', 'xpm', 'pen', 'penYds'];
+  for (let s = 0; s < 30; s++) {
+    const box = {}, pen = {};
+    const res = simEngine(h, a, (hashStr('chg' + s) ^ 11) >>> 0, { boxInto: box, penInto: pen });
+    seen += pen[h.id].n + pen[a.id].n;
+    const ids = new Set([...h.roster, ...a.roster].map(p => p.id));
+    for (const id in box) { const b = box[id];
+      if (b.pen) { charged += b.pen; if (!ids.has(id) || !(b.penYds > 0)) sane = false; }
+      for (const k in b) if (COUNTS.indexOf(k) >= 0 && b[k] < 0) sane = false;   // an undo must never leave a negative count
+    }
+  }
+  check('Phase 49: every flag is charged to a real player on the field', charged === seen && sane, `${charged} of ${seen}`);
+  // determinism still holds with the new draws + the wipe/undo path
+  const A = simEngine(h, a, 4242, { penInto: {} }), B = simEngine(h, a, 4242, { penInto: {} });
+  check('Phase 49: penalties stay deterministic', A.hs === B.hs && A.as === B.as && JSON.stringify(A.box) === JSON.stringify(B.box), `${A.hs}-${A.as}`);
 }());
 
 // Phase 26 — injuries (in-game): occur at a low rate, are deterministic, and force the backup in.

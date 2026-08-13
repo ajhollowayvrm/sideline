@@ -1271,7 +1271,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:44,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:45,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      rivalries:null,rivalryHeat:null,records:null,lastRealign:null,
@@ -1355,10 +1355,17 @@ function mergeRosters(ng,data){
 }
 function normPlayer(p){
   const ov=clamp(+p.overall||60,40,99);
+  // Phase 49: an imported player gets a temperament too, drawn deterministically from his identity.
+  // The schema has no trait fields, so these used to come back absent — which read as exactly 50
+  // everywhere. That was harmless while composure only reshaped a draw (identity at 50), but the
+  // penalty model's propensity is exponential, so a trait-less roster would foul ~20% less than a
+  // generated one. Imported teams also just deserve real personalities.
+  const tr=genTraits(rng(hashStr((p.first||'')+'|'+(p.last||'')+'|'+(p.pos||''))));
   return {id:'p'+Math.random().toString(36).slice(2,9),fn:p.first||'New',ln:p.last||'Player',
     pos:p.pos||'WR',yr:p.year||'FR',age:+p.age||18,st:p.homeState||'TX',
     stars:+p.stars||(ov>=88?4:ov>=78?3:2),ov,pot:clamp(+p.potential||ov,ov,99),
-    cap:!!p.captain,spd:+p.spd||ov,str:+p.str||ov,awr:+p.awr||ov,so:0};
+    cap:!!p.captain,spd:+p.spd||ov,str:+p.str||ov,awr:+p.awr||ov,so:0,
+    mot:tr.mot,comp:tr.comp,ego:tr.ego};
 }
 // Bring an older save up to the current schema. v1 staff lacked coordinator/position
 // tiers and group boosts; backfill them, re-derive ratings (now coach-aware), re-rank.
@@ -1552,6 +1559,11 @@ function migrateState(state){
   }                                    // marks a game as played on the old engine, so replay is refused for it
                                        // instead of re-simming to a score that contradicts the record book.
                                        // Scores, stats, standings and records are untouched.
+  if((state.version||1)<45){           // Phase 49: the penalty model. Structural no-op — the new per-player
+    state.version=45;                  // penalty counters (p.gs.pen/penYds) are sparse box keys that read as 0
+  }                                    // when absent, and the codec carries p.gs generically. SIM_MODEL is now 4,
+                                       // so a game resolved by the old penalty model declines replay (same
+                                       // contract as Phase 48) rather than re-simming to a different score.
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1697,6 +1709,7 @@ function gamePools(team,benched){
     qbList:byso('QB'),                                     // Phase 26: depth at QB (the backup if your starter goes down)
     k:(byPos.K||[])[0]||(byPos.QB||[])[0]||null,
     rush, recv,
+    ol:W([['OT',1.0],['OG',0.95],['C',0.8]],1),            // Phase 49: the five up front — who false-starts and holds
     tkl:W([['LB',1.0],['S',0.8],['CB',0.7],['DE',0.55],['DT',0.45]],1),
     rush4:W([['DE',1.0],['DT',0.7],['LB',0.5]],1),         // pass rush (sacks)
     hawk:W([['CB',1.0],['S',0.85],['LB',0.4]],1),          // ball-hawks (INTs)
@@ -1797,6 +1810,84 @@ function qGain(u,Q,off){
 function distKey(togo){ return togo<=1?'1':togo<=3?'2-3':togo<=6?'4-6':togo<=10?'7-10':'11+'; }
 function ddKey(down,togo){ return down+'|'+distKey(togo); }
 // PM-END
+// === Phase 49 — the penalty model. Fitted to docs/reference/cfb-penalties.md (3,944 real FBS
+// games): 5.98 flags for 52.4 yards per team-game, ~65/35 offense/defense, ~49% of them pre-snap.
+//
+// The design rule, and the reason this block is separate from PM: the LEAGUE MEAN is a constant,
+// the SPREAD is the roster. A team's rate for a family of fouls is the depth-weighted mean foul
+// propensity of the group that actually commits it — your offensive line's composure drives your
+// offensive flags, your secondary's drives your defensive ones — and the culprit is then drawn
+// from that same pool, weighted hard toward the low-composure man. Real false starts concentrate
+// like that (one player commits 44.7% of his team's), so a single head case at left tackle is a
+// visible, fixable problem rather than a rounding error spread across 85 players.
+//
+// Propensity keys off COMPOSURE ALONE — deliberately not OVR or awareness. Measured discipline is
+// flat across team quality (top-10 5.87 flags, unranked 5.99), and composure is generated
+// independently of overall, so keying off it reproduces that independence by construction. Letting
+// rating in would make good teams clean teams, which real football is not.
+// Fitted by tools/cfb-data/15-penfit.js.
+// PN-START
+const PN={
+  // per-snap base rate for each family, for a league-average room. Fitted to the measured
+  // per-team-game split: 2.30 offensive pre-snap, 1.60 offensive live-ball, 0.64 defensive
+  // pre-snap, 1.45 defensive live-ball.
+  base:{offPre:0.02403, offLive:0.01989, defPre:0.00688, defLive:0.02014},
+  compK:30.2,             // composure → propensity: exp(-(comp-50)/compK). Sets the team-to-team spread.
+  propMin:0.28, propMax:3.4,
+  gamma:2.4,              // culprit concentration — pick weight ∝ propensity^gamma. Fitted to the
+                          // measured "worst offender commits 44.7% of his team's false starts".
+  ydsScale:1.216,         // per-type yardage below is ESPN statYardage, which runs ~18% under the
+                          // box-score total (it under-measures spot fouls and kick-game flags)
+  road:1.057,             // the measured road premium (+5.7%). There is deliberately NO late-game
+                          // frustration term — real flags track snap volume, and Q2 is the peak.
+  calm:0.55,              // the coach's "calm them down" lever (Phase 25)
+  driveCap:5,             // flags per drive: a foul replays the down, so this guarantees an
+                          // UNTIMED (overtime) drive still terminates.
+  // The catalog. share = % of all real flags, so the mix falls out of the measured table rather
+  // than being asserted. a1 = automatic first down. pool = who gets blamed.
+  //     key    label                             side  phase   yds  a1  pool      share
+  fouls:[
+    ['fs',  'False start',                       'off','pre',   4.9, 0, 'ol',     26.3],
+    ['dg',  'Delay of game',                     'off','pre',   4.8, 0, 'qb',      6.3],
+    ['ifm', 'Illegal formation',                 'off','pre',   3.4, 0, 'oskill',  3.6],
+    ['isb', 'Illegal substitution',              'off','pre',   4.4, 0, 'oskill',  0.8],
+    ['hold','Holding',                           'off','live',  7.6, 0, 'ol',     15.9],
+    ['idf', 'Ineligible man downfield',          'off','live',  2.2, 0, 'ol',      2.4],
+    ['opi', 'Offensive pass interference',       'off','live', 10.4, 0, 'oskill',  1.7],
+    ['opf', 'Personal foul',                     'off','live', 12.9, 0, 'oskill',  2.1],
+    ['ous', 'Unsportsmanlike conduct',           'off','live', 12.5, 0, 'oskill',  1.6],
+    ['blk', 'Illegal block in the back',         'off','live', 10.2, 0, 'oskill',  0.8],
+    ['ig',  'Intentional grounding',             'off','live',  2.5, 0, 'qb',      0.8],
+    ['ofm', 'Face mask',                         'off','live', 12.8, 0, 'ol',      0.4],
+    ['ofs', 'Offside',                           'def','pre',   4.4, 0, 'dl',      9.1],
+    ['dsb', 'Illegal substitution',              'def','pre',   4.4, 0, 'cov',     1.2],
+    ['dpi', 'Pass interference',                 'def','live', 11.7, 1, 'cov',    11.8],
+    ['rps', 'Roughing the passer',               'def','live', 13.9, 1, 'dl',      2.2],
+    ['dpf', 'Personal foul',                     'def','live', 12.9, 1, 'tkl',     4.0],
+    ['dfm', 'Face mask',                         'def','live', 12.8, 1, 'tkl',     2.1],
+    ['dus', 'Unsportsmanlike conduct',           'def','live', 12.5, 1, 'tkl',     1.7],
+    ['dh',  'Defensive holding',                 'def','live',  8.0, 1, 'cov',     0.8],
+    ['tgt', 'Targeting',                         'def','live', 13.8, 1, 'tkl',     0.6],
+    ['hc',  'Horse collar tackle',               'def','live', 13.0, 1, 'tkl',     0.1],
+  ],
+  // which group's composure sets each family's RATE (the dominant type in that family)
+  famPool:{offPre:'ol', offLive:'ol', defPre:'dl', defLive:'cov'},
+};
+// group the catalog by family once, so a draw is a single weighted walk
+PN.fam={};
+PN.fouls.forEach(f=>{const k=f[2]+(f[3]==='pre'?'Pre':'Live');const g=PN.fam[k]=PN.fam[k]||{list:[],tot:0};g.list.push(f);g.tot+=f[7];});
+// A player's foul propensity. 1.0 at league-average composure; a 0-composure head case is ~3.4x
+// as likely to get flagged as a 100-composure veteran is (0.28). Pure -> simlab-testable.
+function foulProp(p){ return clamp(Math.exp(-(compVal(p)-50)/PN.compK),PN.propMin,PN.propMax); }
+// A group's collective discipline: the depth-weighted mean propensity of a gamePools pool. 1.0 for
+// an average room, <1 for a composed one. This is what makes the rate a ROSTER property.
+function poolProp(pool){ let t=0,w=0; for(const e of (pool||[])){ t+=foulProp(e[0])*e[1]; w+=e[1]; } return w?t/w:1; }
+// Map a catalog pool key onto the game pools (Phase 23 built most of these already).
+function foulPool(P,key){
+  return key==='ol'?(P.ol||[]) : key==='qb'?(P.qb?[[P.qb,1]]:[]) : key==='oskill'?(P.recv||[])
+       : key==='dl'?(P.rush4||[]) : key==='cov'?(P.cover||[]) : (P.tkl||[]);
+}
+// PN-END
 // Phase 48 — the 4th-down brain. Modern CFB goes for it ~1.94 times a game and converts ~52%; the
 // old rule (only inside the opponent's 42 on 4th-and-2) went for it 0.20 times and left 96% of the
 // real "turnover on downs" drives unmodelled. Pure: no rng, no globals → unit-tested in simlab.
@@ -1852,7 +1943,12 @@ function simEngine(home,away,seed,opts){
   const adjusts=(opts&&opts.adjusts)||null, adjustFor=opts&&opts.adjustFor;
   const planAt=pno=>{ if(!adjusts||!adjusts.length)return null; let pl=null; for(const a of adjusts){ if(a.at<=pno)pl=a.plan; else break; } return pl; };
   let playNo=0;
-  const add=(id,k,v)=>{ if(!id)return; (box[id]=box[id]||{gp:1})[k]=(box[id][k]||0)+(v==null?1:v); };
+  // Phase 49: `jr` journals the stat lines a single play wrote, so a play WIPED OUT by a penalty can
+  // be un-recorded — a 22-yard run brought back by holding must not survive in the box score. Null
+  // outside a play, so nothing else pays for it.
+  let jr=null;
+  const add=(id,k,v)=>{ if(!id)return; const d=(v==null?1:v); (box[id]=box[id]||{gp:1})[k]=(box[id][k]||0)+d; if(jr)jr.push([id,k,d]); };
+  const undoPlay=()=>{ if(!jr)return; for(const e of jr){ const b=box[e[0]]; if(!b)continue; b[e[1]]-=e[2]; if(!b[e[1]]&&e[1]!=='gp')delete b[e[1]]; } jr.length=0; };
   const pools={[home.id]:gamePools(home,benched),[away.id]:gamePools(away,benched)};
   const score={[home.id]:0,[away.id]:0};
   // Phase 22 balance: a defense keys on a one-dimensional offense. Track each team's run/pass mix
@@ -1865,15 +1961,8 @@ function simEngine(home,away,seed,opts){
                                           // scheming vs the controlled offense no longer desyncs the main play stream (less variance).
   const KEY_THRESH=0.60, RUN_KEY=7.5, PASS_KEY=6.5;
   const keyedPen=(offId,type)=>{const c=usage[offId],tot=c.run+c.pass;return Math.max(0,((c[type]+4)/(tot+8))-KEY_THRESH);};
-  // Phase 25 discipline/penalties: a per-snap pre-snap foul chance from team COMPOSURE (Phase 10) +
-  // situation (road noise, late-game frustration) − a coach "calm them down" lever (plan.calm). Mostly
-  // symmetric (both teams foul) so the scoring envelope holds; per-game tallies surface via penInto.
-  const teamComp=t=>{const s=t.roster.filter(p=>(p.so||0)<=1);return s.length?s.reduce((a,p)=>a+compVal(p),0)/s.length:50;};
-  const disc={[home.id]:teamComp(home),[away.id]:teamComp(away)};
   const pen=(opts&&opts.penInto)||{};
   if(!pen[home.id])pen[home.id]={n:0,yds:0}; if(!pen[away.id])pen[away.id]={n:0,yds:0};
-  const PEN_BASE=0.042;
-  const penRate=(t,calm,q)=>{ let p=PEN_BASE*(1+(50-disc[t.id])/120); if(t!==home)p*=1.10; if(q>=4)p*=1.15; if(calm)p*=0.5; return clamp(p,0.01,0.10); };
   const HFA=PM.hfa;                                           // home-field, in rating points
   // per-game "form": each team runs a little hot or cold tonight (std ≈ 4 pts), which lets
   // underdogs steal games and keeps the favorite from winning ~every time.
@@ -1891,6 +1980,30 @@ function simEngine(home,away,seed,opts){
   const fatg=p=>p?fatigueCost(touches[p.id]||0,L._q):0;
   const hurt=(p,team)=>{ if(!p||injured.has(p.id))return; injured.add(p.id); const out=injDur(r);   // out = future weeks missed (Phase 27)
     injOut.push({id:p.id,team:team.id,pos:p.pos,name:nm(p),out}); L(team,'play','🩹 '+nm(p)+' ('+p.pos+') injured'+(out?' — out ~'+out+(out===1?' wk':' wks'):' — day-to-day'),' ',true); };
+
+  // ---- Phase 49 penalties (see the PN block). A team's rate for each family is its own players'
+  // collective composure, so discipline is something you BUILD, not a league constant with noise.
+  const fmul={};
+  for(const t of [home,away]){ const P=pools[t.id], m={};
+    for(const fam in PN.famPool) m[fam]=poolProp(foulPool(P,PN.famPool[fam]));
+    fmul[t.id]=m; }
+  const calmOn=(t,plan)=>!!(plan&&plan.calm&&t.id===adjustFor);
+  const penRate=(t,fam,plan)=>clamp(PN.base[fam]*fmul[t.id][fam]*(t===home?1:PN.road)*(calmOn(t,plan)?PN.calm:1),0,0.16);
+  // Draw a foul: pick the type by its measured share, then the culprit out of the pool that commits
+  // it — weighted by propensity^gamma, which is what makes one low-composure tackle *the* problem.
+  const drawFoul=(team,fam)=>{
+    const g=PN.fam[fam]; let x=r()*g.tot, F=g.list[g.list.length-1];
+    for(const e of g.list){ x-=e[7]; if(x<0){ F=e; break; } }
+    const pool=foulPool(pools[team.id],F[6]).map(e=>[e[0],e[1]*Math.pow(foulProp(e[0]),PN.gamma)]);
+    return {F,who:wpick(pool,r,injured),yds:Math.max(1,Math.round(F[4]*PN.ydsScale))};
+  };
+  // Charge it: the tally the UI reads, the culprit's season line, and the play-by-play entry.
+  const chargeFoul=(team,f,yds,dd,note)=>{
+    pen[team.id].n++; pen[team.id].yds+=yds;
+    (pen[team.id].t=pen[team.id].t||{})[f.F[0]]=((pen[team.id].t||{})[f.F[0]]||0)+1;   // per-type tally
+    add(f.who&&f.who.id,'pen'); add(f.who&&f.who.id,'penYds',yds);
+    L(team,'play','🚩 '+f.F[1]+', '+(team.abbr||'')+(f.who?' — '+nm(f.who)+' ('+f.who.pos+')':'')+' — '+yds+' yards'+(note||''),dd);
+  };
 
   // One possession, start at `startLos` (offense's own yard line). Returns the spot the
   // opponent takes over (mutates `score` + `box`); ~drive time charged to the caller's clock.
@@ -1921,11 +2034,15 @@ function simEngine(home,away,seed,opts){
       const qb=(oP.qbList&&(oP.qbList.find(q=>!injured.has(q.id))||oP.qbList[0]))||oP.qb;   // healthy QB (backup if hurt)
       const dd=(down)+' & '+(togo>=(100-los)?'goal':togo), togo0=togo;
       const fgDist=(100-los)+17, inFgRange=fgDist<=57;    // Phase 46: field-goal distance/range (usable on any down)
-      // ---- pre-snap penalty (Phase 25) — capped per drive (each charges a little clock → terminates) ----
-      if(pens<6){
-        const offP=penRate(off,!!(plan&&plan.calm&&off.id===adjustFor),L._q), defP=penRate(def,!!(plan&&plan.calm&&def.id===adjustFor),L._q), rp=r();
-        if(rp<offP){ pen[off.id].n++; pen[off.id].yds+=5; los=clamp(los-5,1,99); togo+=5; pens++; time+=4; L(off,'play','🚩 False start, '+(off.abbr||'OFF')+' — 5 yards',dd); continue; }
-        if(rp<offP+defP){ const fd=togo-5<=0; pen[def.id].n++; pen[def.id].yds+=5; los=clamp(los+5,1,99); togo-=5; if(togo<=0){down=1;togo=10;} pens++; time+=4; L(off,'play','🚩 Offside, '+(def.abbr||'DEF')+' — 5 yards'+(fd?' — 1ST DOWN':''),dd); continue; }
+      // ---- pre-snap (dead-ball) penalty — Phase 49. ~49% of real flags never involve a snap.
+      // Capped per drive: a foul replays the down, so the cap is what terminates an untimed OT drive.
+      if(pens<PN.driveCap){
+        const offP=penRate(off,'offPre',plan), defP=penRate(def,'defPre',plan), rp=r();
+        if(rp<offP){ const f=drawFoul(off,'offPre'), y=Math.min(f.yds,Math.max(1,Math.floor(los/2)));
+          chargeFoul(off,f,y,dd); los=clamp(los-y,1,99); togo+=y; pens++; time+=4; continue; }
+        if(rp<offP+defP){ const f=drawFoul(def,'defPre'), y=Math.min(f.yds,Math.max(1,Math.floor((100-los)/2)));
+          const fd=togo-y<=0; chargeFoul(def,f,y,dd,fd?' — 1ST DOWN':''); los=clamp(los+y,1,99); togo-=y;
+          if(togo<=0){down=1;togo=Math.min(10,100-los);} pens++; time+=4; continue; }
       }
       // ---- 4th down: kick or go ----
       if(down===4){
@@ -1984,6 +2101,7 @@ function simEngine(home,away,seed,opts){
       else if(variant==='deep'){ vComp-=0.14;vSack+=0.03;vBoom+=1; }
       else if(variant==='draw'){ vYds+=(dcall==='blitz'?6:-2); }
       let gain=0, turnover=false, scored=false, tackled=true, txt='';
+      jr=[];        // Phase 49: start journalling this play's stat lines — a flag can wipe them
 
       if(wantPass){                                          // dropback (sacks aren't pass attempts)
         const rec=wpick(oP.recv,r,injured);                  // intended target (pre-snap read; skip the injured)
@@ -2018,6 +2136,35 @@ function simEngine(home,away,seed,opts){
         if(r()<INJ_RATE)hurt(rb,off); if(r()<INJ_RATE*0.7)hurt(fr,def);     // injuries on contact (Phase 26)
       }
 
+      // ---- live-ball penalty (Phase 49) — the flag that comes out after the snap, 51% of real ones.
+      // An accepted OFFENSIVE foul wipes the play outright: undoPlay() un-writes the stat lines it
+      // just recorded (a 22-yard run — or a touchdown — brought back by holding must not survive in
+      // the box score), the ball goes back from the previous spot and the down is replayed. A
+      // DEFENSIVE foul is taken only when it actually beats what happened, which is the real
+      // accept/decline decision; declined flags are never charged, matching the box-score convention.
+      const rl=r();                                 // drawn every snap so the stream stays play-stable
+      if(pens<PN.driveCap){
+        const oLv=penRate(off,'offLive',plan), dLv=penRate(def,'defLive',plan);
+        if(rl<oLv&&!turnover){
+          const f=drawFoul(off,'offLive'); undoPlay(); jr=null;
+          const y=Math.min(f.yds,Math.max(1,Math.floor(los/2)));
+          chargeFoul(off,f,y,dd,scored?' — TOUCHDOWN COMES BACK':' — no play');
+          los=clamp(los-y,1,99); togo+=y; pens++; time+=5; continue;
+        }
+        if(rl>=oLv&&rl<oLv+dLv){
+          const f=drawFoul(def,'defLive'), a1=!!f.F[5];
+          const y=Math.min(f.yds,Math.max(1,Math.floor((100-los)/2)));
+          if(turnover||(a1&&togo-gain>0)||y>gain){   // worth taking: it erases a turnover, hands over a
+            undoPlay(); jr=null;                     // first down the defense had stopped, or beats the gain
+            chargeFoul(def,f,y,dd,a1?' — 1ST DOWN':'');
+            los=clamp(los+y,1,99);
+            if(a1){down=1;togo=Math.min(10,100-los);}
+            else{ togo-=y; if(togo<=0){down=1;togo=Math.min(10,100-los);} }
+            pens++; time+=5; continue;
+          }
+        }
+      }
+      jr=null;
       // ---- resolve the play ----
       if(scored){
         score[off.id]+=6;
@@ -3659,7 +3806,7 @@ function gameSeed(g){return (hashStr(g.id)^(S.seed>>>0))>>>0;}
 // than the one in the record book. Every game resolved from here on is stamped with the model that
 // produced it; replay is refused (not silently wrong) for anything older. Stored results, stats and
 // standings are untouched — only the play-by-play re-sim is unavailable.
-const SIM_MODEL=3;   // 3 = Phase 48.1 (measured per-distance gain tables + play-call mix)
+const SIM_MODEL=4;   // 4 = Phase 49 (roster-driven penalty model); 3 = Phase 48.1 (measured gain tables + play-call mix)
 function gameReplayable(g){ return !!g && (!g.played || g.eng===SIM_MODEL); }
 // Phase 22: if the coach play-called this game, `g.calls` is the ordered list of his controlled-offense
 // decisions. Replaying it (the OC default fills any gap) reproduces the EXACT play-called result on
@@ -7354,6 +7501,9 @@ function statLines(p){
   if(s.rec)  L.push(['Receiving', `${s.rec} rec · ${s.reYds||0} yds · ${s.reTD||0} TD`]);
   if(s.tkl||s.sk||s.dInt){const d=[];if(s.tkl)d.push(s.tkl+' tkl');if(s.sk)d.push(s.sk+' sk');if(s.dInt)d.push(s.dInt+' INT');L.push(['Defense',d.join(' · ')]);}
   if(s.fga||s.xpa){const d=[];if(s.fga)d.push(`${s.fgm||0}/${s.fga} FG`);if(s.xpa)d.push(`${s.xpm||0}/${s.xpa} XP`);L.push(['Kicking',d.join(' · ')]);}
+  // Phase 49: his flags. Shown for anyone who's been called for one — it's the stat that makes a
+  // low-composure starter a visible, benchable problem instead of an invisible team-wide tax.
+  if(s.pen) L.push(['Penalties',`${s.pen} for ${s.penYds||0} yds${(s.gp&&s.pen/s.gp>=1.2)?' ⚠':''}`]);
   return L.length?{gp:s.gp||0,lines:L}:null;
 }
 // "Stats (this year)" block for the player sheet: preseason → placeholder; in-season → the
@@ -7365,6 +7515,12 @@ function statBlock(p){
   const rows=sl.lines.map(([k,v])=>`<div class="kv"><span class="k">${k}</span><span>${v}</span></div>`).join('');
   return `<div class="kv"><span class="k">Stats (this year)</span><span class="dim">${sl.gp} game${sl.gp===1?'':'s'}</span></div>${rows}`;
 }
+// Phase 49: a repeat-offender tag on the roster row. Only for a real habit (3+ flags AND ~one a
+// game), so it marks the guy who is actually costing you drives rather than anyone unlucky once.
+function penFlag(p){
+  const s=p.gs; if(!s||!s.pen||s.pen<3||!(s.pen/(s.gp||1)>=0.9))return '';
+  return ` <span class="tag" style="font-size:9px;background:#6b2020;color:#fff">🚩 ${s.pen} PEN</span>`;
+}
 function playerRow(p,isStarter,t){
   const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=p.id;
   const nk=nickname(p);   // Phase 45: derived nickname (earned/flavor), '' until established
@@ -7373,7 +7529,7 @@ function playerRow(p,isStarter,t){
     <div style="flex:1">
       <div class="nm"><span class="dim" style="font-weight:600">#${jerseyNo(p)}</span> ${p.fn} ${p.ln}${nk?` <span class="accent" style="font-weight:700">“${nk}”</span>`:''} ${fav?`<span class="tag accent" style="font-size:9px">★ ${fav}</span>`:''} ${p.cap?'<span class="cap">© CAPTAIN</span>':''}${p.inj>0?` <span class="tag" style="font-size:10px;background:#7a1f1f;color:#fff">🩹 OUT ${p.inj}wk</span>`:''}${p.rs==='on'?` <span class="tag" style="font-size:10px;background:#8a1c1c;color:#fff">🔴 REDSHIRT</span>`:''}</div>
       <div class="meta">${p.yr} · ${p.age}y · ${p.st} · ${'★'.repeat(p.stars)}${'☆'.repeat(5-p.stars)}</div>
-      <div class="meta" style="margin-top:3px">${ceilingChip(p)} <span class="dim">${devStage(p)}</span>${growthChip(p)}</div>
+      <div class="meta" style="margin-top:3px">${ceilingChip(p)} <span class="dim">${devStage(p)}</span>${growthChip(p)}${penFlag(p)}</div>
       <div class="meta" style="margin-top:3px">${traitChips(p)}${moraleChip(p)}${schemeChip(p,t)}</div>
     </div>
     <div style="text-align:right">

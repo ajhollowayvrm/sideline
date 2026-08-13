@@ -16,7 +16,9 @@ const html = fs.readFileSync(path.join(__dirname, '..', '..', 'index.html'), 'ut
 const grab = (a, b) => { const i = html.indexOf(a), j = html.indexOf(b); return html.slice(i, j); };
 eval(grab('// === TRAIT ENGINE (Phase 10) START ===', '// === TRAIT ENGINE (Phase 10) END ==='));
 eval(grab('// === SCHEME ENGINE (Phase 21) START ===', '// === SCHEME ENGINE (Phase 21) END ==='));
-eval(grab('// === SIM ENGINE (Phase 3) START ===', '// === SIM ENGINE (Phase 3) END ==='));
+// eval returns its last expression, so this hands back the same PN the engine closes over
+const PN = eval(grab('// === SIM ENGINE (Phase 3) START ===', '// === SIM ENGINE (Phase 3) END ===') + '\n;PN');
+const CAT = {}; PN.fouls.forEach(f => CAT[f[0]] = f);
 
 const POS = [["QB", "off", 4], ["RB", "off", 5], ["WR", "off", 11], ["TE", "off", 5],
 ["OT", "off", 7], ["OG", "off", 6], ["C", "off", 3],
@@ -58,7 +60,8 @@ for (let i = 0; i < world.length; i++) for (let d = 1; d <= 15; d++)
 
 const rows = [];                       // one per team-game
 const byTeam = {}; world.forEach(t => byTeam[t.id] = { n: 0, pen: 0, yds: 0, disc: t.disc });
-let fsN = 0, osN = 0, snaps = 0, plays = 0;
+let fsN = 0, osN = 0, snaps = 0, plays = 0, offN = 0, preN = 0;
+const types = {};
 for (const g of slate) {
   const seed = (hashStr(g.id) ^ 0x5ca1ab1e) >>> 0;
   const pen = {};
@@ -71,6 +74,10 @@ for (const g of slate) {
   for (const l of res.log || []) {
     if (l.kind === 'play' || l.kind === 'score') plays++;
     if (/False start/i.test(l.text)) fsN++; else if (/Offside/i.test(l.text)) osN++;
+  }
+  for (const t of [g.home, g.away]) for (const k in ((pen[t.id] || {}).t || {})) {
+    types[k] = (types[k] || 0) + pen[t.id].t[k];
+    const F = CAT[k]; if (F[2] === 'off') offN += pen[t.id].t[k]; if (F[3] === 'pre') preN += pen[t.id].t[k];
   }
 }
 
@@ -91,8 +98,12 @@ say(`  yards/penalty   ${f(mean(rows, 'yds') / mean(rows, 'pen'))}`);
 const hist = {}; rows.forEach(r => hist[r.pen] = (hist[r.pen] || 0) + 1);
 say('  distribution    ' + Object.keys(hist).map(Number).sort((a, b) => a - b).filter(k => k <= 16)
   .map(k => `${k}:${f(hist[k] / rows.length * 100, 1)}%`).join('  '));
-say(`  only two fouls exist:  false start ${f(fsN / slate.length / 2)}/team-game (real 1.26) · offside ${f(osN / slate.length / 2)}/team-game (real 0.43)`);
-say(`  charged to the offense ${f(fsN / (fsN + osN) * 100, 1)}% · to the defense ${f(osN / (fsN + osN) * 100, 1)}%   (real 61.1% / 32.2%)`);
+{ const tot = Object.values(types).reduce((a, x) => a + x, 0);
+  say(`  charged to the offense ${f(offN / tot * 100, 1)}% · to the defense ${f((tot - offN) / tot * 100, 1)}%   (real 65.1% / 34.9% once ST is folded in)`);
+  say(`  pre-snap ${f(preN / tot * 100, 1)}% · live-ball ${f((tot - preN) / tot * 100, 1)}%   (real 49.1% / 50.9%)`);
+  say('  most common flags:');
+  Object.entries(types).sort((a, b) => b[1] - a[1]).slice(0, 6).forEach(([k, n]) =>
+    say(`    ${CAT[k][1].padEnd(32)} ${f(n / slate.length / 2, 2).padStart(5)}/team-game  ${f(n / tot * 100, 1).padStart(5)}%`)); }
 say(`  per scrimmage snap ${f(mean(rows, 'pen') / (plays / rows.length) * 100, 2)}%  (${f(plays / rows.length, 1)} logged plays/team-game)`);
 const H = rows.filter(r => r.home), A = rows.filter(r => !r.home);
 say(`  home ${f(mean(H, 'pen'))} · road ${f(mean(A, 'pen'))}  → road premium ${f((mean(A, 'pen') / mean(H, 'pen') - 1) * 100, 1)}%`);

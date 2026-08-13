@@ -199,44 +199,41 @@ should keep it that cheap.
 
 ---
 
-## 7. Where `simEngine` sits today (Phase 25 model)
+## 7. Where `simEngine` sits
 
 Measured by `tools/cfb-data/14-simpens.js` over 2,010 synthetic games with real `genTraits()`
-composure on every roster.
+composure on every roster. **Phase 49 fitted the sim to this sheet** — the design record is
+`docs/phases/penalties.md`, the constants are the fenced `PN` block in `index.html`, and
+`15-penfit.js` reproduces the fit.
 
-| | Real | Sim | |
-|---|--:|--:|---|
-| Penalties / team-game | 5.98 | **7.37** | +23% |
-| Penalty yards / team-game | 52.4 | **36.8** | −30% |
-| Yards per penalty | 8.76 | **5.00** | flat 5 for every foul |
-| Team-game sd | 2.81 | 2.71 | ✓ close |
-| Distinct penalty types | 25+ | **2** | false start + offside only |
-| Pre-snap flags / team-game | 2.82 | **7.37** | 2.6× — all fouls are pre-snap |
-| False starts / team-game | 1.57 | **3.68** | 2.3× |
-| Offside / team-game | 0.54 | **3.69** | **6.8×** |
-| Charged to offense / defense | 61% / 32% | **50% / 50%** | symmetric by construction |
-| Road premium | +5.7% | **+10.5%** | ~2× |
-| **True team-level sd** | **0.95** | **0.17** | **5.6× too compressed** |
-| Discipline quintile gap | 3.37 | 1.47 (only 0.43 from composure) | |
-| Flags yielding a first down | 28.8% | only offside when togo ≤ 5 | |
+| | Real | Phase 49 | Phase 25 (before) |
+|---|--:|--:|--:|
+| Penalties / team-game | 5.98 | **6.01** | 7.37 |
+| Penalty yards / team-game | 52.4 | **51.5** | 36.8 |
+| Yards per penalty | 8.76 | **8.56** | 5.00 (flat) |
+| Game-to-game sd | 2.54 | **2.63** | 2.71 |
+| Distinct penalty types | 25+ | **22** | 2 |
+| Pre-snap share | 49.1% | **48.9%** | 100% |
+| False starts / team-game | 1.57 | **1.64** | 3.68 |
+| Offside / team-game | 0.54 | **0.57** | 3.69 |
+| Charged to offense / defense | 65% / 35% † | **65% / 35%** | 50% / 50% |
+| Road premium | +5.7% | +2.6% | +10.5% |
+| **True team-level sd** | **0.95** | **0.94** | 0.17 |
+| Team-season p05 / p95 | 4.08 / 7.92 | **4.47 / 7.87** | 6.43 / 8.27 |
+| Discipline quintile gap | 3.37 | **2.94** | 1.47 |
+| Worst false-start offender | 44.7% | **45.1%** | n/a (no culprit) |
 
-The current model is `PEN_BASE = 0.042` per snap per side, scaled by
-`1 + (50 − teamComposure)/120`, ×1.10 on the road, ×1.15 in Q4, ×0.5 with the "calm them down"
-lever, capped at 6 per drive. Its problems, in order of size:
+† The engine models no special teams, so the ~7% of flags this sheet can't attribute are folded
+proportionally into the scrimmage families — which turns the raw measured 61/32 into 65/35.
 
-1. **Composure barely does anything.** Team mean starter composure spans only 42–59 (it's an average
-   of ~28 bell-shaped draws, so it concentrates hard around 50), and the `/120` divisor turns that
-   into a ±7% rate swing. Result: a true team-level sd of **0.17 against reality's 0.95**. The
-   least-composed teams throw 7.67 flags to the most-composed teams' 7.24 — a **0.43** gap where
-   real football has **3.37**. Whatever else changes, *this* is the tuning failure: composure is
-   already wired in, it just isn't allowed to matter.
-2. **Volume is too high and lands entirely pre-snap** — and offside, at 6.8× reality, is the single
-   worst-calibrated number in the block. Real defenses jump 0.54 times a game.
-3. **Flat 5 yards** undershoots total penalty yardage by 30% while the measured quantile table
-   (`PM.penQ`) sits unused two hundred lines away.
-4. **No player attribution**, though false starts are the most player-concentrated flag in the sport
-   (one man, 44.7% of his team's).
-5. **The Q4 multiplier has no support in the data**; the road premium is roughly double the real one.
+The two remaining misses are small and understood: the road premium sits about 2σ of slate noise
+below its constant, and the automatic-first-down share (26.1% vs 28.8%) is short by roughly the
+special-teams fouls that aren't modelled. Both are second-order and deliberately not over-fitted.
+
+Worth noting for future work: `PM.penQ` — a measured penalty-yardage quantile table produced by
+`12-quantiles.js` — is still dead data. Phase 49 uses per-type measured averages instead, which
+carry more information (a false start and a roughing call are different events, not two draws from
+one pooled distribution).
 
 ---
 
@@ -246,8 +243,9 @@ lever, capped at 6 per drive. Its problems, in order of size:
 node tools/cfb-data/13-penalties.js            # real penalty averages (harvests pbp, resumable)
 node tools/cfb-data/13-penalties.js --no-fetch # re-report from pen-cache.json, no network
 node tools/cfb-data/14-simpens.js              # what simEngine currently throws
+node tools/cfb-data/15-penfit.js [--apply]     # fit the PN block to the targets above
 ```
 
-Writes `pen-profile.json`, `penalty-report.txt`, `simpen-report.txt`. The play-by-play cache
+Writes `pen-profile.json`, `penalty-report.txt`, `simpen-report.txt`, `penfit-result.txt`. The play-by-play cache
 (`pen-cache.json`) is ~3,900 games and rebuilds in about 80 seconds. Like the rest of
 `tools/cfb-data/`, these are research tools, not gates — they are not wired into `npm test`.

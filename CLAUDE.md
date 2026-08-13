@@ -12,15 +12,16 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > - `docs/phases/identity-media.md` — traits, morale, media, rivalries, records, contract, legends, identity (Phases 10, 11, 19, 20, 40, 41, 42, 45)
 > - `docs/phases/cloud.md` — cloud saves: AWS backend, career codes, sync/conflict model (Phase 47)
 > - `docs/phases/possession.md` — the possession model: clock, halves, 4th down, gain shape (Phase 48)
+> - `docs/phases/penalties.md` — penalties: the roster-driven foul model, catalog, culprits (Phase 49)
 >
 > **Measured reality:** `docs/reference/cfb-averages.md` holds real FBS averages computed from 3,944
 > games (2021–2025) — national, by rank matchup, and by mismatch size — plus where `simEngine` sits
 > against them. It is the tuning target for any sim work; `tools/cfb-data/` reproduces it.
 > `docs/reference/cfb-penalties.md` does the same for **penalties** off the same 3,944 games — rate,
 > yardage, type mix, when they're thrown, how much team discipline really varies (and how little it
-> decides games), plus the measured gap to the Phase 25 penalty model.
+> decides games), plus where the Phase 49 penalty model lands against it.
 >
-> **All roadmap phases 1–48 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–49 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -72,7 +73,7 @@ still serves it with zero config.
 - **Phase 22 — Interactive play-calling.** `opts.decide` hook (seed + decision-log = deterministic); SVG field, call the game snap-by-snap; predictability tax + scheme tendency. Save v26.
 - **Phase 23 — Per-matchup resolution.** Plays key off the specific WR-vs-CB / RB-vs-front matchup as a mean-zero deviation (`matchEdge`); coverage box stats. No save bump.
 - **Phase 24 — In-game adjustments.** Reassign coverage + settle a player, on a deterministic `g.adjusts` timeline (forward-only, replays on commit). Save v27.
-- **Phase 25 — Penalties & discipline.** Per-snap pre-snap fouls from team composure + situation; "calm them down" lever (rides in `g.adjusts`). No save bump.
+- **Phase 25 — Penalties & discipline.** Per-snap pre-snap fouls from team composure + situation; "calm them down" lever (rides in `g.adjusts`). No save bump. *(Superseded by Phase 49 — the rate model and catalog were rewritten; the calm lever survives.)*
 - **Phase 26 — Injuries & fatigue (in-game).** Per-snap injury knockout (backup forced in) + heavy-usage fade; in-game only, no roster mutation. No save bump.
 - **Phase 27 — Week-to-week injuries.** Injuries persist (`p.inj` weeks out), lower effective rating, heal weekly; each game freezes availability (`g.out`) for faithful replay. Save v28.
 - **Phase 28 — Defensive play-calling.** Call Base/Blitz/Cover/Run-stop on defense (RPS vs run/pass); AI defense is always 'base' (envelope-safe). No save bump.
@@ -97,6 +98,23 @@ still serves it with zero config.
 - **Phase 47 — Cloud saves.** Opt-in cross-device continuation: a career mirrors to your own AWS stack (Lambda Function URL → DynamoDB slot index + private S3 blob), identified by a 60-bit **career code** (no accounts). `localStorage` stays the fast path; pushes are debounced behind `writeSlot`, and a genuine two-device divergence shows both saves and asks. Save v43 (structural no-op). `cloudlab`. *(→ `docs/phases/cloud.md`, `infra/README.md`.)*
 
 - **Phase 48 — Possession model.** The first sim change fitted to **measured** reality (`docs/reference/cfb-averages.md`, 3,944 real FBS games) rather than feel. Two 30-minute halves with drives that die at the horn; a real 4th-down brain (`fourthCall` — field position, distance, score, clock); three-tier gain draw (`tierGain` — stuff/normal/explosive, replacing near-uniform gains that converted far too much short yardage); red-zone compression; a per-drive rhythm term that makes drive outcomes bimodal; recalibrated ball security + the strip sack; tunable per-snap clock. Constants live in one fenced `PM` block fitted by `tools/cfb-data/10-fit.js`. **This is the first phase to deliberately change AI-game output** — games carry `g.eng` and pre-v44 games refuse replay rather than re-sim to a score that contradicts the record book. Save v44. **48.1** then replaced the hand-built gain shape with per-distance quantile tables and a play-call mix measured from 258k real rushes / 145k completions (`tools/cfb-data/11-plays.js`), fixing three things the hand model had backwards. *(→ `docs/phases/possession.md`.)*
+
+- **Phase 49 — Penalties, roster-driven.** The Phase 25 penalty model measured badly against real
+  football (`docs/reference/cfb-penalties.md`, the same 3,944 games) in every dimension, but the one
+  that mattered was **spread**: composure was wired in yet produced a true team-level sd of 0.17
+  against reality's 0.95, so discipline was a flat tax nothing you did could change. Rewritten on one
+  rule — **the league mean is a constant, the spread is the roster**. A team's rate for a family of
+  fouls is the depth-weighted mean foul propensity of the group that actually commits it (your line's
+  composure drives your offensive flags, your secondary's your defensive ones), and the culprit is
+  drawn from that same pool weighted `propensity^2.4`, fitted to the measured fact that one man
+  commits 44.7% of his team's false starts. Propensity keys off **composure alone** — never OVR or
+  awareness — because measured discipline is flat across team quality. A 22-foul catalog with
+  measured shares and yardages; pre-snap fouls replay the down, live-ball fouls resolve after the
+  snap (an offensive one wipes the play, TD included, via a per-play stat journal; a defensive one is
+  accepted only when it beats what happened). The invented Q4-frustration multiplier is gone. Fitted
+  by `tools/cfb-data/15-penfit.js`; lands at 6.01 flags for 51.5 yards with a true team sd of 0.94.
+  Imported rosters now get temperaments (`normPlayer`). Save v45, `SIM_MODEL` 4 — pre-v4 games
+  decline replay. *(→ `docs/phases/penalties.md`.)*
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
@@ -173,9 +191,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   stored inside `state`. The pure decision (`cloudResolve`) is fenced as the CLOUD ENGINE and
   gated by `cloudlab`; the backend is `infra/` (SAM). See `docs/phases/cloud.md`.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **44**). Each step backfills the fields its phase added and re-derives
+  (currently **45**). Each step backfills the fields its phase added and re-derives
   ratings/ranks where needed; most recent steps are structural no-ops (sparse per-player
-  fields / derived data read as their defaults). The full v1→v43 migration ladder is
+  fields / derived data read as their defaults). The full v1→v44 migration ladder is
   documented inline in `migrateState` in `index.html`, and each phase's design doc in
   `docs/phases/` records its save-shape change. **Bump `version` + extend `migrateState`
   on any save-shape change.**
@@ -421,8 +439,9 @@ object as `p.gs`, accumulated for **every** team, so league stat leaders are rea
 objects aren't stored.
 
 **Validated envelope** (`test/simlab.js`, extracts the engine between the markers): points/team,
-score spread, home-win and favorite-win rates, no ties, plus the Phase 48 possession checks (two
-halves, drives dying at the horn, 4th-down decisions, gain-tier shape). The envelope asserts
+score spread, home-win and favorite-win rates, no ties, the Phase 48 possession checks (two halves,
+drives dying at the horn, 4th-down decisions, gain-tier shape), and the Phase 49 penalty checks
+(rate, yardage, side/pre-snap splits, culprit attribution, and that rating does NOT buy discipline). The envelope asserts
 *ranges*; the numbers it should be centred on are the measured ones in
 `docs/reference/cfb-averages.md` — **check a sim change against that file, not just against the
 gate**, since totals-and-leaders assertions passed for nine phases while run/pass balance and drive

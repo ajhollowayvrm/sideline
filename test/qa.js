@@ -274,16 +274,23 @@ function startServer() {
   check('Phase 22: calling your own plays changes the outcome vs the OC autopilot', pc.skip || pc.diffFromAI, JSON.stringify(pc));
   check('Phase 22: the determinism check did not commit the real game', pc.skip || pc.played === false);
   check('Phase 28: defensive play-calls are part of the deterministic coached game', pc.skip || pc.hasDef);
-  // Phase 29: the AI defensive coordinator makes your (predictable) offense work harder than vs a base D
+  // Phase 29: the AI defensive coordinator makes your (predictable) offense work harder than vs a base D.
+  // Sampled across seed variants, not just the 6 real matchups: simlab's own Phase 29 check documents
+  // that this comparison needs n≈200 to have a stable SIGN under the possession model (it measured +2.7
+  // pts at n=30 and −1.4 at n=600). Six games of points is matchup noise — the same trap the Phase 30
+  // check below already sidesteps. simlab owns the envelope; this asserts it's wired through simSides.
   const aidc = await page.evaluate(() => {
     const me = S.teamId, mine = S.schedule.games.filter(x => x.home === me || x.away === me).slice(0, 6);
     const allPass = ctx => ctx.phase === 'fourth' ? ctx.ocAct : ctx.phase === 'def' ? 'base' : 'pass';
-    let dc = 0, bs = 0;
-    mine.forEach(g => { const { home, away } = simSides(g), seed = gameSeed(g), my = g.home === me ? 'hs' : 'as';
-      dc += simEngine(home, away, seed, { decideFor: me, aiDefVs: me, decide: allPass })[my];
-      bs += simEngine(home, away, seed, { decideFor: me, decide: allPass })[my]; });
-    return { dc, bs, harder: dc < bs };
+    let dc = 0, bs = 0, n = 0, engaged = false;
+    mine.forEach(g => { const { home, away } = simSides(g), my = g.home === me ? 'hs' : 'as';
+      for (let k = 0; k < 12; k++) { const seed = (gameSeed(g) ^ (k * 0x9e3779b1)) >>> 0;
+        const a = simEngine(home, away, seed, { decideFor: me, aiDefVs: me, decide: allPass })[my];
+        const b = simEngine(home, away, seed, { decideFor: me, decide: allPass })[my];
+        dc += a; bs += b; n++; if (a !== b) engaged = true; } });
+    return { dc: +(dc / n).toFixed(2), bs: +(bs / n).toFixed(2), n, engaged, harder: dc < bs };
   });
+  check('Phase 29: the AI defensive coordinator is engaged through simSides', aidc.engaged, JSON.stringify(aidc));
   check('Phase 29: an AI defensive coordinator makes your predictable offense work harder', aidc.harder, JSON.stringify(aidc));
   // Phase 30: a predictable DEFENSE (all run-stop) gets read by the adaptive AI OC, which throws more.
   // Measured as opponent PASSING YARDS (the proven mechanic — cf. simlab 314 vs 249) rather than points,
@@ -881,7 +888,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 44 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 45 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -898,7 +905,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v44)', mig.v === 44, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v45)', mig.v === 45, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -1370,7 +1377,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 44', roPost.version === 44, 'v' + roPost.version);
+  check('Rollover: save version bumped to 45', roPost.version === 45, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);
