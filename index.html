@@ -442,6 +442,114 @@ function schemeDelta(offTeam,defTeam){
 }
 // === SCHEME ENGINE (Phase 21) END ===
 
+// === ATTRIBUTE ENGINE (Phase 51) START ===
+// Attributes are the ability model; OVERALL is a derived READOUT of them, weighted by the system the
+// player is in. Before this phase `ov` WAS the model and spd/str/awr were `ov ± noise` that nothing
+// read — six separate generation sites each related them to `ov` differently, so deep backups came
+// out fake-athletic by up to 26 points, blue-chip freshmen arrived with attributes far above their
+// overall, and an imported roster without the fields got no spread at all. One derivation replaces
+// all six.
+//
+// The rule, inherited from Phases 10/21/23/50: attributes REDISTRIBUTE ability, they never add it.
+// A profile is its owner's ability plus a tilt whose WEIGHTED mean is zero, so `ovrBase` returns
+// exactly the ability he was generated with — being fast costs strength or awareness. Every sim
+// channel then reads a DEVIATION from its pool's weighted mean (the Phase 23 trick), so the measured
+// scoring envelope is preserved by construction rather than by fitting.
+//
+// Depends only on clamp (no DOM, no S, no POS) so the labs can eval it standalone.
+const ATTRS=['spd','agi','str','awr','bal','dur'];
+const ATTR_LABEL={spd:'Speed',agi:'Agility',str:'Strength',awr:'Awareness',bal:'Ball Skills',dur:'Durability'};
+const ATTR_DEF=60;
+function attrVal(p,k){const v=p&&p[k];return v!=null?v:((p&&p.ov)!=null?p.ov:ATTR_DEF);}
+// What each position IS, as a weighting over the six. Every row sums to 1. Read them as "what makes
+// a good one": an interior lineman is mostly raw power (the directive — his most important stat), a
+// corner is speed/agility/awareness, a quarterback is overwhelmingly football IQ. Kickers and
+// punters need no special attributes — leg power is STR, placement and accuracy are AWR.
+const POS_ATTR_W={
+  QB:{spd:.10,agi:.12,str:.12,awr:.40,bal:.20,dur:.06},
+  RB:{spd:.24,agi:.22,str:.20,awr:.12,bal:.16,dur:.06},
+  WR:{spd:.26,agi:.24,str:.10,awr:.14,bal:.20,dur:.06},
+  TE:{spd:.12,agi:.14,str:.26,awr:.18,bal:.24,dur:.06},
+  OT:{spd:.05,agi:.18,str:.40,awr:.31,bal:.00,dur:.06},
+  OG:{spd:.03,agi:.12,str:.52,awr:.27,bal:.00,dur:.06},
+  C :{spd:.03,agi:.12,str:.45,awr:.34,bal:.00,dur:.06},
+  DE:{spd:.18,agi:.18,str:.34,awr:.20,bal:.04,dur:.06},
+  DT:{spd:.06,agi:.10,str:.55,awr:.21,bal:.02,dur:.06},
+  LB:{spd:.16,agi:.16,str:.22,awr:.30,bal:.10,dur:.06},
+  CB:{spd:.26,agi:.24,str:.06,awr:.24,bal:.14,dur:.06},
+  S :{spd:.20,agi:.18,str:.12,awr:.32,bal:.12,dur:.06},
+  K :{spd:.02,agi:.02,str:.34,awr:.56,bal:.00,dur:.06},
+  P :{spd:.02,agi:.02,str:.38,awr:.52,bal:.00,dur:.06},
+};
+// How a SYSTEM re-weights the job. Deviations from the position row above, each summing to EXACTLY
+// zero so no scheme is a free upgrade; an unlisted (scheme,position) pair is neutral. This is what
+// makes installing a scheme re-rate the roster that runs it — a zone corner really does need
+// awareness more than speed, and his OVERALL now says so.
+const SCHEME_ATTR_W={
+  'Air Raid':{QB:{awr:.04,bal:.04,spd:-.04,str:-.04},WR:{agi:.06,bal:.04,spd:-.06,str:-.04},
+              OT:{awr:.06,str:-.06},OG:{awr:.06,str:-.06},C:{awr:.06,str:-.06}},
+  'Spread':{QB:{spd:.04,agi:.02,str:-.06},WR:{agi:.04,spd:-.04}},
+  'Spread-Option':{QB:{spd:.10,agi:.06,awr:-.10,bal:-.06},RB:{spd:.06,str:-.06},
+              OT:{agi:.08,str:-.08},OG:{agi:.08,str:-.08},C:{agi:.08,str:-.08}},
+  'Pro Style':{},
+  'Smashmouth':{RB:{str:.10,spd:-.06,agi:-.04},TE:{str:.10,bal:-.06,spd:-.04},
+              OT:{str:.10,agi:-.06,awr:-.04},OG:{str:.10,agi:-.06,awr:-.04},C:{str:.10,agi:-.06,awr:-.04}},
+  'West Coast':{QB:{awr:.06,bal:.02,str:-.08},WR:{agi:.08,bal:.04,spd:-.12}},
+  'Multiple':{},
+  '4-3':{},
+  '3-4':{DT:{str:.08,agi:-.08},LB:{awr:.06,str:.02,spd:-.08}},
+  'Nickel/Cover-3':{CB:{awr:.10,bal:.06,spd:-.08,agi:-.08},S:{awr:.06,bal:.04,str:-.10}},
+  'Bear':{CB:{agi:.10,spd:.06,awr:-.10,bal:-.06},DE:{spd:.06,str:.02,awr:-.08},DT:{str:.08,awr:-.08}},
+  'Tampa-2':{CB:{awr:.10,bal:.04,spd:-.06,agi:-.08},LB:{spd:.08,agi:.04,str:-.12},S:{awr:.08,spd:-.08}},
+};
+function posAttrW(pos){return POS_ATTR_W[pos]||POS_ATTR_W.LB;}
+// The effective weighting for a position inside a scheme: base + the scheme's deviation, floored at
+// 0 and renormalized so the row still sums to 1 and OVR stays on the same 40–99 scale as the
+// attributes themselves.
+function schemeAttrW(pos,scheme){
+  const base=posAttrW(pos), dev=(SCHEME_ATTR_W[scheme]||{})[pos];
+  if(!dev)return base;
+  const w={}; let s=0;
+  for(const k of ATTRS){w[k]=Math.max(0,base[k]+(dev[k]||0));s+=w[k];}
+  if(!s)return base;
+  for(const k of ATTRS)w[k]/=s;
+  return w;
+}
+function ovrWith(p,w){let t=0;for(const k of ATTRS)t+=w[k]*attrVal(p,k);return clamp(Math.round(t),40,99);}
+// The player in the abstract, scheme-agnostic. The cross-team currency: stars, NFL draft grade,
+// recruit rankings, the record book, peakOv. Must NOT move when somebody installs a new defence.
+function ovrBase(p){return ovrWith(p,posAttrW(p&&p.pos));}
+// The player in THIS system — what the roster screen shows, what teamRatings consumes, what the sim
+// sees. Stored on p.ov and re-derived whenever the roster, staff or SCHEME changes.
+function ovrIn(p,scheme){return ovrWith(p,scheme?schemeAttrW(p&&p.pos,scheme):posAttrW(p&&p.pos));}
+// The ONE generator. Produces a six-attribute profile whose weighted mean is exactly `ov0`, so a
+// player is as good as he was asked to be and the spread only decides WHAT KIND of good. The tilt is
+// triangular, so most players sit close to their own average and true specialists stay rare.
+function genAttrs(r,ov0,pos,spread){
+  const w=posAttrW(pos), sp=spread==null?15:spread, t={};
+  let m=0;
+  for(const k of ATTRS){t[k]=(r()+r()-1)*sp;m+=w[k]*t[k];}          // weighted mean of the tilt…
+  const out={};
+  for(const k of ATTRS)out[k]=clamp(Math.round(ov0+t[k]-m),40,99);  // …subtracted → mean-zero tilt
+  return out;
+}
+// A plain copy of a player's six attributes. Other engine blocks read a profile through this rather
+// than iterating ATTRS themselves — ATTRS is a `const`, so it does not survive the sloppy-mode eval
+// the node labs use to extract a block, and a cross-block reference to it would only fail there.
+function attrProfile(p){const o={};for(const k of ATTRS)o[k]=attrVal(p,k);return o;}
+// Move a whole profile by `d` (the depth taper, development, a recruit's pedigree discount). Keeps
+// the shape, moves the level — so a tapered backup is genuinely worse rather than merely different.
+function shiftAttrs(p,d){for(const k of ATTRS)p[k]=clamp(Math.round(attrVal(p,k)+d),40,99);return p;}
+// Re-centre an EXISTING profile onto a target OVR without losing its shape. Used by the v47
+// migration (every legacy player keeps the ov he already had) and by roster import (a file handing
+// us all-90s attributes on a 75-overall player must not get the difference for free).
+function centerAttrs(p,target,pos){
+  const w=posAttrW(pos||(p&&p.pos)); let m=0;
+  for(const k of ATTRS)m+=w[k]*attrVal(p,k);
+  return shiftAttrs(p,target-m);
+}
+// === ATTRIBUTE ENGINE (Phase 51) END ===
+
 /* ---------- world generation ---------- */
 function genPlayer(r,prestige,posCode){
   const cls=pick(r,CLASSES);
@@ -452,11 +560,13 @@ function genPlayer(r,prestige,posCode){
   const pot=clamp(ov+ri(r,-3,16),ov,99);
   const stars=ov>=90?5:ov>=82?4:ov>=72?3:ov>=62?2:1;
   const tr=genTraits(r);
-  return {id:'p'+Math.floor(r()*1e9).toString(36),
+  // Phase 51: attributes are the ability model, so they are generated FROM the ability level and
+  // `ov` is read back off them. genAttrs' tilt is weighted-mean-zero, so ovrBase == ov by
+  // construction; the team's scheme then re-derives p.ov in reRateRoster once it is known.
+  return Object.assign({id:'p'+Math.floor(r()*1e9).toString(36),
     fn:pick(r,FN),ln:pick(r,LN),pos:posCode,yr:cls,age:ageBase+ri(r,0,1),
     st:pick(r,STATES),stars,ov,pot,cap:false,
-    spd:clamp(ov+ri(r,-12,12),40,99),str:clamp(ov+ri(r,-12,12),40,99),awr:clamp(ov+ri(r,-14,10),40,99),
-    mot:tr.mot,comp:tr.comp,ego:tr.ego};
+    mot:tr.mot,comp:tr.comp,ego:tr.ego},genAttrs(r,ov,posCode));
 }
 function genRoster(r,prestige){
   const out=[];
@@ -470,7 +580,11 @@ function genRoster(r,prestige){
       // Starters (so 0-1) are untouched, so team ratings (top-11/side) are unaffected.
       if(i>=2){
         const pen=Math.min(2+(i-2)*2.6,26);
-        p.ov=clamp(Math.round(p.ov-pen),44,99);
+        // Phase 51: taper the ATTRIBUTES, then read `ov` back off them. Tapering `ov` alone was the
+        // bug that left deep backups carrying a speed rating up to 26 points above their overall —
+        // harmless while nothing read the attributes, a walk-on full of burners once something did.
+        shiftAttrs(p,-pen);
+        p.ov=clamp(ovrBase(p),44,99);
         p.pot=clamp(Math.round(p.pot-pen*0.4),p.ov,99);
         p.stars=p.ov>=90?5:p.ov>=82?4:p.ov>=72?3:p.ov>=62?2:1;
       }
@@ -495,6 +609,17 @@ function teamRatings(roster,staff){
   const avgTop=(arr,k)=>{const s=[...arr].sort((a,b)=>eff(b)-eff(a)).slice(0,k);return s.length?Math.round(s.reduce((t,p)=>t+eff(p),0)/s.length):60;};
   const off=avgTop(grp('off'),11), def=avgTop(grp('def'),11);
   return {off,def,ovr:Math.round((off+def)/2)};
+}
+// Phase 51: re-derive every player's OVERALL for the system his team runs, then the team rating off
+// it. `ov` is now a READOUT of the attributes weighted by the scheme, not a stored fact about a
+// player — it moves when the scheme does. Call after generation, after any roster/staff edit, and
+// (the reason this exists) whenever a scheme is installed, so the roster visibly re-rates. Special
+// teams have no scheme, so K/P fall through to the scheme-agnostic base.
+function reRateRoster(t){
+  if(!t||!t.roster)return t;
+  t.roster.forEach(p=>{const s=sideOfPos(p.pos);p.ov=ovrIn(p,s==='off'?t.offScheme:s==='def'?t.defScheme:null);});
+  t.ratings=teamRatings(t.roster,t.staff);
+  return t;
 }
 // boost = small, derived from rating. Coordinators 0..2 (side-wide); position coaches 0..3.
 function coachBoost(tier,rating){return tier==='coord'?clamp(Math.round((rating-55)/20),0,2):clamp(Math.round((rating-50)/15),0,3);}
@@ -550,6 +675,9 @@ function genWorld(seed){
       prestige,roster,ratings,fac,revenue,budget,staff,payroll,legends:[],
       facilityDebt:Math.round(ri(r,0,prestige>70?40:12)*1e6)};
   });
+  // Phase 51: OVERALL is scheme-weighted, and the scheme is only assigned inside the map above — so
+  // every roster is re-rated for the system it actually runs before anything ranks on it.
+  teams.forEach(reRateRoster);
   // rankings
   const sorted=[...teams].sort((a,b)=>b.ratings.ovr-a.ratings.ovr);
   sorted.forEach((t,i)=>t.natRank=i+1);
@@ -569,7 +697,7 @@ function genWorld(seed){
    saves (no `_sv` tag) decode as themselves. Cuts a fresh save ~40%. */
 const SLOTS=[1,2,3];
 const slotKey=n=>'sideline_slot_'+n;
-const SAVE_PKEYS=['id','fn','ln','pos','yr','age','st','stars','ov','pot','cap','spd','str','awr','so','mot','comp','ego'];
+const SAVE_PKEYS=['id','fn','ln','pos','yr','age','st','stars','ov','pot','cap','spd','str','awr','so','mot','comp','ego','agi','bal','dur'];
 function encRoster(roster){
   return roster.map(p=>{
     const core=SAVE_PKEYS.map(k=>p[k]);
@@ -583,7 +711,7 @@ function decRoster(enc){
 // Phase 17: the recruit pool is now the full national class (~3,400), so it serializes columnar too —
 // scalar fields become a flat tuple, the sparse extras (prefs[], iv{}, promise, alumni) ride in a side
 // object (the transient _flipped tag is dropped). Mirrors encRoster/decRoster exactly.
-const RECRUIT_PKEYS=['id','fn','ln','pos','st','stars','ov','pot','spd','str','awr','mot','comp','rebel','scout','committedTo','signed','offered','visited','ego'];
+const RECRUIT_PKEYS=['id','fn','ln','pos','st','stars','ov','pot','spd','str','awr','mot','comp','rebel','scout','committedTo','signed','offered','visited','ego','agi','bal','dur'];
 function encPool(pool){
   return pool.map(p=>{
     const core=RECRUIT_PKEYS.map(k=>p[k]);
@@ -1366,11 +1494,19 @@ function normPlayer(p){
   // penalty model's propensity is exponential, so a trait-less roster would foul ~20% less than a
   // generated one. Imported teams also just deserve real personalities.
   const tr=genTraits(rng(hashStr((p.first||'')+'|'+(p.last||'')+'|'+(p.pos||''))));
-  return {id:'p'+Math.random().toString(36).slice(2,9),fn:p.first||'New',ln:p.last||'Player',
+  const out={id:'p'+Math.random().toString(36).slice(2,9),fn:p.first||'New',ln:p.last||'Player',
     pos:p.pos||'WR',yr:p.year||'FR',age:+p.age||18,st:p.homeState||'TX',
     stars:+p.stars||(ov>=88?4:ov>=78?3:2),ov,pot:clamp(+p.potential||ov,ov,99),
-    cap:!!p.captain,spd:+p.spd||ov,str:+p.str||ov,awr:+p.awr||ov,so:0,
-    mot:tr.mot,comp:tr.comp,ego:tr.ego};
+    cap:!!p.captain,so:0,mot:tr.mot,comp:tr.comp,ego:tr.ego};
+  // Phase 51: attributes. Honour whatever the file supplies — including the three new optional ones
+  // — but RE-CENTRE the profile so its weighted mean is the `overall` the file asked for: a roster
+  // handing us all-90s attributes on a 75-overall player must not collect the difference for free.
+  // A file with no attribute fields gets a generated profile (deterministic from identity) instead
+  // of the old flat spd=str=awr=ov, which left every imported league with no spread at all to read.
+  const pos=out.pos;
+  if(ATTRS.some(k=>p[k]!=null)){ATTRS.forEach(k=>out[k]=clamp(+p[k]||ov,40,99));centerAttrs(out,ov,pos);}
+  else Object.assign(out,genAttrs(rng(hashStr('attr|'+(p.first||'')+'|'+(p.last||'')+'|'+pos)),ov,pos));
+  return out;
 }
 // Bring an older save up to the current schema. v1 staff lacked coordinator/position
 // tiers and group boosts; backfill them, re-derive ratings (now coach-aware), re-rank.
@@ -2402,11 +2538,14 @@ function genRecruits(seed,teams){
     // ~12% of prospects are "rebels" — they want to make their own name, not join a position factory
     // (Phase 13). Keyed on a per-recruit rng (NOT the pool stream), so the board stays byte-identical.
     const rebel=rng((hashStr(rid+'reb'))>>>0)()<0.12;
-    pool.push({id:rid,
+    pool.push(Object.assign({id:rid,
       fn:pick(r,FN),ln:pick(r,LN),pos,st,stars,ov,pot,
-      spd:clamp(ov+ri(r,-10,12),40,99),str:clamp(ov+ri(r,-10,12),40,99),awr:clamp(ov+ri(r,-12,10),40,99),
       mot:tr.mot,comp:tr.comp,ego:tr.ego,rebel,
-      scout:0,prefs:[p1,p2],iv,committedTo:null,signed:false,offered:false,visited:false,promise:null});
+      scout:0,prefs:[p1,p2],iv,committedTo:null,signed:false,offered:false,visited:false,promise:null},
+      // Phase 51: a prospect is scouted on his profile and carries it to campus. Drawn from a
+      // per-recruit rng keyed on the id (NOT the pool stream) for the same reason the traits above
+      // are — the board stays byte-identical, and the profile is just along for the ride.
+      genAttrs(rng(hashStr(rid+'attr')),ov,pos)));
   }
   return pool;
 }
@@ -2891,9 +3030,14 @@ function developPlayer(p,r,rate){
   // random nudge scales with rate too, so a 0-rate (frozen) side genuinely doesn't grow.
   const delta=clamp(Math.round(gap*portion+r()*1.4*clamp(rt,0,2.5)),0,gap);
   if(!delta)return 0;
-  p.ov=clamp(p.ov+delta,40,99);
-  const ab=Math.round(delta*0.6);
-  p.spd=clamp(p.spd+ab,40,99);p.str=clamp(p.str+ab,40,99);p.awr=clamp(p.awr+ab,40,99);
+  // Phase 51: growth lands on the ATTRIBUTES and `ov` is read back off them, so development can no
+  // longer drift the two apart — the old `+0.6*delta` attribute bump left every long-career player
+  // rated above what his attributes actually said. reRateRoster re-applies his team's scheme after.
+  shiftAttrs(p,delta);
+  // The six attributes round independently, so the weighted mean can land ~0.5 either side of the
+  // growth we actually granted and tip a maxed player one point past his ceiling. `pot` is a TRUE
+  // ceiling, so cap the readout rather than let rounding leak through it.
+  p.ov=clamp(ovrBase(p),40,Math.min(99,p.pot||99));
   p.stars=p.ov>=90?5:p.ov>=82?4:p.ov>=72?3:p.ov>=62?2:1;
   return delta;
 }
@@ -2903,10 +3047,9 @@ function genFreshman(r,prestige,posCode){
   const ov=clamp(Math.round(prestige*0.40+ri(r,-8,7)+20),44,80);
   const pot=clamp(ov+ri(r,5,20),ov,95);
   const tr=genTraits(r);
-  return {id:'p'+Math.floor(r()*1e9).toString(36),fn:pick(r,FN),ln:pick(r,LN),pos:posCode,
+  return Object.assign({id:'p'+Math.floor(r()*1e9).toString(36),fn:pick(r,FN),ln:pick(r,LN),pos:posCode,
     yr:'FR',age:18+ri(r,0,1),st:pick(r,STATES),stars:ov>=82?4:ov>=72?3:ov>=62?2:1,
-    ov,pot,cap:false,spd:clamp(ov+ri(r,-12,12),40,99),str:clamp(ov+ri(r,-12,12),40,99),
-    awr:clamp(ov+ri(r,-14,10),40,99),so:0,mot:tr.mot,comp:tr.comp,ego:tr.ego};
+    ov,pot,cap:false,so:0,mot:tr.mot,comp:tr.comp,ego:tr.ego},genAttrs(r,ov,posCode));
 }
 // Convert a signed recruit into a true-freshman Player. Blue-chips enter "raw" (ov discounted by
 // pedigree) with the recruit's pot as their ceiling, so development carries them up over a career —
@@ -2917,10 +3060,13 @@ function recruitToFreshman(rec,r){
   const pot=clamp(Math.max(rec.pot||rec.ov,rec.ov),ov,99);
   // Carry the temperament you scouted on the trail (else generate) so the fogged read pays off.
   const tr=(rec.mot!=null&&rec.comp!=null)?{mot:rec.mot,comp:rec.comp,ego:rec.ego}:genTraits(r);
-  return {id:'p'+Math.floor(r()*1e9).toString(36),fn:rec.fn,ln:rec.ln,pos:rec.pos,
-    yr:'FR',age:18,st:rec.st,stars:rec.stars,ov,pot,cap:false,
-    spd:clamp(rec.spd||ov,40,99),str:clamp(rec.str||ov,40,99),awr:clamp(rec.awr||ov,40,99),
-    so:0,promise:rec.promise||null,fromRecruit:true,mot:tr.mot,comp:tr.comp,ego:tr.ego};
+  // Phase 51: the pedigree discount lands on the ATTRIBUTES — carry the profile you scouted on the
+  // trail, re-centred onto his (raw) freshman overall. Previously the discount hit `ov` alone, so a
+  // blue-chip arrived rated 6–16 points below attributes that still insisted he was already elite.
+  const at=centerAttrs(attrProfile(rec),ov,rec.pos);
+  return Object.assign({id:'p'+Math.floor(r()*1e9).toString(36),fn:rec.fn,ln:rec.ln,pos:rec.pos,
+    yr:'FR',age:18,st:rec.st,stars:rec.stars,ov,pot,cap:false},at,{
+    so:0,promise:rec.promise||null,fromRecruit:true,mot:tr.mot,comp:tr.comp,ego:tr.ego});
 }
 // Roll one team's roster into the next season. `signees` = the prospects that committed to this
 // team. Returns the rebuilt roster + a summary (graduated/developed/freshmen). Mutates nothing it

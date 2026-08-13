@@ -38,6 +38,8 @@ function block(start, end, label) {
   return html.slice(i0, i1);
 }
 eval(block('// === TRAIT ENGINE (Phase 10) START ===', '// === TRAIT ENGINE (Phase 10) END ===', 'TRAIT ENGINE'));
+// Phase 51: development now grows the six-attribute profile and reads `ov` back off it.
+eval(block('// === ATTRIBUTE ENGINE (Phase 51) START ===', '// === ATTRIBUTE ENGINE (Phase 51) END ===', 'ATTRIBUTE ENGINE'));
 // developPlayer (+ DEV_YOUTH/NEXT_CLASS) — the real growth model the motor multiplier feeds.
 eval(block('// === ROLLOVER ENGINE (Phase 5) START ===', '// === ROLLOVER ENGINE (Phase 5) END ===', 'ROLLOVER ENGINE'));
 

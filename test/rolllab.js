@@ -44,6 +44,11 @@ if (i0 < 0 || i1 < 0) { console.error('Could not find ROLLOVER ENGINE markers in
 const T0 = html.indexOf('// === TRAIT ENGINE (Phase 10) START ==='), T1 = html.indexOf('// === TRAIT ENGINE (Phase 10) END ===');
 if (T0 < 0 || T1 < 0) { console.error('Could not find TRAIT ENGINE markers in index.html'); process.exit(2); }
 eval(html.slice(T0, T1));   // leaks genTraits/motorMult/comp* into scope
+// Phase 51: development, freshman generation and recruit enrollment all move the six-attribute
+// profile now (`ov` is read back off it), so the ATTRIBUTE ENGINE must be in scope first.
+const A0 = html.indexOf('// === ATTRIBUTE ENGINE (Phase 51) START ==='), A1 = html.indexOf('// === ATTRIBUTE ENGINE (Phase 51) END ===');
+if (A0 < 0 || A1 < 0) { console.error('Could not find ATTRIBUTE ENGINE markers in index.html'); process.exit(2); }
+eval(html.slice(A0, A1));   // leaks genAttrs/shiftAttrs/centerAttrs/ovrBase/ovrIn
 eval(html.slice(i0, i1));   // leaks NEXT_CLASS/developPlayer/genFreshman/recruitToFreshman/rolloverRoster
 
 /* ---------- faithful-enough roster + ratings (mirror index.html genPlayer/genRoster/teamRatings) ---------- */

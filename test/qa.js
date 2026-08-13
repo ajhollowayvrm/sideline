@@ -897,12 +897,18 @@ function startServer() {
     const team = w.teams[0];
     const state = { version: 1, seed: 424242, createdAt: 7, coach: { first: 'Old', last: 'Timer', homeState: 'TX', archetype: 'Manager', history: 'Lifer' }, teamId: team.id, week: 0, phase: 'Preseason', world: w, task: { type: 'x', label: 'x', note: 'x' } };
     const meta = { coach: 'Old Timer', team: team.name, teamAbbr: team.abbr, color: team.color, week: 0, phase: 'Preseason', savedAt: 7 };
+    // This fixture is deliberately RAW (not columnar) because a genuine v1 save was — that is the
+    // path being tested. A raw 134-team world is ~5MB on its own, so it cannot coexist with the
+    // mid-season save in slot 1 inside the ~5MB origin quota; free the other slots first. Nothing
+    // after this block needs them (the next section reloads with ?reset=1).
+    localStorage.removeItem('sideline_slot_1');
+    localStorage.removeItem('sideline_slot_3');
     localStorage.setItem('sideline_slot_2', JSON.stringify({ meta, state }));
   });
   await page.goto(BASE, { waitUntil: 'networkidle' }); // clean reload (no ?reset)
   await page.getByRole('button', { name: 'Load Game' }).click();
   await page.waitForTimeout(150);
-  await page.getByRole('button', { name: 'Load', exact: true }).nth(1).click();
+  await page.getByRole('button', { name: 'Load', exact: true }).first().click();   // slot 2 is now the only save
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
   check('Migration: v1 save upgrades to current version (v46)', mig.v === 46, 'version=' + mig.v);
