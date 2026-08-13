@@ -1,4 +1,4 @@
-# Possession model — the clock, the drive, and the shape of a gain (Phase 48)
+# Possession model — the clock, the drive, and the shape of a gain (Phase 48 / 48.1)
 
 Design record for the first sim change made against **measured** reality rather than a feel for it.
 The targets live in `docs/reference/cfb-averages.md` (3,944 real FBS games, 2021–2025);
@@ -33,6 +33,11 @@ points were missing **possessions**, not missing efficiency.
 ---
 
 ## What changed
+
+> **Superseded in 48.1:** the three-tier gain draw, the `shortTight` situational term and
+> `PM.rzTop` described below were replaced by per-distance quantile tables measured from real
+> play-by-play. They are kept here because the reasoning that produced them is what led to the
+> measurement — and because one of them turned out to be backwards. See §48.1.
 
 Every constant is grouped in a single `PM` block (fenced by `// PM-START` / `// PM-END` so the
 fitter can swap it) rather than scattered through the play code.
@@ -92,8 +97,11 @@ signal-to-noise: home win 51% → **57%** (real 58.8%) and favourite win rate 73
 (real 83.7%). It also lifted scoring, because stronger offences convert more.
 
 ### Tried and removed: a per-drive rhythm term
-Real failed drives gain ~8 yards; the model's gain ~21 — its drives are all mediocre rather than
-bimodal, which is why too few reach the red zone. A mean-zero per-drive yardage shift is the
+**The premise here was wrong** — it rested on a red-zone figure that 48.1 later measured properly.
+Real non-scoring drives gain **15.7** yards, not the ~8 derived from the bad figure, and the model's
+~16 was fine all along. Recorded because the mechanism was built, fitted and discarded on evidence.
+The original (mistaken) reasoning: failed drives travel too far, so drives are all mediocre rather
+than bimodal, which is why too few reach the red zone. A mean-zero per-drive yardage shift is the
 textbook fix for that (it correlates the snaps inside a possession). It was implemented, fitted,
 and **measured as not helping**: at every setting tried it flattened yards-per-carry and cost
 points, and paying for it by narrowing the explosive tiers was worse still (err 7.3% → 11.9%). It
@@ -177,6 +185,78 @@ Composite error against the 25 measured targets: **41.3% → 8.5%**.
 | Blowout upsets/season | 5.8 | 17.3 | 9.0 |
 
 ---
+
+## 48.1 — measuring the play instead of approximating it
+
+The first pass fitted hand-built shapes against aggregate targets, and several of those targets came
+from published red-zone figures that turned out to be **internally inconsistent** (3.4 trips a game
+at 61% touchdowns implies 2.07 TD drives against a measured 3.10). So 48.1 went and measured the
+play level directly — ESPN's per-play feed carries down, distance and `yardsToEndzone`, which is
+orientation-free field position. `tools/cfb-data/11-plays.js` builds the distributions from
+**258k rushes and 145k completions across 3,866 games**; `12-quantiles.js` turns them into constants.
+
+### What the measurement corrected
+
+- **Red zone: 4.68 trips per team-game at 67.5% TD**, not 3.4 at 61%. Both numbers being tuned
+  against were wrong.
+- **Non-scoring drives gain 15.7 yards**, not the ~8 derived from those bad figures. The earlier
+  claim that the model's failed drives travelled too far was simply false — 16 against a real 15.7.
+- **Short-yardage runs gain LESS, not more.** A carry on 3rd-and-1 averages 3.40 yards against 5.09
+  overall and is stuffed *more* often (23.7% vs 17.6%) — yet still gains the yard 76.3% of the time.
+  It is stuff-or-get-just-enough, a stacked box, not an easier version of a normal carry. The
+  `shortTight` term from the first pass had this exactly backwards.
+
+### What replaced the hand-built model
+
+- **Per-distance quantile tables** (`PM.runQ` / `PM.recQ` — empirical inverse CDFs over a tail-dense
+  percentile grid). A single table plus a mean offset provably cannot work here: shifting the whole
+  distribution down 1.31 yards to hit short yardage's *mean* destroys the very case it needs to
+  preserve, and 3rd-and-1 conversion came out at 60.8% against a real 76.6%. Sampling the measured
+  per-distance shape gets mean, median, stuff rate and conversion right by construction.
+- **Measured play-call mix** (`PM.mix` — pass share by down and distance). Real offences throw 17%
+  on 3rd-and-1 and 79% on 3rd-and-8; the hand-tuned formula threw 34% at both ends. Scheme tendency
+  and team strength now apply as deviations from what real football actually calls.
+- **Goal-to-go distance.** The engine set `togo = 10` on every first down, so 1st-and-goal from the 3
+  was internally "1st and 10" — which made the measured down/distance tables inapplicable at exactly
+  the spot they matter most. Now `togo = min(10, 100 - los)`.
+- **Symmetric home field.** `HFA` was added to the home offence only, lifting the league-average
+  `adv` by HFA/2 and with it every measured gain table. Split to ±HFA/2 — the home-vs-away
+  differential is unchanged, but the league mean stays where the measurement put it.
+
+### Two more data-quality traps
+
+Both caught by sanity-checking results that were impossible rather than merely surprising:
+
+1. **Possession flips corrupt play yardage.** On a failed 4th down or a turnover, ESPN reports `end`
+   from the *new* offence's perspective, so end-minus-start yields garbage (observed: −90, +36).
+   Those bogus positives were counted as conversions, putting 4th-down conversion at **80% against a
+   real ~52%**. Fixed by requiring possession to be retained and falling back to parsing the play
+   text; 4th down now weights out to 54.3%.
+2. **A display string is not data.** The engine logs "3 & goal", so the lab bucketed every goal-to-go
+   snap as 3rd-and-1 and short-yardage conversion looked far worse than it was. The log now carries
+   the numeric distance alongside the display string.
+
+### Where 48.1 landed
+
+| | real | Phase 48 | 48.1 |
+|---|--:|--:|--:|
+| Composite error | 0% | 8.5% | **5.5%** |
+| Plays | 67.5 | 68.2 | 67.7 |
+| Pass attempts | 31.2 | 32.9 | 31.3 |
+| Rush attempts | 34.2 | 33.2 | 34.3 |
+| Sacks | 2.06 | 2.07 | 2.06 |
+| 4th-down attempts | 1.94 | 1.99 | 1.90 |
+| 3rd-down conversion | 39.2% | 39.2% | 38.3% |
+| **3rd-and-1 conversion** | **76.6%** | 54.3% | **70.3%** |
+| Drives at the horn | 6.5% | 6.7% | 6.5% |
+| Blowout upsets/season | 5.8 | 9.0 | **7.1** |
+
+`simlab` → **101** checks. The Phase 48 shape checks were rewritten to assert the measured
+*properties* rather than the constants, so they survive a re-harvest: short yardage gains less than
+long yardage but still converts three times in four, is stuffed more often, pass share rises with
+distance on every down. Two single-seed checks were re-based onto real samples — the Phase 24 shadow
+check was measuring chaos at n=1 (the shadow changes a completion threshold, which cascades into a
+different game); over 300 seeds the effect is a clean 72.0 → 53.5 receiving yards.
 
 ## Known gaps — what this phase did NOT fix
 

@@ -41,8 +41,6 @@ if (C0 < 0 || C1 < 0) { console.error('Could not find SCHEME ENGINE markers in i
 eval(html.slice(C0, C1));
 const engineSrc = html.slice(i0, i1);
 // eval into this scope so simEngine + helpers (gamePersonnel, etc.) become available
-//  leaks out of a sloppy-mode eval where  does not, so re-export PM — the Phase 48
-// shape checks read the SHIPPED tier constants instead of keeping a copy that could drift.
 // `var` leaks out of a sloppy-mode eval where `const` does not, so re-export PM — the Phase 48
 // shape checks read the SHIPPED tier constants instead of keeping a copy that could drift.
 eval(engineSrc + '\nvar PM_TIERS = PM;');
@@ -248,8 +246,17 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Phase 24: an empty adjustment timeline == the un-adjusted game', none.hs === base.hs && none.as === base.as && JSON.stringify(none.box) === JSON.stringify(base.box));
   // shadow the safety onto WR1 (slot 'WR0') from the opening snap → his production should drop
   const shadow = [{ at: 0, plan: { shadow: { 'WR0': sft.id }, boost: {} } }];
-  const shad = simEngine(O, D, seed, { adjustFor: D.id, adjusts: shadow });
-  check('Phase 24: shadowing a stud WR with a better defender cuts his production', wrY(shad) < wrY(base), `${wrY(shad)} vs ${wrY(base)} rec yds`);
+  // Averaged over 200 seeds, not one: the shadow changes the completion threshold, so a single game
+  // cascades into a completely different one and n=1 measures chaos rather than the effect. Over
+  // 300 seeds the real effect is a clean 72.0 -> 53.5 rec yds.
+  let shadY = 0, baseY = 0;
+  for (let i = 0; i < 200; i++) {
+    const sd = (hashStr('shad' + i) ^ 7) >>> 0;
+    baseY += wrY(simEngine(O, D, sd));
+    shadY += wrY(simEngine(O, D, sd, { adjustFor: D.id, adjusts: shadow }));
+  }
+  check('Phase 24: shadowing a stud WR with a better defender cuts his production', shadY < baseY,
+    `${(shadY / 200).toFixed(1)} vs ${(baseY / 200).toFixed(1)} rec yds/g`);
   // pep-talk / settle the beaten corner (+18 effective) → he covers better, WR1 dips
   const pep = [{ at: 0, plan: { shadow: {}, boost: { [cb1.id]: 18 } } }];
   const pr = simEngine(O, D, seed, { adjustFor: D.id, adjusts: pep });
@@ -501,16 +508,44 @@ check('Sack leader realistic (7–22 / 12g)', sk[0].v >= 7 && sk[0].v <= 22, `${
   check('Phase 48: no 60-yard field goals — beyond PM.fgMax it punts or goes',
     fourthCall(9, 55, 62, true, 0, 900, 2) !== 'fg');
 
-  // --- the tiered gain draw (pure) ---
-  const T = PM_TIERS.runTier;
-  const mono = (() => { let prev = -1e9; for (let u = 0; u < 1; u += 0.01) { const g = tierGain(u, T, false, 0); if (g < prev - 1e-9) return false; prev = g; } return true; })();
-  check('Phase 48: tierGain is monotonic in the draw', mono);
-  const meanRun = (() => { let s = 0, n = 0; for (let u = 0.0005; u < 1; u += 0.001) { s += tierGain(u, T, false, 0); n++; } return s / n; })();
-  check('Phase 48: the run tier averages a football yards-per-carry (4.2–5.6)', meanRun >= 4.2 && meanRun <= 5.6, meanRun.toFixed(2));
-  const stuffed = (() => { let c = 0, n = 0; for (let u = 0.0005; u < 1; u += 0.001) { if (Math.round(tierGain(u, T, false, 0)) <= 0) c++; n++; } return c / n; })();
-  check('Phase 48: ~a fifth of carries gain nothing (15–30%)', stuffed >= 0.15 && stuffed <= 0.30, (stuffed * 100).toFixed(1) + '%');
-  check('Phase 48: the red zone clips the explosive tier', tierGain(0.99, T, true, 0) < tierGain(0.99, T, false, 0));
-  check('Phase 48: red-zone compression does not touch ordinary gains', tierGain(0.5, T, true, 0) === tierGain(0.5, T, false, 0));
+  // --- the measured gain draw (pure) ---
+  // These assert the PROPERTIES the measurement found, not the constants themselves — if someone
+  // re-harvests and the tables move, these should still hold; if they don't, the model is wrong.
+  const BKS = ['1', '2-3', '4-6', '7-10', '11+'];
+  const sample = (Q, f) => { let s = 0, n = 0; for (let u = 0.0005; u < 1; u += 0.001) { s += f(qGain(u, Q, 0)); n++; } return s / n; };
+  const meanOf = Q => sample(Q, x => x), shareLE0 = Q => sample(Q, x => Math.round(x) <= 0 ? 1 : 0);
+  const convAt = (Q, need) => sample(Q, x => Math.round(x) >= need ? 1 : 0);
+
+  const monoAll = BKS.every(bk => { let prev = -1e9;
+    for (let u = 0; u < 1; u += 0.005) { const g = qGain(u, PM_TIERS.runQ[bk], 0); if (g < prev - 1e-9) return false; prev = g; }
+    return true; });
+  check('Phase 48: qGain is monotonic in the draw for every distance table', monoAll);
+
+  const m1 = meanOf(PM_TIERS.runQ['1']), mLong = meanOf(PM_TIERS.runQ['7-10']);
+  check('Phase 48: run tables average a football yards-per-carry (3–6.5)',
+    BKS.every(bk => { const m = meanOf(PM_TIERS.runQ[bk]); return m >= 3 && m <= 6.5; }),
+    BKS.map(bk => bk + ':' + meanOf(PM_TIERS.runQ[bk]).toFixed(2)).join(' '));
+  // The counterintuitive measured property, and the one a mean-shift model cannot express:
+  // short yardage has a LOWER mean than long yardage but still converts, because it is
+  // stuff-or-get-just-enough rather than a shifted version of a normal carry.
+  check('Phase 48: short yardage gains LESS than long yardage (a stacked box)', m1 < mLong - 1,
+    `dist-1 ${m1.toFixed(2)} vs dist-7-10 ${mLong.toFixed(2)}`);
+  check('Phase 48: …yet still converts 3rd-and-1 about three times in four (70–83%)',
+    convAt(PM_TIERS.runQ['1'], 1) >= 0.70 && convAt(PM_TIERS.runQ['1'], 1) <= 0.83,
+    (convAt(PM_TIERS.runQ['1'], 1) * 100).toFixed(1) + '%  (real 76.3%)');
+  check('Phase 48: short yardage is stuffed MORE often than long (18–30%)',
+    shareLE0(PM_TIERS.runQ['1']) > shareLE0(PM_TIERS.runQ['7-10']) && shareLE0(PM_TIERS.runQ['1']) <= 0.30,
+    (shareLE0(PM_TIERS.runQ['1']) * 100).toFixed(1) + '% vs ' + (shareLE0(PM_TIERS.runQ['7-10']) * 100).toFixed(1) + '%');
+  check('Phase 48: a completion outgains a carry at every distance',
+    BKS.every(bk => meanOf(PM_TIERS.recQ[bk]) > meanOf(PM_TIERS.runQ[bk])));
+
+  // --- the measured play-call mix ---
+  check('Phase 48: offences run on 3rd-and-1 and throw on 3rd-and-long',
+    PM_TIERS.mix['3|1'] < 0.30 && PM_TIERS.mix['3|7-10'] > 0.70,
+    `3rd-and-1 ${(PM_TIERS.mix['3|1'] * 100).toFixed(0)}% pass, 3rd-and-7-10 ${(PM_TIERS.mix['3|7-10'] * 100).toFixed(0)}% pass`);
+  check('Phase 48: pass share rises with distance to go on every down',
+    [1, 2, 3, 4].every(dn => { const v = BKS.map(bk => PM_TIERS.mix[dn + '|' + bk]).filter(x => x != null);
+      return v[0] < v[v.length - 1]; }));
 
   // --- two halves + end-of-half drives ---
   const w = genWorld(4801);

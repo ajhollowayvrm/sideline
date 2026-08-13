@@ -6,3 +6,8 @@ gapdrama.json
 simprofile.json
 simresid.json
 simupsets.json
+play-cache.json
+play-profile.json
+quantiles.json
+fit.log
+plays.log

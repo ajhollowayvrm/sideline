@@ -1751,55 +1751,52 @@ function heavyRunBonus(togo,los){ return (togo<=2||los>=97)?4 : togo<=4?2 : togo
 // tools/cfb-data/9-tune.js. Grouped here so they're sweepable rather than buried in the play code.
 // PM-START
 const PM={
-  // GAIN SHAPE. Yardage is drawn in three tiers — stuff / normal / explosive — as
-  // [p1,lo1,hi1, p2,lo2,hi2, lo3,hi3] over one compDraw. A flat distribution with the same mean
-  // produces the right total yards but far too few touchdowns: real football banks a third of its
-  // yardage in ~12% of snaps, and it's those snaps that turn a punt into a score.
-  runTier:[0.38,-3,2.5, 0.89,2.5,8.25, 8.25,34],    // ~22% of carries gain 0 or less; mean ~4.9
-  recTier:[0.35,-2,6, 0.80,6,14.75, 14.75,51],     // mean ~11.9 per completion
-  passBase:0.350,                    // base pass probability (→ ~52/48 run/pass by attempt)
-  cmpBase:0.6200,                    // completion rate before situation
+  // GAIN SHAPE — sampled from the REAL distribution, not approximated by one.
+  // Q* are empirical inverse-CDF tables (percentile grid GRID -> yards) measured over 258k rushes
+  // and 145k completions from 3,866 FBS games; see tools/cfb-data/11-plays.js + 12-quantiles.js.
+  // The mean, median, stuff rate and explosive rate now come out right BY CONSTRUCTION instead of
+  // being fitted against each other — the old three-tier approximation could only satisfy some of
+  // them at once. Real: rush mean 5.09 / median 3 / 18% gain nothing; completion 11.97 / 9 / 17% go 20+.
+  GRID:[0,1,2,4,6,8,11,14,18,22,26,30,35,40,45,50,55,60,65,70,74,78,82,85,88,91,93,95,96.5,98,99,99.5,99.8],
+  runQ:{'1':[-30,-4,-3,-2,-1,-1,0,0,0,0,1,1,1,1,2,2,2,3,3,3,4,5,5,6,7,9,10,12,15,22,34,46,59], '2-3':[-29,-4,-3,-2,-1,-1,0,0,1,1,1,1,2,2,2,3,3,3,4,5,5,6,7,8,9,11,13,16,19,28,39,51,66], '4-6':[-30,-5,-3,-2,-1,-1,0,0,1,1,1,2,2,3,3,3,4,4,5,6,6,7,8,9,10,12,14,17,21,27,37,50,65], '7-10':[-30,-5,-3,-2,-2,-1,0,0,1,1,1,2,2,3,3,4,4,5,5,6,7,8,9,10,11,13,15,18,22,29,41,54,70], '11+':[-28,-6,-4,-3,-2,-2,-1,-1,0,1,1,2,2,3,3,4,5,5,6,7,8,9,10,11,13,15,16,19,22,28,38,48,63]},
+  recQ:{'1':[-14,-4,-2,-1,0,1,1,1,2,2,3,3,4,5,5,6,7,7,8,10,11,13,15,17,19,23,27,32,36,43,53,62,66], '2-3':[-15,-3,-2,0,1,1,2,2,3,3,4,4,5,6,6,7,8,9,10,11,13,14,16,18,21,25,28,33,38,45,53,65,69], '4-6':[-15,-3,-2,0,1,2,3,3,4,4,5,5,6,7,7,8,9,10,11,13,14,15,18,19,22,26,29,33,38,46,57,68,75], '7-10':[-29,-4,-2,-1,0,1,2,3,4,5,5,6,7,7,8,9,10,11,13,14,16,17,20,22,25,28,32,37,41,49,59,69,75], '11+':[-28,-4,-2,-1,0,1,2,3,4,5,5,6,7,8,9,10,11,12,13,14,16,17,19,21,23,26,29,34,39,46,56,67,78]},
+  sackQ:[-29,-16,-14,-13,-12,-11,-10,-10,-9,-9,-8,-8,-8,-7,-7,-6,-6,-5,-5,-4,-4,-3,-3,-2,-2,-2,-1,-1,-1,-1,0,0,8],
+  penQ:[-25,-15,-15,-14,-10,-10,-10,-10,-9,-5,-5,-5,-5,-5,-5,-5,-5,0,3,5,5,9,11,15,15,15,15,15,15,17,20,22,24],
+  // MEASURED pass share by down|distance — replaces a hand-tuned base plus down/distance nudges
+  // that had the sim throwing 34% on 3rd-and-1 where real offences throw 17%. Scheme tendency and
+  // team strength still apply on top, as deviations from what real football actually calls.
+  mix:{'1|1':0.199,'1|2-3':0.177,'1|4-6':0.278,'1|7-10':0.437,'1|11+':0.509,'2|1':0.292,'2|2-3':0.326,'2|4-6':0.409,'2|7-10':0.531,'2|11+':0.618,'3|1':0.172,'3|2-3':0.405,'3|4-6':0.699,'3|7-10':0.785,'3|11+':0.741,'4|1':0.161,'4|2-3':0.598,'4|4-6':0.842,'4|7-10':0.871,'4|11+':0.862},
+  passBase:0.45,                    // fallback when a situation has no measured sample
+  cmpBase:0.6200,                   // completion rate before situation
   fgMax:50,                         // longest field goal the AI will try on a normal down
   intRate:0.068,                    // pick chance on an incompletion (→ ~0.82 INT/team-game)
   fumRate:0.0125, sackFumP:0.075,   // ball-security: on a carry / stripped on a sack
-  // RED-ZONE COMPRESSION. Inside the 20 there is no field left to attack: no deep shot, defenders
-  // sit on routes, the box is stacked. Without this the model finished 88% of its red-zone trips
-  // (real: ~61%) while reaching the 20 far too rarely — points came out low even with the right
-  // yardage, because the offence was all-or-nothing instead of grinding and settling for threes.
-  rzLos:80, rzComp:-0.060, rzTop:0.32,
+  // Red zone. Measured: 4.68 trips per team-game, 67.5% end in a touchdown, 17.7% in a field goal.
+  // Goal-to-go is now handled by the DD table above (1st-and-goal from the 3 really does average
+  // 1.6 yards); this is the residual 'no room to throw' effect from the 20 in.
+  rzLos:80, rzComp:-0.060,
   gameForm:0,                       // per-game hot/cold. Fitted to 0: play-level variance alone
                                     // already meets the real margin SD, so there is no budget left
                                     // for it. Raising it re-inflates the upset rate (see the design doc).
-  shortTight:0.55,
   // How hard team strength (and everything riding on it — home field, the Phase 23 individual
-  // matchup) presses on a gain. The tier draw is much wider than the old near-uniform one, so the
-  // OLD coefficients (0.06 / 0.035) were a far smaller share of the noise and strength stopped
-  // mattering: home win% fell to 51 and a stud receiver no longer beat weak coverage. Scaled to
-  // restore the signal-to-noise the envelope checks assume.
-  advPass:0.14, advRun:0.085, hfa:3.6,                  // must-convert short down: the stuff tier shrinks to this share
+  // matchup) presses on a gain, in yards per rating point.
+  advPass:0.14, advRun:0.085, hfa:3.6,
   // Game clock charged per snap. Real FBS runs ~135 plays in 3600s ≈ 26.7s a snap once you net out
   // the stopped clock on incompletions, out-of-bounds and changes of possession.
   secRun:32, secPass:30, secQuick:13, secIncomp:6, secSack:32,
 };
-// PM-END
-// One yardage draw, three tiers (see PM.runTier/recTier). `rz` clips the explosive tier — inside
-// the 20 there is no room for one. `xtop` extends it (Phase 46's deep shot). Pure → simlab-testable.
-//
-// `tight` is the situational one, and it's what lets the model hit real football's 39% third-down
-// rate AND its explosive-play rate at the same time. A single gain distribution can't: making it
-// consistent enough to move the chains kills the tail, and a fat tail can't convert 3rd-and-3.
-// Real offences resolve that by shaping the CALL to the down — a high-floor concept when they need
-// four yards, a shot play on 1st-and-10. So on a must-convert short down the stuff tier shrinks
-// (offences are good at getting the two yards they need) while the explosive tier is untouched.
-// It is a deterministic conditional, not a random one, so it buys conversions without spending any
-// of the variance budget — which is the whole reason points and game-to-game noise stopped fighting.
-function tierGain(u,t,rz,xtop,tight){
-  const p1=tight?t[0]*PM.shortTight:t[0];
-  const top=(rz?t[6]+(t[7]-t[6])*PM.rzTop:t[7])+(xtop||0);
-  return u<p1 ? t[1]+(u/p1)*(t[2]-t[1])
-       : u<t[3] ? t[4]+((u-p1)/(t[3]-p1))*(t[5]-t[4])
-       : t[6]+((u-t[3])/(1-t[3]))*(top-t[6]);
+// Sample a measured yardage distribution: u in [0,1) -> yards, by linear interpolation across the
+// percentile grid. `off` is the down/distance mean shift. Pure -> simlab-testable.
+function qGain(u,Q,off){
+  const G=PM.GRID,n=G.length,p=u*100;
+  let i=0; while(i<n-2&&G[i+1]<=p)i++;
+  const span=G[i+1]-G[i], t=span>0?Math.min(1,(p-G[i])/span):0;
+  return Q[i]+t*(Q[i+1]-Q[i])+(off||0);
 }
+// Distance bucket, keyed exactly as the measured table is.
+function distKey(togo){ return togo<=1?'1':togo<=3?'2-3':togo<=6?'4-6':togo<=10?'7-10':'11+'; }
+function ddKey(down,togo){ return down+'|'+distKey(togo); }
+// PM-END
 // Phase 48 — the 4th-down brain. Modern CFB goes for it ~1.94 times a game and converts ~52%; the
 // old rule (only inside the opponent's 42 on 4th-and-2) went for it 0.20 times and left 96% of the
 // real "turnover on downs" drives unmodelled. Pure: no rng, no globals → unit-tested in simlab.
@@ -1884,7 +1881,7 @@ function simEngine(home,away,seed,opts){
   const flipTo=spot=>100-clamp(spot,1,99);                 // mirror a spot for the opponent
   const nm=p=>p?((p.fn?p.fn[0]+'. ':'')+(p.ln||p.pos||'')).trim():'';
   const fpos=l=>l===50?'midfield':(l<50?'own ':'opp ')+(l<50?l:100-l);
-  const L=(team,kind,text,dd,big)=>{ if(log)log.push({q:L._q,team:team?team.id:null,kind,text,dd:dd||'',hs:score[home.id],as:score[away.id],big:!!big}); };
+  const L=(team,kind,text,dd,big,tg)=>{ if(log)log.push({q:L._q,team:team?team.id:null,kind,text,dd:dd||'',tg,hs:score[home.id],as:score[away.id],big:!!big}); };
   L._q=1;
   // Phase 26 injuries + fatigue (IN-GAME only — pure, deterministic, resets each game). An injured
   // player is skipped from selection (the backup is forced in → his matchup shows); a heavily-used
@@ -1899,9 +1896,9 @@ function simEngine(home,away,seed,opts){
   // opponent takes over (mutates `score` + `box`); ~drive time charged to the caller's clock.
   function playDrive(off,def,startLos,clutch,clk0,half){
     const oP=pools[off.id], dP=pools[def.id];
-    let adv=(off.ratings.off-def.ratings.def)+(off===home?HFA:0)+form[off.id]-form[def.id];
+    let adv=(off.ratings.off-def.ratings.def)+(off===home?HFA/2:-HFA/2)+form[off.id]-form[def.id];
     if(clutch)adv+=compClutch(oP.qb);                   // late & close: the QB's composure shows (Phase 10)
-    let los=startLos, down=1, togo=10, time=0, pens=0;
+    let los=startLos, down=1, togo=Math.min(10,100-startLos), time=0, pens=0;
     const mine=decide&&off.id===decideFor;             // only the controlled offense ever prompts the coach
     const clkNow=()=>Math.max(0,(clk0||0)-time);
     const timed=(clk0||0)>0;                            // OT drives are untimed (clk0 === 0) — never expire them
@@ -1922,8 +1919,7 @@ function simEngine(home,away,seed,opts){
       const boost=(plan&&plan.boost)||null;
       const bov=p=>p?(p.ov+((boost&&boost[p.id])||0)-fatg(p)):0;   // effective OVR (pep-talk + fatigue)
       const qb=(oP.qbList&&(oP.qbList.find(q=>!injured.has(q.id))||oP.qbList[0]))||oP.qb;   // healthy QB (backup if hurt)
-      const dd=(down)+' & '+(togo>=(100-los)?'goal':togo);
-      const mustGet=down>=3&&togo<=4;                     // Phase 48: play the sticks, not the shot
+      const dd=(down)+' & '+(togo>=(100-los)?'goal':togo), togo0=togo;
       const fgDist=(100-los)+17, inFgRange=fgDist<=57;    // Phase 46: field-goal distance/range (usable on any down)
       // ---- pre-snap penalty (Phase 25) — capped per drive (each charges a little clock → terminates) ----
       if(pens<6){
@@ -1938,7 +1934,7 @@ function simEngine(home,away,seed,opts){
         // AI isn't robotic — 12% of the time it takes the conservative option instead.
         const diff=score[off.id]-score[def.id];
         let act=fourthCall(togo,los,fgDist,inFgRange,diff,clkNow(),L._q);
-        if(act==='go'&&r()<0.08)act=inFgRange?'fg':'punt';
+        if(act==='go'&&r()<0.24)act=inFgRange?'fg':'punt';
         if(mine){const pick=decide({phase:'fourth',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,fgDist,inFgRange,ocAct:act});
           if(pick==='fg'||pick==='punt'||pick==='go')act=pick;}
         if(act==='fg'&&!inFgRange)act='punt';               // illegal FG (out of range) → fall back to a punt
@@ -1963,7 +1959,7 @@ function simEngine(home,away,seed,opts){
       const dRunY =dcall==='blitz'?3:dcall==='cover'?1:dcall==='run'?-4:0;            // stack the box stuffs the run; blitz is gashed
 
       // ---- run / pass ----
-      let passProb=clamp(PM.passBase+(togo>7?0.18:togo<3?-0.18:0)+(down>=3?0.17:0)+adv*0.003+schemeTendency(off.offScheme),0.12,0.92);
+      let passProb=clamp((PM.mix[ddKey(down,togo)]!=null?PM.mix[ddKey(down,togo)]:PM.passBase)+adv*0.003+schemeTendency(off.offScheme),0.12,0.92);
       // Phase 30: the AI OC reads YOUR defensive tendency (so far) and biases its run/pass to exploit it.
       if(aiOffVs && def.id===aiOffVs && off.id!==aiOffVs) passProb=clamp(passProb+aiOffPassAdj(dusage[def.id]),0.12,0.92);
       // Phase 46: snapshot the defense's tendency BEFORE this snap's call is recorded, so the offense reads
@@ -2000,7 +1996,7 @@ function simEngine(home,away,seed,opts){
           gain=-ri(r,4,9); time+=PM.secSack; const s=wpick(dP.rush4,r,injured); add(s&&s.id,'sk'); txt=nm(qb)+' sacked by '+nm(s)+' for '+gain;
           if(r()<PM.sackFumP){ turnover=true; txt=nm(qb)+' STRIP-SACKED by '+nm(s)+' — fumble lost'; }   // Phase 48: the strip sack
         } else if(r()<clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)+padv*0.007-ky*0.22+dComp+vComp+(pkg==='spread'?0.05:0),0.28,0.88)){    // completion (+ spread stresses coverage)
-          gain=Math.max(-3,Math.round(tierGain(compDraw(r,rec),PM.recTier,los>=PM.rzLos,vBoom*22,mustGet)+padv*PM.advPass-ky*PASS_KEY+dPassY+vYds+(pkg==='spread'?3:0)));
+          gain=Math.max(-3,Math.round(qGain(compDraw(r,rec),PM.recQ[distKey(togo)],vBoom*8)+padv*PM.advPass-ky*PASS_KEY+dPassY+vYds+(pkg==='spread'?3:0)));
           add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
           add(cov&&cov.id,'cvTgt'); add(cov&&cov.id,'cvCmp'); add(cov&&cov.id,'cvYds',gain);   // coverage targeted / allowed
@@ -2015,7 +2011,7 @@ function simEngine(home,away,seed,opts){
         const rb=wpick(oP.rush,r,injured)||qb;
         const fr=wpick(dP.front,r,injured);                  // the front defender he meets (Phase 23)
         const padv=adv+matchEdge(bov(rb),oP.rushAvg,bov(fr),dP.frontAvg);   // RB vs front matchup (mean-zero, pep-talk + fatigue aware)
-        gain=Math.max(-9,Math.round(tierGain(compDraw(r,rb),PM.runTier,los>=PM.rzLos,0,mustGet)+padv*PM.advRun-ky*RUN_KEY+dRunY+vYds+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
+        gain=Math.max(-9,Math.round(qGain(compDraw(r,rb),PM.runQ[distKey(togo)],0)+padv*PM.advRun-ky*RUN_KEY+dRunY+vYds+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
         time+=PM.secRun; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
         if(!scored && r()<PM.fumRate){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
@@ -2034,8 +2030,8 @@ function simEngine(home,away,seed,opts){
 
       const wasFirst=togo-gain<=0;
       los=clamp(los+gain,1,99); togo-=gain;
-      L(off,'play',txt+(wasFirst?' — 1ST DOWN':''),dd);
-      if(togo<=0){ down=1; togo=10; }                       // first down
+      L(off,'play',txt+(wasFirst?' — 1ST DOWN':''),dd,false,togo0);
+      if(togo<=0){ down=1; togo=Math.min(10,100-los); }     // first down (goal-to-go aware)
       else if(++down>4){ L(off,'play','Turnover on downs',dd); return {nextLos:flipTo(los),time}; }
     }
   }
@@ -3663,7 +3659,7 @@ function gameSeed(g){return (hashStr(g.id)^(S.seed>>>0))>>>0;}
 // than the one in the record book. Every game resolved from here on is stamped with the model that
 // produced it; replay is refused (not silently wrong) for anything older. Stored results, stats and
 // standings are untouched — only the play-by-play re-sim is unavailable.
-const SIM_MODEL=2;
+const SIM_MODEL=3;   // 3 = Phase 48.1 (measured per-distance gain tables + play-call mix)
 function gameReplayable(g){ return !!g && (!g.played || g.eng===SIM_MODEL); }
 // Phase 22: if the coach play-called this game, `g.calls` is the ordered list of his controlled-offense
 // decisions. Replaying it (the OC default fills any gap) reproduces the EXACT play-called result on

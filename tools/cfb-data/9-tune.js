@@ -28,9 +28,9 @@ const T = {
   drives: 11.8, pldr: 5.75, ppd: 2.28,
   dTD: 26.3, dFG: 9.9, dPUNT: 35.3, dDOWNS: 7.2, dTO: 10.7, dEND: 6.5,
   sd: 13.26, kurt: 0.32, blow: 5.8, midUps: 9.5,
-  start: 29.5,   // avg drive start (FBS ~own 29-30; literature value, not measured from the harvest)
+  start: 29.8,   // avg drive start — MEASURED
   ydPerPt: 14.2, // 383 yds / 26.9 pts
-  rzTrips: 3.4, rzTD: 61, rzScore: 85,   // red zone (FBS literature values, not from the harvest)
+  rzTrips: 4.68, rzTD: 67.5, rzScore: 85.2,  // red zone — MEASURED (tools/cfb-data/11-plays.js)
 };
 
 /* ---------- synthetic world (identical to test/simlab.js) ---------- */
@@ -67,7 +67,7 @@ function score(src, label, verbose) {
   const simEngine = build(src);
   const A = { pts: 0, pAtt: 0, pCmp: 0, pYds: 0, rAtt: 0, rYds: 0, skYds: 0, sk: 0, fd: 0,
     d3a: 0, d3c: 0, d4a: 0, d4c: 0, int: 0, fum: 0, punts: 0, fga: 0, fgm: 0, drives: 0,
-    dTD: 0, dFG: 0, dPUNT: 0, dDOWNS: 0, dTO: 0, dMISS: 0, dEND: 0, pen: 0, startSum: 0, startN: 0, rz: 0, rzTD: 0, rzFG: 0 };
+    dTD: 0, dFG: 0, dPUNT: 0, dDOWNS: 0, dTO: 0, dMISS: 0, dEND: 0, pen: 0, startSum: 0, startN: 0, rz: 0, rzTD: 0, rzFG: 0, d3b: {} };
   const rows = [];
   let curDrive = null;
   for (const g of slate) {
@@ -98,7 +98,11 @@ function score(src, label, verbose) {
       const isPen = /^🚩/.test(e.text), dn = parseInt(String(e.dd || '').charAt(0), 10);
       const scored = e.kind === 'score' && /TOUCHDOWN/.test(e.text);
       const conv = /1ST DOWN/.test(e.text) || scored;
-      if (!isPen && dn === 3) { A.d3a++; if (conv) A.d3c++; }
+      if (!isPen && dn === 3) { A.d3a++; if (conv) A.d3c++;
+        const dv = e.tg;
+        if (dv != null) {
+          const bk = dv <= 1 ? '1' : dv <= 3 ? '2-3' : dv <= 6 ? '4-6' : dv <= 10 ? '7-10' : '11+';
+          const a = A.d3b[bk] = A.d3b[bk] || [0, 0]; a[0]++; if (conv) a[1]++; } }
       if (!isPen && dn === 4 && !/^Punt/.test(e.text) && !/field goal/.test(e.text)) { A.d4a++; if (conv) A.d4c++; }
       if (conv) A.fd++;
       if (/^Punt/.test(e.text)) { A.punts++; A.dPUNT++; }
@@ -154,6 +158,14 @@ function score(src, label, verbose) {
     ydPerPt: (A.pYds + A.rYds - A.skYds) / (A.pts || 1),
   };
   if (verbose) {
+    const REAL3 = { '1': [11.4, 76.6], '2-3': [16.5, 57.0], '4-6': [24.6, 43.4], '7-10': [29.5, 31.7], '11+': [18.1, 16.9] };
+    const t3 = Object.values(A.d3b).reduce((s2, x) => s2 + x[0], 0) || 1;
+    console.log('\n    3rd-DOWN MIX        real freq / sim freq      real conv / sim conv');
+    for (const bk of ['1', '2-3', '4-6', '7-10', '11+']) {
+      const a = A.d3b[bk] || [0, 0], R = REAL3[bk];
+      console.log('      ' + bk.padEnd(6) + (R[0].toFixed(1) + '%').padStart(8) + ' / ' + ((a[0] / t3 * 100).toFixed(1) + '%').padStart(7)
+        + '        ' + (R[1].toFixed(1) + '%').padStart(8) + ' / ' + ((a[1] / (a[0] || 1) * 100).toFixed(1) + '%').padStart(7));
+    }
     console.log(`\n  ${label}`);
     const K = [['pts', 1], ['yds', 0], ['plays', 1], ['ypp', 2], ['att', 1], ['cmpPct', 1], ['pyds', 0], ['ypa', 2],
       ['ratt', 1], ['ryds', 0], ['ypc', 2], ['fd', 1], ['d3', 1], ['d4a', 2], ['to', 2], ['int', 2], ['fl', 2],
