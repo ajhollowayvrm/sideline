@@ -2402,7 +2402,7 @@ const AT={
   iqProt:0.45,            // he sets the protection
   // ESCAPE — the quarterback's own athleticism against the man who beat the block. P(no sack |
   // pressured) ≈ 0.80 for an average QB, which lands the league on the measured ~6% sack rate.
-  escBase:0.815, escK:0.030, escElu:0.42, escAgi:0.30, escStr:0.14, escBtk:0.14, escAwr:0.30, escPrs:0.28,
+  escBase:0.815, escK:0.030, escElu:0.42, escAgi:0.30, escStr:0.14, escBtk:0.14, escAwr:0.30, escPrs:0.16,
   scrRun:0.30,            // of the escapes, how many take off rather than throw on the run
   // SEPARATION — one physical quantity, in rating points, with two separate consumers below.
   sepRte:1.00, sepAgi:0.60, sepSpd:0.45, sepAcc:0.35,
@@ -2644,6 +2644,15 @@ const PM={
                                     // Re-anchored at Phase 53: the pressured throw now carries its
                                     // own multiplier (AT.intPress), so the pre-pressure base must fall
                                     // for the league to still land on the measured 0.82.
+  // NON-OFFENSIVE SCORING (Phase 54 / step 4). Real football books 0.08 INT-return TDs and 0.05
+  // kick/punt-return TDs per team-game (cfb-averages.md §3), plus fumble returns and the odd safety.
+  // The sim scored ZERO of it. Measured: real 26.9 pts/team against 25.1 accounted for by offensive
+  // TDs and field goals, so ~1.8 a game is non-offensive; the sim's 22.77 against 22.71, so ~0.06.
+  // That is 43% of the whole scoring shortfall, and it was a MISSING CATEGORY rather than a
+  // mis-calibration — cfb-averages.md §4(e) has named it since Phase 48.
+  pick6:0.098,                      // share of interceptions returned for six (0.08 / 0.82)
+  fumb6:0.055,                      // share of recovered fumbles returned for six
+  punt6:0.011,                      // share of punts returned for six (0.05 / 4.32)
   fumRate:0.0125, sackFumP:0.075,   // ball-security: on a carry / stripped on a sack
   fumCatch:0.0070,                  // ...and after a catch (Phase 53). Real fumbles lost are 0.56 a
                                     // team-game and carries plus strip sacks alone reached 0.40.
@@ -2660,7 +2669,12 @@ const PM={
   // which is what answered a 31-point spread with a 55-point favourite against a real 50. It now moves
   // the CONTESTS — the completion in log-odds (AT.advCmpZ) and the yardage regime (AT.regAdv/regAdvR)
   // — so a better team wins more downs rather than every down by more.
-  hfa:3.6,
+  hfa:6.0,      // RE-ANCHORED at step 4. Home field rode on `adv`, and Phase 53 stopped `adv` adding
+                // yards to every snap — so the same 3.6 rating points bought a 51.7% home win rate
+                // against a real 58.8%. Raising it further keeps helping the win rate and keeps
+                // widening the margin (hfa 10 measured 59.0% home but a 21.0 margin against a real
+                // 16.2), so it is set where the gate is safe and left for the stakes-scaled version
+                // cfb-averages.md §5 recommends — 2.5 in a nothing game, 4.8 when both teams are ranked.
   // Game clock charged per snap. Real FBS runs ~135 plays in 3600s ≈ 26.7s a snap once you net out
   // the stopped clock on incompletions, out-of-bounds and changes of possession.
   secRun:32, secPass:30, secQuick:13, secIncomp:6, secSack:32,
@@ -2831,10 +2845,17 @@ function fourthCall(togo,los,fgDist,inFgRange,diff,secs,q){
   // protecting a lead in the last two minutes — never hand it back on downs
   if(q>=4&&secs<=120&&diff>0&&los<50)return 'punt';
   if(goalToGo&&togo<=2)return 'go';                // 4th-and-goal from the 3 or closer
-  if(togo<=2&&los>=38)return 'go';                 // short yardage past your own 38
+  // Phase 54 (step 4): short yardage is where real teams actually gamble. Measured, the sim went for
+  // it on 4th-and-1 only 49% of the time and took 25% of its attempts there, against a real ~45% —
+  // it was converting badly by attempting the WRONG downs, not by executing them badly.
+  if(togo<=1&&los>=30)return 'go';                 // 4th-and-inches is a go almost anywhere
+  if(togo<=2&&los>=40)return 'go';                 // short yardage past your own 40
+  if(togo<=3&&los>=50)return 'go';                 // 4th-and-3 past midfield — before the chip shot,
+                                                   // because a modern offence takes this down rather
+                                                   // than settling for three from the opponent's 25
   if(chip)return 'fg';                             // comfortable kick
   // no-man's-land: past midfield, too far for a good kick, too close to punt usefully
-  if(los>=55&&los<=74&&togo<=6)return 'go';
+  if(los>=52&&los<=74&&togo<=6)return 'go';
   if(fgDist<=PM.fgMax)return 'fg';                 // a 46-52 yd try beats a 25-yd punt; beyond that, don't
   if(togo<=1&&los>=35)return 'go';                 // 4th-and-inches is worth it almost anywhere
   return 'punt';
@@ -2897,7 +2918,10 @@ function simEngine(home,away,seed,opts){
   const flipTo=spot=>100-clamp(spot,1,99);                 // mirror a spot for the opponent
   const nm=p=>p?((p.fn?p.fn[0]+'. ':'')+(p.ln||p.pos||'')).trim():'';
   const fpos=l=>l===50?'midfield':(l<50?'own ':'opp ')+(l<50?l:100-l);
-  const L=(team,kind,text,dd,big,tg)=>{ if(log)log.push({q:L._q,team:team?team.id:null,kind,text,dd:dd||'',tg,hs:score[home.id],as:score[away.id],big:!!big}); };
+  // `l` is the line of scrimmage the entry happened at (offense's own yard line, 100 = the end zone
+  // it attacks). Carried so a log can be measured for field-position questions — red-zone trip and
+  // conversion rates are measured targets in cfb-averages.md §3 and were not derivable from the log.
+  const L=(team,kind,text,dd,big,tg,l)=>{ if(log)log.push({q:L._q,team:team?team.id:null,kind,text,dd:dd||'',tg,l,hs:score[home.id],as:score[away.id],big:!!big}); };
   L._q=1;
   // Phase 26 injuries + fatigue (IN-GAME only — pure, deterministic, resets each game). An injured
   // player is skipped from selection (the backup is forced in → his matchup shows); a heavily-used
@@ -2954,7 +2978,7 @@ function simEngine(home,away,seed,opts){
       const kk=oP.k, slope=0.013*clamp(1-AT.kLeg*tilt(kk,'kpw'),0.55,1.5);
       if(r()<clamp(0.965+AT.kAcc*tilt(kk,'kac')-(fgDist-20)*slope,0.40,0.99)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; L(off,'score',nm(oP.k)+' '+fgDist+'-yd field goal is GOOD',dd,true); return {nextLos:25,time}; }
       L(off,'play',nm(oP.k)+' '+fgDist+'-yd field goal MISSED',dd); return {nextLos:flipTo(los),time}; };
-    L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los));
+    L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los),'',false,undefined,los);
     while(true){
       // Phase 48: the half expired mid-drive — the drive dies here (real football's ~6.5% of drives).
       if(timed&&clkNow()<=0){ L(off,'play',half===2?'END OF GAME':'END OF HALF',' ');
@@ -2985,15 +3009,28 @@ function simEngine(home,away,seed,opts){
         // AI isn't robotic — 12% of the time it takes the conservative option instead.
         const diff=score[off.id]-score[def.id];
         let act=fourthCall(togo,los,fgDist,inFgRange,diff,clkNow(),L._q);
-        if(act==='go'&&r()<0.24)act=inFgRange?'fg':'punt';
+        // The coach loses his nerve — but a real one loses it on 4th-and-8, not on 4th-and-inches.
+        // A flat 24% was bailing out of a quarter of all short-yardage gambles and turning them into
+        // field goals, which is where the sim's 26% FG rate on 4th-and-1 came from.
+        if(act==='go'&&r()<(togo<=2?0.07:0.30))act=inFgRange?'fg':'punt';
         if(mine){const pick=decide({phase:'fourth',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,fgDist,inFgRange,ocAct:act});
           if(pick==='fg'||pick==='punt'||pick==='go')act=pick;}
         if(act==='fg'&&!inFgRange)act='punt';               // illegal FG (out of range) → fall back to a punt
         if(act==='fg'){                                      // field-goal attempt
           return doFG(dd,fgDist);
         } else if(act==='punt'){                             // punt (net ~42; into EZ → touchback @20)
-          time+=10; L(off,'play','Punt',dd);
-          return {nextLos:clamp(flipTo(los+ri(r,38,46)+Math.round(AT.puntLeg*tilt(oP.pu,'kpw'))),20,99),time};   // Phase 51: his leg is worth field position
+          time+=10;
+          const pspot=clamp(flipTo(los+ri(r,38,46)+Math.round(AT.puntLeg*tilt(oP.pu,'kpw'))),20,99);
+          if(r()<PM.punt6){                                  // Phase 54: taken back the other way
+            const ret=wpick(dP.cover,r,injured)||dP.cb[0];
+            score[def.id]+=6; add(ret&&ret.id,'dTD');
+            add(dP.k&&dP.k.id,'xpa'); if(r()<0.965){ add(dP.k&&dP.k.id,'xpm'); score[def.id]+=1; }
+            L(off,'play','Punt',dd);
+            L(def,'score','TOUCHDOWN — '+nm(ret)+' returns the punt '+(100-pspot)+' yards',dd,true);
+            return {nextLos:25,time,keep:true};
+          }
+          L(off,'play','Punt',dd);
+          return {nextLos:pspot,time};   // Phase 51: his leg is worth field position
         } // else: go for it → fall through and run a normal play
       }
 
@@ -3042,6 +3079,7 @@ function simEngine(home,away,seed,opts){
       else if(variant==='deep'){ vComp-=0.14;vSack+=0.03;vBoom+=1; }
       else if(variant==='draw'){ vYds+=(dcall==='blitz'?6:-2); }
       let gain=0, turnover=false, scored=false, tackled=true, txt='';
+      let toKind='', toBy=null;                            // Phase 54: what kind of turnover, and who took it
       jr=[];        // Phase 49: start journalling this play's stat lines — a flag can wipe them
       // Phase 50: what this snap is worth. `vAmp` amplifies the composure reshape (mean-preserving,
       // so it moves WHO wobbles, not the league's scoring); the rest are the measured situational
@@ -3121,7 +3159,7 @@ function simEngine(home,away,seed,opts){
           // -ri(4,9). The measured table has the same mean and a real tail (a 29-yard loss exists).
           gain=Math.min(-1,Math.round(qGain(r(),PM.sackQ,0)));
           time+=PM.secSack; add(rsh&&rsh.id,'sk'); txt=nm(qb)+' sacked by '+nm(rsh)+' for '+gain;
-          if(r()<clamp(PM.sackFumP+AT.carFum*tilt(qb,'car')*2.4,0.01,0.20)){ turnover=true; txt=nm(qb)+' STRIP-SACKED by '+nm(rsh)+' — fumble lost'; }   // Phase 48: the strip sack
+          if(r()<clamp(PM.sackFumP+AT.carFum*tilt(qb,'car')*2.4,0.01,0.20)){ turnover=true; toKind='fum'; toBy=rsh; txt=nm(qb)+' STRIP-SACKED by '+nm(rsh)+' — fumble lost'; }   // Phase 48: the strip sack
         } else if(scrambled){
           // He got out and took off. §7: this books as a RUSH, because that is what the box score
           // says — and it is most of why the sim ran 10% light on rush attempts.
@@ -3162,7 +3200,7 @@ function simEngine(home,away,seed,opts){
           // fumbles lost measured 0.40 against 0.56. The reception and its yards still stand, which is
           // the box-score convention.
           if(!scored && r()<clamp(PM.fumCatch*(1+PC.fumMul*press)+AT.carFum*ADX(rec,oP.recvA,'car',cov,dP.covA,'tkl'),0.001,0.05)){
-            turnover=true; txt=nm(rec)+' FUMBLES after the catch — lost'; }
+            turnover=true; toKind='fum'; toBy=cov; txt=nm(rec)+' FUMBLES after the catch — lost'; }
           if(r()<INJ_RATE*injMul(rec))hurt(rec,off); if(r()<INJ_RATE*0.7*injMul(cov))hurt(cov,def);   // injuries on contact (Phase 26, Phase 51 durability)
         } else {                                            // incomplete (maybe picked)
           time+=PM.secIncomp; tackled=false; add(qb&&qb.id,'pAtt'); add(cov&&cov.id,'cvTgt'); txt=nm(qb)+' incomplete';
@@ -3171,7 +3209,7 @@ function simEngine(home,away,seed,opts){
           // is the whole point of having a state rather than a sack roll.
           if(r()<clamp((PM.intRate-adv*0.0008)*(1+PC.intMul*press)*(pressed?AT.intPress:1)+AT.awrInt*qAWR+AT.iqInt*qIQ+AT.thaInt*qTHA+AT.cthInt*(av(cov,'cth')-dP.covA.cth)+AT.zcvInt*(av(cov,'zcv')-dP.covA.zcv),0.020,0.14)){ turnover=true; add(qb&&qb.id,'pInt'); add(cov&&cov.id,'dInt');
             if(press>=0.5)add(cov&&cov.id,'cl');           // a pick in a big moment is a clutch play
-            txt=nm(qb)+' INTERCEPTED by '+nm(cov); }
+            toKind='int'; toBy=cov; txt=nm(qb)+' INTERCEPTED by '+nm(cov); }
         }
       } else {                                              // run
         const rb=wpick(oP.rush,r,injured)||qb;
@@ -3207,7 +3245,7 @@ function simEngine(home,away,seed,opts){
           +tailAdd(u,dSPDr,AT.tailRun)+floorAdd(u,AT.floorPush*pushR+AT.floorBrk*breakR,AT.strRun)+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
         time+=PM.secRun; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain; hero=rb;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
-        if(!scored && r()<clamp(PM.fumRate*(1+PC.fumMul*press)+AT.awrFum*AD(rb,oP.rushA,fr,dP.frontA,'awr')+AT.carFum*ADX(rb,oP.rushA,'car',fr,dP.frontA,'tkl'),0.002,0.05)){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
+        if(!scored && r()<clamp(PM.fumRate*(1+PC.fumMul*press)+AT.awrFum*AD(rb,oP.rushA,fr,dP.frontA,'awr')+AT.carFum*ADX(rb,oP.rushA,'car',fr,dP.frontA,'tkl'),0.002,0.05)){ turnover=true; toKind='fum'; toBy=fr; txt=nm(rb)+' FUMBLES — lost'; }
         if(r()<INJ_RATE*injMul(rb))hurt(rb,off); if(r()<INJ_RATE*0.7*injMul(fr))hurt(fr,def);     // injuries on contact (Phase 26, Phase 51 durability)
       }
 
@@ -3245,16 +3283,29 @@ function simEngine(home,away,seed,opts){
         if(press>=0.5){ add(hero&&hero.id,'cl'); if(wantPass)add(qb&&qb.id,'cl'); }   // Phase 50: made it when it mattered
         score[off.id]+=6;
         add(oP.k&&oP.k.id,'xpa'); const xp=r()<0.965; if(xp){ add(oP.k&&oP.k.id,'xpm'); score[off.id]+=1; }
-        L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true);
+        L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true,undefined,los);
         return {nextLos:25,time};
       }
       if(tackled){ const t=wpick(dP.tkl,r); add(t&&t.id,'tkl'); }
-      if(turnover){ L(off,'play',txt,dd,true); return {nextLos:flipTo(clamp(los+gain,1,99)),time}; }
+      if(turnover){
+        // Phase 54: turnovers are RETURNED. `keep` tells the caller NOT to swap possession — the
+        // scoring defense kicks off, so the ball goes back to the team that just turned it over,
+        // which the alternating drive loop would otherwise hand to the wrong side.
+        const spot=flipTo(clamp(los+gain,1,99));
+        if(toBy && r()<(toKind==='int'?PM.pick6:PM.fumb6)){
+          L(off,'play',txt,dd,true);                       // the drive still ended in a turnover
+          score[def.id]+=6; add(toBy.id,'dTD');
+          add(dP.k&&dP.k.id,'xpa'); if(r()<0.965){ add(dP.k&&dP.k.id,'xpm'); score[def.id]+=1; }
+          if(press>=0.5)add(toBy.id,'cl');
+          L(def,'score','TOUCHDOWN — '+nm(toBy)+' returns the '+(toKind==='int'?'interception':'fumble')+' '+(100-spot)+' yards',dd,true);
+          return {nextLos:25,time,keep:true};
+        }
+        L(off,'play',txt,dd,true); return {nextLos:spot,time}; }
 
       const wasFirst=togo-gain<=0;
       if(wasFirst&&press>=0.5){ add(hero&&hero.id,'cl'); if(wantPass)add(qb&&qb.id,'cl'); }   // Phase 50
       los=clamp(los+gain,1,99); togo-=gain;
-      L(off,'play',txt+(wasFirst?' — 1ST DOWN':''),dd,false,togo0);
+      L(off,'play',txt+(wasFirst?' — 1ST DOWN':''),dd,false,togo0,los);
       if(togo<=0){ down=1; togo=Math.min(10,100-los); }     // first down (goal-to-go aware)
       else if(++down>4){ L(off,'play','Turnover on downs',dd); return {nextLos:flipTo(los),time}; }
     }
@@ -3273,7 +3324,9 @@ function simEngine(home,away,seed,opts){
       L._q=half*2-(clock>900?1:0);
       const d=playDrive(off,def,startLos,clock,half);
       clock-=Math.max(d.time,12); startLos=d.nextLos;
-      const swap=off; off=def; def=swap;
+      // Phase 54: a defensive score does not change possession the way a stop does — the scoring team
+      // kicks off, so the team that just turned it over gets the ball back.
+      if(!d.keep){ const swap=off; off=def; def=swap; }
     }
   }
   // overtime: each team a possession from the opponent's 25 (los 75) until someone leads.

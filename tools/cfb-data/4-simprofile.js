@@ -105,7 +105,8 @@ for (const g of slate) {
   for (const t of [g.home, g.away]) per[t.id] = {
     pts: 0, pAtt: 0, pCmp: 0, pYds: 0, rAtt: 0, rYds: 0, skYds: 0, sk: 0,
     fd: 0, d3a: 0, d3c: 0, d4a: 0, d4c: 0, int: 0, fum: 0, punts: 0, fga: 0, fgm: 0,
-    drives: 0, dTD: 0, dFG: 0, dPUNT: 0, dDOWNS: 0, dTO: 0, dMISS: 0, dEND: 0, plays: 0,
+    drives: 0, dTD: 0, dFG: 0, dPUNT: 0, dDOWNS: 0, dTO: 0, dMISS: 0, dEND: 0, ntTD: 0, plays: 0,
+    rz: 0, rzTD: 0, rzFG: 0, startSum: 0, startN: 0,
   };
   // box → per-team passing/rushing/sacks
   for (const t of [g.home, g.away]) {
@@ -118,23 +119,38 @@ for (const g of slate) {
   per[g.home.id].pts = res.hs; per[g.away.id].pts = res.as;
   // log → downs, drives, drive outcomes, punts, fumbles, sack yardage
   let cur = null, q4h = null, q4a = null;
+  // Red zone: a drive that reaches the opponent's 20 (los >= 80), and what it ended in. Measured
+  // targets are 4.68 trips per team-game, 67.5% touchdowns, 17.7% field goals (cfb-averages.md §3).
+  let rzHit = false;
   for (const e of res.log) {
     if (e.q === 4 && q4h === null) { q4h = e.hs; q4a = e.as; }
     const s = e.team ? per[e.team] : null;
-    if (e.kind === 'drive') { if (s) { s.drives++; cur = e.team; } continue; }
+    if (e.kind === 'drive') { if (s) { s.drives++; cur = e.team; if (e.l != null) { s.startSum += e.l; s.startN++; } } rzHit = false; continue; }
     if (e.kind === 'final') continue;
     if (!s) continue;
+    if (e.team === cur && !rzHit && e.l != null && e.l >= 80) { rzHit = true; s.rz++; }
     const isPen = /^🚩/.test(e.text);
     const dnum = parseInt(String(e.dd || '').charAt(0), 10);
     const scored = e.kind === 'score' && /TOUCHDOWN/.test(e.text);
     const conv = /1ST DOWN/.test(e.text) || scored;
     if (!isPen && dnum === 3) { s.d3a++; if (conv) s.d3c++; }
-    if (!isPen && dnum === 4 && !/^Punt/.test(e.text) && !/field goal/.test(e.text)) { s.d4a++; if (conv) s.d4c++; }
+    // "Turnover on downs" is logged as a SECOND entry carrying the same 4th-down `dd` as the play
+    // that failed, so counting every 4th-down entry booked each failed attempt twice — inflating
+    // attempts and deflating the conversion rate by the same failures. The real side reads ESPN's
+    // fourthDownEff and has no such duplicate, so the comparison was wrong in both columns.
+    if (!isPen && dnum === 4 && !/^Punt/.test(e.text) && !/field goal/.test(e.text) && !/Turnover on downs/.test(e.text)) { s.d4a++; if (conv) s.d4c++; }
     if (conv) s.fd++;
     if (/^Punt/.test(e.text)) { s.punts++; s.dPUNT++; }
-    else if (/field goal is GOOD/.test(e.text)) s.dFG++;
+    else if (/field goal is GOOD/.test(e.text)) { s.dFG++; if (rzHit) s.rzFG++; }
     else if (/field goal MISSED/.test(e.text)) s.dMISS++;
-    else if (scored) s.dTD++;
+    // A TD counts as a DRIVE outcome only for the team whose drive it is. Phase 54 added returned
+    // turnovers and punts, and a defensive score would otherwise be booked as that defense's drive
+    // touchdown — a drive it never had — while the offense's drive landed in no bucket at all.
+    // A touchdown IS a red-zone trip: the ball crosses the opponent's 20 on the way to the end zone,
+    // however far out it started. That is what makes the real 4.68 trips x 67.5% TD reconcile with the
+    // real 3.10 offensive TDs a game; scoring the trip only when a PRIOR play reached the 20
+    // undercounts every long touchdown and invents a gap.
+    else if (scored) { if (e.team === cur) { s.dTD++; s.rzTD++; if (!rzHit) { rzHit = true; s.rz++; } } else s.ntTD++; }
     else if (/Turnover on downs/.test(e.text)) s.dDOWNS++;
     // Phase 48 kills a drive that is still alive when the half expires (real football's ~6.5%).
     // This bucket was never wired up, so those drives counted toward `drives` but landed in no
@@ -217,6 +233,11 @@ function profile(rs, gs, label) {
     dPUNT: sum(rs, r => r.dPUNT) / dn * 100, dDOWNS: sum(rs, r => r.dDOWNS) / dn * 100,
     dTO: sum(rs, r => r.dTO) / dn * 100, dMISS: sum(rs, r => r.dMISS) / dn * 100,
     dEND: sum(rs, r => r.dEND) / dn * 100,
+    ntTD: mean(rs, r => r.ntTD),        // non-offensive TDs per team-game (real ~0.13 + fumble returns)
+    startLos: sum(rs, r => r.startSum) / (sum(rs, r => r.startN) || 1),  // avg drive start, own yard line (real ~29)
+    rz: mean(rs, r => r.rz),                                            // real 4.68 trips
+    rzTD: sum(rs, r => r.rzTD) / (sum(rs, r => r.rz) || 1) * 100,        // real 67.5%
+    rzFG: sum(rs, r => r.rzFG) / (sum(rs, r => r.rz) || 1) * 100,        // real 17.7%
     margin: mean(gs, g => Math.abs(g.hs - g.as)), total: mean(gs, g => g.hs + g.as),
     homeWin: mean(gs, g => g.hs > g.as ? 100 : 0),
     otPct: mean(gs, g => g.ot ? 100 : 0),
