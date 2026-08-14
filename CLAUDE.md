@@ -26,8 +26,14 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > `docs/reference/cfb-clutch.md` covers **big moments** — that one-score records don't repeat
 > (r=0.078) so there is no such thing as a clutch team, that late-and-close football genuinely
 > tightens, and that kickers measurably do not choke.
+> `docs/reference/cfb-recruiting.md` is the fourth sheet and the newest — **45,735 prospects across
+> 11 signing classes (2015–2025)** from the CollegeFootballData API: supply, where the blue-chips
+> actually go by program tier, class-size flatness, persistence (r=0.882), and geography. It is the
+> tuning target for the Phase 57 talent economy, and its "where the model sits" section records the
+> band-pass and saturation defects Phase 56 measured. Reproduce with `tools/cfb-data/20–23`
+> (needs a free `CFBD_API_KEY`).
 >
-> **All roadmap phases 1–55.2 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–56 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -325,6 +331,31 @@ still serves it with zero config.
   unreachable in the shipped app (`skipGame` and the Fast toggle clear the timer first), but it made a
   probe that moved `G.idx` replay a stale entry and open a second Q1 band after Q3. It re-reads at fire
   time now. `simlab` → 161, `qa` → 327. *(→ `docs/phases/gameday.md`.)*
+
+- **Phase 56 — recruiting, measured.** Recruiting was the last major system never fitted to measured
+  football: its design record stopped at Phase 38 while the sim was rebuilt three times. Phase 56
+  **changes no game code** — it builds the instrument (`tools/cfb-data/20-recruits.js` harvest +
+  `21-recanalyze.js` real + `22-recprofile.js` sim + `23-reccompare.js`) and the fourth reference
+  sheet. The aggregates all looked fine (blue-chip share 11.2% vs 11.1%, class size 20.7 vs 20.2,
+  persistence 0.927 vs 0.882) — the same way the sim's totals looked fine for nine phases. **The band
+  table did not.** Real class size is *flat* across program quality (23.5 at the top, 19.9 at the
+  bottom) while SIDELINE inverts it: **Georgia signs a one-man class**, Alabama three, Ohio State
+  five, while prestige-72 programs sign a full 25 that's essentially all blue-chip. The cause is one
+  mechanism — `recruitFit` scores against a *target prestige per star tier* (88/70/50/32) and the
+  suitor draw has **no over-tier floor**, so pull is a **band-pass filter** and being above a tier is
+  penalised exactly like being below it. Separately, **the race is settled before anyone plays it**:
+  with nobody acting, 86.7% of a good-fit program's seeded 4★ relationships clear the commit bar by
+  **week 7** and 90% pin at the ceiling — so everything Phases 33–38 layered on moves a saturated
+  number. Also measured: the board is 18% too small (3,400 vs 4,158, which is why sign rate reads 82%
+  against a real 63.7% — the real board deliberately exceeds FBS capacity), and geography is inverted
+  (TX/FL/CA/GA produce 42.4% of the real board vs 8% under the uniform `pick(r,STATES)` draw).
+  **Instrument work:** `reclab` now pulls the game's data arrays instead of copying them — its
+  `STATES` held 15 of 50 and its `POS` still carried the pre-Phase-52 `S`, so `posAttrW` fell back to
+  the *linebacker* row for ~9.5% of every pool it validated (`rolllab`/`legacylab` still have this).
+  Convergence was re-pointed off pool consumption, which is a supply-vs-capacity identity and explains
+  the 92→91→80 drift and the quiet 88→85 bar drop. And the **Phase 44 recruiting cliff was
+  relocated** — it is app-layer, not engine: `advanceRecruiting` resolves a full class for a passive
+  player team. `reclab` → 68. *(→ `docs/phases/recruiting.md`, `docs/reference/cfb-recruiting.md`.)*
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week

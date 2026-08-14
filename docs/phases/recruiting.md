@@ -638,6 +638,104 @@ weekends only); no dated multi-day visit *slots* (a weekend hosts up to `weekend
 ---
 
 
+## Phase 56 design — measure what recruiting produces
+
+Decided 2026-08-14 with AJ, opening a three-phase recruiting arc. Recruiting was the last major
+system never fitted to measured football: this document stopped at Phase 38 while the sim was rebuilt
+three times (Phases 48–55.2) against `cfb-averages.md` / `cfb-penalties.md` / `cfb-clutch.md`.
+Recruiting's "truth" was a set of self-imposed lab invariants. **Phase 56 changes no game code** — it
+builds the instrument, exactly as Phases 48–50 did before touching anything.
+
+### The tools
+`20-recruits.js` harvests the CollegeFootballData API (free tier, `CFBD_API_KEY` from env, never
+written to disk) — `/recruiting/players`, `/recruiting/teams`, `/teams/fbs`, `/talent`, 2015–2025,
+**45,735 prospects for 44 calls**. It has a **`--probe` mode that prints the first record's real field
+names**, and that earned its keep immediately: the raw API is camelCase (`stateProvince`,
+`hometownInfo.latitude`, `committedTo`) while nearly every published example is the R wrapper's
+snake_case. `21-recanalyze.js` measures reality, `22-recprofile.js` measures the game on the identical
+metric set (honouring `INDEX=path`, so a later phase can print a real before/after column),
+`23-reccompare.js` puts them side by side in `5-compare.js`'s `ok / ~ / MISS` format. Findings are
+transcribed into **`docs/reference/cfb-recruiting.md`**, the fourth reference sheet.
+
+`22-recprofile.js` builds its world from the game's **real** `TEAMS`/`TEAM_STATE`/`CONF_BASE`/`BUMP`
+and **extracts the data arrays from `index.html` rather than copying them** — see the instrument
+defects below for why that is not fussiness.
+
+### What it found
+**The aggregates all look fine** — blue-chip share of the board 11.2% against a real 11.1%, class size
+20.7 against 20.2, persistence r 0.927 against 0.882, Gini 0.835 against 0.772. That is precisely how
+the sim's totals looked right for nine phases while drive structure was badly wrong.
+
+**The band table is not fine.** Non-cumulative, by program quality (talent composite for real,
+prestige for the sim):
+
+| band | real size | sim size | real BC% | sim BC% | real BCR | sim BCR |
+|---|--:|--:|--:|--:|--:|--:|
+| 1–10 | 23.5 | **4.2** | 40.3 | **10.9** | 69.6 | 100.0 |
+| 11–25 | 21.5 | 18.0 | 35.4 | **67.0** | 44.5 | 94.5 |
+| 26–50 | 19.8 | 14.7 | 19.0 | 21.8 | 15.6 | 22.5 |
+| 51–90 | 19.5 | **25.0** | 5.1 | 0.2 | 2.6 | 0.1 |
+| 91–134 | 19.9 | **25.0** | 0.2 | 0.0 | 0.1 | 0.0 |
+
+Real class size is **flat** across program quality (23.5 → 19.9); scholarships are a constant and what
+varies by two orders of magnitude is what the signatures are worth. SIDELINE inverts it: in a
+representative class **Georgia signs one player, Alabama three, Ohio State five, Texas and LSU two**,
+while prestige-72 programs sign a full 25 that is essentially all blue-chip.
+
+**The cause is one mechanism.** `recruitFit` scores against a *target prestige per star tier*
+(88/70/50/32) and the suitor draw in `genRecruits` scores on `1 − |prestige − target|/50` **with no
+over-tier floor** (the floor exists only in `recruitFit`, which governs interest growth, not whether
+you make the board). Pull is a **band-pass filter** — above a tier is penalised exactly like below it.
+Real pull is *monotonic in program quality*.
+
+**And the race is settled before anyone plays it.** Passive growth is `iv += (1.0+fit*3.2) *
+(0.6+r()*0.9)` per week — ~4.4/week from a seeded base near 46 against a `COMMIT_THRESH` of 68. With
+**nobody acting at all**, 86.7% of a prestige-71 program's seeded 4★ relationships are past the commit
+bar by **week 7** and 90.0% are pinned at the 100 ceiling by Signing Day. So the AI brain, NIL, the
+league ripple, visit weekends, pitch angles, double-downs and diminishing returns are all moving a
+saturated number. That is the mechanical reason Phase 37 had to weaken its "aggressive push lands the
+target" check to merely *leading* him into Signing Day.
+
+Two more measured misses: the board is **18% too small** (3,400 vs 4,158), which is why its sign rate
+reads 82% against a real **63.7%** — the real ranked board deliberately exceeds FBS capacity, a third
+of it going to FCS/JUCO/PWO. And geography is inverted: **TX/FL/CA/GA produce 42.4%** of the real
+board against 8% under the uniform `pick(r, STATES)` draw, so 13 Texas programs fight over ~68
+in-state prospects.
+
+### Instrument defects fixed, and one relocated bug
+`reclab` hand-copied the data arrays and they had rotted: `STATES` held **15 of the real 50** (in-state
+density 3.3× the shipped game) and `POS` still carried the pre-Phase-52 **`S`**, so `posAttrW('S')`
+fell back to the **linebacker** row and `pickArch(r,'S')` returned `null` for ~9.5% of every pool it
+validated — the same defect Phase 53 fixed in `simlab`. It now pulls them live; all 63 existing checks
+stay green. **`rolllab` and `legacylab` still have the stale `S`** — recorded, not fixed here.
+
+Convergence was **re-pointed off pool consumption**, which §2 shows is a supply-versus-capacity
+accounting identity rather than a health metric — which is why it drifted 92 → 91 → ~80% as
+contestedness moved and why the bar was quietly lowered 88 → 85 at Phase 51 for a shift nothing
+behavioural had caused. (Also: every generated prospect gets suitors, so the two "different"
+denominators were always the same number.) It is now a band, plus the two things real recruiting is
+tight about — almost nobody signs under 10, and the bottom decile still signs a real class.
+
+Writing the **passive-coach** scenario relocated the **Phase 44 recruiting cliff**. It does not
+reproduce: `advanceRecruiting` resolves a full 25-man, 25-blue-chip class for a passive player team,
+identical to the AI-recruited one. The cliff is created in the **app layer** (the board model plus
+`decayNeglect` eating his seeded interest), which is why `reclab` could not see it and still cannot
+while the engine is all it drives. Saturation is pinned as a **characterization check** so Phase 57
+has a number to move.
+
+### Save & validation
+**No save bump, no `SIM_MODEL` bump, no game code touched.** `reclab` 63 → **68**; `rolllab` and
+`portallab` re-run green. New artifacts: `docs/reference/cfb-recruiting.md`, plus
+`recruit-report.txt` / `simrec-report.txt` / `rec-vs-real.txt` committed and the caches gitignored.
+
+### Deliberately out of scope
+No engine change of any kind — the band-pass fix, the geography table, the supply resize and the
+saturation fix all belong to Phase 57, where they can be asserted green rather than asserted broken.
+The band-table and class-size-inversion checks are therefore **not** in `reclab` yet, on purpose: a
+gate that fails is not a gate. `22-recprofile.js` + `23-reccompare.js` hold them meanwhile.
+
+---
+
 ## Planned: non-conference series scheduling (Phase 8)
 
 Players (and AI schools) book the **non-conference** part of the schedule by agreeing to
