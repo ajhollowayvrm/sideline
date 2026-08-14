@@ -3224,9 +3224,13 @@ function simEngine(home,away,seed,opts){
           if(los+gain>=100)gain=100-los;                   // capped at the goal line (see the run)
           // Separation is a real quantity here (sepR, in rating points), so the receiver's beat can
           // say WHY he was open rather than asserting it.
-          beat(pressed?'throws on the run':sepR>4?nm(rec)+' has a step':deepW>=1.3?'takes a shot downfield':'steps up');
+          // Beats are OPTIONAL, and a routine snap should say less than a dramatic one. `beat(null)`
+          // is a no-op, so a checkdown reads "drops back … COMPLETE to X for 5" in two, while a
+          // pressured deep shot into contested coverage runs to five or six.
+          beat(pressed?'throws on the run':sepR>4?nm(rec)+' has a step':deepW>=1.3?'takes a shot downfield':null);
+          beat(dCTH>5?nm(rec)+' goes up and gets it':dCTH<-5?'contested at the catch point':null);
           beat('COMPLETE to '+nm(rec)+' for '+gain+(cov?' — over '+nm(cov):''));
-          if(gain>=20)beat('and he is GONE');
+          beat(gain>=25?'and he is GONE':gain>=15?'into the open field':null);
           hero=rec;
           add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
@@ -3244,7 +3248,7 @@ function simEngine(home,away,seed,opts){
           time+=PM.secIncomp; tackled=false; add(qb&&qb.id,'pAtt'); add(cov&&cov.id,'cvTgt'); txt=nm(qb)+' incomplete';
           beat(pressed?'has to get rid of it'
             :sepR<-4?nm(cov)+' has him blanketed'
-            :deepW>=1.3?'launches it deep for '+nm(rec):'fires for '+nm(rec));
+            :deepW>=1.3?'launches it deep for '+nm(rec):null);
           beat('INCOMPLETE');
           // §7: the interception reads PRESSURE. A throw made with a rusher arriving is a different
           // throw, and this is the last place the pocket state was not being carried through — which
@@ -3296,9 +3300,11 @@ function simEngine(home,away,seed,opts){
         // beats say which stage decided it. pushR is the line's contest and is known before the draw.
         beat(nm(rb)+(pkg==='heavy'?' behind the heavy set':dcall==='run'?' into a stacked box':' takes the handoff'));
         beat(gain<=0?(pushR<-2?'no push up front':'met in the backfield')
-          :gain<=3?(breakR>3?'shakes the first man':'wrapped up quickly')
-          :gain<=9?(pushR>2?'the line moves them off the ball':'slips through the crease')
-          :'into the second level');
+          :gain<=3?null
+          :gain<=9?(pushR>2?'the line moves them off the ball':null)
+          :'through the hole');
+        beat(gain>=4&&breakR>3?'shakes the first man':null);
+        beat(gain>=12?'into the second level':null);
         beat(gain<0?'STOPPED for '+gain:gain===0?'no gain':gain>=15?'BREAKS FREE for '+gain:'gains '+gain);
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
         if(!scored && r()<clamp(PM.fumRate*(1+PC.fumMul*press)+AT.awrFum*AD(rb,oP.rushA,fr,dP.frontA,'awr')+AT.carFum*ADX(rb,oP.rushA,'car',fr,dP.frontA,'tkl'),0.002,0.05)){ turnover=true; toKind='fum'; toBy=fr; txt=nm(rb)+' FUMBLES — lost'; }
@@ -3343,7 +3349,10 @@ function simEngine(home,away,seed,opts){
         L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true,undefined,los,bt);
         return {nextLos:25,time};
       }
-      if(tackled){ const t=wpick(dP.tkl,r); add(t&&t.id,'tkl'); }
+      if(tackled){ const t=wpick(dP.tkl,r); add(t&&t.id,'tkl');
+        // Named on the plays where it means something — a stop in the backfield, or a chase-down
+        // after a big gain. On a routine four-yard carry it is noise.
+        if(t&&(gain<=0||gain>=10))beat((gain<=0?'brought down by ':'run down by ')+nm(t)); }
       if(turnover){
         // Phase 54: turnovers are RETURNED. `keep` tells the caller NOT to swap possession — the
         // scoring defense kicks off, so the ball goes back to the team that just turned it over,
@@ -6594,13 +6603,30 @@ function beatBody(e){
   });
   return body;
 }
+// How long one beat holds the screen before the next arrives. A play should feel like it DEVELOPS —
+// the snap, then the pocket, then the throw — so this is deliberately near a second rather than the
+// flicker a fade normally gets. `fast` collapses the whole line at once.
+const BEAT_MS=900, BEAT_GAP=800;
+// Total time a line owns the screen: one beat's worth per beat, plus a gap before the next snap.
+// Derived from the actual beat count, so a two-beat checkdown moves on quickly and a six-beat
+// scramble-and-catch gets the room it needs — the pacing varies because the PLAY varied.
+function beatSpan(e){ return e&&e.bt&&e.bt.length?(e.bt.length-1)*BEAT_MS+BEAT_GAP:0; }
 // Fade the beats in left to right. Purely visual — the log is already committed, so this changes
-// nothing about the result, and `fast` mode collapses it to nothing.
+// nothing about the result. Timers are tracked so leaving the viewer mid-play cancels them rather
+// than writing into a screen that is gone.
+let beatTimers=[];
+function clearBeatTimers(){ beatTimers.forEach(clearTimeout); beatTimers=[]; }
 function revealBeats(line,fast){
   const spans=[...line.querySelectorAll('span[style*="opacity"]')];
   if(!spans.length)return;
-  if(fast||!spans.length){spans.forEach(s=>s.style.opacity='1');return;}
-  spans.forEach((sp,i)=>setTimeout(()=>{sp.style.opacity='1';},i*70));
+  if(fast){spans.forEach(s=>s.style.opacity='1');return;}
+  spans[0].style.opacity='1';
+  // spans alternate [beat, ' … ', beat, …] — step the separator in with the beat that follows it
+  for(let i=1;i<spans.length;i++){
+    const at=Math.ceil(i/2)*BEAT_MS-(i%2?120:0);
+    beatTimers.push(setTimeout(()=>{spans[i].style.opacity='1';
+      const f=$('#g-feed'); if(f)f.scrollTop=f.scrollHeight;},at));
+  }
 }
 function applyGameEvent(e){
   const hs=$('#g-hs'),as=$('#g-as'),q=$('#g-q');
@@ -6612,12 +6638,15 @@ function scheduleGameTick(){
   const G=UI.game; if(!G||G.done)return;
   if(G.idx>=G.log.length){gameDone();return;}
   const e=G.log[G.idx];
-  const base=e.kind==='score'?760:e.kind==='drive'?260:e.kind==='final'?10
-    :230+(e.bt?Math.min(e.bt.length,5)*55:0);      // let a multi-beat call finish before the next snap
-  gameTimer=setTimeout(()=>{ if(UI.view!=='game'||!UI.game){gameTimer=null;return;} applyGameEvent(e); UI.game.idx++; scheduleGameTick(); }, G.fast?Math.max(35,base/4):base);
+  // A line with beats owns the screen until its last beat has landed; everything else keeps the
+  // short cadence it had. This is what makes the feed breathe at the pace of the play rather than
+  // at a fixed tick.
+  const base=e.bt&&e.bt.length?beatSpan(e)
+    :e.kind==='score'?760:e.kind==='drive'?260:e.kind==='final'?10:230;
+  gameTimer=setTimeout(()=>{ if(UI.view!=='game'||!UI.game){gameTimer=null;clearBeatTimers();return;} applyGameEvent(e); UI.game.idx++; scheduleGameTick(); }, G.fast?Math.max(35,base/8):base);
 }
-function gameDone(){ if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} if(UI.game){UI.game.done=true;render();} }
-function skipGame(){ const G=UI.game; if(!G)return; if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} G.idx=G.log.length; G.done=true; render(); }
+function gameDone(){ if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} clearBeatTimers(); if(UI.game){UI.game.done=true;render();} }
+function skipGame(){ const G=UI.game; if(!G)return; if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} clearBeatTimers(); G.idx=G.log.length; G.done=true; render(); }
 /* ============================================================
    PLAY-CALLING — the interactive field (Phase 22)
    The classic viewer animates a pre-baked log; here the COACH calls plays. The pure simEngine is
@@ -6668,7 +6697,7 @@ function runInteractive(){
   G.idx=G.log.length; render();
 }
 function enterInteractive(){
-  if(gameTimer){clearTimeout(gameTimer);gameTimer=null;}
+  if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} clearBeatTimers();
   const G=UI.game; if(!G)return;
   Object.assign(G,{interactive:true,mode:G.mode||'key',decisions:[],log:[],pending:null,done:false,simRest:false,halfShown:false,atHalf:false,prevBallX:null,plan:{shadow:{},boost:{}},adjusts:[]});
   runInteractive();
@@ -6978,7 +7007,7 @@ function renderInteractiveGame(app){
   requestAnimationFrame(()=>{const f=$('#g-feed');if(f)f.scrollTop=f.scrollHeight;});
 }
 function finishGame(){
-  if(gameTimer){clearTimeout(gameTimer);gameTimer=null;}
+  if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} clearBeatTimers();
   const G=UI.game; if(!G)return; const replay=G.replay, gid=G.gameId, post=G.post, champ=G.champ, interactive=G.interactive, calls=G.decisions, adjusts=G.adjusts; UI.game=null;
   if(replay){ UI.view='season'; render(); return; }
   if(interactive){const g=findAnyGame(gid); if(g){g.calls=(calls||[]).slice(); if(adjusts&&adjusts.length)g.adjusts=adjusts.slice();}}   // bank calls + adjustments → commit reproduces the coached game
@@ -7008,7 +7037,12 @@ function renderGame(app){
     cont.onclick=finishGame;ctr.append(cont);
   }else{
     const skip=el('button','btn line','Skip to result');skip.dataset.tid='game-skip';skip.onclick=skipGame;
-    const fast=el('button','btn ghost',G.fast?'Fast ✓':'Fast');fast.dataset.tid='game-fast';fast.onclick=()=>{G.fast=!G.fast;render();};
+    const fast=el('button','btn ghost',G.fast?'Fast ✓':'Fast');fast.dataset.tid='game-fast';fast.onclick=()=>{G.fast=!G.fast;
+      // flush the beats already in flight, or the line you're looking at keeps its slow cadence
+      // after you've asked for fast
+      if(G.fast){clearBeatTimers();document.querySelectorAll('#g-feed span[style*="opacity"]').forEach(sp=>sp.style.opacity='1');}
+      if(gameTimer){clearTimeout(gameTimer);gameTimer=null;scheduleGameTick();}
+      render();};
     ctr.append(skip,fast);
   }
   v.append(ctr);

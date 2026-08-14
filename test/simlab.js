@@ -188,10 +188,19 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   const playish = lg.filter(e => (e.kind === 'play' || e.kind === 'score') && !/^🚩|^Punt|field goal|^END OF|Turnover on downs/.test(e.text));
   check('Play log: every run/pass snap carries its beats', withBt.length >= playish.length * 0.95 && withBt.length > 30,
     `${withBt.length} beat lines / ${playish.length} snaps`);
-  check('Play log: a beat sequence opens with the snap and ends on the outcome',
+  // Opens on the snap and CONTAINS the outcome — not "ends on" it, because a play can carry beats
+  // after the result (who ran him down, whether it moved the chains), which is how a call actually
+  // finishes. The beat count is deliberately variable, so the gate asserts the shape, not a length.
+  const OUTCOME = /COMPLETE|INCOMPLETE|SACKED|scrambles for|gains |no gain|STOPPED|BREAKS FREE|INTERCEPTED/;
+  check('Play log: a beat sequence opens with the snap and states an outcome',
     withBt.every(e => /drops back|takes the handoff|fakes the handoff|sets up the screen|looks deep|spreads them out|behind the heavy set|into a stacked box/.test(e.bt[0]))
-    && withBt.every(e => /COMPLETE|INCOMPLETE|SACKED|scrambles for|gains |no gain|STOPPED|BREAKS FREE|INTERCEPTED|TOUCHDOWN|FIRST DOWN|TURNOVER/.test(e.bt[e.bt.length - 1])),
+    && withBt.every(e => e.bt.some(t => OUTCOME.test(t))),
     withBt[0] ? withBt[0].bt.join(' … ') : '');
+  // …and the length genuinely varies with what happened, which is the point of beats over one string
+  const lens = new Set(withBt.map(e => e.bt.length));
+  check('Play log: beat count varies with the play (routine short, dramatic long)',
+    lens.size >= 4 && Math.min(...lens) <= 2 && Math.max(...lens) >= 5,
+    `${Math.min(...lens)}–${Math.max(...lens)} beats, ${lens.size} distinct lengths`);
   // the beats are rendered into the DOM as text; a name from an imported roster must not be able to
   // smuggle markup through them (index.html's `el` helper assigns innerHTML)
   check('Play log: beats carry no markup', withBt.every(e => e.bt.every(t => !/[<>]/.test(t))));
