@@ -45,7 +45,7 @@ function block(start, end, label) {
 // then LEGACY (the model under test). Order matters: later blocks reference earlier helpers.
 eval(block('// === TRAIT ENGINE (Phase 10) START ===', '// === TRAIT ENGINE (Phase 10) END ===', 'TRAIT ENGINE'));
 // Phase 51: the rollover block's development path moves the six-attribute profile.
-eval(block('// === ATTRIBUTE ENGINE (Phase 51) START ===', '// === ATTRIBUTE ENGINE (Phase 51) END ===', 'ATTRIBUTE ENGINE'));
+eval(block('// === ATTRIBUTE ENGINE (Phase 52) START ===', '// === ATTRIBUTE ENGINE (Phase 52) END ===', 'ATTRIBUTE ENGINE'));
 eval(block('// === ROLLOVER ENGINE (Phase 5) START ===', '// === ROLLOVER ENGINE (Phase 5) END ===', 'ROLLOVER ENGINE'));
 eval(block('// === LEGACY ENGINE (Phase 11) START ===', '// === LEGACY ENGINE (Phase 11) END ===', 'LEGACY ENGINE'));
 

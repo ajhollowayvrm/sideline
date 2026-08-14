@@ -15,6 +15,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > - `docs/phases/penalties.md` — penalties: the roster-driven foul model, catalog, culprits (Phase 49)
 > - `docs/phases/clutch.md` — big moments: pressure, clutch-as-variance, what the data forbids (Phase 50)
 > - `docs/phases/attributes.md` — the six-attribute ability model, OVR as a scheme-weighted readout (Phase 51)
+> - `docs/phases/attributes-2.md` — position-specific attributes, archetypes, purity (Phase 52)
 >
 > **Measured reality:** `docs/reference/cfb-averages.md` holds real FBS averages computed from 3,944
 > games (2021–2025) — national, by rank matchup, and by mismatch size — plus where `simEngine` sits
@@ -26,7 +27,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > (r=0.078) so there is no such thing as a clutch team, that late-and-close football genuinely
 > tightens, and that kickers measurably do not choke.
 >
-> **All roadmap phases 1–51 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–52 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -161,6 +162,41 @@ still serves it with zero config.
   separate from `stars`, which drives mechanics). Save v47, `SIM_MODEL` 6 — pre-v6 games decline
   replay; the migration is a **real mutation** of ~11.3k players, each keeping the `ov` he had.
   *(→ `docs/phases/attributes.md`, incl. the measured post-phase drift and what the tuning pass owns.)*
+
+- **Phase 52 — Position-specific attributes (steps 2–3a).** Six generic attributes could not express
+  what the directive asked for: a tackle who pass-sets against speed rushers and a guard who anchors
+  against bull rushers were both "strength". Now **25 attributes, ~12 carried per position**, with
+  `POS_ATTR_W` the single source of truth for *both* the weighting and **which attributes a player even
+  has**. `S` splits into real **FS/SS** codes. **71 archetypes** across 15 positions — named shapes,
+  auto-balanced to weighted mean zero under their own row, so picking one changes *what* a player is
+  and never *how good* — plus **purity**, a per-player multiplier that makes variation run ALONG the
+  archetype axis rather than orthogonal to it (a 0.4 merely leans pocket-passer; a 1.4 is an immobile
+  savant). Technique generates **correlated** with its athletic basis, and physical attributes resist
+  an upward correction, so an elite player's holes fill in on the coachable side — Brady never got
+  fast. **Every one of the 25 reaches a play**: separation is `rte` vs `mcv`/`zcv`, the pocket `pbk` vs
+  `prs`, the pile `btk` vs `tkl` plus `rbk` vs `rst`, ball security `car`, the catch point `cth`, and
+  kickers finally have `kpw`/`kac` instead of borrowing str/awr. Two new contest forms carry that:
+  `ADX` (per-matchup, cross-attribute — each half is still a deviation from its own pool, so mean-zero
+  survives) and `AUX` (unit-vs-unit, cross-attribute — the naive form would carry the league-wide level
+  difference between two *different* stats as a constant, so it subtracts the mirror contest and comes
+  out mean-zero **within every game**). Attributes move into a packed per-position array `p.at` (codec
+  `_sv:2`) rather than 13 mostly-null columns. Save **v48** — a real mutation of every player, each
+  keeping the `ov` he had; `SIM_MODEL` 7, so pre-Phase-52 games decline replay. **The envelope holds**:
+  22.6→22.8 pts/team, margin 20.9→20.6, Y/C 5.20→5.24, sacks 1.96→1.93 — all within ~1–2% of Phase 51,
+  which is the checkpoint the phase doc demands of this step. Excess kurtosis **−0.154 → +0.037**: the
+  archetype mixture bought a fatter tail with nothing fitted, ~40% of the way to the measured +0.319.
+  Still open: the architectural inversion (compounding contests, calibration to the 8-bucket curve, the
+  new gates) — steps 3b–5. *(→ `docs/phases/attributes-2.md`; `tools/schemesim.js` for what a scheme is
+  worth now.)*
+
+  **One trap worth remembering.** `tilt()` — "how much of a specialist is he", used for the singletons
+  with no pool to deviate from — measured a player against the flat mean of his own attributes. That is
+  genuinely mean-zero under six generic attributes and is **not** under anchored position rows, where a
+  quarterback's `tha` carries 20% of his row and sits above his own average by construction. Left
+  uncorrected it halved the interception rate (0.92 → 0.47) and cut sacks 27% before anything else was
+  wrong. `attrTiltBase(pos,k)` is the correction, and it is a **function** rather than a const table
+  because the node labs extract engine blocks with a sloppy-mode eval that leaks function declarations
+  but not block-scoped consts.
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week

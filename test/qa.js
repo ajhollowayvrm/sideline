@@ -192,19 +192,18 @@ function startServer() {
   // edit a clearly-backup player to a max rating → offense rating must rise
   await page.locator('[data-tid="sheet-bg"]').click({ position: { x: 5, y: 5 } }).catch(() => {});
   await page.waitForTimeout(100);
-  const wrId = await page.evaluate(() => { const r = controlled().roster.filter(p => p.pos === 'WR').sort((a, b) => b.so - a.so)[0]; return r.id; });
+  const wrId = await page.evaluate(() => { const r = controlled().roster.filter(p => p.pos === 'WR').sort((a, b) => a.so - b.so)[0]; return r.id; });
   const offBefore = await page.evaluate(() => controlled().ratings.off);
-  await page.evaluate(id => { const p = controlled().roster.find(x => x.id === id); p.ov = 40; controlled().ratings = teamRatings(controlled().roster, controlled().staff); }, wrId);
   await page.locator(`[data-id="${wrId}"]`).click();
   await page.waitForTimeout(120);
   await page.getByRole('button', { name: 'Edit player' }).click();
   await page.waitForTimeout(120);
-  await page.getByLabel('Overall (40-99)').fill('99');
-  await page.getByLabel('Potential').fill('99');
+  await page.getByLabel('Overall (40-99)').fill('40');
+  await page.getByLabel('Potential').fill('40');
   await page.getByRole('button', { name: 'Save player' }).click();
   await page.waitForTimeout(150);
   const offAfter = await page.evaluate(() => controlled().ratings.off);
-  check('Edit player updates ratings live', offAfter > offBefore, `off ${offBefore} → ${offAfter}`);
+  check('Edit player updates ratings live', offAfter < offBefore, `off ${offBefore} → ${offAfter}`);
 
   // ---------- TEAM: COACHES ----------
   await page.locator('[data-tid="tab-coaches"]').click();
@@ -350,7 +349,7 @@ function startServer() {
       check('Phase 24: the in-game adjustments sheet opens', sheetOK);
       await page.evaluate(() => { const G = UI.game, me = S.teamId, opp = teamById(G.home === me ? G.away : G.home), t = controlled();
         const rc = opp.roster.filter(p => p.pos === 'WR').sort((a, b) => a.so - b.so)[0]; const db = t.roster.filter(p => p.pos === 'CB').sort((a, b) => a.so - b.so)[1] || t.roster.filter(p => p.pos === 'CB')[0];
-        G.plan.shadow[rc.pos + (rc.so || 0)] = db.id; const any = t.roster.find(p => p.pos === 'S'); if (any) G.plan.boost[any.id] = 4; G.plan.calm = true; });
+        G.plan.shadow[rc.pos + (rc.so || 0)] = db.id; const any = t.roster.find(p => p.pos === 'FS' || p.pos === 'SS'); if (any) G.plan.boost[any.id] = 4; G.plan.calm = true; });
       await page.locator('[data-tid="adjust-apply"]').click();
       await page.waitForTimeout(70);
       const adj = await page.evaluate(() => ({ n: (UI.game.adjusts || []).length, hasShadow: (UI.game.adjusts || []).some(a => Object.keys(a.plan.shadow || {}).length), hasBoost: (UI.game.adjusts || []).some(a => Object.keys(a.plan.boost || {}).length), hasCalm: (UI.game.adjusts || []).some(a => a.plan.calm) }));
@@ -888,7 +887,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 47 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 48 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -911,7 +910,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).first().click();   // slot 2 is now the only save
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v47)', mig.v === 47, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v48)', mig.v === 48, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -1383,7 +1382,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 47', roPost.version === 47, 'v' + roPost.version);
+  check('Rollover: save version bumped to 48', roPost.version === 48, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);

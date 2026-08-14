@@ -197,7 +197,7 @@ const LN=["Carter","Williams","Hayes","Brooks","Robinson","Bennett","Foster","Je
 // roster (~84/team); ratings key off the top 11 per side, so deep players don't inflate them.
 const POS=[["QB","off",4,1.4],["RB","off",5,1],["WR","off",11,1.2],["TE","off",5,.8],
 ["OT","off",7,1],["OG","off",6,.9],["C","off",3,.8],
-["DE","def",6,1.1],["DT","def",6,1],["LB","def",10,1.1],["CB","def",9,1.1],["S","def",8,1],
+["DE","def",6,1.1],["DT","def",6,1],["LB","def",10,1.1],["CB","def",9,1.1],["FS","def",4,1],["SS","def",4,1],
 ["K","st",2,.4],["P","st",2,.3]];
 const CLASSES=["FR","RS-FR","SO","RS-SO","JR","RS-JR","SR","RS-SR"];
 // Coordinators: fixed slots, one per side. [code, title, side]
@@ -207,7 +207,7 @@ const COORD_ROLES=[["OC","Offensive Coordinator","off"],["DC","Defensive Coordin
 const POS_COACHES=[["QB","QBs Coach","QB",["QB"]],["RB","RBs Coach","RB",["RB"]],
 ["WR","Pass-Catchers Coach","WR/TE",["WR","TE"]],["OL","O-Line Coach","OL",["OT","OG","C"]],
 ["DL","D-Line Coach","DL",["DE","DT"]],["LB","LBs Coach","LB",["LB"]],
-["DB","DBs Coach","DB",["CB","S"]]];
+["DB","DBs Coach","DB",["CB","FS","SS"]]];
 
 const ARCHETYPES=[
 ["Recruiter","Closes on talent. Recruiting boards open wider and visits convert harder."],
@@ -448,113 +448,468 @@ function schemeDelta(offTeam,defTeam){
 }
 // === SCHEME ENGINE (Phase 21) END ===
 
-// === ATTRIBUTE ENGINE (Phase 51) START ===
+// === ATTRIBUTE ENGINE (Phase 52) START ===
 // Attributes are the ability model; OVERALL is a derived READOUT of them, weighted by the system the
-// player is in. Before this phase `ov` WAS the model and spd/str/awr were `ov ± noise` that nothing
-// read — six separate generation sites each related them to `ov` differently, so deep backups came
-// out fake-athletic by up to 26 points, blue-chip freshmen arrived with attributes far above their
-// overall, and an imported roster without the fields got no spread at all. One derivation replaces
-// all six.
+// player is in. Phase 51 established that with SIX generic attributes for every position. Phase 52
+// gives each position its OWN VOCABULARY — 25 attributes, ~12 carried per position — because six
+// generic ones cannot express what the directive asks for: a tackle who pass-sets against speed
+// rushers is a different player from a guard who anchors against bull rushers, and both were "str".
 //
-// The rule, inherited from Phases 10/21/23/50: attributes REDISTRIBUTE ability, they never add it.
-// A profile is its owner's ability plus a tilt whose WEIGHTED mean is zero, so `ovrBase` returns
-// exactly the ability he was generated with — being fast costs strength or awareness. Every sim
-// channel then reads a DEVIATION from its pool's weighted mean (the Phase 23 trick), so the measured
-// scoring envelope is preserved by construction rather than by fitting.
+// The rule is unchanged and still enforced by construction: attributes REDISTRIBUTE ability, they
+// never add it. A profile is its owner's ability plus a tilt whose WEIGHTED mean is zero, so
+// `ovrBase` returns exactly the ability he was generated with — arm strength costs mobility. Every
+// sim channel then reads a DEVIATION from its pool's mean (the Phase 23 trick), so the measured
+// scoring envelope is preserved rather than fitted.
 //
-// Depends only on clamp (no DOM, no S, no POS) so the labs can eval it standalone.
-const ATTRS=['spd','agi','str','awr','bal','dur'];
-const ATTR_LABEL={spd:'Speed',agi:'Agility',str:'Strength',awr:'Awareness',bal:'Ball Skills',dur:'Durability'};
+// Depends only on clamp/ri (no DOM, no S, no POS) so the labs can eval it standalone.
+const ATTRS=['spd','acc','agi','str','dur','adp','awr','iq','thp','tha','tor',
+             'elu','btk','car','cth','rte','rbk','pbk','prs','rst','mcv','zcv','tkl','kpw','kac'];
+const ATTR_LABEL={spd:'Speed',acc:'Acceleration',agi:'Agility',str:'Strength',dur:'Durability',adp:'Adaptability',
+  awr:'Awareness',iq:'Football IQ',thp:'Throw Power',tha:'Throw Accuracy',tor:'Throw on Run',
+  elu:'Elusiveness',btk:'Break Tackle',car:'Carrying',cth:'Catching',rte:'Route Running',
+  rbk:'Run Block',pbk:'Pass Block',prs:'Pass Rush',rst:'Run Stop',
+  mcv:'Man Coverage',zcv:'Zone Coverage',tkl:'Tackling',kpw:'Kick Power',kac:'Kick Accuracy'};
+// Short labels for the roster screen, where a 25-word vocabulary will not fit.
+const ATTR_ABBR={spd:'SPD',acc:'ACC',agi:'AGI',str:'STR',dur:'DUR',adp:'ADP',awr:'AWR',iq:'IQ',thp:'THP',tha:'THA',
+  tor:'TOR',elu:'ELU',btk:'BTK',car:'CAR',cth:'CTH',rte:'RTE',rbk:'RBK',pbk:'PBK',prs:'PRS',rst:'RST',
+  mcv:'MCV',zcv:'ZCV',tkl:'TKL',kpw:'KPW',kac:'KAC'};
 const ATTR_DEF=60;
-function attrVal(p,k){const v=p&&p[k];return v!=null?v:((p&&p.ov)!=null?p.ov:ATTR_DEF);}
-// What each position IS, as a weighting over the six. Every row sums to 1. Read them as "what makes
-// a good one": an interior lineman is mostly raw power (the directive — his most important stat), a
-// corner is speed/agility/awareness, a quarterback is overwhelmingly football IQ. Kickers and
-// punters need no special attributes — leg power is STR, placement and accuracy are AWR.
+// What each position IS, as a weighting over the attributes it CARRIES. Rows sum to 1, and the
+// presence of a key is what decides whether the attribute is stored for that position at all — one
+// table, not two. `adp` is carried everywhere but weighted 0: adaptability is about playing SOMEWHERE
+// ELSE (see posFit), so it must never make a player better at his own spot.
 const POS_ATTR_W={
-  QB:{spd:.10,agi:.12,str:.12,awr:.40,bal:.20,dur:.06},
-  RB:{spd:.24,agi:.22,str:.20,awr:.12,bal:.16,dur:.06},
-  WR:{spd:.26,agi:.24,str:.10,awr:.14,bal:.20,dur:.06},
-  TE:{spd:.12,agi:.14,str:.26,awr:.18,bal:.24,dur:.06},
-  OT:{spd:.05,agi:.18,str:.40,awr:.31,bal:.00,dur:.06},
-  OG:{spd:.03,agi:.12,str:.52,awr:.27,bal:.00,dur:.06},
-  C :{spd:.03,agi:.12,str:.45,awr:.34,bal:.00,dur:.06},
-  DE:{spd:.18,agi:.18,str:.34,awr:.20,bal:.04,dur:.06},
-  DT:{spd:.06,agi:.10,str:.55,awr:.21,bal:.02,dur:.06},
-  LB:{spd:.16,agi:.16,str:.22,awr:.30,bal:.10,dur:.06},
-  CB:{spd:.26,agi:.24,str:.06,awr:.24,bal:.14,dur:.06},
-  S :{spd:.20,agi:.18,str:.12,awr:.32,bal:.12,dur:.06},
-  K :{spd:.02,agi:.02,str:.34,awr:.56,bal:.00,dur:.06},
-  P :{spd:.02,agi:.02,str:.38,awr:.52,bal:.00,dur:.06},
-};
-// How a SYSTEM re-weights the job. Deviations from the position row above, each summing to EXACTLY
-// zero so no scheme is a free upgrade; an unlisted (scheme,position) pair is neutral. This is what
-// makes installing a scheme re-rate the roster that runs it — a zone corner really does need
-// awareness more than speed, and his OVERALL now says so.
-const SCHEME_ATTR_W={
-  'Air Raid':{QB:{awr:.04,bal:.04,spd:-.04,str:-.04},WR:{agi:.06,bal:.04,spd:-.06,str:-.04},
-              OT:{awr:.06,str:-.06},OG:{awr:.06,str:-.06},C:{awr:.06,str:-.06}},
-  'Spread':{QB:{spd:.04,agi:.02,str:-.06},WR:{agi:.04,spd:-.04}},
-  'Spread-Option':{QB:{spd:.10,agi:.06,awr:-.10,bal:-.06},RB:{spd:.06,str:-.06},
-              OT:{agi:.08,str:-.08},OG:{agi:.08,str:-.08},C:{agi:.08,str:-.08}},
-  'Pro Style':{},
-  'Smashmouth':{RB:{str:.10,spd:-.06,agi:-.04},TE:{str:.10,bal:-.06,spd:-.04},
-              OT:{str:.10,agi:-.06,awr:-.04},OG:{str:.10,agi:-.06,awr:-.04},C:{str:.10,agi:-.06,awr:-.04}},
-  'West Coast':{QB:{awr:.06,bal:.02,str:-.08},WR:{agi:.08,bal:.04,spd:-.12}},
-  'Multiple':{},
-  '4-3':{},
-  '3-4':{DT:{str:.08,agi:-.08},LB:{awr:.06,str:.02,spd:-.08}},
-  'Nickel/Cover-3':{CB:{awr:.10,bal:.06,spd:-.08,agi:-.08},S:{awr:.06,bal:.04,str:-.10}},
-  'Bear':{CB:{agi:.10,spd:.06,awr:-.10,bal:-.06},DE:{spd:.06,str:.02,awr:-.08},DT:{str:.08,awr:-.08}},
-  'Tampa-2':{CB:{awr:.10,bal:.04,spd:-.06,agi:-.08},LB:{spd:.08,agi:.04,str:-.12},S:{awr:.08,spd:-.08}},
+  // reading a defence is the job; accuracy over arm
+  QB:{tha:.20,iq:.16,awr:.12,thp:.12,tor:.08,agi:.06,elu:.06,spd:.05,acc:.04,str:.04,car:.03,btk:.02,dur:.02,adp:0},
+  // vision + make him miss + finish; blocks and catches a little
+  RB:{elu:.16,spd:.14,acc:.12,agi:.12,btk:.12,str:.08,awr:.08,car:.06,cth:.05,pbk:.03,rte:.02,rbk:.01,dur:.01,adp:0},
+  // hands and routes first, then the athleticism that creates separation
+  WR:{cth:.22,rte:.20,spd:.16,acc:.10,agi:.10,awr:.08,elu:.05,str:.04,btk:.02,car:.02,dur:.01,adp:0},
+  // "basically WR + OL"
+  TE:{cth:.18,rbk:.14,rte:.12,str:.12,pbk:.10,awr:.08,spd:.06,agi:.06,acc:.05,btk:.04,elu:.02,car:.02,dur:.01,adp:0},
+  // "a tackle needs more agility and pass-block technique because they go against speed rushers"
+  OT:{pbk:.30,str:.22,rbk:.18,agi:.12,awr:.10,acc:.04,spd:.02,dur:.02,adp:0},
+  // "a guard needs more pure strength because they face tackles and bull rushers"
+  OG:{str:.32,rbk:.26,pbk:.22,awr:.10,agi:.05,acc:.02,spd:.01,dur:.02,adp:0},
+  // the centre makes the line calls
+  C :{str:.24,rbk:.20,pbk:.20,iq:.14,awr:.10,agi:.06,acc:.02,spd:.01,dur:.03,adp:0},
+  DE:{prs:.26,str:.20,rst:.16,acc:.10,agi:.08,awr:.08,spd:.06,tkl:.04,dur:.02,adp:0},
+  DT:{str:.32,rst:.24,prs:.18,awr:.08,acc:.06,agi:.05,tkl:.04,spd:.01,dur:.02,adp:0},
+  LB:{tkl:.16,awr:.14,iq:.12,rst:.12,zcv:.10,mcv:.08,str:.08,spd:.06,agi:.05,acc:.04,prs:.03,cth:.01,dur:.01,adp:0},
+  // "awareness is great; speed is big for deep routes"
+  CB:{mcv:.22,spd:.18,awr:.14,zcv:.12,agi:.10,acc:.08,cth:.08,tkl:.04,str:.02,dur:.02,adp:0},
+  // "a free safety needs speed and awareness as they zone cover a lot of space"
+  FS:{zcv:.20,awr:.16,spd:.14,iq:.12,mcv:.10,cth:.08,acc:.07,agi:.06,tkl:.05,str:.01,dur:.01,adp:0},
+  // "strong safeties are more about tackling and occasionally coverage"
+  SS:{tkl:.20,str:.14,mcv:.13,awr:.13,zcv:.11,iq:.08,acc:.06,agi:.06,spd:.05,cth:.03,dur:.01,adp:0},
+  K :{kac:.52,kpw:.34,awr:.08,str:.04,dur:.02,adp:0},
+  P :{kpw:.46,kac:.40,awr:.08,str:.04,dur:.02,adp:0},
 };
 function posAttrW(pos){return POS_ATTR_W[pos]||POS_ATTR_W.LB;}
+function posAttrs(pos){return Object.keys(posAttrW(pos));}
+// How a SYSTEM re-weights the job. Deviations from the position row above, each summing to ~0 so no
+// scheme is a free upgrade; an unlisted (scheme,position) pair is neutral. This is what makes
+// installing a scheme re-rate the roster that runs it. Phase 51 could only nudge six generic
+// attributes here and the whole lever measured a single rating point; over the real vocabulary a
+// system can ask for what it actually needs — the Air Raid wants a line that pass-sets and a
+// quarterback who is accurate, and says so.
+const SCHEME_ATTR_W={
+  'Air Raid':{QB:{tha:.06,iq:.04,thp:-.04,str:-.03,btk:-.03},WR:{rte:.06,cth:.04,spd:-.05,str:-.05},
+    OT:{pbk:.08,rbk:-.08},OG:{pbk:.08,rbk:-.08},C:{pbk:.08,rbk:-.08},
+    RB:{cth:.06,rte:.04,btk:-.07,rbk:-.03},TE:{cth:.06,rte:.05,rbk:-.06,pbk:-.05}},
+  'Spread':{QB:{spd:.04,acc:.03,elu:.03,str:-.04,thp:-.06},WR:{rte:.04,acc:.03,str:-.04,btk:-.03}},
+  'Spread-Option':{QB:{spd:.08,acc:.06,elu:.06,tha:-.08,thp:-.06,iq:-.06},
+    RB:{spd:.05,acc:.05,elu:.04,btk:-.07,cth:-.04,pbk:-.03},
+    OT:{agi:.08,acc:.04,str:-.06,pbk:-.06},OG:{agi:.08,acc:.04,str:-.06,pbk:-.06},C:{agi:.08,acc:.04,str:-.06,pbk:-.06}},
+  'Pro Style':{},
+  'Smashmouth':{RB:{btk:.08,str:.06,car:.03,elu:-.06,spd:-.06,cth:-.05},
+    TE:{rbk:.10,pbk:.04,str:.03,cth:-.09,rte:-.08},
+    OT:{rbk:.10,str:.05,pbk:-.10,agi:-.05},OG:{rbk:.08,str:.06,pbk:-.10,agi:-.04},C:{rbk:.08,str:.06,pbk:-.10,agi:-.04},
+    WR:{str:.06,btk:.05,cth:.02,spd:-.06,acc:-.04,rte:-.03}},
+  'West Coast':{QB:{tha:.08,iq:.04,awr:.02,thp:-.08,spd:-.03,elu:-.03},
+    WR:{rte:.08,cth:.05,agi:.04,spd:-.10,btk:-.04,str:-.03},
+    TE:{cth:.06,rte:.05,rbk:-.06,pbk:-.05},RB:{cth:.06,rte:.04,pbk:.02,btk:-.06,str:-.06}},
+  'Multiple':{},
+  '4-3':{},
+  '3-4':{DT:{str:.06,rst:.06,prs:-.08,acc:-.04},LB:{prs:.05,rst:.04,iq:.03,mcv:-.06,zcv:-.06},
+    DE:{rst:.06,str:.04,prs:-.06,acc:-.04}},
+  'Nickel/Cover-3':{CB:{zcv:.08,awr:.05,cth:.03,mcv:-.10,str:-.03,tkl:-.03},
+    FS:{zcv:.08,awr:.04,mcv:-.06,tkl:-.04,str:-.02},SS:{zcv:.08,cth:.04,mcv:-.03,tkl:-.05,str:-.04}},
+  'Bear':{DT:{prs:.06,str:.05,rst:-.06,awr:-.05},DE:{prs:.08,acc:.05,rst:-.07,str:-.06},
+    CB:{mcv:.10,agi:.04,zcv:-.10,awr:-.04},LB:{prs:.06,rst:-.03,zcv:-.03}},
+  'Tampa-2':{LB:{spd:.06,zcv:.06,acc:.04,str:-.08,rst:-.08},
+    CB:{zcv:.08,awr:.04,cth:.03,mcv:-.10,str:-.02,tkl:-.03},
+    FS:{zcv:.08,spd:.04,awr:.03,mcv:-.08,tkl:-.04,str:-.03},SS:{zcv:.08,cth:.04,mcv:-.04,tkl:-.05,str:-.03}},
+};
 // The effective weighting for a position inside a scheme: base + the scheme's deviation, floored at
-// 0 and renormalized so the row still sums to 1 and OVR stays on the same 40–99 scale as the
-// attributes themselves.
+// 0 and renormalized so the row still sums to 1 and OVR stays on the same 40-99 scale. A scheme may
+// only re-weight attributes the position already carries — asking a corner for throw power is a
+// bug, and the floor+renormalize would silently absorb it, so it is dropped explicitly.
 function schemeAttrW(pos,scheme){
   const base=posAttrW(pos), dev=(SCHEME_ATTR_W[scheme]||{})[pos];
   if(!dev)return base;
   const w={}; let s=0;
-  for(const k of ATTRS){w[k]=Math.max(0,base[k]+(dev[k]||0));s+=w[k];}
+  for(const k in base){w[k]=Math.max(0,base[k]+(base[k]!=null?(dev[k]||0):0));s+=w[k];}
   if(!s)return base;
-  for(const k of ATTRS)w[k]/=s;
+  for(const k in w)w[k]/=s;
   return w;
 }
-function ovrWith(p,w){let t=0;for(const k of ATTRS)t+=w[k]*attrVal(p,k);return clamp(Math.round(t),40,99);}
+/* ---------- technique, genetics, and the anchor ---------- */
+// Technique correlates with its athletic/mental basis — "run/pass block are technique, and technique
+// and natural athleticism go hand in hand". Also load-bearing for the fat tail: correlated attributes
+// make a bad unit COHERENTLY bad, which is what compounds into a blowout. Independent draws average
+// that away, which is exactly how Phase 51 flattened the tail (attributes.md section 9).
+const TECH_BASIS={rbk:['str','awr'],pbk:['str','agi','awr'],prs:['str','acc','agi'],rst:['str','awr'],
+  mcv:['agi','acc','spd'],zcv:['awr','iq','agi'],tkl:['str','awr'],cth:['awr'],rte:['agi','acc'],
+  elu:['agi','acc'],btk:['str'],car:['awr'],tha:['awr','iq'],thp:['str'],tor:['agi','tha'],kac:['awr'],kpw:['str']};
+const TECH_W=0.55;          // share of a technique stat driven by its basis
+// GENETIC vs COACHABLE. These five are what a player showed up with; everything else in the
+// vocabulary is technique or recognition and can be taught. Drives how a profile fills in as a player
+// approaches elite, and (Phase 52.1) what development is allowed to move: a 22-year-old gets smarter
+// and more technically sound, not faster. Brady never got fast.
+const PHYSICAL={spd:1,acc:1,agi:1,str:1,dur:1};
+const PHYS_ABSORB=0.18;     // how much of an upward correction a physical attribute will take
+const ELITE_DIV=2.6;        // how hard an archetype shape amplifies with ability on low-weight attrs
+const ANCHOR=15;
+// An attribute a position does not select for should sit LOW and vary LITTLE. A 90-overall centre is
+// not a 90-speed athlete — he is a 90 at being a centre, and nobody ever timed him. Derived from the
+// row itself rather than a second hand-maintained table, so it stays correct as weights are tuned.
+// Asymmetric on purpose: being irrelevant to the position drags an attribute down hard, being central
+// lifts it only slightly, because the centring pass already sets the player's LEVEL.
+function anchorOff(w,keys,k){return clamp(ANCHOR*(w[k]*keys.length-1),-24,6);}
+// What the anchor alone puts at each (position, attribute), measured against the player's own
+// attribute mean. The sim's `tilt` — "how much of a specialist is he", used for the singletons who
+// have no pool to deviate from (the quarterback, the kicker, the punter) — subtracts this.
+//
+// It has to, and this is the subtle cost of position-specific vocabularies. Under Phase 51's six
+// generic attributes a player's numbers were symmetric about his own mean, so "his accuracy minus
+// his own average" was genuinely mean-zero across the league. Anchoring breaks that by design: a
+// quarterback's `tha` carries 20% of his row and sits ABOVE his own average by construction, while
+// his `car` carries 3% and sits below. Left uncorrected every channel keyed off tilt picks up a
+// CONSTANT rather than a deviation — measured, that alone halved the interception rate (0.92 -> 0.47
+// per team-game) and cut sacks 27%, because awr/iq/tha all read systematically positive and all
+// three carry negative coefficients.
+//
+// `adp` is excluded to match SIM_ATTRS, which does not carry it.
+//
+// Deliberately a FUNCTION and not a const table: the node labs extract engine blocks with a
+// sloppy-mode eval, which leaks function declarations into the calling scope but NOT block-scoped
+// consts. The SIM block calls this, so a const would resolve in the page and throw in every lab —
+// the same trap attrProfile exists to avoid. Memoized on first call.
+function attrTiltBase(pos,k){
+  let T=attrTiltBase._t;
+  if(!T){
+    T=attrTiltBase._t={};
+    for(const pz in POS_ATTR_W){
+      const w=POS_ATTR_W[pz], all=Object.keys(w), keys=all.filter(x=>x!=='adp'), o={};
+      let m=0; for(const x of keys)m+=anchorOff(w,all,x);
+      m/=keys.length||1;
+      for(const x of keys)o[x]=anchorOff(w,all,x)-m;
+      T[pz]=o;
+    }
+  }
+  const o=T[pos];
+  return (o&&o[k])||0;
+}
+// === PLAYER ARCHETYPES START ===   (ARCHETYPES is already the Phase 6 COACH list)
+// A named SHAPE in attribute space, authored as raw preferences and then AUTO-balanced to weighted
+// mean zero under its own position row (balanceArch), so picking an archetype changes WHAT a player
+// is and never HOW GOOD he is — the same construction as SCHEME_ATTR_W. Hand-balancing 71 vectors
+// would rot the moment a weight was tuned.
+//
+// They exist because a free tilt produces INCOHERENT players: a quarterback with elite arm strength
+// who cannot throw on the run, a corner with press-man skills and no strength to press with.
+// Archetypes guarantee football-real COMBINATIONS, not merely football-real individual numbers.
+//
+// They are also the legible face of the floor/tail rule: a Pocket Passer has a high floor and no
+// tail, a Gunslinger is boom-or-bust. Same Overall, different outcome DISTRIBUTION — which makes the
+// league a MIXTURE, and mixtures have excess kurtosis by construction.
+//
+// `f` is relative draw weight (pocket passers are common, true dual-threats are not). No two
+// archetypes at a position may exceed 0.70 cosine — see the gate in tools/attrproto.js: an archetype
+// that differs from its neighbour only in MAGNITUDE is what `purity` already expresses, so it must
+// differ in DIRECTION or not exist.
+const PLAYER_ARCH={
+  QB:[
+    {n:'Pocket Passer',f:22,w:{tha:10,thp:7,iq:3,str:3,elu:2,spd:-10,acc:-9,agi:-7,tor:-4}},
+    {n:'Field General',f:18,w:{iq:12,awr:11,car:4,tha:2,thp:-10,spd:-6,acc:-5,elu:-4,tor:-4}},
+    // defined by RISK, not the arm — he throws the one nobody else would. `car` crashing is what
+    // separates him from the Cannon, who is simply strong-armed.
+    {n:'Gunslinger',f:15,w:{thp:9,car:-11,awr:-7,iq:-5,tha:-2,elu:4,agi:3,tor:3,spd:2}},
+    // NOT a lesser Field General: he protects the ball rather than elevating the offence, so `car` is
+    // his one elite trait and `iq` sits BELOW average.
+    {n:'Game Manager',f:13,w:{car:13,awr:3,tha:2,thp:-9,iq:-5,spd:-5,acc:-4,elu:-4,agi:-3,tor:-3}},
+    {n:'Dual-Threat',f:13,w:{spd:11,acc:9,agi:7,elu:5,tor:4,tha:-6,thp:-3,iq:-5}},
+    {n:'Scrambler',f:12,w:{tor:8,elu:9,agi:6,acc:3,iq:-6,awr:-5,thp:-2,str:-3}},
+    // a statue with a howitzer. Points AWAY from the Gunslinger rather than further along him.
+    {n:'Cannon',f:7,w:{thp:16,str:4,tha:-9,awr:-6,iq:-6,car:-4,tor:-3,agi:-4,elu:-4,spd:-3}},
+  ],
+  RB:[
+    {n:'Receiving Back',f:20,w:{cth:10,rte:9,pbk:5,awr:4,btk:-6,str:-6}},
+    {n:'Power Back',f:20,w:{str:9,btk:10,rbk:4,pbk:4,spd:-6,acc:-4,agi:-6,elu:-7}},
+    {n:'Scat Back',f:17,w:{elu:10,agi:9,acc:6,str:-8,btk:-8,pbk:-4}},
+    {n:'One-Cut Runner',f:15,w:{awr:10,acc:9,agi:5,elu:-7,btk:-5,cth:-4}},
+    {n:'Home-Run Hitter',f:14,w:{spd:12,acc:8,elu:4,str:-5,awr:-5,pbk:-5,car:-4}},
+    {n:'Workhorse',f:14,w:{dur:10,car:9,str:5,awr:4,elu:-6,spd:-5,acc:-4}},
+  ],
+  WR:[
+    {n:'Possession',f:20,w:{cth:9,rte:8,awr:5,spd:-7,acc:-6,elu:-4}},
+    {n:'Slot Technician',f:18,w:{rte:10,agi:9,acc:5,awr:4,str:-8,btk:-7}},
+    {n:'Deep Threat',f:17,w:{spd:11,acc:9,rte:3,str:-6,cth:-4,btk:-6}},
+    {n:'Contested X',f:15,w:{str:11,cth:5,btk:6,agi:-7,acc:-6,elu:-6,spd:-7}},
+    {n:'YAC Weapon',f:14,w:{btk:12,elu:9,str:6,rte:-6,cth:-3,awr:-4,spd:-7}},
+    {n:'Gadget',f:9,w:{spd:12,acc:9,elu:6,cth:-11,rte:-12,awr:-4}},
+    {n:'Blocking WR',f:7,w:{str:10,awr:6,cth:-7,rte:-6,elu:-4,acc:-3}},
+  ],
+  TE:[
+    {n:'Receiving F',f:24,w:{cth:12,rte:11,rbk:-9,pbk:-7,str:-5,spd:-4}},
+    {n:'Move H-Back',f:22,w:{agi:6,acc:6,cth:4,rbk:3,elu:3,str:-6,btk:-4}},
+    {n:'Blocking Y',f:22,w:{rbk:10,pbk:9,str:5,cth:-7,rte:-8,spd:-5,elu:-4}},
+    {n:'Seam Stretcher',f:16,w:{spd:15,acc:5,rbk:-9,pbk:-6,str:-7,cth:-3,awr:-3}},
+    {n:'Complete TE',f:16,w:{cth:2,rbk:2,pbk:2,rte:1,str:1,spd:-2,elu:-3,btk:-2}},
+  ],
+  OT:[
+    {n:'Pass Protector',f:26,w:{pbk:9,agi:7,awr:4,str:-6,rbk:-7}},
+    {n:'Mauler',f:24,w:{str:9,rbk:9,agi:-7,pbk:-5,acc:-5}},
+    {n:'Zone Athlete',f:22,w:{agi:8,acc:8,spd:5,rbk:4,str:-8,pbk:-3}},
+    {n:'Technician',f:16,w:{awr:10,pbk:5,str:-6,agi:-5,acc:-4}},
+    {n:'Raw Project',f:12,w:{agi:8,acc:8,str:6,awr:-11,pbk:-6,rbk:-5}},
+  ],
+  OG:[
+    {n:'Mauler',f:28,w:{str:8,rbk:9,agi:-8,acc:-7}},
+    {n:'Anchor',f:22,w:{pbk:9,str:4,awr:5,spd:-5,agi:-6}},
+    {n:'Puller',f:20,w:{agi:9,acc:9,spd:5,str:-6,rbk:-3}},
+    {n:'Technician',f:18,w:{awr:10,pbk:5,str:-6,agi:-5,acc:-4}},
+    {n:'Raw Project',f:12,w:{str:9,agi:6,awr:-11,rbk:-5,pbk:-5}},
+  ],
+  C:[
+    {n:'Field General',f:30,w:{iq:9,awr:7,pbk:4,str:-6,agi:-3}},
+    {n:'Mauler',f:26,w:{str:8,rbk:9,iq:-6,agi:-6}},
+    {n:'Zone Snapper',f:24,w:{agi:8,acc:6,iq:3,str:-7,rbk:-4}},
+    {n:'Anchor',f:20,w:{str:10,pbk:5,agi:-7,acc:-6}},
+  ],
+  DE:[
+    {n:'Speed Rusher',f:25,w:{prs:9,acc:9,agi:6,spd:5,str:-8,rst:-7}},
+    {n:'Bull Rusher',f:23,w:{str:10,prs:5,rst:5,acc:-7,agi:-6,spd:-5}},
+    {n:'Run Stopper',f:22,w:{rst:10,str:5,tkl:6,prs:-8,acc:-5}},
+    // bends the arc with agility and NEGATIVE speed; the Speed Rusher runs past you instead
+    {n:'Edge Bender',f:17,w:{agi:13,prs:4,acc:2,spd:-6,str:-9,rst:-6}},
+    {n:'Hand Fighter',f:13,w:{awr:11,prs:5,rst:4,acc:-6,agi:-5,str:-5}},
+  ],
+  DT:[
+    {n:'Nose Tackle',f:25,w:{str:8,rst:9,prs:-7,acc:-6,agi:-6,spd:-4}},
+    {n:'3-Tech',f:23,w:{prs:10,acc:8,agi:6,str:-6,rst:-6}},
+    // a brain, not more mass — otherwise he is a second Nose Tackle
+    {n:'Two-Gap Anchor',f:22,w:{awr:9,tkl:8,rst:2,prs:-3,str:-3,acc:-4,agi:-4}},
+    {n:'Interior Freak',f:16,w:{str:10,acc:9,prs:5,awr:-10,rst:-4}},
+    {n:'Technician',f:14,w:{rst:11,prs:6,agi:4,str:-8,acc:-5,tkl:-4}},
+  ],
+  LB:[
+    {n:'Thumper',f:22,w:{tkl:9,str:8,rst:6,zcv:-7,mcv:-7,spd:-4,acc:-4}},
+    {n:'Coverage LB',f:22,w:{zcv:9,mcv:9,cth:5,spd:5,acc:4,str:-7,rst:-6,tkl:-5}},
+    {n:'Field General',f:22,w:{iq:10,awr:9,rst:4,spd:-5,prs:-6,acc:-4}},
+    {n:'Blitzer',f:18,w:{prs:11,acc:7,str:4,zcv:-7,mcv:-7,cth:-4}},
+    {n:'Sideline-to-Sideline',f:16,w:{spd:11,acc:9,agi:6,str:-8,rst:-6,tkl:-3}},
+  ],
+  CB:[
+    {n:'Zone Corner',f:24,w:{zcv:9,awr:8,cth:5,mcv:-7,str:-5,spd:-3}},
+    {n:'Burner',f:22,w:{spd:10,acc:8,mcv:4,tkl:-6,str:-6,awr:-6}},
+    {n:'Press Corner',f:22,w:{mcv:9,str:7,agi:5,zcv:-8,awr:-5}},
+    {n:'Slot Corner',f:18,w:{agi:10,tkl:6,zcv:5,awr:4,spd:-7,str:-6}},
+    // a gambler: hands up, DISCIPLINE down
+    {n:'Ball Hawk',f:14,w:{cth:13,spd:5,awr:-6,zcv:-4,tkl:-6,str:-4}},
+  ],
+  FS:[
+    {n:'Center Fielder',f:30,w:{zcv:9,spd:8,awr:5,tkl:-7,str:-6,mcv:-5}},
+    {n:'Ball Hawk',f:26,w:{cth:10,zcv:5,awr:5,iq:4,tkl:-7,str:-6}},
+    {n:'Nickel Hybrid',f:24,w:{mcv:10,agi:6,acc:6,zcv:-6,str:-5,tkl:-4}},
+    {n:'Robber',f:20,w:{awr:10,iq:9,mcv:4,tkl:4,spd:-8,zcv:-6}},
+  ],
+  SS:[
+    {n:'Box Enforcer',f:30,w:{tkl:9,str:9,zcv:-7,spd:-5,cth:-6}},
+    // coverage-capable, not a second Box Enforcer
+    {n:'Hybrid LB/S',f:26,w:{iq:10,mcv:7,acc:4,agi:4,str:-5,tkl:-4,zcv:-5}},
+    {n:'Coverage SS',f:24,w:{mcv:9,zcv:6,cth:6,str:-7,tkl:-7}},
+    {n:'Deep Half',f:20,w:{zcv:10,spd:6,awr:5,tkl:-8,str:-6,mcv:-5}},
+  ],
+  // K and P stay at two each: they carry six attributes of which two matter, so there is no
+  // dimensionality for more without inventing distinctions the sim cannot express. A "clutch kicker"
+  // is ruled out outright — cfb-clutch.md measured that kickers do not choke.
+  K:[{n:'Big Leg',f:50,w:{kpw:9,kac:-6}},{n:'Precision',f:50,w:{kac:7,kpw:-9}}],
+  P:[{n:'Boomer',f:50,w:{kpw:8,kac:-8}},{n:'Coffin Corner',f:50,w:{kac:9,kpw:-7}}],
+};
+// Subtract each vector's WEIGHTED mean so an archetype is mean-zero under its own position row:
+// choosing one changes what a player is, never how good he is.
+(function balanceArch(){
+  for(const pos in PLAYER_ARCH){
+    const w=posAttrW(pos), keys=Object.keys(w), sw=keys.reduce((s,k)=>s+w[k],0)||1;
+    for(const a of PLAYER_ARCH[pos]){
+      let m=0; for(const k of keys)m+=w[k]*(a.w[k]||0);
+      m/=sw;
+      a.off={}; for(const k of keys)a.off[k]=(a.w[k]||0)-m;
+    }
+  }
+})();
+function archList(pos){return PLAYER_ARCH[pos]||null;}
+function archByName(pos,n){const l=PLAYER_ARCH[pos];return l?l.find(a=>a.n===n)||null:null;}
+function pickArch(r,pos){
+  const list=PLAYER_ARCH[pos]; if(!list)return null;
+  let x=r()*list.reduce((s,a)=>s+a.f,0);
+  for(const a of list){x-=a.f;if(x<=0)return a;}
+  return list[list.length-1];
+}
+// Classify an EXISTING profile to its nearest archetype — needed for imported rosters, the v48
+// migration, and for a player whose development has drifted him away from where he started.
+//
+// COSINE similarity against the POSITIONAL BASELINE, not weighted Euclidean distance. Weighting the
+// distance by POS_ATTR_W measured badly wrong: the defining attributes drown out exactly the
+// low-weight ones that separate neighbours (an LB Blitzer is a Blitzer because of `prs`, weight .03),
+// which sent four archetypes to literally 0% while central ones swallowed the field. Cosine is
+// direction-only — "is this the SHAPE of a Blitzer?" rather than "is this player near the Blitzer
+// point?" — and scale-invariant, which `purity` now requires. Subtracting the baseline matters as
+// much as the metric: every quarterback carries the same anchor shape whatever his archetype, and
+// that shared component alone held recovery to 54.8%.
+function classifyArch(p){
+  const list=PLAYER_ARCH[p&&p.pos]; if(!list)return null;
+  const w=posAttrW(p.pos), keys=Object.keys(w), sw=keys.reduce((s,k)=>s+w[k],0)||1;
+  let mean=0; for(const k of keys)mean+=w[k]*attrVal(p,k); mean/=sw;
+  const elite=clamp((mean-72)/27,0,1), amp={};
+  for(const k of keys){const rel=clamp(w[k]*keys.length,0,2);amp[k]=1+elite*ELITE_DIV*Math.max(0,1-rel);}
+  const dev={}; let dn=0;
+  for(const k of keys){dev[k]=attrVal(p,k)-mean-anchorOff(w,keys,k)*amp[k];dn+=dev[k]*dev[k];}
+  dn=Math.sqrt(dn)||1;
+  let best=null,bestS=-Infinity;
+  for(const a of list){
+    let dot=0,an=0;
+    for(const k of keys){const e=a.off[k]*amp[k];dot+=dev[k]*e;an+=e*e;}
+    const s=dot/(dn*(Math.sqrt(an)||1));
+    if(s>bestS){bestS=s;best=a;}
+  }
+  return best;
+}
+// === PLAYER ARCHETYPES END ===
+function attrVal(p,k){const v=p&&p[k];return v!=null?v:((p&&p.ov)!=null?p.ov:ATTR_DEF);}
+// OVR is the weighted mean of the attributes the position carries. Normalized by the weight sum so a
+// row that does not quite total 1 (or a scheme row after flooring) still reads on the 40-99 scale.
+function ovrWith(p,w){let t=0,s=0;for(const k in w){t+=w[k]*attrVal(p,k);s+=w[k];}return clamp(Math.round(t/(s||1)),40,99);}
 // The player in the abstract, scheme-agnostic. The cross-team currency: stars, NFL draft grade,
 // recruit rankings, the record book, peakOv. Must NOT move when somebody installs a new defence.
 function ovrBase(p){return ovrWith(p,posAttrW(p&&p.pos));}
 // The player in THIS system — what the roster screen shows, what teamRatings consumes, what the sim
 // sees. Stored on p.ov and re-derived whenever the roster, staff or SCHEME changes.
 function ovrIn(p,scheme){return ovrWith(p,scheme?schemeAttrW(p&&p.pos,scheme):posAttrW(p&&p.pos));}
-// The ONE generator. Produces a six-attribute profile whose weighted mean is exactly `ov0`, so a
-// player is as good as he was asked to be and the spread only decides WHAT KIND of good. The tilt is
-// triangular, so most players sit close to their own average and true specialists stay rare.
-function genAttrs(r,ov0,pos,spread){
-  const w=posAttrW(pos), sp=spread==null?15:spread, t={};
-  let m=0;
-  for(const k of ATTRS){t[k]=(r()+r()-1)*sp;m+=w[k]*t[k];}          // weighted mean of the tilt…
+/* The ONE generator. Produces a profile whose WEIGHTED mean is exactly `ov0`, so a player is as good
+   as he was asked to be and the spread only decides WHAT KIND of good.
+   Order matters: anchor -> archetype -> draw the tilt -> blend technique toward its basis -> THEN
+   re-centre, so neither the anchoring nor the correlation can smuggle ability in. */
+function genAttrs(r,ov0,pos,spread,arch,purity){
+  const w=posAttrW(pos), keys=Object.keys(w), sp=spread==null?15:spread;
+  const t={};
+  // PURITY — how strongly this player embodies his archetype. Without it the only within-archetype
+  // variation is independent per-attribute noise, so every Pocket Passer is the SAME SHAPE at a
+  // different level and the list is 71 fixed templates scaled up and down. Purity makes the variation
+  // run ALONG the archetype axis instead: a 0.4 merely leans that way, a 1.4 is an immobile savant.
+  // It also explains tweeners honestly, and is the natural thing for scouting to fog.
+  const pur=purity!=null?purity:(arch?clamp(0.35+(r()+r()+r())/3*1.5,0.3,1.7):0);
+  const ind=arch?0.42:1;      // the independent draw shrinks; purity now carries the spread
+  // ELITE DIVERGENCE. An elite player cannot carry a hole in what his position is BUILT on — a 97
+  // quarterback is never inaccurate, because `tha` is 20% of the row and the weighted mean would not
+  // survive it. But he can be famously slow, because `spd` is 5% and the mean barely notices. So the
+  // archetype's shape amplifies with ability, and only where the row can afford it.
+  const elite=clamp((ov0-72)/27,0,1);
+  for(const k of keys){
+    const rel=clamp(w[k]*keys.length,0,2);
+    const s=sp*(0.35+0.65*Math.min(rel,1.4)/1.4)*ind;   // what the position barely uses barely varies
+    const amp=1+elite*ELITE_DIV*Math.max(0,1-rel);
+    t[k]=(anchorOff(w,keys,k)+(arch?arch.off[k]*pur:0))*amp+(r()+r()-1)*s;
+  }
+  for(const k of keys){                                  // technique follows athleticism
+    const basis=TECH_BASIS[k]; if(!basis)continue;
+    const have=basis.filter(b=>t[b]!=null); if(!have.length)continue;
+    const bm=have.reduce((s,b)=>s+t[b],0)/have.length;
+    const off=anchorOff(w,keys,k);
+    const bOff=have.reduce((s,b)=>s+anchorOff(w,keys,b),0)/have.length;
+    t[k]=off+TECH_W*(bm-bOff)+(1-TECH_W)*(t[k]-off);     // blend DEVIATIONS, so it moves shape not level
+  }
+  // Centre so the WEIGHTED mean is exactly ov0. Iterated, because clamping at 40/99 eats part of the
+  // correction — the residual is redistributed onto the attributes that still have room. But NOT
+  // evenly: left alone the residual always lands on whatever has room, which is the physical
+  // attributes, and that turned a 97-overall Pocket Passer into an 88-speed athlete. Elite players
+  // converge on what is LEARNABLE, not on what is GENETIC, so physical attributes resist an upward
+  // correction and the holes fill in on the coachable side first.
   const out={};
-  for(const k of ATTRS)out[k]=clamp(Math.round(ov0+t[k]-m),40,99);  // …subtracted → mean-zero tilt
+  for(const k of keys)out[k]=ov0+t[k];
+  const sw=keys.reduce((s,k)=>s+w[k],0)||1;
+  for(let pass=0;pass<8;pass++){
+    let m=0; for(const k of keys)m+=w[k]*clamp(out[k],40,99);
+    const err=ov0-m/sw;
+    if(Math.abs(err)<1e-6)break;
+    const share=k=>(err>0&&PHYSICAL[k])?PHYS_ABSORB:1;
+    let room=0;
+    for(const k of keys){const v=clamp(out[k],40,99);if((err>0&&v<99)||(err<0&&v>40))room+=w[k]*share(k);}
+    if(!room)break;
+    for(const k of keys){const v=clamp(out[k],40,99);if((err>0&&v<99)||(err<0&&v>40))out[k]=v+err*sw*share(k)/room;}
+  }
+  for(const k of keys)out[k]=clamp(Math.round(out[k]),40,99);
+  out.adp=clamp(Math.round(50+(r()+r()-1)*22),20,99);    // weighted 0, so it never enters the centring
   return out;
 }
-// A plain copy of a player's six attributes. Other engine blocks read a profile through this rather
-// than iterating ATTRS themselves — ATTRS is a `const`, so it does not survive the sloppy-mode eval
-// the node labs use to extract a block, and a cross-block reference to it would only fail there.
-function attrProfile(p){const o={};for(const k of ATTRS)o[k]=attrVal(p,k);return o;}
+// Generate a profile AND remember the shape it was drawn from. `p.arch` is the archetype name and
+// `p.pur` its purity — both stored, because classifying back from the numbers is lossy (a 0.4-purity
+// player genuinely reads as a tweener) and scouting wants to fog "prototypical" vs "hybrid".
+function genProfile(r,ov0,pos,spread){
+  const a=pickArch(r,pos);
+  const pur=a?clamp(0.35+(r()+r()+r())/3*1.5,0.3,1.7):0;
+  const prof=genAttrs(r,ov0,pos,spread,a,pur);
+  if(a){prof.arch=a.n;prof.pur=Math.round(pur*100)/100;}
+  return prof;
+}
+// A plain copy of a player's carried attributes. Other engine blocks read a profile through this
+// rather than iterating ATTRS themselves — ATTRS is a `const`, so it does not survive the sloppy-mode
+// eval the node labs use to extract a block, and a cross-block reference would only fail there.
+function attrProfile(p){const o={};for(const k of posAttrs(p&&p.pos))o[k]=attrVal(p,k);return o;}
 // Move a whole profile by `d` (the depth taper, development, a recruit's pedigree discount). Keeps
 // the shape, moves the level — so a tapered backup is genuinely worse rather than merely different.
-function shiftAttrs(p,d){for(const k of ATTRS)p[k]=clamp(Math.round(attrVal(p,k)+d),40,99);return p;}
-// Re-centre an EXISTING profile onto a target OVR without losing its shape. Used by the v47
-// migration (every legacy player keeps the ov he already had) and by roster import (a file handing
-// us all-90s attributes on a 75-overall player must not get the difference for free).
+// `adp` is excluded: it is weighted 0 and describes portability, not quality.
+function shiftAttrs(p,d){for(const k of posAttrs(p&&p.pos)){if(k==='adp')continue;p[k]=clamp(Math.round(attrVal(p,k)+d),40,99);}return p;}
+// Re-centre an EXISTING profile onto a target OVR without losing its shape. Used by the v48
+// migration (every legacy player keeps the ov he already had) and by roster import (a file handing us
+// all-99s on a 75-overall player must not get the difference for free). Iterated for the same reason
+// genAttrs is: clamping eats part of the correction.
 function centerAttrs(p,target,pos){
-  const w=posAttrW(pos||(p&&p.pos)); let m=0;
-  for(const k of ATTRS)m+=w[k]*attrVal(p,k);
-  return shiftAttrs(p,target-m);
+  const w=posAttrW(pos||(p&&p.pos)), keys=Object.keys(w), sw=keys.reduce((s,k)=>s+w[k],0)||1;
+  for(let pass=0;pass<8;pass++){
+    let m=0; for(const k of keys)m+=w[k]*attrVal(p,k);
+    const err=target-m/sw;
+    if(Math.abs(err)<0.5)break;
+    let room=0;
+    for(const k of keys){const v=attrVal(p,k);if((err>0&&v<99)||(err<0&&v>40))room+=w[k];}
+    if(!room)break;
+    for(const k of keys){const v=attrVal(p,k);if((err>0&&v<99)||(err<0&&v>40))p[k]=clamp(Math.round(v+err*sw/room),40,99);}
+  }
+  return p;
 }
-// === ATTRIBUTE ENGINE (Phase 51) END ===
+// ADAPTABILITY (the one attribute weighted 0 everywhere): how much of himself a player keeps when he
+// lines up somewhere else. Returns the OVR he would read at `to`, by re-centring his shared
+// attributes onto the new row and discounting what does not carry over. A 90 `adp` moves anywhere; a
+// 30 is a specialist who is exactly one thing.
+function posFit(p,to){
+  if(!p||!to||p.pos===to)return p?(p.ov||ovrBase(p)):0;
+  const from=posAttrW(p.pos), tw=posAttrW(to);
+  let shared=0,total=0;
+  for(const k in tw){total+=tw[k];if(from[k]!=null)shared+=tw[k];}
+  const cover=total?shared/total:0;                      // how much of the new job he has evidence for
+  const adp=attrVal(p,'adp');
+  // what he does not carry, he is assumed to be poor at, softened by adaptability
+  const unknown=40+(adp-20)*0.35;
+  let t=0,s=0;
+  for(const k in tw){t+=tw[k]*(from[k]!=null?attrVal(p,k):unknown);s+=tw[k];}
+  const raw=t/(s||1);
+  // even a perfect attribute match costs something out of position; adaptability buys most of it back
+  const penalty=(1-cover)*(1-(adp-20)/79)*8;
+  return clamp(Math.round(raw-penalty),40,99);
+}
+// === ATTRIBUTE ENGINE (Phase 52) END ===
 
 /* ---------- world generation ---------- */
 function genPlayer(r,prestige,posCode){
@@ -572,7 +927,7 @@ function genPlayer(r,prestige,posCode){
   return Object.assign({id:'p'+Math.floor(r()*1e9).toString(36),
     fn:pick(r,FN),ln:pick(r,LN),pos:posCode,yr:cls,age:ageBase+ri(r,0,1),
     st:pick(r,STATES),stars,ov,pot,cap:false,
-    mot:tr.mot,comp:tr.comp,ego:tr.ego},genAttrs(r,ov,posCode));
+    mot:tr.mot,comp:tr.comp,ego:tr.ego},genProfile(r,ov,posCode));
 }
 function genRoster(r,prestige){
   const out=[];
@@ -703,37 +1058,67 @@ function genWorld(seed){
    saves (no `_sv` tag) decode as themselves. Cuts a fresh save ~40%. */
 const SLOTS=[1,2,3];
 const slotKey=n=>'sideline_slot_'+n;
-const SAVE_PKEYS=['id','fn','ln','pos','yr','age','st','stars','ov','pot','cap','spd','str','awr','so','mot','comp','ego','agi','bal','dur'];
+// Phase 52 (codec _sv:2): a player now carries ~12 attributes out of a 25-word vocabulary, and WHICH
+// twelve depends on his position. Adding all 25 to a fixed column list would give every one of ~11.3k
+// players thirteen mostly-null columns; leaving them out entirely would dump them in the sparse `ext`
+// object, which repeats the key name per player and is far worse. So they ride in ONE packed array
+// `at`, ordered by that position's own attribute list — self-describing from `p.pos`, dense, no nulls.
+const SAVE_PKEYS_V1=['id','fn','ln','pos','yr','age','st','stars','ov','pot','cap','spd','str','awr','so','mot','comp','ego','agi','bal','dur'];
+const SAVE_PKEYS=['id','fn','ln','pos','yr','age','st','stars','ov','pot','cap','so','mot','comp','ego','at','arch','pur'];
 function encRoster(roster){
   return roster.map(p=>{
-    const core=SAVE_PKEYS.map(k=>p[k]);
-    let ext=null;for(const k in p)if(SAVE_PKEYS.indexOf(k)<0){(ext=ext||{})[k]=p[k];}
+    const ak=posAttrs(p.pos), inAk={}; ak.forEach(k=>inAk[k]=1);
+    const core=SAVE_PKEYS.map(k=>k==='at'?ak.map(x=>p[x]!=null?p[x]:null):p[k]);
+    let ext=null;for(const k in p){if(inAk[k]||SAVE_PKEYS.indexOf(k)>=0)continue;(ext=ext||{})[k]=p[k];}
     return ext?[core,ext]:[core];
   });
 }
-function decRoster(enc){
-  return (enc||[]).map(e=>{const p={};SAVE_PKEYS.forEach((k,i)=>p[k]=e[0][i]);if(e[1])Object.assign(p,e[1]);return p;});
+// `sv` is the codec version the blob was written with. A v1 blob decodes on the OLD column list and
+// keeps its legacy spd/str/awr — migrateState's v48 step is what turns those into a real profile.
+function decRoster(enc,sv){
+  const keys=(sv||1)>=2?SAVE_PKEYS:SAVE_PKEYS_V1;
+  return (enc||[]).map(e=>{
+    const p={};keys.forEach((k,i)=>p[k]=e[0][i]);
+    if(e[1])Object.assign(p,e[1]);
+    if(Array.isArray(p.at)){const ak=posAttrs(p.pos);ak.forEach((k,i)=>{if(p.at[i]!=null)p[k]=p.at[i];});}
+    delete p.at;
+    // `arch`/`pur` are SPARSE columns — a player who predates archetypes has neither. JSON turns an
+    // undefined array slot into null, so they would decode as real null-valued keys and break the
+    // exactness of the round-trip. Drop them when empty rather than inventing them.
+    if(p.arch==null)delete p.arch; if(p.pur==null)delete p.pur;
+    return p;
+  });
 }
 // Phase 17: the recruit pool is now the full national class (~3,400), so it serializes columnar too —
 // scalar fields become a flat tuple, the sparse extras (prefs[], iv{}, promise, alumni) ride in a side
 // object (the transient _flipped tag is dropped). Mirrors encRoster/decRoster exactly.
-const RECRUIT_PKEYS=['id','fn','ln','pos','st','stars','ov','pot','spd','str','awr','mot','comp','rebel','scout','committedTo','signed','offered','visited','ego','agi','bal','dur','svc'];
+const RECRUIT_PKEYS_V1=['id','fn','ln','pos','st','stars','ov','pot','spd','str','awr','mot','comp','rebel','scout','committedTo','signed','offered','visited','ego','agi','bal','dur','svc'];
+const RECRUIT_PKEYS=['id','fn','ln','pos','st','stars','ov','pot','mot','comp','rebel','scout','committedTo','signed','offered','visited','ego','svc','at','arch','pur'];
 function encPool(pool){
   return pool.map(p=>{
-    const core=RECRUIT_PKEYS.map(k=>p[k]);
-    let ext=null;for(const k in p){if(k==='_flipped')continue;if(RECRUIT_PKEYS.indexOf(k)<0){(ext=ext||{})[k]=p[k];}}
+    const ak=posAttrs(p.pos), inAk={}; ak.forEach(k=>inAk[k]=1);
+    const core=RECRUIT_PKEYS.map(k=>k==='at'?ak.map(x=>p[x]!=null?p[x]:null):p[k]);
+    let ext=null;for(const k in p){if(k==='_flipped'||inAk[k]||RECRUIT_PKEYS.indexOf(k)>=0)continue;(ext=ext||{})[k]=p[k];}
     return ext?[core,ext]:[core];
   });
 }
-function decPool(enc){
-  return (enc||[]).map(e=>{const p={};RECRUIT_PKEYS.forEach((k,i)=>p[k]=e[0][i]);if(e[1])Object.assign(p,e[1]);return p;});
+function decPool(enc,sv){
+  const keys=(sv||1)>=2?RECRUIT_PKEYS:RECRUIT_PKEYS_V1;
+  return (enc||[]).map(e=>{
+    const p={};keys.forEach((k,i)=>p[k]=e[0][i]);
+    if(e[1])Object.assign(p,e[1]);
+    if(Array.isArray(p.at)){const ak=posAttrs(p.pos);ak.forEach((k,i)=>{if(p.at[i]!=null)p[k]=p.at[i];});}
+    delete p.at;
+    if(p.arch==null)delete p.arch; if(p.pur==null)delete p.pur;
+    return p;
+  });
 }
 // Encode a live state for storage (compact). Never mutates the live state (shallow copies + new
 // arrays). Falls back to the full state if anything unexpected happens, so a save is never lost.
 function encodeState(state){
   try{
     const teams=state.world.teams.map(t=>{const o=Object.assign({},t);o._cr=encRoster(t.roster);delete o.roster;return o;});
-    const out=Object.assign({},state,{world:{teams},_sv:1});
+    const out=Object.assign({},state,{world:{teams},_sv:2});
     if(state.recruiting&&state.recruiting.pool){      // Phase 17: columnar-encode the (large) recruit pool
       out.recruiting=Object.assign({},state.recruiting,{_cp:encPool(state.recruiting.pool)});
       delete out.recruiting.pool;
@@ -743,10 +1128,10 @@ function encodeState(state){
 }
 function decodeState(s){
   if(!s||!s._sv)return s;            // old/full save → use as-is
-  const teams=s.world.teams.map(t=>{const o=Object.assign({},t);o.roster=decRoster(t._cr);delete o._cr;return o;});
+  const teams=s.world.teams.map(t=>{const o=Object.assign({},t);o.roster=decRoster(t._cr,s._sv);delete o._cr;return o;});
   const out=Object.assign({},s,{world:{teams}});delete out._sv;
   if(out.recruiting&&out.recruiting._cp){             // decode the columnar recruit pool (older saves stored pool plainly)
-    out.recruiting=Object.assign({},out.recruiting,{pool:decPool(out.recruiting._cp)});
+    out.recruiting=Object.assign({},out.recruiting,{pool:decPool(out.recruiting._cp,s._sv)});
     delete out.recruiting._cp;
   }
   return out;
@@ -1410,7 +1795,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:47,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:48,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      rivalries:null,rivalryHeat:null,records:null,lastRealign:null,
@@ -1514,8 +1899,14 @@ function normPlayer(p){
   // A file with no attribute fields gets a generated profile (deterministic from identity) instead
   // of the old flat spd=str=awr=ov, which left every imported league with no spread at all to read.
   const pos=out.pos;
-  if(ATTRS.some(k=>p[k]!=null)){ATTRS.forEach(k=>out[k]=clamp(+p[k]||ov,40,99));centerAttrs(out,ov,pos);}
-  else Object.assign(out,genAttrs(rng(hashStr('attr|'+(p.first||'')+'|'+(p.last||'')+'|'+pos)),ov,pos));
+  const keys=posAttrs(pos);
+  if(keys.some(k=>p[k]!=null)){
+    const gen=genProfile(rng(hashStr('attr|'+(p.first||'')+'|'+(p.last||'')+'|'+pos)),ov,pos);
+    keys.forEach(k=>out[k]=p[k]!=null?clamp(+p[k]||ov,40,99):gen[k]);   // fill the gaps rather than flat-lining them
+    centerAttrs(out,ov,pos);
+    const a=classifyArch(out); if(a)out.arch=a.n;
+  }
+  else Object.assign(out,genProfile(rng(hashStr('attr|'+(p.first||'')+'|'+(p.last||'')+'|'+pos)),ov,pos));
   return out;
 }
 // Bring an older save up to the current schema. v1 staff lacked coordinator/position
@@ -1729,28 +2120,59 @@ function migrateState(state){
     // id and then RE-CENTRED onto that value, so nobody's strength changes, depth charts hold, and
     // the record book still agrees with the roster. What he gains is a shape — which of his six
     // attributes carry that ability — and from here on the sim reads the shape.
+    // The ATTRIBUTE half of this step is superseded by v48 below, which rebuilds every profile over
+    // the Phase 52 vocabulary anyway — doing it twice would only mean generating a six-attribute
+    // profile and immediately throwing it away. What still has to happen here is the SCHEME half:
+    // v48's re-rate reads t.offScheme/t.defScheme, so they must exist before it runs.
+    (state.world.teams||[]).forEach(t=>{
+      if(t.offScheme==null)t.offScheme=defaultOffScheme(t.id);
+      if(t.defScheme==null)t.defScheme=defaultDefScheme(t.id);
+    });
+    state.version=47;
+  }
+  if((state.version||1)<48){
+    // Phase 52: the vocabulary. 25 attributes, ~12 per position, and S splits into real FS/SS codes.
+    // Like v47 this is a real mutation of every player in the save (~11.3k plus both pools), and it
+    // has to be: a v47 player carries six generic attributes, and no channel in the sim reads those
+    // any more — a corner has `mcv`/`zcv` now, not "ball skills".
+    //
+    // The contract is the one v47 set and is what makes this safe: EVERY PLAYER KEEPS THE `ov` HE
+    // HAD. The profile is drawn deterministically from his id, his surviving attributes are kept as
+    // the shape wherever the new vocabulary still has a word for them, and the whole thing is
+    // re-centred onto his existing overall. Nobody gets better, depth charts hold, and the record
+    // book still agrees with the roster.
+    const LEGACY={spd:'spd',agi:'agi',str:'str',awr:'awr',dur:'dur',bal:'cth'};   // bal was the catch point
     const fill=o=>{
       if(!o||!o.pos)return;
       const target=clamp(+o.ov||60,40,99);
-      if(ATTRS.every(k=>o[k]!=null)){centerAttrs(o,target,o.pos);return;}   // already has all six
-      // Seed from the id so a save re-migrated twice lands identically. Where the old three
-      // attributes exist they are kept as the starting shape, so an imported roster's real speed
-      // and strength survive; the three new ones are drawn around them.
-      const gen=genAttrs(rng(hashStr('a51|'+(o.id||'')+'|'+o.pos)),target,o.pos);
-      for(const k of ATTRS)if(o[k]==null)o[k]=gen[k];
+      const keys=posAttrs(o.pos);
+      const gen=genProfile(rng(hashStr('a52|'+(o.id||'')+'|'+o.pos)),target,o.pos);
+      const old={};for(const k in LEGACY)if(o[k]!=null)old[LEGACY[k]]=clamp(+o[k],40,99);
+      for(const k in LEGACY)delete o[k];
+      keys.forEach(k=>{o[k]=old[k]!=null?old[k]:gen[k];});
+      o.adp=gen.adp;
       centerAttrs(o,target,o.pos);
+      // He was generated before archetypes existed, so his shape is whatever it is — classify it
+      // rather than assert one, which is exactly the case classifyArch was built for.
+      const a=classifyArch(o); if(a){o.arch=a.n;o.pur=gen.pur;}
+    };
+    // S -> FS/SS. Assigned by depth INSIDE each team and alternating, so a roster that had eight
+    // safeties still fields both kinds rather than drawing eight of one at random.
+    const splitS=roster=>{
+      const saf=(roster||[]).filter(p=>p.pos==='S').sort((a,b)=>(a.so||0)-(b.so||0)||String(a.id).localeCompare(String(b.id)));
+      saf.forEach((p,i)=>{p.pos=i%2===0?'SS':'FS';});
     };
     (state.world.teams||[]).forEach(t=>{
+      splitS(t.roster);
       (t.roster||[]).forEach(fill);
-      if(t.offScheme==null)t.offScheme=defaultOffScheme(t.id);
-      if(t.defScheme==null)t.defScheme=defaultDefScheme(t.id);
-      reRateRoster(t);                 // OVERALL is scheme-weighted from here on
+      reRateRoster(t);                 // OVERALL is scheme-weighted, over the new vocabulary
     });
-    if(state.recruiting&&state.recruiting.pool)state.recruiting.pool.forEach(fill);
-    if(state.portal&&state.portal.pool)state.portal.pool.forEach(fill);
+    const poolSplit=pool=>(pool||[]).forEach(p=>{if(p.pos==='S')p.pos=(hashStr('sf|'+(p.id||''))%2)?'FS':'SS';});
+    if(state.recruiting&&state.recruiting.pool){poolSplit(state.recruiting.pool);state.recruiting.pool.forEach(fill);}
+    if(state.portal&&state.portal.pool){poolSplit(state.portal.pool);state.portal.pool.forEach(fill);}
     recomputeRanks(state.world);
-    state.version=47;                  // SIM_MODEL is 6, so pre-Phase-51 games decline replay rather
-  }                                    // than re-simming: attribute channels move play outcomes.
+    state.version=48;                  // SIM_MODEL is 7, so pre-Phase-52 games decline replay rather
+  }                                    // than re-simming: every channel now reads a different stat.
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -1897,7 +2319,12 @@ function startSeason(){
 //
 // Self-contained (its own attribute list + accessor) so the SIM block keeps its "depends only on
 // rng/clamp/ri" property and the node labs can still extract it standalone.
-const SIM_ATTRS=['spd','agi','str','awr','bal','dur'];
+const SIM_ATTRS=['spd','acc','agi','str','awr','iq','dur','thp','tha','tor','elu','btk','car','cth','rte',
+                 'rbk','pbk','prs','rst','mcv','zcv','tkl','kpw','kac'];
+// The subset the depth-weighted POOL means are computed over — every attribute a channel below reads
+// off a group rather than off one man. Kept separate from SIM_ATTRS because pools are built twice per
+// game over every player on the roster, and averaging attributes nothing reads is pure cost.
+const POOL_ATTRS=['spd','acc','agi','str','awr','cth','rte','elu','btk','car','rbk','pbk','prs','rst','mcv','zcv','tkl'];
 const av=(p,k)=>{const v=p&&p[k];return v!=null?v:((p&&p.ov)!=null?p.ov:60);};
 // A player's tilt: how much of a specialist he is, measured against HIS OWN attribute mean. Used for
 // singletons like the QB, the kicker and the punter, who have no depth-weighted pool to sit in.
@@ -1906,7 +2333,18 @@ const av=(p,k)=>{const v=p&&p[k];return v!=null?v:((p&&p.ov)!=null?p.ov:60);};
 // otherwise leak straight into these channels and let raw rating buy things it must not — notably
 // discipline, which the measurement says is flat across team quality. The six deviations sum to zero
 // by construction, so this is mean-zero per player with no dependence on the readout at all.
-const tilt=(p,k)=>{ if(!p)return 0; let s=0; for(const j of SIM_ATTRS)s+=av(p,j); return av(p,k)-s/SIM_ATTRS.length; };
+// Phase 52: averaged over the attributes this player ACTUALLY CARRIES, not over the whole vocabulary
+// (a kicker has six; a mean including seventeen absent stats, each falling back to his overall, would
+// mute every channel), and then corrected by ATTR_TILT_BASE so that what is left is how much of a
+// specialist he is FOR A PLAYER AT HIS POSITION rather than the shape his position gives everyone.
+// Without that correction this stops being mean-zero and every channel reading it inherits a bias —
+// see the note on ATTR_TILT_BASE for what that measured.
+const tilt=(p,k)=>{
+  if(!p)return 0;
+  let s=0,n=0; for(const j of SIM_ATTRS){if(p[j]==null)continue;s+=p[j];n++;}
+  if(!n)return 0;
+  return av(p,k)-s/n-attrTiltBase(p.pos,k);
+};
 // AT-START
 const AT={
   // SPEED — top end. Owns the tail, not the mean.
@@ -1922,15 +2360,31 @@ const AT={
   // strength reaches a play through THREE routes at once (the carrier, his line against the front,
   // and the pocket), so equal coefficients would make a strength build strictly the best one. The
   // simlab build-vs-build check is what caught that — it ran 68% against an aware team's 48%.
-  strFloorU:0.30, strRun:0.15, strSack:-0.0018, strLine:0.45,
+  strFloorU:0.30, strRun:0.15, pbkSack:-0.0018, rbkLine:0.45,
   // AWARENESS — errors only.
   awrInt:-0.0022, awrSack:-0.0024, awrFum:-0.00028, awrVariant:0.020,
-  // BALL SKILLS — the catch point and the takeaway.
-  balCmp:0.0013, balInt:0.0014, balFum:-0.00020,
+  // FOOTBALL IQ — pre-snap mastery. Errors only, like awareness: a smart quarterback throws the ball
+  // away, he does not throw it further.
+  iqInt:-0.0012,
+  // HANDS — the catch point, and the takeaway. Phase 51's `bal` split into the receiver's `cth` and
+  // the defender's `cth`/`zcv`, which is the same contest with both sides finally named.
+  cthCmp:0.0013, cthInt:0.0014, zcvInt:0.0009,
+  // ROUTE RUNNING against COVERAGE — separation. The biggest genuinely new channel: Phase 51 had no
+  // term for a receiver beating his man on technique rather than on raw speed.
+  rteCmp:0.0016,
+  // THROWING. Accuracy owns the completion mean and the interception; the arm owns the deep ball only,
+  // weighted by how far the throw actually is (`deepW`), so a cannon is worth nothing on a checkdown.
+  thaCmp:0.0018, thaInt:-0.0020, thpDeep:0.028,
+  // ELUSIVENESS / BREAK TACKLE against TACKLING — the broken run and yards after the catch.
+  eluRun:0.050, btkRun:0.14, yacPass:0.026,
+  // BALL SECURITY — fumbles finally have a per-player owner (`car`), met by the tackler stripping.
+  carFum:-0.00034,
   // DURABILITY — how often you get hurt, and how late you fade.
   durInj:0.011, durFat:0.22,
-  // THE KICKING GAME — leg (strength) is range, technique (awareness) is accuracy, and a punter's leg
-  // is net yards. Previously distance was the ONLY input and a 90-rated specialist did nothing at all.
+  // THE KICKING GAME — `kpw` is range and `kac` is placement. Phase 51 mapped these onto str/awr,
+  // which was defensible when specialists had no attributes of their own but left a 90-rated kicker
+  // indistinguishable from a 70 on anything else. Neither is pressure-sensitive: cfb-clutch.md
+  // measured that kickers do not choke.
   kLeg:0.010, kAcc:0.0016, puntLeg:0.16,
 };
 // AT-END
@@ -1939,6 +2393,20 @@ const AT={
 const AD=(o,oA,d,dA,k)=>((av(o,k)-oA[k])-(av(d,k)-dA[k]));
 // The unit-vs-unit form — one whole group against another (the line against the rush).
 const AU=(oA,dA,k)=>oA[k]-dA[k];
+// Phase 52 — the two sides of a contest are no longer the same stat. Route running is met by man
+// coverage, pass blocking by pass rushing, ball security by tackling.
+//
+// ADX (per-matchup) is safe in the naive form: each half is still a deviation from ITS OWN pool's mean
+// of that SAME attribute, so each half is mean-zero and so is the difference. The Phase 23 guarantee
+// survives the vocabulary change untouched.
+const ADX=(o,oA,ok,d,dA,dk)=>((av(o,ok)-oA[ok])-(av(d,dk)-dA[dk]));
+// AUX (unit vs unit) is NOT. `oA[ok]-dA[dk]` carries the league-wide LEVEL difference between two
+// different attributes as a constant — pass blocking does not sit at the same average as pass rushing,
+// and a constant here shifts the scoring envelope rather than deciding a matchup, which is exactly the
+// kind of thing that would then need re-fitting. Subtracting the mirror contest (their line against
+// your rush) cancels the constant exactly and leaves a contrast that is mean-zero WITHIN EVERY GAME —
+// a stronger property than the league-level one it replaces.
+const AUX=(oA,dA,mA,nA,ok,dk)=>(((oA[ok]-dA[dk])-(mA[ok]-nA[dk]))/2);
 // SPEED is a TAIL property: nothing through the ordinary range, ramping to full at the very top of
 // the draw. A burner turns a 15-yard gain into a 40; a plodder gets run down from behind at 22.
 const tailAdd=(u,d,w)=>u<=AT.tailU?0:w*d*((u-AT.tailU)/(1-AT.tailU));
@@ -1963,10 +2431,10 @@ function gamePools(team,benched){
   // as a deviation from these, exactly as Phase 23's matchEdge is measured from `wavg` — which is
   // what keeps each channel mean-zero across the league and the scoring envelope intact.
   const wavgA=(pool,k)=>{let t=0,w=0;pool.forEach(([p,wt])=>{t+=av(p,k)*wt;w+=wt;});return w?t/w:60;};
-  const avgA=pool=>{const o={};for(const k of SIM_ATTRS)o[k]=wavgA(pool,k);return o;};
+  const avgA=pool=>{const o={};for(const k of POOL_ATTRS)o[k]=wavgA(pool,k);return o;};
   const recv=W([['WR',1.15],['TE',0.75],['RB',0.55]],1);
   const rush=W([['RB',1.0]],1);
-  const cover=W([['CB',1.15],['S',0.75],['LB',0.4]],1);   // who covers the pass (weights mirror `recv`)
+  const cover=W([['CB',1.15],['FS',0.75],['SS',0.75],['LB',0.4]],1);   // who covers the pass (weights mirror `recv`)
   const front=W([['DT',1.0],['DE',0.9],['LB',0.7]],1);    // who meets the run
   const ol=W([['OT',1.0],['OG',0.95],['C',0.8]],1);       // Phase 49: who false-starts — Phase 51: and who blocks
   const rush4=W([['DE',1.0],['DT',0.7],['LB',0.5]],1);    // pass rush (sacks)
@@ -1979,11 +2447,11 @@ function gamePools(team,benched){
     k:(byPos.K||[])[0]||(byPos.QB||[])[0]||null,
     pu:(byPos.P||[])[0]||(byPos.K||[])[0]||null,           // Phase 51: the punter enters the sim at last
     rush, recv, ol, rush4,                                 // ol: who false-starts (Phase 49) AND who blocks (Phase 51)
-    tkl:W([['LB',1.0],['S',0.8],['CB',0.7],['DE',0.55],['DT',0.45]],1),
+    tkl:W([['LB',1.0],['SS',0.85],['FS',0.75],['CB',0.7],['DE',0.55],['DT',0.45]],1),
     // Phase 23 per-matchup resolution: assign a coverage man (by depth) to the targeted receiver, a
     // front defender to the run, and measure each as a deviation from his side's WEIGHTED mean — so the
     // matchup edge is mean-zero (the envelope holds) but a stud-on-scrub mismatch tilts the play.
-    cover, front, cb:byso('CB'), saf:byso('S'), lbk:byso('LB'),
+    cover, front, cb:byso('CB'), saf:byso('SS').concat(byso('FS')), lbk:byso('LB'),
     recvAvg:wavg(recv), rushAvg:wavg(rush), covAvg:wavg(cover), frontAvg:wavg(front)
   };
 }
@@ -2346,8 +2814,8 @@ function simEngine(home,away,seed,opts){
     // reproduces the measured curve exactly and league-wide FG% is unchanged. Deliberately NOT
     // pressure-sensitive: docs/reference/cfb-clutch.md measured that kickers do not choke.
     const doFG=(dd,fgDist)=>{ time+=8; add(oP.k&&oP.k.id,'fga');
-      const kk=oP.k, slope=0.013*clamp(1-AT.kLeg*tilt(kk,'str'),0.55,1.5);
-      if(r()<clamp(0.965+AT.kAcc*tilt(kk,'awr')-(fgDist-20)*slope,0.40,0.99)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; L(off,'score',nm(oP.k)+' '+fgDist+'-yd field goal is GOOD',dd,true); return {nextLos:25,time}; }
+      const kk=oP.k, slope=0.013*clamp(1-AT.kLeg*tilt(kk,'kpw'),0.55,1.5);
+      if(r()<clamp(0.965+AT.kAcc*tilt(kk,'kac')-(fgDist-20)*slope,0.40,0.99)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; L(off,'score',nm(oP.k)+' '+fgDist+'-yd field goal is GOOD',dd,true); return {nextLos:25,time}; }
       L(off,'play',nm(oP.k)+' '+fgDist+'-yd field goal MISSED',dd); return {nextLos:flipTo(los),time}; };
     L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los));
     while(true){
@@ -2388,7 +2856,7 @@ function simEngine(home,away,seed,opts){
           return doFG(dd,fgDist);
         } else if(act==='punt'){                             // punt (net ~42; into EZ → touchback @20)
           time+=10; L(off,'play','Punt',dd);
-          return {nextLos:clamp(flipTo(los+ri(r,38,46)+Math.round(AT.puntLeg*tilt(oP.pu,'str'))),20,99),time};   // Phase 51: his leg is worth field position
+          return {nextLos:clamp(flipTo(los+ri(r,38,46)+Math.round(AT.puntLeg*tilt(oP.pu,'kpw'))),20,99),time};   // Phase 51: his leg is worth field position
         } // else: go for it → fall through and run a normal play
       }
 
@@ -2449,9 +2917,13 @@ function simEngine(home,away,seed,opts){
         // PC.mean, and the only channel allowed to bias a close game at all.
         const padv=adv+mEdge+(compClutch(qb)+compClutch(rec)-compClutch(cov))*PC.mean*press;
         // ---- Phase 51 attribute channels, all mean-zero against the pools they come from ----
-        const dAGI=AD(rec,oP.recvA,cov,dP.covA,'agi'), dBAL=AD(rec,oP.recvA,cov,dP.covA,'bal');
-        const dPRO=AU(oP.olA,dP.rush4A,'str');               // the line against the rush — the pocket
-        const qAWR=tilt(qb,'awr');                           // does he see it coming
+        const dAGI=AD(rec,oP.recvA,cov,dP.covA,'agi'), dCTH=AD(rec,oP.recvA,cov,dP.covA,'cth');
+        // SEPARATION — his route running against the coverage the defence is actually playing. The
+        // scheme picks which coverage stat is on trial: zone reads `zcv`, everything else `mcv`.
+        const dRTE=ADX(rec,oP.recvA,'rte',cov,dP.covA,dcall==='cover'?'zcv':'mcv');
+        const dPRO=AUX(oP.olA,dP.rush4A,dP.olA,oP.rush4A,'pbk','prs');   // the pocket — protection vs rush
+        const qAWR=tilt(qb,'awr'), qIQ=tilt(qb,'iq');        // does he see it coming, and did he set the protection
+        const qTHA=tilt(qb,'tha'), qTHP=tilt(qb,'thp');      // accuracy owns the mean, the arm owns the deep ball
         let dSPD=AD(rec,oP.recvA,cov,dP.covA,'spd');
         // The one-on-one clause: isolated deep or in man, a speed DEFICIT is not something technique
         // covers, so it steepens past the threshold. A surplus is left alone — this is the only
@@ -2461,12 +2933,12 @@ function simEngine(home,away,seed,opts){
         const deepW=variant==='deep'?1.6:togo>=11?1.3:togo>=7?1.0:0.6;
         // A sharp cover man is not fooled by the play concept (play action, screen); a poor one bites.
         const vD=clamp(1-AT.awrVariant*(av(cov,'awr')-dP.covA.awr),0.4,1.6);
-        if(r()<clamp(0.062-adv*0.0012+ky*0.05+dSack+vSack*vD+AT.strSack*dPRO+AT.awrSack*qAWR+(pkg==='spread'?(dcall==='blitz'?0.08:0.02):0),0.02,0.25)){  // sack (+ spread = fewer blockers, exposed to the blitz)
+        if(r()<clamp(0.062-adv*0.0012+ky*0.05+dSack+vSack*vD+AT.pbkSack*dPRO+AT.awrSack*qAWR+(pkg==='spread'?(dcall==='blitz'?0.08:0.02):0),0.02,0.25)){  // sack (+ spread = fewer blockers, exposed to the blitz)
           gain=-ri(r,4,9); time+=PM.secSack; const s=wpick(dP.rush4,r,injured); add(s&&s.id,'sk'); txt=nm(qb)+' sacked by '+nm(s)+' for '+gain;
-          if(r()<clamp(PM.sackFumP+AT.balFum*tilt(qb,'bal')*4,0.01,0.20)){ turnover=true; txt=nm(qb)+' STRIP-SACKED by '+nm(s)+' — fumble lost'; }   // Phase 48: the strip sack
-        } else if(r()<clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)+padv*0.007-ky*0.22+dComp+vComp*vD-PC.cmp*press+AT.deepCmp*dSPD*deepW+AT.agiCmp*dAGI+AT.balCmp*dBAL+(pkg==='spread'?0.05:0),0.28,0.88)){    // completion (+ spread stresses coverage)
+          if(r()<clamp(PM.sackFumP+AT.carFum*tilt(qb,'car')*2.4,0.01,0.20)){ turnover=true; txt=nm(qb)+' STRIP-SACKED by '+nm(s)+' — fumble lost'; }   // Phase 48: the strip sack
+        } else if(r()<clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)+padv*0.007-ky*0.22+dComp+vComp*vD-PC.cmp*press+AT.deepCmp*dSPD*deepW+AT.agiCmp*dAGI+AT.cthCmp*dCTH+AT.rteCmp*dRTE+AT.thaCmp*qTHA+(pkg==='spread'?0.05:0),0.28,0.88)){    // completion (+ spread stresses coverage)
           const u=compDraw(r,rec,vAmp);                      // Phase 51: keep the draw — speed reads its TAIL
-          gain=Math.max(-3,Math.round(qGain(u,PM.recQ[distKey(togo)],vBoom*8)+padv*PM.advPass-ky*PASS_KEY+dPassY+vYds*vD-PC.ya*press+tailAdd(u,dSPD,AT.tailPass)+(pkg==='spread'?3:0)));
+          gain=Math.max(-3,Math.round(qGain(u,PM.recQ[distKey(togo)],vBoom*8)+padv*PM.advPass-ky*PASS_KEY+dPassY+vYds*vD-PC.ya*press+tailAdd(u,dSPD,AT.tailPass)+AT.thpDeep*qTHP*deepW+AT.yacPass*ADX(rec,oP.recvA,'elu',cov,dP.covA,'tkl')+(pkg==='spread'?3:0)));
           hero=rec;
           add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
@@ -2476,7 +2948,7 @@ function simEngine(home,away,seed,opts){
           if(r()<INJ_RATE*injMul(rec))hurt(rec,off); if(r()<INJ_RATE*0.7*injMul(cov))hurt(cov,def);   // injuries on contact (Phase 26, Phase 51 durability)
         } else {                                            // incomplete (maybe picked)
           time+=PM.secIncomp; tackled=false; add(qb&&qb.id,'pAtt'); add(cov&&cov.id,'cvTgt'); txt=nm(qb)+' incomplete';
-          if(r()<clamp((PM.intRate-adv*0.0008)*(1+PC.intMul*press)+AT.awrInt*qAWR+AT.balInt*(av(cov,'bal')-dP.covA.bal),0.020,0.14)){ turnover=true; add(qb&&qb.id,'pInt'); add(cov&&cov.id,'dInt');
+          if(r()<clamp((PM.intRate-adv*0.0008)*(1+PC.intMul*press)+AT.awrInt*qAWR+AT.iqInt*qIQ+AT.thaInt*qTHA+AT.cthInt*(av(cov,'cth')-dP.covA.cth)+AT.zcvInt*(av(cov,'zcv')-dP.covA.zcv),0.020,0.14)){ turnover=true; add(qb&&qb.id,'pInt'); add(cov&&cov.id,'dInt');
             if(press>=0.5)add(cov&&cov.id,'cl');           // a pick in a big moment is a clutch play
             txt=nm(qb)+' INTERCEPTED by '+nm(cov); }
         }
@@ -2488,14 +2960,20 @@ function simEngine(home,away,seed,opts){
         // ---- Phase 51 channels. The run is where STRENGTH finally gives the offensive line a job:
         // the back's own power plus his line against the front decides what happens in the pile.
         const dSPDr=AD(rb,oP.rushA,fr,dP.frontA,'spd'), dAGIr=AD(rb,oP.rushA,fr,dP.frontA,'agi');
-        const dSTRr=AD(rb,oP.rushA,fr,dP.frontA,'str')+AU(oP.olA,dP.frontA,'str')*AT.strLine;
+        // THE FLOOR — what happens in the pile. His power to break the tackle, plus his line's run
+        // blocking against the front's ability to shed and fill. This is the job the offensive line
+        // finally has: Phase 51 gave it `str`, which was the same stat as the back's own power.
+        const dSTRr=ADX(rb,oP.rushA,'btk',fr,dP.frontA,'tkl')*AT.btkRun/AT.strRun
+          +AUX(oP.olA,dP.frontA,dP.olA,oP.frontA,'rbk','rst')*AT.rbkLine;
+        // THE CREASE — making him miss, against the man filling it.
+        const dELUr=ADX(rb,oP.rushA,'elu',fr,dP.frontA,'tkl');
         const vDr=clamp(1-AT.awrVariant*(av(fr,'awr')-dP.frontA.awr),0.4,1.6);
         const u=compDraw(r,rb,vAmp);                         // Phase 51: speed reads the tail, strength the floor
         gain=Math.max(-9,Math.round(qGain(u,PM.runQ[distKey(togo)],0)+padv*PM.advRun-ky*RUN_KEY+dRunY+vYds*vDr-PC.yc*press
-          +tailAdd(u,dSPDr,AT.tailRun)+floorAdd(u,dSTRr,AT.strRun)+AT.agiRun*dAGIr+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
+          +tailAdd(u,dSPDr,AT.tailRun)+floorAdd(u,dSTRr,AT.strRun)+AT.agiRun*dAGIr+AT.eluRun*dELUr+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
         time+=PM.secRun; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain; hero=rb;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
-        if(!scored && r()<clamp(PM.fumRate*(1+PC.fumMul*press)+AT.awrFum*AD(rb,oP.rushA,fr,dP.frontA,'awr')+AT.balFum*AD(rb,oP.rushA,fr,dP.frontA,'bal'),0.002,0.05)){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
+        if(!scored && r()<clamp(PM.fumRate*(1+PC.fumMul*press)+AT.awrFum*AD(rb,oP.rushA,fr,dP.frontA,'awr')+AT.carFum*ADX(rb,oP.rushA,'car',fr,dP.frontA,'tkl'),0.002,0.05)){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }
         if(r()<INJ_RATE*injMul(rb))hurt(rb,off); if(r()<INJ_RATE*0.7*injMul(fr))hurt(fr,def);     // injuries on contact (Phase 26, Phase 51 durability)
       }
 
@@ -2707,7 +3185,7 @@ function genRecruits(seed,teams){
       // independently of it. The three inline `ri(r,…)` draws the old spd/str/awr consumed are gone
       // though, so the board does shift ONCE at this phase boundary — the same one-time change
       // genPlayer makes to generated worlds. It is stable per seed from here on.
-      genAttrs(rng(hashStr(rid+'attr')),ov,pos)));
+      genProfile(rng(hashStr(rid+'attr')),ov,pos)));
   }
   return pool;
 }
@@ -3211,7 +3689,7 @@ function genFreshman(r,prestige,posCode){
   const tr=genTraits(r);
   return Object.assign({id:'p'+Math.floor(r()*1e9).toString(36),fn:pick(r,FN),ln:pick(r,LN),pos:posCode,
     yr:'FR',age:18+ri(r,0,1),st:pick(r,STATES),stars:ov>=82?4:ov>=72?3:ov>=62?2:1,
-    ov,pot,cap:false,so:0,mot:tr.mot,comp:tr.comp,ego:tr.ego},genAttrs(r,ov,posCode));
+    ov,pot,cap:false,so:0,mot:tr.mot,comp:tr.comp,ego:tr.ego},genProfile(r,ov,posCode));
 }
 // Convert a signed recruit into a true-freshman Player. Blue-chips enter "raw" (ov discounted by
 // pedigree) with the recruit's pot as their ceiling, so development carries them up over a career —
@@ -3228,6 +3706,10 @@ function recruitToFreshman(rec,r){
   const at=centerAttrs(attrProfile(rec),ov,rec.pos);
   return Object.assign({id:'p'+Math.floor(r()*1e9).toString(36),fn:rec.fn,ln:rec.ln,pos:rec.pos,
     yr:'FR',age:18,st:rec.st,stars:rec.stars,ov,pot,cap:false},at,{
+    // Phase 52: carry the SHAPE he was scouted as, not just the numbers. attrProfile returns the
+    // attribute values alone, so without this a signee arrives on campus with no archetype at all —
+    // he stops being a Deep Threat the moment he enrols.
+    arch:rec.arch!=null?rec.arch:(classifyArch(rec)||{}).n,pur:rec.pur,
     so:0,promise:rec.promise||null,fromRecruit:true,mot:tr.mot,comp:tr.comp,ego:tr.ego});
 }
 // Roll one team's roster into the next season. `signees` = the prospects that committed to this
@@ -3502,7 +3984,7 @@ function awardK(s){const acc=(s.fga||0)?((s.fgm||0)/s.fga):0;return (s.fgm||0)*3
 // Outland → best DT (interior linemen aren't box-scored; the DL approximates it). K/P handled specially.
 const TROPHY_DEFS=[["obrien","Davey O'Brien",["QB"],"off"],["doak","Doak Walker",["RB"],"off"],
   ["biletnikoff","Biletnikoff",["WR"],"off"],["mackey","John Mackey",["TE"],"off"],
-  ["outland","Outland",["DT"],"def"],["butkus","Butkus",["LB"],"def"],["thorpe","Jim Thorpe",["CB","S"],"def"]];
+  ["outland","Outland",["DT"],"def"],["butkus","Butkus",["LB"],"def"],["thorpe","Jim Thorpe",["CB","FS","SS"],"def"]];
 function awardLine(s,side){
   if(side==='k'){const d=[];if(s.fga)d.push((s.fgm||0)+'/'+s.fga+' FG');if(s.xpm)d.push((s.xpm||0)+' XP');return d.join(', ')||'—';}
   if(side==='def'){const d=[];if(s.tkl)d.push(s.tkl+' tkl');if(s.sk)d.push(s.sk+' sk');if(s.dInt)d.push(s.dInt+' INT');return d.join(', ')||'—';}
@@ -4193,7 +4675,7 @@ function gameSeed(g){return (hashStr(g.id)^(S.seed>>>0))>>>0;}
 // than the one in the record book. Every game resolved from here on is stamped with the model that
 // produced it; replay is refused (not silently wrong) for anything older. Stored results, stats and
 // standings are untouched — only the play-by-play re-sim is unavailable.
-const SIM_MODEL=6;   // 6 = Phase 51 (attributes are the ability model); 5 = Phase 50 (big moments); 4 = Phase 49 (roster-driven penalties); 3 = Phase 48.1 (measured gain tables)
+const SIM_MODEL=7;   // 7 = Phase 52 (position-specific attributes); 6 = Phase 51 (attributes are the ability model); 5 = Phase 50 (big moments); 4 = Phase 49 (roster-driven penalties); 3 = Phase 48.1 (measured gain tables)
 function gameReplayable(g){ return !!g && (!g.played || g.eng===SIM_MODEL); }
 // Phase 22: if the coach play-called this game, `g.calls` is the ordered list of his controlled-offense
 // decisions. Replaying it (the OC default fills any gap) reproduces the EXACT play-called result on
@@ -5825,7 +6307,7 @@ function adjustSheet(){
   const me=S.teamId, opp=teamById(G.home===me?G.away:G.home), t=controlled();
   const plan=G.plan=G.plan||{shadow:{},boost:{}};
   const oppRecv=opp.roster.filter(p=>['WR','TE','RB'].includes(p.pos)).sort((a,b)=>(a.so||0)-(b.so||0)).slice(0,5);
-  const myDB=t.roster.filter(p=>['CB','S'].includes(p.pos)).sort((a,b)=>(a.so||0)-(b.so||0));
+  const myDB=t.roster.filter(p=>['CB','FS','SS'].includes(p.pos)).sort((a,b)=>(a.so||0)-(b.so||0));
   const lab=p=>`${p.pos}${(p.so||0)+1} ${p.fn[0]}.${p.ln} (${p.ov})`;
   const idByLab={}; myDB.forEach(d=>idByLab[lab(d)]=d.id);
   const body=el('div');
@@ -7930,8 +8412,9 @@ function statBlock(p){
 // than at guard, and that weighting is exactly what decides his OVERALL.
 function attrRowsHTML(p,scheme){
   const w=scheme?schemeAttrW(p.pos,scheme):posAttrW(p.pos);
-  const top=Math.max(...ATTRS.map(k=>w[k]));
-  return ATTRS.map(k=>{
+  const keys=posAttrs(p.pos).filter(k=>k!=='adp');   // adaptability is about playing ELSEWHERE (posFit)
+  const top=Math.max(...keys.map(k=>w[k]));
+  return keys.sort((a,b)=>w[b]-w[a]).map(k=>{
     const v=attrVal(p,k), key=w[k]>=top-0.001, pct=clamp(Math.round((v-40)/59*100),0,100);
     return `<div class="row spread" style="margin:3px 0;gap:8px;align-items:center">
       <span class="meta ${key?'accent':'dim'}" style="min-width:88px;font-weight:${key?700:400}">${ATTR_LABEL[k]}</span>

@@ -1,116 +1,111 @@
-SIDELINE SCHEME SIM — teams built as shapes, played against each other
+SIDELINE SCHEME SIM — randomized rosters, real archetypes, 25 attributes
 
-  7 offensive schemes x 5 defensive schemes; 7 offenses, 5 defenses
-  every roster re-centred to the SAME ovrBase, so shape is the only difference
+  parity: worst ovrBase gap between any identity and the control = 0.00 rating pts
+  (archetypes are weighted-mean-zero, so recruiting a shape must not buy ability)
+  a control roster's WRs: Slot Technician x3, Possession x5, Deep Threat x1, YAC Weapon x1, Gadget x1
+  an Air Raid roster's WRs: Contested X x2, Deep Threat x5, Possession x2, YAC Weapon x1, Slot Technician x1
 
 == A. THE MATCHUP TABLE, MEASURED ==
-   identical neutral rosters (78 off / 78 def), common seeds; cells = points scored by the OFFENSE
-   parity-matchup baseline: 20.07 pts/team  (NOT the league average — two
-   identical 78-rated rosters never mismatch, and the profiler's 22.6 includes blowouts)
+   two randomized neutral rosters (75 off / 74 def), common seeds; cells = points scored by the OFFENSE
+   parity-matchup baseline: 22.76 pts/team
 
    offense             4-3     3-4  Nickel    Bear  Tampa-     row  | table says
-   Air Raid           +1.1    +1.3    -2.2    +2.1    -2.3    +0.7  |  +1 +1 -2 +2 -2
-   Spread             +0.8    -0.2    -0.5    +0.6    -0.7    +0.8  |  +1 +0 -1 +1 -1
-   Spread-Option      +0.9    +1.5    +0.1    -0.9    -1.6    -1.9  |  +1 +2 +0 -1 -2
-   Pro Style          -0.9    +0.7    +0.9    -0.8    +0.1    +0.9  |  -1 +1 +1 -1 +0
-   Smashmouth         -0.9    -1.5    +1.3    -1.6    +2.6    -2.2  |  -1 -2 +2 -2 +3
-   West Coast         -0.9    -1.8    +0.1    +0.6    +1.9    +0.8  |  -1 -2 +0 +1 +2
-   Multiple           -0.2    -0.1    +0.2    -0.0    +0.1    +1.0  |  +0 +0 +0 +0 +0
-   (column)           +0.2    +0.0    -0.1    -0.0    -0.1
+   Air Raid           +1.4    +1.2    -2.2    +1.8    -2.1    +1.9  |  +1 +1 -2 +2 -2
+   Spread             +1.0    -0.0    -0.7    +0.4    -0.7    +1.8  |  +1 +0 -1 +1 -1
+   Spread-Option      +0.6    +1.8    +0.2    -0.9    -1.7    -2.0  |  +1 +2 +0 -1 -2
+   Pro Style          -1.0    +0.9    +0.8    -0.4    -0.3    +0.4  |  -1 +1 +1 -1 +0
+   Smashmouth         -1.0    -1.7    +1.8    -1.7    +2.6    -4.3  |  -1 -2 +2 -2 +3
+   West Coast         -1.0    -2.1    +0.2    +0.6    +2.3    +2.0  |  -1 -2 +0 +1 +2
+   Multiple           +0.0    -0.1    -0.0    +0.1    -0.1    +0.2  |  +0 +0 +0 +0 +0
+   (column)           +0.2    +0.2    +0.1    -0.6    +0.1
 
    offense           scores  opp scores   margin   what the row effect IS
-   Air Raid            +0.7        +1.9     -1.3   a real PENALTY
-   Spread              +0.8        +0.2     +0.6   a real EDGE
-   Spread-Option       -1.9        -1.2     -0.7   a real PENALTY
-   Pro Style           +0.9        +0.1     +0.8   a real EDGE
-   Smashmouth          -2.2        -1.2     -1.1   a real PENALTY
-   West Coast          +0.8        +0.3     +0.5   a real EDGE
-   Multiple            +1.0        -0.1     +1.1   a real EDGE
+   Air Raid            +1.9        +1.0     +0.9   a real EDGE
+   Spread              +1.8        +0.2     +1.6   a real EDGE
+   Spread-Option       -2.0        -1.0     -1.0   a real PENALTY
+   Pro Style           +0.4        -0.2     +0.6   a real EDGE
+   Smashmouth          -4.3        -0.4     -3.8   a real PENALTY
+   West Coast          +2.0        +0.6     +1.4   a real EDGE
+   Multiple            +0.2        -0.1     +0.3   ball control (margin-neutral)
 
    cells = INTERACTION only (cell - row - column + grand), which is what SCHEME_EDGE is.
-   row/column = how much a scheme moves scoring against EVERY opponent — mostly lever 3,
-   the play-mix tendency, which the matchup table says nothing about.
-
-   correlation, interaction vs table : 0.982
-   1 rating pt of matchup edge buys  : 0.87 pts on the scoreboard
-   spread, best to worst MATCHUP     : 4.9 pts
-   spread, best to worst OFFENSE row : 3.2 pts
-   spread, best to worst DEFENSE col : 0.3 pts
+   correlation, interaction vs table : 0.983
+   1 rating pt of matchup edge buys  : 0.91 pts on the scoreboard
+   spread, best to worst MATCHUP     : 4.8 pts
+   spread, best to worst OFFENSE row : 6.2 pts
+   spread, best to worst DEFENSE col : 0.8 pts
    28000 games
 
 == B. THE SAME ROSTER, IN EVERY SYSTEM ==
-   top-11 offensive rating after ovrIn re-rating; every roster is ovrBase 78
+   top-11 offensive rating after ovrIn re-rating, averaged over 12 independent random rosters
 
-   roster built for  Air Rai   Spread  Spread-  Pro Sty  Smashmo  West Co  Multipl
-   Air Raid              *79       78       78       78       78       78       78
-   Smashmouth             78       78       77       78      *80       78       78
-   Spread-Option          78       78      *79       78       78       78       78
-   West Coast             79       78       78       78       78      *79       78
-   Pro Style              78       78       78      *78       78       78       78
-   (* = the system the roster was built for)
-
-   rosters whose own system rates them highest: 5 of 5
-   spread between best and worst fit: 1, 3, 1, 1, 0 rating pts
+   roster recruited for  Air Rai   Spread  Spread-  Pro Sty  Smashmo  West Co  Multipl
+   Air Raid                *74.8     74.6     73.6     74.3     73.4     74.9     74.3   spread 1.5
+   Smashmouth               74.0     74.2     72.9     74.3    *75.4     74.3     74.3   spread 2.5
+   Spread-Option            74.3     74.6    *74.5     74.3     73.4     74.0     74.3   spread 1.2
+   West Coast               74.8     74.5     73.4     74.3     73.7    *74.8     74.3   spread 1.4
+   Pro Style                74.5     74.3     73.7    *74.3     74.3     74.6     74.3   spread 0.9
+   (* = the system the roster was recruited for)
 
    defensive side, same test:
 
-   roster built for      4-3      3-4  Nickel/     Bear  Tampa-2
-   Bear                   78       78       77      *79       77
-   Tampa-2                78       78       78       78      *79
-   Nickel/Cover-3         78       78      *79       78       79
-   3-4                    78      *78       78       78       78
-   4-3                   *78       78       78       78       78
-   rosters whose own system rates them highest: 5 of 5
+   roster recruited for      4-3      3-4  Nickel/     Bear  Tampa-2
+   Bear                     73.8     73.8     73.7    *74.1     73.3   spread 0.8
+   Tampa-2                  73.8     73.6     74.5     73.8    *74.8   spread 1.2
+   Nickel/Cover-3           73.8     73.9    *74.3     73.4     74.3   spread 0.9
+   3-4                      73.8    *74.2     73.8     73.4     73.6   spread 0.8
+   4-3                     *73.8     73.9     74.0     73.8     73.8   spread 0.3
+
+   rosters whose own system rates them highest: 6 of 10
 
 == C. FIVE PROGRAMS, EQUAL TALENT, ROUND-ROBIN ==
-   program          offense        defense         off  def
-   Air Raid U       Air Raid       Nickel/Cover-3   79   79
-   Smashmouth St    Smashmouth     3-4              80   78
-   Option Tech      Spread-Option  Bear             80   79
-   West Coast A&M   West Coast     Tampa-2          79   79
-   Pro State        Pro Style      4-3              78   78
+   5 independent random rosters per program, 120 games per roster pairing
 
-   STANDINGS (600 games vs each opponent, home-and-home)
+   program          offense        defense          off  def
+   Air Raid U       Air Raid       Nickel/Cover-3  74.0 73.4
+   Smashmouth St    Smashmouth     3-4             74.4 73.4
+   Option Tech      Spread-Option  Bear            73.6 73.0
+   West Coast A&M   West Coast     Tampa-2         74.0 73.6
+   Pro State        Pro Style      4-3             73.2 72.8
 
-   program              W    L   win%     PF     PA   marg
-   West Coast A&M    1403  997   58.5   23.2   19.7   +3.5
-   Smashmouth St     1264 1136   52.7   21.1   19.9   +1.2
-   Air Raid U        1165 1235   48.5   21.7   22.8   -1.1
-   Pro State         1092 1308   45.5   20.3   21.8   -1.6
-   Option Tech       1076 1324   44.8   18.6   20.6   -2.1
+   STANDINGS
+
+   program               W     L   win%     PF     PA   marg
+   West Coast A&M     1413   987   58.9   22.9   19.7   +3.2
+   Air Raid U         1335  1065   55.6   24.1   21.4   +2.7
+   Smashmouth St      1197  1203   49.9   20.1   19.8   +0.4
+   Pro State          1039  1361   43.3   19.2   22.3   -3.1
+   Option Tech        1016  1384   42.3   18.5   21.6   -3.2
 
    HOW THEY PLAY (per game)
 
    program            pass%   att   cmp%   Y/A   car   Y/C   int
-   West Coast A&M      55.1  36.2   60.2  7.24  29.5  5.10  0.63
-   Smashmouth St       33.6  21.6   61.7  7.62  42.7  5.12  0.51
-   Air Raid U          66.7  42.1   60.2  7.23  21.0  5.18  1.02
-   Pro State           48.4  30.9   60.2  7.23  32.9  5.08  0.84
-   Option Tech         34.2  21.1   62.0  7.63  40.7  5.07  0.81
+   West Coast A&M      54.6  35.6   61.0  7.33  29.6  5.15  0.65
+   Air Raid U          66.6  43.2   61.3  7.43  21.6  5.29  0.79
+   Smashmouth St       33.5  21.3   62.5  7.51  42.4  5.02  0.28
+   Pro State           48.1  30.4   59.8  7.12  32.7  5.13  0.99
+   Option Tech         35.2  22.0   60.4  7.23  40.5  4.98  0.66
 
    HEAD TO HEAD (win% for the row team, and the average score)
 
                               AIR          SMA          OPT          WCO          PRO
-   Air Raid U                   —    47% 22-23    62% 23-19    34% 19-26    52% 23-23
-   Smashmouth St        54% 23-22            —    46% 17-19    62% 24-19    49% 20-20
-   Option Tech          38% 19-23    54% 19-17            —    29% 16-24    59% 21-18
-   West Coast A&M       66% 26-19    38% 19-24    71% 24-16            —    59% 24-20
-   Pro State            48% 23-23    51% 20-20    41% 18-21    42% 20-24            —
+   Air Raid U                   -    52% 22-21    66% 26-19    41% 21-25    64% 26-20
+   Smashmouth St        48% 21-22            -    45% 17-19    58% 23-19    48% 20-19
+   Option Tech          34% 19-26    55% 19-17            -    26% 16-25    55% 20-19
+   West Coast A&M       60% 25-21    42% 19-23    74% 25-16            -    60% 23-19
+   Pro State            36% 20-26    52% 19-20    46% 19-20    40% 19-23            -
 
 == D. RUNNING THE WRONG SYSTEM ==
-   each roster vs the SAME neutral opponent (Pro Style / 4-3), all 7 offenses installed.
-   Points are shown NET of what a shapeless neutral roster scores in that same scheme, so
-   the play-mix tendency (which moves scoring on its own) is controlled away and what is
-   left is what the ROSTER SHAPE is worth. Same seeds throughout.
+   pts vs a shapeless control roster with the same ability draw, 5 roster draws x 240 games
 
-   shapeless control   Air Rai   Spread  Spread-  Pro Sty  Smashmo  West Co  Multipl
-     pts (tendency)       22.9     22.8     19.4     20.3     17.6     20.3     21.2
+   shapeless control     Air Rai   Spread  Spread-  Pro Sty  Smashmo  West Co  Multipl
+     pts (tendency)         23.6     24.0     20.6     21.2     18.9     22.2     22.2
 
-   roster built for    Air Rai   Spread  Spread-  Pro Sty  Smashmo  West Co  Multipl  own-vs-worst
-   Air Raid              *+1.3     -0.1     +1.2     -0.2     +0.1     +0.0     +0.2      +1.5 pts
-   Smashmouth             +1.8     +0.8     +1.4     +1.1    *+2.0     +1.3     +1.0      +1.2 pts
-   Spread-Option          -3.0     -3.4    *-0.0     -2.4     -2.4     -2.3     -2.2      +3.4 pts
-   West Coast             +1.3     +1.2     +1.2     +0.7     +0.9    *+2.1     +1.1      +1.4 pts
-   Pro Style              +0.0     +0.0     +0.0    *+0.0     +0.0     +0.0     +0.0      +0.0 pts
-   (* = the system the roster was built for; cells are pts vs the shapeless control)
+   roster recruited for  Air Rai   Spread  Spread-  Pro Sty  Smashmo  West Co  Multipl  own-vs-worst
+   Air Raid                *+3.3     +1.4     +0.2     +1.7     +0.7     +2.2     +1.9      +3.2 pts
+   Smashmouth               +2.2     +0.4     +0.1     +1.7    *+2.1     +1.3     +1.9      +2.0 pts
+   Spread-Option            -0.5     -1.7    *-0.0     -0.8     -0.8     -1.2     -1.1      +1.7 pts
+   West Coast               +2.7     +0.4     -0.0     +1.6     +0.8    *+1.2     +1.5      +1.2 pts
+   Pro Style                +0.0     +0.0     +0.0    *+0.0     +0.0     +0.0     +0.0      +0.0 pts
+   (* = the system the roster was recruited for)
 

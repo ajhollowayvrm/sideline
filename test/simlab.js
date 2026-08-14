@@ -42,7 +42,7 @@ eval(html.slice(C0, C1));
 // Phase 51: `ov` is a derived readout of six attributes, and the sim reads the attributes directly
 // through its own self-contained accessor. The engine block does not depend on this one at runtime,
 // but the checks below build synthetic players with real profiles, so pull it in for genAttrs/ovrIn.
-const A0 = html.indexOf('// === ATTRIBUTE ENGINE (Phase 51) START ==='), A1 = html.indexOf('// === ATTRIBUTE ENGINE (Phase 51) END ===');
+const A0 = html.indexOf('// === ATTRIBUTE ENGINE (Phase 52) START ==='), A1 = html.indexOf('// === ATTRIBUTE ENGINE (Phase 52) END ===');
 if (A0 < 0 || A1 < 0) { console.error('Could not find ATTRIBUTE ENGINE markers in index.html'); process.exit(2); }
 eval(html.slice(A0, A1) + '\nglobalThis.ATTRS = ATTRS; globalThis.POS_ATTR_W = POS_ATTR_W; globalThis.SCHEME_ATTR_W = SCHEME_ATTR_W;');
 const engineSrc = html.slice(i0, i1);
@@ -302,10 +302,24 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
     floorAdd(0.9, 20, AT.strRun) === 0 && floorAdd(AT.strFloorU, 20, AT.strRun) === 0 && floorAdd(0.01, 20, AT.strRun) > 0);
   check('Phase 51: speed’s one-on-one clause is asymmetric (a deficit steepens, a surplus does not)',
     AT.oneOnOneMul > 1 && AT.oneOnOne < 0);
-  // A player with a flat profile is the pre-phase player: every channel reads exactly zero.
-  const flat = { pos: 'WR', ov: 80, spd: 80, agi: 80, str: 80, awr: 80, bal: 80, dur: 80 };
-  check('Phase 51: a flat profile has no tilt in any attribute (pre-phase behaviour)',
-    SIM_ATTRS.every(k => Math.abs(tilt(flat, k)) < 1e-9));
+  // Phase 52 replaces the flat-profile version of this check, and the replacement is the point of
+  // the phase rather than a concession to it. Under six generic attributes, "80 across the board"
+  // WAS the neutral player and every channel read zero off him. Under position-specific rows it is
+  // not: a receiver at 80 everywhere has a low catching and route-running number FOR A RECEIVER and
+  // a high strength one, so he is a genuine specialist and the channels should say so.
+  //
+  // The invariant that survives is the one that actually matters — a player sitting exactly on his
+  // position's own expected shape has NO tilt anywhere. Built at ov 72, below the elite-divergence
+  // threshold, with zero spread and no archetype, which is precisely that player. Tolerance is 1.0
+  // because attributes are stored as integers.
+  const neutral = Object.assign({ pos: 'WR', ov: 72 }, genAttrs(rng(1), 72, 'WR', 0, null, 0));
+  check('Phase 52: a player on his position\'s own shape has no tilt in any attribute',
+    Object.keys(POS_ATTR_W.WR).filter(k => k !== 'adp').every(k => Math.abs(tilt(neutral, k)) < 1.0),
+    Object.keys(POS_ATTR_W.WR).filter(k => k !== 'adp').map(k => k + ' ' + tilt(neutral, k).toFixed(1)).join(' '));
+  // ...and the flat player is now correctly NOT neutral, which is what the vocabulary buys.
+  const flat = { pos: 'WR', ov: 80, spd: 80, agi: 80, str: 80, awr: 80, cth: 80, rte: 80, dur: 80 };
+  check('Phase 52: a FLAT profile is a specialist, not a neutral player',
+    Math.abs(tilt(flat, 'str')) > 2 && Math.abs(tilt(flat, 'cth')) > 2);
   check('Phase 51: ovrIn moves with the scheme while ovrBase does not', (() => {
     const cb = { pos: 'CB', spd: 70, agi: 72, str: 60, awr: 92, bal: 88, dur: 70 };
     const zone = ovrIn(cb, 'Tampa-2'), press = ovrIn(cb, 'Bear'), b1 = ovrBase(cb), b2 = ovrBase(cb);

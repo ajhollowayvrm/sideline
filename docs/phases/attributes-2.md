@@ -1,7 +1,13 @@
 # Phase 52 — Position-specific attributes, and the sim built from the players up
 
-> **Status: SPEC — not built.** This records the design input and the decisions it forces, so
-> implementation starts from an agreed model rather than from a conversation.
+> **Status: SHIPPED (steps 2 and 3a) — save v48, `SIM_MODEL` 7.** The vocabulary, the position matrix,
+> archetypes, purity, the FS/SS split, packed storage and the migration are all in `index.html`, and
+> every one of the 25 attributes now reaches a play. What is **not** done is the architectural
+> inversion of §1: play resolution still uses Phase 51's mean-zero deviation channels, re-pointed at
+> the right stats, rather than being rebuilt bottom-up. That is deliberate — it keeps the measured
+> envelope intact (22.6 → 22.8 pts/team) so nothing needs re-fitting, and it leaves steps 3b–5
+> (compounding contests, calibration to the §3 curve, the new gates) as the next phase. The sections
+> below are the design record; **§12 records what shipping actually measured.**
 
 Two directives, given together, that turn out to be one phase:
 
@@ -681,3 +687,83 @@ confirmation of §1 — additive mean-zero channels Gaussianize, and more of the
 Targets (1) and (2) are in direct tension under the current architecture — anything that tightens
 margins also flattens the tail. That is the strongest practical argument for the rebuild: compounding
 matchups produce a narrow body *and* a fat tail, which additive noise cannot.
+
+---
+
+## 12. What shipping measured (steps 2 + 3a)
+
+Measured with `tools/cfb-data/4-simprofile.js` over 2,010 games, against the same tool run on the
+Phase 51 build (`INDEX=/tmp/old51.html`, an option added for exactly this) rather than against the
+numbers in §11 — so the comparison is like-for-like rather than tool-version-to-tool-version.
+
+### The envelope held, which was the checkpoint
+
+| | real | Phase 51 | Phase 52 |
+|---|--:|--:|--:|
+| points / team | 26.9 | 22.6 | **22.8** |
+| avg margin | 16.2 | 20.9 | **20.6** |
+| total yards | 383 | 390 | 392 |
+| plays | 67.5 | 65.8 | 65.7 |
+| completion % | 61.1 | 60.6 | 61.6 |
+| yards / carry | 4.27 | 5.20 | 5.24 |
+| interceptions | 0.82 | 0.92 | 0.87 |
+| sacks | 2.06 | 1.96 | 1.93 |
+| penalties | 6.0 | 5.0 | 5.0 |
+
+Everything within ~1–2%. §10 predicted exactly this: `ov` is still derived from a re-centred profile
+and every channel is still a deviation from its pool, so the envelope is preserved by construction
+rather than by fitting.
+
+### The tail moved, without fitting anything
+
+| | real | Phase 51 | Phase 52 |
+|---|--:|--:|--:|
+| residual SD | 13.26 | 15.1 | 14.9 |
+| skew | +0.130 | +0.010 | −0.007 |
+| **excess kurtosis** | **+0.319** | **−0.154** | **+0.037** |
+
+This is §1's argument paying off a phase early. The league is now a MIXTURE of roster shapes rather
+than a cloud of independent tilts, and mixtures carry excess kurtosis by construction — the sim
+crossed from thinner-than-Gaussian to fatter, closing ~40% of the gap with no knob touched. The
+remaining 0.28 is what the compounding rebuild (step 3b) is for.
+
+### The bug this phase would otherwise have shipped
+
+`tilt(p,k)` measured a player against the flat mean of his own attributes. Under six generic
+attributes that was genuinely mean-zero. Under **anchored** position rows it is not: `anchorOff` puts
+high-weight attributes above a player's own average by construction, so a quarterback's `tha`, `iq`
+and `awr` all read systematically positive — and all three carry negative coefficients.
+
+Measured, before the fix: interceptions **0.92 → 0.47**, sacks −27%, completion % +1.6, total yards
++17. Every channel keyed off `tilt` moved in the direction its coefficient's sign predicted, which is
+what identified it. `attrTiltBase(pos,k)` subtracts the position's own expected shape, so what is left
+is "how much of a specialist is he *for a player at his position*".
+
+The general lesson, which the next phase should carry: **a deviation is only mean-zero against the
+right reference.** Phase 51 could use a player's own mean because its attributes were symmetric about
+it. A position-specific vocabulary breaks that silently, and it surfaces as a mean shift in the league
+envelope rather than as anything that looks like an error.
+
+### What a scheme is worth now
+
+`tools/schemesim.js` was rewritten onto randomized rosters for this (report: `tools/scheme-report.txt`).
+Identity is expressed as what a program RECRUITS — a bias in the archetype draw — and parity is
+enforced by paired ability streams, so the worst `ovrBase` gap between any identity and the control is
+**0.00** rating points.
+
+- **The matchup table is exactly what it claims.** Interaction vs `SCHEME_EDGE` correlates **0.983**,
+  at **0.91** scoreboard points per rating point of edge. Unchanged from Phase 51.
+- **Scheme fit at the RATING level is still small** — 0.3–2.5 rating points, and only 6 of 10 rosters
+  rate highest in their own system. Widening the vocabulary did not widen this, because
+  `SCHEME_ATTR_W`'s deviations are still ±.06–.10 on the weights. If roster fit is meant to be a real
+  decision for the player, that table is the thing to open, not the attribute list.
+- **But on the FIELD, shape is now worth up to +3.3 points** (an Air Raid roster in an Air Raid, net of
+  a shapeless roster with the same ability draw) against ~+1–2 before — because the sim reads the
+  specific attributes rather than six proxies for them.
+- **The play-mix tendency is still the biggest lever and still points the wrong way.** Smashmouth costs
+  **−3.8** points of margin on a neutral roster, while `SCHEME_TENDENCY`'s comment claims it moves
+  selection and not the scoring envelope. Caveat: this measured roughly twice the Phase 51 figure
+  (−1.1), but the harness changed from flat rosters to randomized ones at the same time and the two
+  were **not** separated — a real roster has weak links a flat one does not.
+- **Defensive scheme choice is worth 0.8 points.** Defenses have no tendency lever and the table's
+  columns sum to zero, so outside a specific matchup the call is close to inert.

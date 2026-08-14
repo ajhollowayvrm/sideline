@@ -6,13 +6,18 @@ const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const pick = (r, a) => a[Math.floor(r() * a.length)];
 function rng(seed) { let a = seed >>> 0; return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
 function hashStr(s) { let h = 2166136261; for (let i = 0; i < String(s).length; i++) { h ^= String(s).charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
-const html = fs.readFileSync(require('path').join(__dirname, '..', '..', 'index.html'), 'utf8');
-const grab = (a, b) => { const i = html.indexOf(a), j = html.indexOf(b); return html.slice(i, j); };
+// INDEX=path lets this profile a DIFFERENT build of the game — which is the only way to measure a
+// phase's effect on the envelope honestly (git show HEAD:index.html > /tmp/old.html).
+const html = fs.readFileSync(process.env.INDEX || require('path').join(__dirname, '..', '..', 'index.html'), 'utf8');
+const grab = (a, b) => { const i = html.indexOf(a), j = html.indexOf(b); if (i < 0 || j < 0) return null; return html.slice(i, j); };
+// the attribute block was renamed at Phase 52; accept either so old and new builds both profile
+const grabAttr = () => grab('// === ATTRIBUTE ENGINE (Phase 52) START ===', '// === ATTRIBUTE ENGINE (Phase 52) END ===')
+  || grab('// === ATTRIBUTE ENGINE (Phase 51) START ===', '// === ATTRIBUTE ENGINE (Phase 51) END ===');
 eval(grab('// === TRAIT ENGINE (Phase 10) START ===', '// === TRAIT ENGINE (Phase 10) END ==='));
 eval(grab('// === SCHEME ENGINE (Phase 21) START ===', '// === SCHEME ENGINE (Phase 21) END ==='));
 // Phase 51's attribute engine — needed so the synthetic league carries REAL six-attribute profiles.
 // See the FLAT note in genRoster below for why this matters to every number this tool prints.
-eval(grab('// === ATTRIBUTE ENGINE (Phase 51) START ===', '// === ATTRIBUTE ENGINE (Phase 51) END ==='));
+eval(grabAttr());
 eval(grab('// === SIM ENGINE (Phase 3) START ===', '// === SIM ENGINE (Phase 3) END ==='));
 
 /* `FLAT=1 node 4-simprofile.js` reproduces the pre-fix behaviour — players with NO attribute
@@ -21,10 +26,12 @@ eval(grab('// === SIM ENGINE (Phase 3) START ===', '// === SIM ENGINE (Phase 3) 
 const FLAT = process.env.FLAT === '1';
 
 /* synthetic world — mirrors test/simlab.js exactly */
+const POS_HAS_FS = /FS:\{/.test(html);
 const POS = [["QB", "off", 4], ["RB", "off", 5], ["WR", "off", 11], ["TE", "off", 5],
 ["OT", "off", 7], ["OG", "off", 6], ["C", "off", 3],
-["DE", "def", 6], ["DT", "def", 6], ["LB", "def", 10], ["CB", "def", 9], ["S", "def", 8],
-["K", "st", 2], ["P", "st", 2]];
+["DE", "def", 6], ["DT", "def", 6], ["LB", "def", 10], ["CB", "def", 9]].concat(
+  POS_HAS_FS ? [["FS", "def", 4], ["SS", "def", 4]] : [["S", "def", 8]]).concat([
+["K", "st", 2], ["P", "st", 2]]);
 const sideOf = {}; POS.forEach(([c, s]) => sideOf[c] = s);
 function genRoster(r, prestige) {
   const out = [];
@@ -36,7 +43,7 @@ function genRoster(r, prestige) {
     // back to `ov`, collapsing all six sim channels onto the rating gap so they restate matchEdge
     // six times over. That makes the league look FAR more rating-determined than the real game is,
     // and it is the world every number in docs/phases/attributes.md §9 was measured on.
-    out.push(FLAT ? p : Object.assign(p, genAttrs(r, ov, code)));
+    out.push(FLAT ? p : Object.assign(p, (typeof genProfile === 'function' ? genProfile : genAttrs)(r, ov, code)));   // Phase 52: a real archetype, not a free tilt
   } });
   const byPos = {}; out.forEach(p => (byPos[p.pos] = byPos[p.pos] || []).push(p));
   Object.values(byPos).forEach(arr => { arr.sort((a, b) => b.ov - a.ov);
@@ -213,8 +220,16 @@ console.log(`  ${out.all.pts.toFixed(1)} pts, ${out.all.yds.toFixed(0)} yds, ${o
   const resid = gameRows.map(g => (g.hs - g.as) - g.exp);
   const m = resid.reduce((a, b) => a + b, 0) / resid.length;
   const sd = Math.sqrt(resid.reduce((s, x) => s + (x - m) ** 2, 0) / resid.length);
+  // Phase 52: the SHAPE of the tail, not just its width. cfb-averages section 6 measures real
+  // football at skew +0.130 / excess kurtosis +0.319 — thin through the ordinary range and fat at
+  // the extreme — and Phase 51 went the wrong way (-0.136) because additive mean-zero channels
+  // Gaussianize. Archetypes are the stated fix: a league of distinct roster SHAPES is a mixture, and
+  // mixtures carry excess kurtosis by construction. This is the number that says whether that worked.
+  const cm = k => resid.reduce((s2, x) => s2 + Math.pow(x - m, k), 0) / resid.length;
+  const skew = cm(3) / Math.pow(sd, 3), kurt = cm(4) / Math.pow(sd, 4) - 3;
+  console.log(`  skew ${skew.toFixed(3)} (real +0.130)   excess kurtosis ${kurt.toFixed(3)} (real +0.319)`);
   fs.writeFileSync(__dirname + '/simresid.json', JSON.stringify({
-    n: resid.length, sd,
+    n: resid.length, sd, skew, kurt,
     p14: resid.filter(x => Math.abs(x) > 14).length / resid.length * 100,
     p21: resid.filter(x => Math.abs(x) > 21).length / resid.length * 100,
   }));
