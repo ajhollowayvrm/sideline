@@ -639,3 +639,103 @@ ball slide, not a full 22-man play animation (only the controlled team's game is
 
 ---
 
+
+## Phase 55 design — the watch screen as a drive chart
+
+Decided 2026-08-14 with AJ. The brief, in his words: the log should take about **60%** of the vertical
+space and the rest should be a **graphical representation of the game** — lines for gains, losses and
+penalties; the bar in the **primary colour of the team possessing the ball**; **losses grey**,
+**penalties a dull yellow**; and the bars running **toward the scoring end zone, which swaps every
+quarter**.
+
+This is the watch-then-commit viewer (`renderGame`) and the greatest-games replay, not the coach
+screen — the coach screen already has `fieldSVG` and needs the room for the call buttons. The one
+piece of it that *did* need fixing everywhere is in "The bug this uncovered" below.
+
+### The engine had never written down what happened to the ball
+
+A log entry carried prose (`text`), the play as beats (`bt`), a down-and-distance string, and `l` —
+which was the *post*-play spot on a normal snap, the *pre*-play spot on a touchdown, and the drive's
+own field position on a drive header. Yardage existed only inside the prose. Nothing you can draw a
+field from.
+
+So the entry gains **`mv`** — the play reduced to what happened to the **ball**:
+
+```
+mv = { o, a, b, k }
+  o   the offence that had possession
+  a   the spot before, b the spot after — both in THAT offence's own-yard-line frame,
+      0 = its own goal line, 100 = the end zone it is attacking
+  k   'd' drive start · 'p' scrimmage snap · 'f' flag · 'k' kick or punt · 's' score
+```
+
+Two decisions worth recording:
+
+- **`o` is the possessing offence, not the entry's `team`.** A defensive flag is logged against the
+  team that threw it, but it is still a movement of the *offence's* ball, and the chart has to draw
+  it in that frame or a defensive holding call would point the wrong way down the field.
+- **`l` was left exactly as it was.** `tools/cfb-data/4-simprofile.js` reads `e.l >= 80` for the
+  red-zone rate and `e.l` for drive start; re-defining it to mean one consistent thing would have
+  silently moved two measured numbers. `mv` is additive, like `bt` and `l` before it.
+
+`mv` is built from state the engine already held and **consumes no rng**, so the score, the box and
+the penalty tallies are byte-identical with logging on or off — simlab re-checks that across 60 seeds.
+**No save bump** (the log is rebuilt from the seed, never serialized) and **no `SIM_MODEL` bump**
+(the output did not change), so every previously-played game still replays.
+
+### The chart
+
+A field running left→right with **time running down**, so a game reads as the shape it actually had:
+a stack of short grey stubs is a team that never moved, one long bar into the colour at the edge is
+the drive that decided it. Rows are appended one per event exactly as the feed is, and both scroll
+pinned to the newest play.
+
+- Field band 8%–92%; the outer 8% each side is an end zone, tinted with the colour of the team that
+  **scores** there this quarter — so a bar always points at its own colour.
+- `chartOdd(q)` is the direction rule: **home attacks right in odd quarters** (and in overtime), left
+  in even ones. Teams change ends at every quarter break, which is the whole reason the function
+  exists. `chartX(spot, right)` maps a spot into the band, mirroring it when the offence attacks left.
+- Gain → the possessing team's colour. Loss → grey. Flag → dull yellow, **whichever side threw it**,
+  because what the chart draws is what happened to the ball, not who is to blame. Punts and a missed
+  field goal are a faint dashed line; a made field goal is dashed from the spot **through** the
+  uprights (it has no yardage to draw and faking one as a gain would be a lie); a touchdown is a
+  glowing bar into the end zone with a `TD` tag.
+- The end-zone tint rides on **each row** rather than on the fixed backdrop. Rows carry their quarter
+  with them as they scroll, so the flip is visible as the two columns trading colour mid-chart —
+  which is the honest way to show a thing that changes over the axis you're scrolling.
+- `chartInk()` lifts a colour toward white only when it is too dark to see on turf. Navy and black
+  programmes exist and `#001E62` on `#0b2016` is simply invisible; the blend is capped at 55% so the
+  hue — and so the team's identity — survives.
+
+The 60/40 split is one flex column (`.gamev` → `.gsplit`, `flex:6` / `flex:4`) at `100dvh`, not two
+guessed `vh` numbers, so it holds on a small phone and on a tablet. qa asserts the ratio, not a
+pixel height.
+
+### The bug this uncovered
+
+`beatBody` builds every beat at `opacity:0` and **only `revealBeats` — i.e. only the live tick — ever
+raised them**. Any *re-render* rebuilt the feed from the log and left the text invisible: "Skip to
+result", the Fast toggle, and every re-render of the coach screen, which re-runs the engine and
+rebuilds the whole feed after each call. The committed `19b-coach-field.png` shows it plainly — a
+column of bare `3 & 4` / `1 & 10` with no play-by-play beside it, shipped that way since Phase 53.
+
+`showBeats(line)` shows a line whole. History is shown whole on both screens; on the coach screen the
+**newest** line is then re-hidden and animated, which restores what Phase 53 actually wanted there.
+
+### Validation
+`simlab` → **150** (9 new: every drive/snap/flag/kick/score carries `mv`; spots are on-field integers
+owned by a team in the game; only the five `k` codes appear; a drive's `mv` agrees with its `l`; a
+flag moves the ball by the yardage it was charged; a touchdown ends at 100; a field goal does not
+move; a punt travels downfield in the punting team's frame). The load-bearing one is
+**`mv` reconciled against the prose** — for every scrimmage snap that quotes a yardage, `b − a` must
+equal it (109/109), which is what stops the chart drawing a game that didn't happen.
+`qa` → **323** (6 new: a bar per snap and a header per drive; the split is 60%; a gain runs toward the
+end zone its team attacks; the attacking end swaps every quarter and oppositely for the two teams;
+gain/loss/penalty colours; and Skip leaves the play-by-play readable — the regression guard on the
+bug above). All 23 gates green.
+
+### Deliberately out of scope
+The coach screen keeps `fieldSVG` and gains no chart — it needs the vertical space for play calls, and
+it already shows the ball live. No win-probability or momentum curve: this chart is a record of where
+the ball went, and nothing on it is a model output. No per-play tooltips — the feed beside it *is* the
+detail view.

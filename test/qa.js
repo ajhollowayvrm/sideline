@@ -563,7 +563,7 @@ function startServer() {
   // advancing now opens the watch-then-commit viewer for your game; skip + commit each week.
   // bye weeks advance directly (no viewer). Capture the first watched game to verify its score
   // equals the committed result (the replay is faithful, not a re-roll).
-  let sawViewer = false, watchCheck = null;
+  let sawViewer = false, watchCheck = null, chartInfo = null;
   for (let i = 0; i < 3; i++) {
     await page.getByRole('button', { name: /Play Week/ }).click();
     await page.waitForTimeout(120);
@@ -571,6 +571,38 @@ function startServer() {
       if (!sawViewer) { sawViewer = true; check('Watch: viewer shows a live game board', await page.locator('[data-tid="game-board"]').isVisible()); await shot(page, '19-watch-game.png'); }
       await page.locator('[data-tid="game-skip"]').click();
       await page.waitForTimeout(80);
+      // Phase 55: with the whole game drawn, read the split and the chart it produced.
+      if (!chartInfo) {
+        chartInfo = await page.evaluate(() => {
+          const G = UI.game, rows = document.querySelector('#g-chart'), feed = document.querySelector('#g-feed');
+          const norm = c => { const d = document.createElement('div'); d.style.background = c; return d.style.background; };
+          const barOf = e => { const r = chartRowEl(G, e), b = r && r.querySelector('.ch-bar'); return b ? b.style.background : ''; };
+          const fh = feed.getBoundingClientRect().height, ch = rows.parentElement.getBoundingClientRect().height;
+          // a gain must run TOWARD the end zone its team attacks…
+          const gains = G.log.filter(e => e.mv && e.mv.k === 'p' && e.mv.b > e.mv.a);
+          const toward = gains.length > 20 && gains.every(e => { const r = chartRight(G, e);
+            const x0 = chartX(e.mv.a, r), x1 = chartX(e.mv.b, r); return r ? x1 > x0 : x1 < x0; });
+          // …and that end must swap every quarter, for both teams, in opposite senses
+          const dir = (team, q) => chartRight(G, { q, mv: { o: team } });
+          const flips = [1, 2, 3, 4].every(q => dir(G.home, q) !== dir(G.away, q))
+            && dir(G.home, 1) !== dir(G.home, 2) && dir(G.home, 2) !== dir(G.home, 3) && dir(G.home, 3) !== dir(G.home, 4);
+          const pen = G.log.find(e => e.mv && e.mv.k === 'f');
+          const loss = G.log.find(e => e.mv && e.mv.k === 'p' && e.mv.b < e.mv.a);
+          const gain = gains[0];
+          return {
+            bars: rows.querySelectorAll('.ch-bar').length, drives: rows.querySelectorAll('.ch-drive').length,
+            bands: rows.querySelectorAll('.ch-q').length, plays: G.log.filter(e => e.mv && e.mv.k === 'p').length,
+            fh: Math.round(fh), ch: Math.round(ch), toward, flips,
+            penOK: !!pen && barOf(pen) === norm(CHART_PEN), lossOK: !!loss && barOf(loss) === norm(CHART_LOSS),
+            gainOK: !!gain && barOf(gain) === norm(chartInk(teamById(gain.mv.o).color)),
+            // the play-by-play must survive a rebuild — beats are built at opacity 0 and only the
+            // live tick ever raised them, so Skip used to leave a column of bare down-and-distances
+            hiddenBeats: [...feed.querySelectorAll('span[style*="opacity"]')].filter(s => s.style.opacity === '0').length,
+            feedText: feed.innerText.replace(/\s+/g, ' ').trim().length,
+          };
+        });
+        await shot(page, '19c-watch-chart.png');
+      }
       const watched = await page.evaluate(() => UI.game ? { id: UI.game.gameId, hs: UI.game.hs, as: UI.game.as } : null);
       await page.locator('[data-tid="game-continue"]').click();
       await page.waitForTimeout(120);
@@ -579,6 +611,21 @@ function startServer() {
   }
   check('Watch: advancing opens the watch-then-commit viewer', sawViewer);
   check('Watch: watched score == committed result (replay is faithful)', !!watchCheck && watchCheck.watched.hs === watchCheck.committed.hs && watchCheck.watched.as === watchCheck.committed.as && watchCheck.committed.played, JSON.stringify(watchCheck));
+  // --- Phase 55: the drive chart + the 60/40 split ---
+  check('Phase 55: the drive chart draws a bar per snap and a header per drive',
+    !!chartInfo && chartInfo.bars >= chartInfo.plays && chartInfo.drives > 8 && chartInfo.bands >= 4,
+    chartInfo && `${chartInfo.bars} bars / ${chartInfo.plays} snaps, ${chartInfo.drives} drives, ${chartInfo.bands} quarter bands`);
+  check('Phase 55: the log takes ~60% of the split and the chart the rest',
+    !!chartInfo && Math.abs(chartInfo.fh / (chartInfo.fh + chartInfo.ch) - 0.6) < 0.06,
+    chartInfo && `log ${chartInfo.fh}px / chart ${chartInfo.ch}px = ${(chartInfo.fh / (chartInfo.fh + chartInfo.ch) * 100).toFixed(0)}%`);
+  check('Phase 55: a gain runs toward the end zone its team is attacking', !!chartInfo && chartInfo.toward);
+  check('Phase 55: the attacking end swaps every quarter, oppositely for the two teams', !!chartInfo && chartInfo.flips);
+  check('Phase 55: gain = the possessing team\'s colour, loss = grey, penalty = dull yellow',
+    !!chartInfo && chartInfo.gainOK && chartInfo.lossOK && chartInfo.penOK,
+    chartInfo && `gain ${chartInfo.gainOK} loss ${chartInfo.lossOK} pen ${chartInfo.penOK}`);
+  check('Phase 55: skipping to the result leaves the play-by-play readable (beats not stuck hidden)',
+    !!chartInfo && chartInfo.hiddenBeats === 0 && chartInfo.feedText > 800,
+    chartInfo && `${chartInfo.hiddenBeats} hidden spans, ${chartInfo.feedText} chars of feed`);
   const adv = await page.evaluate(() => {
     let W = 0, L = 0; S.world.teams.forEach(x => { W += x.rec.w; L += x.rec.l; });
     const t = controlled();

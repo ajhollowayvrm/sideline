@@ -221,6 +221,49 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Play log: the big moments name the man in full',
     bigs.length > 0 && bigs.every(t => /[A-Z][a-z]+ [A-Z][a-z]+/.test(t)),
     bigs[0] || 'none seen');
+
+  // --- Phase 55: `mv`, the entry as MOVEMENT (what the drive chart draws) ---------------------
+  // `text` is prose and `l` was only ever set on some entries; `mv` is the ball's before/after in
+  // the POSSESSING offence's frame. It has to agree with the prose or the chart draws a game that
+  // didn't happen — so the gate reconciles it against the yardage the line itself quotes.
+  const A = w.teams[0].id, B = w.teams[5].id;
+  const mvs = lg.filter(e => e.mv);
+  check('Phase 55: every drive, snap, flag, kick and score carries `mv`',
+    mvs.length >= lg.filter(e => e.kind !== 'final' && !/^🩹|^END OF|Turnover on downs/.test(e.text)).length,
+    `${mvs.length} of ${lg.length} entries`);
+  check('Phase 55: `mv` spots are on the field and owned by a team in the game',
+    mvs.every(m => (m.mv.o === A || m.mv.o === B) && m.mv.a >= 0 && m.mv.a <= 100 && m.mv.b >= 0 && m.mv.b <= 100
+      && Number.isInteger(m.mv.a) && Number.isInteger(m.mv.b)),
+    `${mvs.length} checked`);
+  check('Phase 55: `mv.k` only ever uses the five known codes',
+    mvs.every(m => 'dpfks'.includes(m.mv.k)),
+    [...new Set(mvs.map(m => m.mv.k))].sort().join(''));
+  // A drive entry's spot is the drive's own field position (which `l` also carries) — a drive chart
+  // that starts a possession in the wrong place mis-draws every bar that follows it.
+  check('Phase 55: a drive `mv` starts where the drive says it starts',
+    lg.filter(e => e.kind === 'drive').every(e => e.mv && e.mv.a === e.l && e.mv.b === e.l && e.mv.k === 'd'));
+  // The reconciliation that matters: for a scrimmage snap the engine's own prose quotes the yardage,
+  // so b − a must equal it (clamped at the goal line and at the 1, which is what `MV` clamps to).
+  const quoted = e => { const m = /(?:gains|for|STOPPED for|scrambles for) (-?\d+)/.exec(e.text); return m ? +m[1] : null; };
+  const snaps = lg.filter(e => e.mv && e.mv.k === 'p' && quoted(e) !== null);
+  const agree = snaps.filter(e => { const g = quoted(e), b = Math.max(1, Math.min(99, e.mv.a + g)); return e.mv.b === b; });
+  check('Phase 55: a snap\'s `mv` moves the ball exactly as far as the line says it did',
+    snaps.length > 25 && agree.length === snaps.length, `${agree.length}/${snaps.length} snaps agree`);
+  // A flag moves the ball by its own yardage, and toward the side that benefits.
+  const flags = lg.filter(e => e.mv && e.mv.k === 'f');
+  check('Phase 55: a flag moves the ball by the yardage it was charged',
+    flags.length > 0 && flags.every(e => { const m = /— (\d+) yards/.exec(e.text); return m && Math.abs(e.mv.b - e.mv.a) <= +m[1]; }),
+    `${flags.length} flags`);
+  // A touchdown reaches the end zone; a field goal is a kick from the spot, so it does not move.
+  const tds = lg.filter(e => e.mv && e.mv.k === 's' && /^TOUCHDOWN/.test(e.text));
+  check('Phase 55: a touchdown `mv` ends in the end zone', tds.length > 0 && tds.every(e => e.mv.b === 100), `${tds.length} TDs`);
+  check('Phase 55: a field goal `mv` is a kick from the spot, not a gain',
+    lg.filter(e => e.mv && /field goal/.test(e.text)).every(e => e.mv.a === e.mv.b));
+  // …and a punt travels DOWNFIELD in the punting team's frame, which is what makes the chart's
+  // direction rule (a bar always runs toward the end zone its team attacks) hold for kicks too.
+  const punts = lg.filter(e => e.mv && e.mv.k === 'k' && e.text === 'Punt');
+  check('Phase 55: a punt travels downfield in the punting team\'s frame',
+    punts.length > 0 && punts.every(e => e.mv.b > e.mv.a), `${punts.length} punts`);
 })();
 
 // Phase 22 — the play-calling decision hook. The OC always draws its own suggestion, so a coach

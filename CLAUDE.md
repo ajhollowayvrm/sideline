@@ -6,7 +6,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > This file is the **working brief** — what you need loaded every session. The full
 > phase-by-phase design records (the "why" behind each system) live in **`docs/phases/`**
 > and are read on demand, not auto-loaded:
-> - `docs/phases/gameday.md` — sim engine + play-calling (Phases 3, 3.5, 21–31)
+> - `docs/phases/gameday.md` — sim engine + play-calling + the watch screen (Phases 3, 3.5, 21–31, 46, 55)
 > - `docs/phases/recruiting.md` — recruiting, signing, portal, visits (Phases 4, 14, 16, 17, 33–38)
 > - `docs/phases/offseason.md` — rollover, program, postseason, draft, championships, camp, realignment (Phases 5, 6–9, 12, 13, 15, 18, 32, 39, 43, 44)
 > - `docs/phases/identity-media.md` — traits, morale, media, rivalries, records, contract, legends, identity (Phases 10, 11, 19, 20, 40, 41, 42, 45)
@@ -27,7 +27,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > (r=0.078) so there is no such thing as a clutch team, that late-and-close football genuinely
 > tightens, and that kickers measurably do not choke.
 >
-> **All roadmap phases 1–52 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–55 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -261,6 +261,26 @@ still serves it with zero config.
   which is how the residual was localised to the number of red-zone TRIPS. Two hypotheses were measured
   and **rejected**: per-play variance is not what puts the sim in 3rd-and-long (its draws match the
   measured tables to ~1.5%), and the play-caller honours `PM.mix` per cell.
+
+- **Phase 55 — the watch screen as a drive chart.** The watch-then-commit viewer splits 60/40: the
+  play-by-play on top, and below it the game drawn as **movement** — a field running left→right with
+  time running down, one bar per snap. The bar is the **possessing team's colour**, a **loss is grey**,
+  a **flag is dull yellow whichever side threw it**, and every bar runs toward the end zone that team is
+  attacking — **which swaps at every quarter break**, visible as the two end-zone columns trading colour
+  mid-chart (the tint rides on each ROW, not on the fixed backdrop, so rows carry their quarter with
+  them as they scroll). This needed the engine to write down something it never had: a log entry
+  carried prose, beats and a `l` that meant three different things, but **the ball's yardage existed
+  only inside the prose**. Entries now also carry **`mv` = `{o,a,b,k}`** — the possessing offence, the
+  spot before and after in *that* offence's own-yard-line frame (100 = the end zone it attacks), and
+  the kind (`d` drive · `p` snap · `f` flag · `k` kick · `s` score). `o` is deliberately the possessing
+  offence rather than the entry's `team`, so a defensive flag still draws in the right frame; `l` was
+  left exactly as it was, because `tools/cfb-data/4-simprofile.js` reads it for red-zone rate and drive
+  start. Additive and rng-free, like `bt` before it → **no save bump, no `SIM_MODEL` bump**, every old
+  game still replays. **It also fixed a shipped bug:** `beatBody` builds beats at `opacity:0` and only
+  the live tick ever raised them, so *every re-render* — Skip to result, the Fast toggle, and the coach
+  screen, which rebuilds its whole feed after each call — was painting the play-by-play invisible and
+  leaving a column of bare down-and-distances (visible in the committed `19b-coach-field.png`).
+  `simlab` → 150, `qa` → 323. *(→ `docs/phases/gameday.md`.)*
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
@@ -555,6 +575,8 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - **Stable selectors:** dynamic rows carry `data-id` (player id / coach `role` / team id);
   nav buttons `data-tid="nav-<view>"`, team tabs `data-tid="tab-<roster|coaches>"`;
   `#app` carries `data-screen` (= `UI.view`) and `data-tab`; sheets `data-tid="sheet"`.
+  The watch viewer: `data-tid="game-board"`, `#g-feed` (the log), `data-tid="drive-chart"` with
+  `#g-chart` (the scrolling rows) inside it.
 - **State access:** it's a classic script, so `S`, `UI`, and `controlled()` are global —
   read them directly from `page.evaluate(() => ...)` instead of scraping the DOM.
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
@@ -605,7 +627,8 @@ score spread, home-win and favorite-win rates, no ties, the Phase 48 possession 
 drives dying at the horn, 4th-down decisions, gain-tier shape), and the Phase 49 penalty checks
 (rate, yardage, side/pre-snap splits, culprit attribution, and that rating does NOT buy discipline),
 and the Phase 50 clutch checks (pressure shape, a mean-preserving amplified reshape, kickers not
-choking, and that composure does NOT decide one-score games). The envelope asserts
+choking, and that composure does NOT decide one-score games), and the Phase 55 `mv` checks (the
+movement each log entry records must reconcile with the yardage the line's own prose quotes). The envelope asserts
 *ranges*; the numbers it should be centred on are the measured ones in
 `docs/reference/cfb-averages.md` — **check a sim change against that file, not just against the
 gate**, since totals-and-leaders assertions passed for nine phases while run/pass balance and drive

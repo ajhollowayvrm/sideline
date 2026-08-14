@@ -98,6 +98,47 @@ h2.sec:first-child{margin-top:6px}
 .meta{font-size:11.5px;color:var(--ink3)}
 .cap{color:var(--accent);font-weight:700;font-size:11px}
 
+/* watch viewer (Phase 55) — a fixed-height column so the log/chart split is exact on any phone,
+   rather than two guessed vh numbers that leave a gap on a tablet and overlap on an iPhone SE. */
+#app[data-screen="game"]{padding-bottom:0}     /* no bottom nav on the game screen */
+.gamev{display:flex;flex-direction:column;height:100dvh;padding-bottom:calc(10px + var(--safe-b))}
+.gsplit{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.gsplit>#g-feed{flex:6 1 0;min-height:64px;overflow-y:auto}
+.gsplit>.ch-wrap{flex:4 1 0;min-height:96px}
+
+/* drive chart — the game as movement. Field runs 8%..92%; the outer 8% each side is an end zone,
+   tinted per ROW (not on the fixed backdrop) because which team scores in which end swaps every
+   quarter, and the rows are what carry a quarter with them as they scroll. */
+.ch-wrap{position:relative;background:#0b2016;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.ch-grid{position:absolute;left:8%;right:8%;top:0;bottom:0;z-index:0;pointer-events:none;
+  background:repeating-linear-gradient(90deg,rgba(255,255,255,.09) 0 1px,transparent 1px 10%);
+  border-left:1px solid rgba(255,255,255,.22);border-right:1px solid rgba(255,255,255,.22)}
+.ch-grid::after{content:'';position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(255,255,255,.26)}
+.ch-rows{position:absolute;inset:0;z-index:1;overflow-y:auto;overflow-x:hidden;padding:3px 0 5px;scrollbar-width:none}
+.ch-rows::-webkit-scrollbar{display:none}
+.ch-row,.ch-drive{position:relative}
+.ch-row{height:6px}
+.ch-row::before,.ch-row::after,.ch-drive::before,.ch-drive::after{content:'';position:absolute;top:0;bottom:0;width:8%}
+.ch-row::before,.ch-drive::before{left:0;background:var(--ezl)}
+.ch-row::after,.ch-drive::after{right:0;background:var(--ezr)}
+.ch-bar{position:absolute;top:1px;height:4px;min-width:1.6%;border-radius:2px}
+.ch-row.sc{height:11px}
+.ch-row.sc .ch-bar{top:2px;height:6px;border-radius:3px}
+.ch-tag{position:absolute;top:1px;font-family:'Saira Condensed';font-weight:800;font-size:8px;
+  letter-spacing:.06em;line-height:9px;color:var(--ink);text-shadow:0 0 3px #000}
+.ch-drive{height:13px}
+.ch-drive .ln{position:absolute;left:8%;right:8%;top:6px;height:1px;opacity:.22}
+.ch-drive .tick{position:absolute;top:2px;width:2px;height:9px;border-radius:1px}
+.ch-drive .ab{position:absolute;top:2px;font-family:'Saira Condensed';font-weight:700;font-size:8.5px;
+  line-height:9px;letter-spacing:.06em;text-shadow:0 0 3px #000;white-space:nowrap}
+.ch-q{position:relative;display:flex;justify-content:space-between;align-items:center;gap:6px;
+  height:15px;padding:0 5px;margin:3px 0 1px;font-family:'Saira Condensed';font-weight:700;
+  font-size:9.5px;letter-spacing:.09em;text-shadow:0 0 3px #000;
+  border-top:1px solid rgba(255,255,255,.16);border-bottom:1px solid rgba(255,255,255,.16);
+  background:rgba(0,0,0,.32)}
+.ch-key{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:5px;font-size:9.5px;color:var(--ink3)}
+.ch-key i{display:inline-block;width:12px;height:4px;border-radius:2px;margin-right:4px;vertical-align:middle}
+
 /* tabs */
 .tabs{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:14px;overflow-x:auto;scrollbar-width:none}
 .tabs::-webkit-scrollbar{display:none}
@@ -2962,8 +3003,19 @@ function simEngine(home,away,seed,opts){
   // Deliberately a SEPARATE field from `text`. Six tools and gates parse `text` with regexes
   // (`pass to X for N`, `sacked by X for N`, `1ST DOWN`, …), so the machine-readable line is left
   // exactly as it was and the prose lives beside it. Strings only, no rng — `watch == commit` holds.
-  const L=(team,kind,text,dd,big,tg,l,bt)=>{ if(log)log.push({q:L._q,team:team?team.id:null,kind,text,dd:dd||'',tg,l,bt,hs:score[home.id],as:score[away.id],big:!!big}); };
+  const L=(team,kind,text,dd,big,tg,l,bt,mv)=>{ if(log)log.push({q:L._q,team:team?team.id:null,kind,text,dd:dd||'',tg,l,bt,mv,hs:score[home.id],as:score[away.id],big:!!big}); };
   L._q=1;
+  // Phase 55: `mv` is the entry as MOVEMENT — the play reduced to what happened to the BALL, which is
+  // the one thing the terse `text` never carried in a machine-readable form. `{o,a,b,k}`: the offense
+  // that had possession, the spot before and the spot after (both in THAT offense's own-yard-line
+  // frame, 100 = the end zone it is attacking), and what kind of movement it was —
+  //   'p' scrimmage play · 'f' flag · 'k' kick or punt · 's' score · 'd' drive start.
+  // `o` is deliberately the possessing offense rather than the entry's `team`, because a defensive
+  // flag is still a movement of the offense's ball and the chart has to draw it in that frame.
+  // Strings and numbers only, built from state the engine already had — no rng, so the envelope and
+  // watch == commit are untouched, exactly like `bt` and `l` before it.
+  const MV=(o,a,b,k)=>({o:o.id,a:clamp(Math.round(a),0,100),b:clamp(Math.round(b),0,100),k});
+  const LM=(team,kind,text,dd,big,mv)=>L(team,kind,text,dd,big,undefined,undefined,undefined,mv);
   // Phase 26 injuries + fatigue (IN-GAME only — pure, deterministic, resets each game). An injured
   // player is skipped from selection (the backup is forced in → his matchup shows); a heavily-used
   // ball-carrier fades late (fatigueCost). Mean-neutral-ish (symmetric across teams) → envelope holds.
@@ -2990,11 +3042,11 @@ function simEngine(home,away,seed,opts){
     return {F,who:wpick(pool,r,injured),yds:Math.max(1,Math.round(F[4]*PN.ydsScale))};
   };
   // Charge it: the tally the UI reads, the culprit's season line, and the play-by-play entry.
-  const chargeFoul=(team,f,yds,dd,note)=>{
+  const chargeFoul=(team,f,yds,dd,note,mv)=>{
     pen[team.id].n++; pen[team.id].yds+=yds;
     (pen[team.id].t=pen[team.id].t||{})[f.F[0]]=((pen[team.id].t||{})[f.F[0]]||0)+1;   // per-type tally
     add(f.who&&f.who.id,'pen'); add(f.who&&f.who.id,'penYds',yds);
-    L(team,'play','🚩 '+f.F[1]+', '+(team.abbr||'')+(f.who?' — '+nm(f.who)+' ('+f.who.pos+')':'')+' — '+yds+' yards'+(note||''),dd);
+    LM(team,'play','🚩 '+f.F[1]+', '+(team.abbr||'')+(f.who?' — '+nm(f.who)+' ('+f.who.pos+')':'')+' — '+yds+' yards'+(note||''),dd,false,mv);
   };
 
   // One possession, start at `startLos` (offense's own yard line). Returns the spot the
@@ -3017,9 +3069,9 @@ function simEngine(home,away,seed,opts){
     // pressure-sensitive: docs/reference/cfb-clutch.md measured that kickers do not choke.
     const doFG=(dd,fgDist)=>{ time+=8; add(oP.k&&oP.k.id,'fga');
       const kk=oP.k, slope=0.013*clamp(1-AT.kLeg*tilt(kk,'kpw'),0.55,1.5);
-      if(r()<clamp(0.965+AT.kAcc*tilt(kk,'kac')-(fgDist-20)*slope,0.40,0.99)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; L(off,'score',nm(oP.k)+' '+fgDist+'-yd field goal is GOOD',dd,true); return {nextLos:25,time}; }
-      L(off,'play',nm(oP.k)+' '+fgDist+'-yd field goal MISSED',dd); return {nextLos:flipTo(los),time}; };
-    L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los),'',false,undefined,los);
+      if(r()<clamp(0.965+AT.kAcc*tilt(kk,'kac')-(fgDist-20)*slope,0.40,0.99)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; LM(off,'score',nm(oP.k)+' '+fgDist+'-yd field goal is GOOD',dd,true,MV(off,los,los,'s')); return {nextLos:25,time}; }
+      LM(off,'play',nm(oP.k)+' '+fgDist+'-yd field goal MISSED',dd,false,MV(off,los,los,'k')); return {nextLos:flipTo(los),time}; };
+    L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los),'',false,undefined,los,undefined,MV(off,los,los,'d'));
     while(true){
       // Phase 48: the half expired mid-drive — the drive dies here (real football's ~6.5% of drives).
       if(timed&&clkNow()<=0){ L(off,'play',half===2?'END OF GAME':'END OF HALF',' ');
@@ -3031,16 +3083,16 @@ function simEngine(home,away,seed,opts){
       const boost=(plan&&plan.boost)||null;
       const bov=p=>p?(p.ov+((boost&&boost[p.id])||0)-fatg(p)):0;   // effective OVR (pep-talk + fatigue)
       const qb=(oP.qbList&&(oP.qbList.find(q=>!injured.has(q.id))||oP.qbList[0]))||oP.qb;   // healthy QB (backup if hurt)
-      const dd=(down)+' & '+(togo>=(100-los)?'goal':togo), togo0=togo;
+      const dd=(down)+' & '+(togo>=(100-los)?'goal':togo), togo0=togo, losAt=los;   // losAt = the spot this snap starts from (Phase 55 `mv`)
       const fgDist=(100-los)+17, inFgRange=fgDist<=57;    // Phase 46: field-goal distance/range (usable on any down)
       // ---- pre-snap (dead-ball) penalty — Phase 49. ~49% of real flags never involve a snap.
       // Capped per drive: a foul replays the down, so the cap is what terminates an untimed OT drive.
       if(pens<PN.driveCap){
         const offP=penRate(off,'offPre',plan), defP=penRate(def,'defPre',plan), rp=r();
-        if(rp<offP){ const f=drawFoul(off,'offPre'), y=Math.min(f.yds,Math.max(1,Math.floor(los/2)));
-          chargeFoul(off,f,y,dd); los=clamp(los-y,1,99); togo+=y; pens++; time+=4; continue; }
-        if(rp<offP+defP){ const f=drawFoul(def,'defPre'), y=Math.min(f.yds,Math.max(1,Math.floor((100-los)/2)));
-          const fd=togo-y<=0; chargeFoul(def,f,y,dd,fd?' — 1ST DOWN':''); los=clamp(los+y,1,99); togo-=y;
+        if(rp<offP){ const f=drawFoul(off,'offPre'), y=Math.min(f.yds,Math.max(1,Math.floor(los/2))), to=clamp(los-y,1,99);
+          chargeFoul(off,f,y,dd,'',MV(off,los,to,'f')); los=to; togo+=y; pens++; time+=4; continue; }
+        if(rp<offP+defP){ const f=drawFoul(def,'defPre'), y=Math.min(f.yds,Math.max(1,Math.floor((100-los)/2))), to=clamp(los+y,1,99);
+          const fd=togo-y<=0; chargeFoul(def,f,y,dd,fd?' — 1ST DOWN':'',MV(off,los,to,'f')); los=to; togo-=y;
           if(togo<=0){down=1;togo=Math.min(10,100-los);} pens++; time+=4; continue; }
       }
       // ---- 4th down: kick or go ----
@@ -3066,11 +3118,11 @@ function simEngine(home,away,seed,opts){
             const ret=wpick(dP.cover,r,injured)||dP.cb[0];
             score[def.id]+=6; add(ret&&ret.id,'dTD');
             add(dP.k&&dP.k.id,'xpa'); if(r()<0.965){ add(dP.k&&dP.k.id,'xpm'); score[def.id]+=1; }
-            L(off,'play','Punt',dd);
-            L(def,'score','TOUCHDOWN — '+NM(ret)+' returns the punt '+(100-pspot)+' yards',dd,true);
+            LM(off,'play','Punt',dd,false,MV(off,los,100-pspot,'k'));
+            LM(def,'score','TOUCHDOWN — '+NM(ret)+' returns the punt '+(100-pspot)+' yards',dd,true,MV(def,pspot,100,'s'));
             return {nextLos:25,time,keep:true};
           }
-          L(off,'play','Punt',dd);
+          LM(off,'play','Punt',dd,false,MV(off,los,100-pspot,'k'));
           return {nextLos:pspot,time};   // Phase 51: his leg is worth field position
         } // else: go for it → fall through and run a normal play
       }
@@ -3344,16 +3396,16 @@ function simEngine(home,away,seed,opts){
         const oLv=penRate(off,'offLive',plan), dLv=penRate(def,'defLive',plan);
         if(rl<oLv&&!turnover){
           const f=drawFoul(off,'offLive'); undoPlay(); jr=null;
-          const y=Math.min(f.yds,Math.max(1,Math.floor(los/2)));
-          chargeFoul(off,f,y,dd,scored?' — TOUCHDOWN COMES BACK':' — no play');
-          los=clamp(los-y,1,99); togo+=y; pens++; time+=5; continue;
+          const y=Math.min(f.yds,Math.max(1,Math.floor(los/2))), to=clamp(los-y,1,99);
+          chargeFoul(off,f,y,dd,scored?' — TOUCHDOWN COMES BACK':' — no play',MV(off,los,to,'f'));
+          los=to; togo+=y; pens++; time+=5; continue;
         }
         if(rl>=oLv&&rl<oLv+dLv){
           const f=drawFoul(def,'defLive'), a1=!!f.F[5];
           const y=Math.min(f.yds,Math.max(1,Math.floor((100-los)/2)));
           if(turnover||(a1&&togo-gain>0)||y>gain){   // worth taking: it erases a turnover, hands over a
             undoPlay(); jr=null;                     // first down the defense had stopped, or beats the gain
-            chargeFoul(def,f,y,dd,a1?' — 1ST DOWN':'');
+            chargeFoul(def,f,y,dd,a1?' — 1ST DOWN':'',MV(off,los,clamp(los+y,1,99),'f'));
             los=clamp(los+y,1,99);
             if(a1){down=1;togo=Math.min(10,100-los);}
             else{ togo-=y; if(togo<=0){down=1;togo=Math.min(10,100-los);} }
@@ -3368,7 +3420,7 @@ function simEngine(home,away,seed,opts){
         score[off.id]+=6;
         add(oP.k&&oP.k.id,'xpa'); const xp=r()<0.965; if(xp){ add(oP.k&&oP.k.id,'xpm'); score[off.id]+=1; }
         beat(hero?'TOUCHDOWN — '+NM(hero)+'!':'TOUCHDOWN!');
-        L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true,undefined,los,bt);
+        L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true,undefined,los,bt,MV(off,losAt,100,'s'));
         return {nextLos:25,time};
       }
       if(tackled){ const t=wpick(dP.tkl,r); add(t&&t.id,'tkl');
@@ -3381,21 +3433,21 @@ function simEngine(home,away,seed,opts){
         // which the alternating drive loop would otherwise hand to the wrong side.
         const spot=flipTo(clamp(los+gain,1,99));
         if(toBy && r()<(toKind==='int'?PM.pick6:PM.fumb6)){
-          L(off,'play',txt,dd,true,undefined,undefined,bt);   // the drive still ended in a turnover
+          L(off,'play',txt,dd,true,undefined,undefined,bt,MV(off,losAt,clamp(los+gain,1,99),'p'));   // the drive still ended in a turnover
           score[def.id]+=6; add(toBy.id,'dTD');
           add(dP.k&&dP.k.id,'xpa'); if(r()<0.965){ add(dP.k&&dP.k.id,'xpm'); score[def.id]+=1; }
           if(press>=0.5)add(toBy.id,'cl');
-          L(def,'score','TOUCHDOWN — '+NM(toBy)+' returns the '+(toKind==='int'?'interception':'fumble')+' '+(100-spot)+' yards',dd,true);
+          LM(def,'score','TOUCHDOWN — '+NM(toBy)+' returns the '+(toKind==='int'?'interception':'fumble')+' '+(100-spot)+' yards',dd,true,MV(def,spot,100,'s'));
           return {nextLos:25,time,keep:true};
         }
         beat('TURNOVER');
-        L(off,'play',txt,dd,true,undefined,undefined,bt); return {nextLos:spot,time}; }
+        L(off,'play',txt,dd,true,undefined,undefined,bt,MV(off,losAt,clamp(los+gain,1,99),'p')); return {nextLos:spot,time}; }
 
       const wasFirst=togo-gain<=0;
       if(wasFirst&&press>=0.5){ add(hero&&hero.id,'cl'); if(wantPass)add(qb&&qb.id,'cl'); }   // Phase 50
       los=clamp(los+gain,1,99); togo-=gain;
       if(wasFirst)beat('FIRST DOWN!');
-      L(off,'play',txt+(wasFirst?' — 1ST DOWN':''),dd,false,togo0,los,bt);
+      L(off,'play',txt+(wasFirst?' — 1ST DOWN':''),dd,false,togo0,los,bt,MV(off,losAt,los,'p'));
       if(togo<=0){ down=1; togo=Math.min(10,100-los); }     // first down (goal-to-go aware)
       else if(++down>4){ L(off,'play','Turnover on downs',dd); return {nextLos:flipTo(los),time}; }
     }
@@ -6638,6 +6690,11 @@ function beatSpan(e){ return e&&e.bt&&e.bt.length?(e.bt.length-1)*BEAT_MS+BEAT_G
 // than writing into a screen that is gone.
 let beatTimers=[];
 function clearBeatTimers(){ beatTimers.forEach(clearTimeout); beatTimers=[]; }
+// A line rebuilt from HISTORY has already been read — show it whole. `beatBody` builds every beat at
+// opacity 0 and only `revealBeats` (i.e. only the live tick) ever brought them up, so any re-render —
+// Skip to result, the Fast toggle, every interactive re-render — was painting the play-by-play
+// invisible and leaving a column of bare down-and-distances.
+function showBeats(line){ line.querySelectorAll('span[style*="opacity"]').forEach(s=>s.style.opacity='1'); }
 function revealBeats(line,fast){
   const spans=[...line.querySelectorAll('span[style*="opacity"]')];
   if(!spans.length)return;
@@ -6650,11 +6707,115 @@ function revealBeats(line,fast){
       const f=$('#g-feed'); if(f)f.scrollTop=f.scrollHeight;},at));
   }
 }
+/* ------------------------------------------------------------
+   DRIVE CHART (Phase 55) — the watched game as MOVEMENT.
+   The feed tells you what was called; this tells you where the ball went. Every log entry that
+   carries `mv` (see the SIM ENGINE block) becomes one bar on a field running left→right, with time
+   running DOWN, so a game reads as the shape it actually had: a stack of short grey stubs is a team
+   that never moved, one long bar into the colour at the edge is the drive that decided it.
+
+   Three rules do the work:
+   - The bar is the POSSESSING team's colour and runs toward the end zone that team is attacking.
+   - A loss runs backwards in grey, and a flag runs in dull yellow whichever side threw it — what
+     the chart draws is what happened to the BALL, not who is to blame for it.
+   - The attacking direction SWAPS every quarter, as the teams do. So the tint of the two end-zone
+     columns rides on each ROW rather than on the fixed backdrop: rows carry their quarter with them
+     as they scroll, and the flip is visible as the columns trading colour mid-chart.
+   ------------------------------------------------------------ */
+const CHART_LOSS='#79818e', CHART_PEN='#a89440';    // grey for a loss, dull yellow for a flag
+function hexRGB(hex){const h=(hex||'#888888').replace('#','');
+  const n=parseInt(h.length===3?h.split('').map(c=>c+c).join(''):h.slice(0,6),16)||0x888888;
+  return [(n>>16)&255,(n>>8)&255,n&255];}
+function hexA(hex,a){const c=hexRGB(hex);return `rgba(${c[0]},${c[1]},${c[2]},${a})`;}
+// A team colour readable on dark turf. Navy and black programmes exist and #001E62 on #0b2016 is
+// simply invisible, so anything below the threshold is blended toward white — never past 55%, which
+// keeps the hue (and so the team's identity) intact. Bright colours come back untouched.
+function chartInk(hex){const c=hexRGB(hex), lum=(c[0]*299+c[1]*587+c[2]*114)/1000;
+  if(lum>=90)return `rgb(${c[0]},${c[1]},${c[2]})`;
+  const m=(90-lum)/90*0.55;
+  return `rgb(${c.map(v=>Math.round(v+(255-v)*m)).join(',')})`;}
+// Home attacks RIGHT in odd quarters (and in overtime), left in even ones — teams change ends at
+// every quarter break, which is the whole reason this function exists.
+function chartOdd(q){ return (''+q).startsWith('OT') ? true : (+q)%2===1; }
+function chartRight(G,e){ return (e.mv.o===G.home)===chartOdd(e.q); }
+// `spot` is the offense's own yard line (100 = the end zone it attacks) → a percent across the wrap.
+// The field band is 8%..92%; the outer 8% each side is an end zone.
+function chartX(spot,right){ const p=right?spot:100-spot; return 8+clamp(p,0,100)/100*84; }
+// Each end zone is tinted with the colour of the team that SCORES there this quarter, so a bar
+// always points at its own colour.
+function chartEZ(G,q){ const odd=chartOdd(q), h=teamById(G.home), a=teamById(G.away);
+  return {l:odd?a:h, r:odd?h:a}; }
+function chartTint(row,G,q){ const ez=chartEZ(G,q);
+  row.style.setProperty('--ezl',hexA(ez.l&&ez.l.color,.22));
+  row.style.setProperty('--ezr',hexA(ez.r&&ez.r.color,.22)); }
+function chartQuarterEl(G,q){
+  const ez=chartEZ(G,q), d=el('div','ch-q');
+  const side=(t,arrow)=>`<span style="color:${chartInk(t&&t.color)}">${arrow==='◂'?'◂ ':''}${(t&&t.abbr)||''}${arrow==='▸'?' ▸':''}</span>`;
+  d.innerHTML=side(ez.l,'◂')+`<span style="color:var(--ink2)">${qLabel(q)}</span>`+side(ez.r,'▸');
+  return d;
+}
+// The start of a possession: a hairline across the field, a tick at the spot, and who has it.
+function chartDriveEl(G,e){
+  const right=chartRight(G,e), t=teamById(e.mv.o), col=chartInk(t&&t.color), x=chartX(e.mv.a,right);
+  const d=el('div','ch-drive'); chartTint(d,G,e.q);
+  // the label sits on whichever side of the tick has room, so a drive starting on the 5 still reads
+  const lab=x>50?`right:${(100-x).toFixed(2)}%;padding-right:4px`:`left:${x.toFixed(2)}%;padding-left:4px`;
+  d.innerHTML=`<span class="ln" style="background:${col}"></span>`
+    +`<span class="tick" style="left:${x.toFixed(2)}%;background:${col}"></span>`
+    +`<span class="ab" style="${lab};color:${col}">${(t&&t.abbr)||''}</span>`;
+  return d;
+}
+function chartRowEl(G,e){
+  const mv=e.mv; if(!mv)return null;
+  if(mv.k==='d')return chartDriveEl(G,e);
+  const right=chartRight(G,e), t=teamById(mv.o), col=chartInk(t&&t.color);
+  const x0=chartX(mv.a,right), x1=chartX(mv.b,right);
+  const row=el('div','ch-row'+(mv.k==='s'?' sc':'')); chartTint(row,G,e.q);
+  const span=(a,b,css)=>`<span class="ch-bar" style="left:${Math.min(a,b).toFixed(2)}%;width:${Math.abs(b-a).toFixed(2)}%;${css}"></span>`;
+  const dash=c=>`background:repeating-linear-gradient(90deg,${c} 0 3px,transparent 3px 7px)`;
+  if(mv.k==='s'){
+    const td=/^TOUCHDOWN/.test(e.text), goal=right?92:8;
+    // A field goal has no yardage to draw — what it is is a kick from the spot THROUGH the uprights,
+    // so it's dashed to the goal line rather than faked as a gain.
+    row.innerHTML=(td?span(x0,x1,`background:${col};box-shadow:0 0 5px ${hexA(t&&t.color,.85)}`):span(x0,goal,dash(col)))
+      +`<span class="ch-tag" style="${right?'right:0.6%':'left:0.6%'};color:${col}">${td?'TD':'FG'}</span>`;
+    return row;
+  }
+  if(mv.k==='k'){ row.innerHTML=span(x0,x1,dash('rgba(170,179,192,.55)')+';top:2px;height:2px'); return row; }
+  const col2=mv.k==='f'?CHART_PEN:(mv.b>mv.a?col:CHART_LOSS);   // gain → team colour; loss → grey; flag → dull yellow
+  row.innerHTML=span(x0,x1,`background:${col2}`);
+  return row;
+}
+// Append one event, opening a new quarter band when the clock has rolled over into one.
+function chartAppend(rows,G,e){
+  if(!rows||!e||!e.mv)return;
+  const q=''+e.q;
+  if(rows.dataset.q!==q){ rows.dataset.q=q; rows.append(chartQuarterEl(G,e.q)); }
+  const r=chartRowEl(G,e); if(r)rows.append(r);
+}
+function driveChart(G){
+  const wrap=el('div','ch-wrap'); wrap.dataset.tid='drive-chart';
+  wrap.append(el('div','ch-grid'));
+  const rows=el('div','ch-rows'); rows.id='g-chart';
+  for(let i=0;i<(G.idx||0);i++)chartAppend(rows,G,(G.log||[])[i]);
+  wrap.append(rows);
+  return wrap;
+}
+function chartKey(){
+  const k=el('div','ch-key');
+  k.innerHTML=`<span><i style="background:var(--accent)"></i>gain</span>`
+    +`<span><i style="background:${CHART_LOSS}"></i>loss</span>`
+    +`<span><i style="background:${CHART_PEN}"></i>penalty</span>`
+    +`<span><i style="background:repeating-linear-gradient(90deg,rgba(170,179,192,.55) 0 3px,transparent 3px 7px)"></i>kick</span>`;
+  return k;
+}
 function applyGameEvent(e){
   const hs=$('#g-hs'),as=$('#g-as'),q=$('#g-q');
   if(hs)hs.textContent=e.hs; if(as)as.textContent=e.as; if(q&&e.q)q.textContent=qLabel(e.q);
   const ln=gameEventEl(e),feed=$('#g-feed');
   if(ln&&feed){feed.append(ln);revealBeats(ln,!!(UI.game&&UI.game.fast));feed.scrollTop=feed.scrollHeight;}
+  const rows=$('#g-chart');
+  if(rows&&UI.game){chartAppend(rows,UI.game,e);rows.scrollTop=rows.scrollHeight;}
 }
 function scheduleGameTick(){
   const G=UI.game; if(!G||G.done)return;
@@ -7012,7 +7173,12 @@ function renderInteractiveGame(app){
   // A play is three or four beats now rather than one clause, so a line wraps to 2-3 rows — the
   // watch view needs the height back to keep a drive's worth on screen.
   const feed=el('div');feed.id='g-feed';feed.style.cssText='max-height:'+((ctx&&!half)?'26vh':'48vh')+';overflow-y:auto;margin-top:12px';
-  G.log.forEach(e=>{const ln=gameEventEl(e);if(ln)feed.append(ln);});
+  // The coach screen re-runs the engine and rebuilds the whole feed after every call, so history is
+  // shown whole and only the newest line is allowed to develop — which is what Phase 53's beats were
+  // for, and what a wholesale rebuild had been quietly swallowing.
+  let lastLn=null;
+  G.log.forEach(e=>{const ln=gameEventEl(e);if(ln){showBeats(ln);feed.append(ln);lastLn=ln;}});
+  if(lastLn&&!G.done){clearBeatTimers();lastLn.querySelectorAll('span[style*="opacity"]').forEach(s=>s.style.opacity='0');revealBeats(lastLn,false);}
   v.append(feed);
   const ctr=el('div');ctr.style.marginTop='12px';
   if(G.done){
@@ -7042,18 +7208,22 @@ function renderGame(app){
   const G=UI.game; if(!G){UI.view='home';return renderHome(app);}
   if(G.interactive)return renderInteractiveGame(app);
   const home=teamById(G.home),away=teamById(G.away),t=controlled(),cs=curGameScore(G);
-  const v=el('div','view');v.style.paddingBottom='10px';
-  const sb=el('div','card');sb.dataset.tid='game-board';sb.style.cssText='position:sticky;top:0;z-index:5';
+  const v=el('div','view gamev');
+  const sb=el('div','card');sb.dataset.tid='game-board';sb.style.cssText='flex:none';
   sb.innerHTML=`<div class="row spread" style="align-items:center">
       <div class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${home.color};flex:none"></span><div class="nm">${home.abbr}${home.id===t.id?' <span class="cap">YOU</span>':''}</div></div>
       <div class="cond" style="font-size:30px;font-weight:800;white-space:nowrap"><span id="g-hs">${cs.hs}</span> – <span id="g-as">${cs.as}</span></div>
       <div class="row" style="gap:8px;min-width:0;justify-content:flex-end"><div class="nm">${away.abbr}${away.id===t.id?' <span class="cap">YOU</span>':''}</div><span class="dot" style="background:${away.color};flex:none"></span></div></div>
     <div class="meta dim" style="text-align:center;margin-top:6px"><span id="g-q">${qLabel(cs.q)}</span> · ${G.replay?'Replay':'Live'} · ${home.name} vs ${away.name}</div>`;
   v.append(sb);
-  const feed=el('div');feed.id='g-feed';feed.style.cssText='max-height:46vh;overflow-y:auto;margin-top:12px';
-  for(let i=0;i<G.idx;i++){const ln=gameEventEl(G.log[i]);if(ln)feed.append(ln);}
-  v.append(feed);
-  const ctr=el('div','btn-row');ctr.style.marginTop='14px';
+  // Phase 55: the log keeps ~60% of what's left and the drive chart takes the rest. They're siblings
+  // in one flex column rather than two vh guesses, so the split holds on a small phone and a tablet.
+  const split=el('div','gsplit');
+  const feed=el('div');feed.id='g-feed';
+  for(let i=0;i<G.idx;i++){const ln=gameEventEl((G.log||[])[i]);if(ln){showBeats(ln);feed.append(ln);}}
+  split.append(feed,driveChart(G));
+  v.append(split,chartKey());
+  const ctr=el('div','btn-row');ctr.style.cssText='margin-top:10px;flex:none';
   if(G.done){
     const cont=el('button','btn',G.replay?'Done':'Continue → commit week');cont.dataset.tid='game-continue';
     cont.onclick=finishGame;ctr.append(cont);
@@ -7071,11 +7241,12 @@ function renderGame(app){
   // Phase 22: jump into play-calling for your own upcoming game (not a replay / already-played game).
   const me=S.teamId,g0=findAnyGame(G.gameId);
   if(g0&&!g0.played&&!G.replay&&(G.home===me||G.away===me)){
-    const coach=el('button','btn','🎮 Coach this game');coach.style.marginTop='10px';coach.dataset.tid='game-coach';coach.onclick=enterInteractive;
+    const coach=el('button','btn','🎮 Coach this game');coach.style.cssText='margin-top:9px;flex:none';coach.dataset.tid='game-coach';coach.onclick=enterInteractive;
     v.append(coach);
   }
   app.append(v);
-  requestAnimationFrame(()=>{const f=$('#g-feed');if(f)f.scrollTop=f.scrollHeight;});
+  requestAnimationFrame(()=>{const f=$('#g-feed');if(f)f.scrollTop=f.scrollHeight;
+    const c=$('#g-chart');if(c)c.scrollTop=c.scrollHeight;});
 }
 
 /* ============================================================
