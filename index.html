@@ -2936,7 +2936,15 @@ function simEngine(home,away,seed,opts){
   // `l` is the line of scrimmage the entry happened at (offense's own yard line, 100 = the end zone
   // it attacks). Carried so a log can be measured for field-position questions — red-zone trip and
   // conversion rates are measured targets in cfb-averages.md §3 and were not derivable from the log.
-  const L=(team,kind,text,dd,big,tg,l)=>{ if(log)log.push({q:L._q,team:team?team.id:null,kind,text,dd:dd||'',tg,l,hs:score[home.id],as:score[away.id],big:!!big}); };
+  // `bt` is the play told as BEATS — the sequence the engine actually resolved (drops back →
+  // pressure → escapes → complete), for the watchable viewer to reveal one at a time. Phase 53 made
+  // the play a real sequence with a real intermediate state and then threw all of it away into one
+  // terse string; this is that state surfaced.
+  //
+  // Deliberately a SEPARATE field from `text`. Six tools and gates parse `text` with regexes
+  // (`pass to X for N`, `sacked by X for N`, `1ST DOWN`, …), so the machine-readable line is left
+  // exactly as it was and the prose lives beside it. Strings only, no rng — `watch == commit` holds.
+  const L=(team,kind,text,dd,big,tg,l,bt)=>{ if(log)log.push({q:L._q,team:team?team.id:null,kind,text,dd:dd||'',tg,l,bt,hs:score[home.id],as:score[away.id],big:!!big}); };
   L._q=1;
   // Phase 26 injuries + fatigue (IN-GAME only — pure, deterministic, resets each game). An injured
   // player is skipped from selection (the backup is forced in → his matchup shows); a heavily-used
@@ -3095,6 +3103,9 @@ function simEngine(home,away,seed,opts){
       else if(variant==='draw'){ vYds+=(dcall==='blitz'?6:-2); }
       let gain=0, turnover=false, scored=false, tackled=true, txt='';
       let toKind='', toBy=null;                            // Phase 54: what kind of turnover, and who took it
+      // Beats are built ONLY when a log is being kept. Advancing a week sims 60+ games with no log,
+      // and none of them should pay for prose nobody reads.
+      const bt=log?[]:null, beat=t=>{ if(bt&&t)bt.push(t); };
       jr=[];        // Phase 49: start journalling this play's stat lines — a flag can wipe them
       // Phase 50: what this snap is worth. `vAmp` amplifies the composure reshape (mean-preserving,
       // so it moves WHO wobbles, not the league's scoring); the rest are the measured situational
@@ -3160,6 +3171,8 @@ function simEngine(home,away,seed,opts){
             +vSack*vD*AT.pressVar,0.04,0.80);
         const pressed=r()<pressP;
         let sacked=false, scrambled=false, rsh=null;
+        beat(nm(qb)+(variant==='pa'?' fakes the handoff':variant==='screen'?' sets up the screen'
+          :variant==='deep'?' looks deep':pkg==='spread'?' spreads them out':' drops back'));
         if(pressed){
           // the man who beat his block, and the quarterback's own athleticism against him. Awareness
           // belongs here for the Phase 51 reason — a sack taken is a MISTAKE, not lost yardage.
@@ -3168,12 +3181,14 @@ function simEngine(home,away,seed,opts){
             +AT.escBtk*tilt(qb,'btk')+AT.escAwr*qAWR-AT.escPrs*(av(rsh,'prs')-dP.rush4A.prs);
           if(r()<clamp(AT.escBase*cx(esc,AT.escK),0.15,0.96)) scrambled=r()<AT.scrRun;
           else sacked=true;
-        }
+          beat(rsh?'PRESSURE — '+nm(rsh)+' is through':'PRESSURE');
+        } else beat(dcall==='cover'?'has time':null);
         if(sacked){
           // PM.sackQ has been measured since Phase 48.1 and was never read — sacks drew a flat
           // -ri(4,9). The measured table has the same mean and a real tail (a 29-yard loss exists).
           gain=Math.min(-1,Math.round(qGain(r(),PM.sackQ,0)));
           time+=PM.secSack; add(rsh&&rsh.id,'sk'); txt=nm(qb)+' sacked by '+nm(rsh)+' for '+gain;
+          beat('dragged down — SACKED for '+gain);
           if(r()<clamp(PM.sackFumP+AT.carFum*tilt(qb,'car')*2.4,0.01,0.20)){ turnover=true; toKind='fum'; toBy=rsh; txt=nm(qb)+' STRIP-SACKED by '+nm(rsh)+' — fumble lost'; }   // Phase 48: the strip sack
         } else if(scrambled){
           // He got out and took off. §7: this books as a RUSH, because that is what the box score
@@ -3184,6 +3199,7 @@ function simEngine(home,away,seed,opts){
           if(los+gain>=100)gain=100-los;                   // capped at the goal line (see the run)
           time+=PM.secRun; add(qb&&qb.id,'rAtt'); add(qb&&qb.id,'rYds',gain); if(qb)touches[qb.id]=(touches[qb.id]||0)+1;
           txt=nm(qb)+' scrambles for '+gain; hero=qb;
+          beat('escapes the pocket'); beat('scrambles for '+gain);
           if(los+gain>=100){ scored=true; add(qb&&qb.id,'rTD'); }
         // PC.cmp is subtracted from the FINAL probability, not folded into the pre-logit base. It was
         // measured as an absolute -3.4pp at full pressure, and a fixed shift in the base survives the
@@ -3206,6 +3222,11 @@ function simEngine(home,away,seed,opts){
           // let a defence be punished for the same call that had just produced the pressure.
           gain=Math.max(-3,Math.round(qGain(u,PM.recQ[distKey(togo)],vBoom*8)-ky*PASS_KEY+(dPassY>0&&pressed?0:dPassY)+vYds*vD-PC.ya*press+tailAdd(u,dSPD,AT.tailPass)+AT.thpDeep*qTHP*deepW+AT.yacPass*ADX(rec,oP.recvA,'elu',cov,dP.covA,'tkl')+(pkg==='spread'?3:0)));
           if(los+gain>=100)gain=100-los;                   // capped at the goal line (see the run)
+          // Separation is a real quantity here (sepR, in rating points), so the receiver's beat can
+          // say WHY he was open rather than asserting it.
+          beat(pressed?'throws on the run':sepR>4?nm(rec)+' has a step':deepW>=1.3?'takes a shot downfield':'steps up');
+          beat('COMPLETE to '+nm(rec)+' for '+gain+(cov?' — over '+nm(cov):''));
+          if(gain>=20)beat('and he is GONE');
           hero=rec;
           add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
@@ -3221,12 +3242,17 @@ function simEngine(home,away,seed,opts){
           if(r()<INJ_RATE*injMul(rec))hurt(rec,off); if(r()<INJ_RATE*0.7*injMul(cov))hurt(cov,def);   // injuries on contact (Phase 26, Phase 51 durability)
         } else {                                            // incomplete (maybe picked)
           time+=PM.secIncomp; tackled=false; add(qb&&qb.id,'pAtt'); add(cov&&cov.id,'cvTgt'); txt=nm(qb)+' incomplete';
+          beat(pressed?'has to get rid of it'
+            :sepR<-4?nm(cov)+' has him blanketed'
+            :deepW>=1.3?'launches it deep for '+nm(rec):'fires for '+nm(rec));
+          beat('INCOMPLETE');
           // §7: the interception reads PRESSURE. A throw made with a rusher arriving is a different
           // throw, and this is the last place the pocket state was not being carried through — which
           // is the whole point of having a state rather than a sack roll.
           if(r()<clamp((PM.intRate-adv*0.0008)*(1+PC.intMul*press)*(pressed?AT.intPress:1)+AT.awrInt*qAWR+AT.iqInt*qIQ+AT.thaInt*qTHA+AT.cthInt*(av(cov,'cth')-dP.covA.cth)+AT.zcvInt*(av(cov,'zcv')-dP.covA.zcv),0.020,0.14)){ turnover=true; add(qb&&qb.id,'pInt'); add(cov&&cov.id,'dInt');
             if(press>=0.5)add(cov&&cov.id,'cl');           // a pick in a big moment is a clutch play
-            toKind='int'; toBy=cov; txt=nm(qb)+' INTERCEPTED by '+nm(cov); }
+            toKind='int'; toBy=cov; txt=nm(qb)+' INTERCEPTED by '+nm(cov);
+            if(bt)bt[bt.length-1]='INTERCEPTED by '+nm(cov); }
         }
       } else {                                              // run
         const rb=wpick(oP.rush,r,injured)||qb;
@@ -3266,6 +3292,14 @@ function simEngine(home,away,seed,opts){
         // showed up as goal-to-go plays gaining 5.61 where real ones gain 1.63.
         if(los+gain>=100)gain=100-los;
         time+=PM.secRun; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain; hero=rb;
+        // push -> crease -> break is how the run actually resolves now (attributes-2.md §7), so the
+        // beats say which stage decided it. pushR is the line's contest and is known before the draw.
+        beat(nm(rb)+(pkg==='heavy'?' behind the heavy set':dcall==='run'?' into a stacked box':' takes the handoff'));
+        beat(gain<=0?(pushR<-2?'no push up front':'met in the backfield')
+          :gain<=3?(breakR>3?'shakes the first man':'wrapped up quickly')
+          :gain<=9?(pushR>2?'the line moves them off the ball':'slips through the crease')
+          :'into the second level');
+        beat(gain<0?'STOPPED for '+gain:gain===0?'no gain':gain>=15?'BREAKS FREE for '+gain:'gains '+gain);
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
         if(!scored && r()<clamp(PM.fumRate*(1+PC.fumMul*press)+AT.awrFum*AD(rb,oP.rushA,fr,dP.frontA,'awr')+AT.carFum*ADX(rb,oP.rushA,'car',fr,dP.frontA,'tkl'),0.002,0.05)){ turnover=true; toKind='fum'; toBy=fr; txt=nm(rb)+' FUMBLES — lost'; }
         if(r()<INJ_RATE*injMul(rb))hurt(rb,off); if(r()<INJ_RATE*0.7*injMul(fr))hurt(fr,def);     // injuries on contact (Phase 26, Phase 51 durability)
@@ -3305,7 +3339,8 @@ function simEngine(home,away,seed,opts){
         if(press>=0.5){ add(hero&&hero.id,'cl'); if(wantPass)add(qb&&qb.id,'cl'); }   // Phase 50: made it when it mattered
         score[off.id]+=6;
         add(oP.k&&oP.k.id,'xpa'); const xp=r()<0.965; if(xp){ add(oP.k&&oP.k.id,'xpm'); score[off.id]+=1; }
-        L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true,undefined,los);
+        beat('TOUCHDOWN!');
+        L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true,undefined,los,bt);
         return {nextLos:25,time};
       }
       if(tackled){ const t=wpick(dP.tkl,r); add(t&&t.id,'tkl'); }
@@ -3315,19 +3350,21 @@ function simEngine(home,away,seed,opts){
         // which the alternating drive loop would otherwise hand to the wrong side.
         const spot=flipTo(clamp(los+gain,1,99));
         if(toBy && r()<(toKind==='int'?PM.pick6:PM.fumb6)){
-          L(off,'play',txt,dd,true);                       // the drive still ended in a turnover
+          L(off,'play',txt,dd,true,undefined,undefined,bt);   // the drive still ended in a turnover
           score[def.id]+=6; add(toBy.id,'dTD');
           add(dP.k&&dP.k.id,'xpa'); if(r()<0.965){ add(dP.k&&dP.k.id,'xpm'); score[def.id]+=1; }
           if(press>=0.5)add(toBy.id,'cl');
           L(def,'score','TOUCHDOWN — '+nm(toBy)+' returns the '+(toKind==='int'?'interception':'fumble')+' '+(100-spot)+' yards',dd,true);
           return {nextLos:25,time,keep:true};
         }
-        L(off,'play',txt,dd,true); return {nextLos:spot,time}; }
+        beat('TURNOVER');
+        L(off,'play',txt,dd,true,undefined,undefined,bt); return {nextLos:spot,time}; }
 
       const wasFirst=togo-gain<=0;
       if(wasFirst&&press>=0.5){ add(hero&&hero.id,'cl'); if(wantPass)add(qb&&qb.id,'cl'); }   // Phase 50
       los=clamp(los+gain,1,99); togo-=gain;
-      L(off,'play',txt+(wasFirst?' — 1ST DOWN':''),dd,false,togo0,los);
+      if(wasFirst)beat('FIRST DOWN!');
+      L(off,'play',txt+(wasFirst?' — 1ST DOWN':''),dd,false,togo0,los,bt);
       if(togo<=0){ down=1; togo=Math.min(10,100-los); }     // first down (goal-to-go aware)
       else if(++down>4){ L(off,'play','Turnover on downs',dd); return {nextLos:flipTo(los),time}; }
     }
@@ -6523,20 +6560,60 @@ function gameEventEl(e){
   if(e.kind==='final')return null;
   const line=el('div');
   if(e.kind==='drive'){line.className='meta dim';line.style.cssText='margin:11px 2px 3px;font-weight:700;letter-spacing:.04em';line.textContent=e.text;}
-  else if(e.kind==='score'){line.className='lrow';line.style.cssText='box-shadow:inset 0 0 0 1px var(--accent);font-weight:700;margin:4px 0';line.innerHTML=`<div style="flex:1;font-size:13px">${e.text}</div>`;}
-  else{line.className='row';line.style.cssText='gap:8px;margin:3px 2px';line.innerHTML=`<span class="meta dim" style="flex:none;width:46px">${e.dd||''}</span><span style="flex:1;font-size:13px">${e.text}</span>`;}
+  else if(e.kind==='score'){line.className='lrow';line.style.cssText='box-shadow:inset 0 0 0 1px var(--accent);font-weight:700;margin:4px 0';
+    const box=el('div');box.style.cssText='flex:1;font-size:13px';box.append(beatBody(e));line.append(box);}
+  else{
+    line.className='row';line.style.cssText='gap:8px;margin:3px 2px';
+    const dn=el('span','meta dim');dn.style.cssText='flex:none;width:46px';dn.textContent=e.dd||'';
+    line.append(dn,beatBody(e));
+  }
   return line;
+}
+// Phase 53 made a play a SEQUENCE, and `bt` is that sequence — drops back / PRESSURE / escapes /
+// COMPLETE. Render the beats when they're there and let revealBeats bring them in one at a time, so
+// the call lands the way the engine actually resolved it. Falls back to the terse line for events
+// that have no beats (punts, kicks, flags, end of half).
+//
+// textContent throughout, deliberately: `el(t,c,h)` assigns innerHTML, and a player name can come
+// from an IMPORTED roster, so names must never take that path.
+function beatBody(e){
+  const body=el('span');body.style.cssText='flex:1;font-size:13px';
+  if(!(e.bt&&e.bt.length)){body.textContent=e.text;return body;}
+  // Setup beats sit back a shade so the feed stays scannable and the play's OUTCOME carries the line.
+  // "Last beat" alone is the wrong rule: a completion that moves the chains ends on "FIRST DOWN!",
+  // which would dim the completion itself. So a beat is foreground if it is the last one OR it shouts
+  // — the engine writes the moments that matter in caps (PRESSURE, COMPLETE, SACKED, GONE), which is
+  // exactly the set worth lifting out.
+  const last=e.bt.length-1, loud=t=>/\b[A-Z]{3,}\b/.test(t);
+  e.bt.forEach((t,i)=>{
+    if(i){const d=el('span','dim');d.style.cssText='opacity:0;transition:opacity .18s ease';d.textContent=' … ';body.append(d);}
+    const sp=el('span');
+    sp.style.cssText='opacity:0;transition:opacity .18s ease'+((i===last||loud(t))?'':';color:var(--ink2)');
+    if(/!$/.test(t))sp.style.fontWeight='700';
+    sp.textContent=t;body.append(sp);
+  });
+  return body;
+}
+// Fade the beats in left to right. Purely visual — the log is already committed, so this changes
+// nothing about the result, and `fast` mode collapses it to nothing.
+function revealBeats(line,fast){
+  const spans=[...line.querySelectorAll('span[style*="opacity"]')];
+  if(!spans.length)return;
+  if(fast||!spans.length){spans.forEach(s=>s.style.opacity='1');return;}
+  spans.forEach((sp,i)=>setTimeout(()=>{sp.style.opacity='1';},i*70));
 }
 function applyGameEvent(e){
   const hs=$('#g-hs'),as=$('#g-as'),q=$('#g-q');
   if(hs)hs.textContent=e.hs; if(as)as.textContent=e.as; if(q&&e.q)q.textContent=qLabel(e.q);
-  const ln=gameEventEl(e),feed=$('#g-feed'); if(ln&&feed){feed.append(ln);feed.scrollTop=feed.scrollHeight;}
+  const ln=gameEventEl(e),feed=$('#g-feed');
+  if(ln&&feed){feed.append(ln);revealBeats(ln,!!(UI.game&&UI.game.fast));feed.scrollTop=feed.scrollHeight;}
 }
 function scheduleGameTick(){
   const G=UI.game; if(!G||G.done)return;
   if(G.idx>=G.log.length){gameDone();return;}
   const e=G.log[G.idx];
-  const base=e.kind==='score'?760:e.kind==='drive'?260:e.kind==='final'?10:230;
+  const base=e.kind==='score'?760:e.kind==='drive'?260:e.kind==='final'?10
+    :230+(e.bt?Math.min(e.bt.length,5)*55:0);      // let a multi-beat call finish before the next snap
   gameTimer=setTimeout(()=>{ if(UI.view!=='game'||!UI.game){gameTimer=null;return;} applyGameEvent(e); UI.game.idx++; scheduleGameTick(); }, G.fast?Math.max(35,base/4):base);
 }
 function gameDone(){ if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} if(UI.game){UI.game.done=true;render();} }
@@ -6881,7 +6958,9 @@ function renderInteractiveGame(app){
     v.append(el('div','card','<div class="hint">Resolving…</div>'));
   }
   const mp=matchupPanel(G); if(mp){mp.style.marginTop='12px';v.append(mp);}
-  const feed=el('div');feed.id='g-feed';feed.style.cssText='max-height:'+((ctx&&!half)?'26vh':'40vh')+';overflow-y:auto;margin-top:12px';
+  // A play is three or four beats now rather than one clause, so a line wraps to 2-3 rows — the
+  // watch view needs the height back to keep a drive's worth on screen.
+  const feed=el('div');feed.id='g-feed';feed.style.cssText='max-height:'+((ctx&&!half)?'26vh':'48vh')+';overflow-y:auto;margin-top:12px';
   G.log.forEach(e=>{const ln=gameEventEl(e);if(ln)feed.append(ln);});
   v.append(feed);
   const ctr=el('div');ctr.style.marginTop='12px';

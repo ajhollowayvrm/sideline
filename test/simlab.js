@@ -172,6 +172,29 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   const scoreEvents = lg.filter(e => e.kind === 'score' || e.kind === 'final');
   let mono = true; for (let i = 1; i < scoreEvents.length; i++) if (scoreEvents[i].hs < scoreEvents[i - 1].hs || scoreEvents[i].as < scoreEvents[i - 1].as) mono = false;
   check('Play log: running score is monotonic non-decreasing', mono);
+  // Beats (the play told as a sequence) are built ONLY when a log is kept, which means logging now
+  // takes a different code path — so the parity check above is re-run over many seeds rather than one.
+  // If anyone ever puts an rng draw inside a beat, this is what catches it.
+  let par = 0;
+  for (let i = 0; i < 60; i++) {
+    const sd = (hashStr('logpar' + i) ^ 5) >>> 0;
+    const a = simEngine(w.teams[i % 8], w.teams[(i + 3) % 8], sd);
+    const b = simEngine(w.teams[i % 8], w.teams[(i + 3) % 8], sd, { log: true });
+    if (a.hs === b.hs && a.as === b.as && JSON.stringify(a.box) === JSON.stringify(b.box)
+      && JSON.stringify(a.pen) === JSON.stringify(b.pen)) par++;
+  }
+  check('Play log: beats consume no rng — 60 seeds identical logged vs not', par === 60, `${par}/60`);
+  const withBt = lg.filter(e => e.bt && e.bt.length);
+  const playish = lg.filter(e => (e.kind === 'play' || e.kind === 'score') && !/^🚩|^Punt|field goal|^END OF|Turnover on downs/.test(e.text));
+  check('Play log: every run/pass snap carries its beats', withBt.length >= playish.length * 0.95 && withBt.length > 30,
+    `${withBt.length} beat lines / ${playish.length} snaps`);
+  check('Play log: a beat sequence opens with the snap and ends on the outcome',
+    withBt.every(e => /drops back|takes the handoff|fakes the handoff|sets up the screen|looks deep|spreads them out|behind the heavy set|into a stacked box/.test(e.bt[0]))
+    && withBt.every(e => /COMPLETE|INCOMPLETE|SACKED|scrambles for|gains |no gain|STOPPED|BREAKS FREE|INTERCEPTED|TOUCHDOWN|FIRST DOWN|TURNOVER/.test(e.bt[e.bt.length - 1])),
+    withBt[0] ? withBt[0].bt.join(' … ') : '');
+  // the beats are rendered into the DOM as text; a name from an imported roster must not be able to
+  // smuggle markup through them (index.html's `el` helper assigns innerHTML)
+  check('Play log: beats carry no markup', withBt.every(e => e.bt.every(t => !/[<>]/.test(t))));
 })();
 
 // Phase 22 — the play-calling decision hook. The OC always draws its own suggestion, so a coach
