@@ -820,11 +820,13 @@ rules — a number crossed, said once, never editorialised:
 
 Three notes on how they land:
 
-- **`sm` entries are now `{t, d}`** — the line, and `d` when it is the downside. The engine decides the
-  tone because the engine is what knows whether a number is something you did or something that was
-  done to you. The viewer renders the two in different registers, distinguished by a **left rule as
-  well as** colour: a crimson programme's accent sits close to the downside red, so hue alone can't be
-  load-bearing.
+- **They are not marked out as bad news.** The first attempt gave them their own colour, on the theory
+  that a third interception reads in a different tone from a third touchdown. AJ's call, and the right
+  one: *don't single them out — work them in like a good milestone.* A broadcast does not change its
+  voice to tell you about a pick, and a feed that colours one set red is editorialising rather than
+  reporting. So `sm` stayed a plain array of strings, the `{t,d}` shape and the `.dn` class went, and
+  the viewer renders one register. `qa` asserts exactly **one** computed colour across the story lines
+  *and* that a downside line is among them, so a second register can't creep back in unnoticed.
 - **Two counters, not two box keys.** Fumbles lost and team giveaways have no key in the box, and
   adding one is not free — `applyResult` folds the box into `p.gs`, so a new key becomes a new
   per-player *season* stat and a save-shape change. A piece of commentary has no business doing that,
@@ -842,10 +844,10 @@ that set `G.idx` directly made the ticker replay a stale entry and open a **seco
 after Q3**. The tick now re-reads the entry at fire time; `e` is only used to pace the timer.
 
 `simlab` → **160**: every downside category is reachable (a milestone nobody ever crosses is dead code,
-not a feature), the tone flag is right in both directions, and the story stays a garnish — asserted on
-the **mean** (14.2 lines a game) with a ceiling on the tail, because one loud game is fine and a loud
-average is the feature eating the feed. `qa` → **328**: the downside appears in the feed in its own
-register, alongside the upside.
+not a feature), every line is a plain string with nothing marking one set out, and the story stays a
+garnish — asserted on the **mean** (14.2 lines a game) with a ceiling on the tail, because one loud
+game is fine and a loud average is the feature eating the feed. `qa` → **328**: the feed tells both
+halves of the game in one voice.
 
 ### Deliberately out of scope
 The Stats tab is a box score, not analytics — no win probability, no EPA, nothing that is a model

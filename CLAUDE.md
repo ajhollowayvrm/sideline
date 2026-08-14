@@ -308,10 +308,12 @@ still serves it with zero config.
   categories now run on the same rules (a number crossed, said once, never editorialised): picks thrown
   (`box.pInt`), fumbles lost, team giveaways, **sacks given up** (the other side's `box.sk`), flags on
   one man (`box.pen` — the line Phase 49 earned, since one man commits 44.7% of a team's false starts),
-  and flags on a team. `sm` entries become **`{t,d}`** — the line plus a downside flag, because the
-  engine is what knows whether a number is something you did or something done to you; the viewer gives
-  the two registers a **left rule as well as** colour, since a crimson programme's accent sits close to
-  the downside red. Fumbles-lost and giveaways are **local counters, not box keys** — `applyResult`
+  and flags on a team. They are deliberately **not marked out as bad news** — the first attempt gave
+  them their own colour and that was the wrong call: a broadcast doesn't change its voice to tell you
+  about a pick, and colouring one set red is editorialising, not reporting. `sm` is a plain array of
+  strings and the viewer renders one register (`qa` asserts exactly one computed colour across the
+  story lines *and* that a downside line is among them). Fumbles-lost and giveaways are **local
+  counters, not box keys** — `applyResult`
   folds the box into `p.gs`, so a new key would become a new per-player season stat and a save-shape
   change, which commentary has no business causing. Flags get their own hook (`flagStory`) because a
   foul is reported by `chargeFoul` and never reaches the play resolution. **Also fixed a latent bug:**

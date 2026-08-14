@@ -606,9 +606,9 @@ function startServer() {
             feedText: feed.innerText.replace(/\s+/g, ' ').trim().length,
             // the running story
             smLines: feed.querySelectorAll('.sm-line').length,
-            smDown: feed.querySelectorAll('.sm-line.dn').length,
             smText: [...feed.querySelectorAll('.sm-line')].map(n => n.textContent),
-            smDownText: [...feed.querySelectorAll('.sm-line.dn')].map(n => n.textContent),
+            // one register, deliberately: an interception reads in the same voice as a touchdown
+            smStyles: new Set([...feed.querySelectorAll('.sm-line')].map(n => getComputedStyle(n).color)).size,
             fieldFirst: [...document.querySelector('.gamev').children].findIndex(n => n.classList.contains('ch-wrap'))
               < [...document.querySelector('.gamev').children].findIndex(n => n.id === 'g-feed'),
           };
@@ -669,9 +669,10 @@ function startServer() {
   check('Phase 55.1: the running story appears in the feed',
     !!chartInfo && chartInfo.smLines > 0,
     chartInfo && `${chartInfo.smLines} lines — e.g. ${JSON.stringify(chartInfo.smText[0] || '')}`);
-  check('Phase 55.1: the story tells BOTH halves — the downside reads in its own register',
-    !!chartInfo && chartInfo.smDown > 0 && chartInfo.smDown < chartInfo.smLines,
-    chartInfo && `${chartInfo.smDown} downside of ${chartInfo.smLines} — e.g. ${JSON.stringify(chartInfo.smDownText[0] || '')}`);
+  check('Phase 55.1: the story tells both halves of the game in ONE voice',
+    !!chartInfo && chartInfo.smStyles === 1
+    && chartInfo.smText.some(t => /interception of the day|fumble lost by|turnovers now for|has given up|flag on |flags now on/.test(t)),
+    chartInfo && `${chartInfo.smStyles} register(s) — e.g. ${JSON.stringify(chartInfo.smText.find(t => /flag on |has given up|interception/.test(t)) || chartInfo.smText[0] || '')}`);
   check('Phase 55.1: the Stats tab totals agree with the score and the box it folded',
     !!statsInfo && statsInfo.shown && statsInfo.foldsToBox && statsInfo.yardsOK && statsInfo.leaders,
     statsInfo && JSON.stringify(statsInfo));
