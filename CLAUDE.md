@@ -308,11 +308,15 @@ still serves it with zero config.
   categories now run on the same rules (a number crossed, said once, never editorialised): picks thrown
   (`box.pInt`), fumbles lost, team giveaways, **sacks given up** (the other side's `box.sk`), flags on
   one man (`box.pen` — the line Phase 49 earned, since one man commits 44.7% of a team's false starts),
-  and flags on a team. They are deliberately **not marked out as bad news** — the first attempt gave
-  them their own colour and that was the wrong call: a broadcast doesn't change its voice to tell you
-  about a pick, and colouring one set red is editorialising, not reporting. `sm` is a plain array of
-  strings and the viewer renders one register (`qa` asserts exactly one computed colour across the
-  story lines *and* that a downside line is among them). Fumbles-lost and giveaways are **local
+  and flags on a team. Both halves are **spoken inside the call**, not as an annotation beside it: a
+  milestone is the last beat or two of the play's own sequence ("…SACKED for -8 … brought down by
+  Whitfield … Missouri has given up six sacks"), same styling, same reveal, with `beatSpan` giving the
+  line the time it needs; an entry with no beats (a flag, a punt) puts its text in as beat one. `sm`
+  stays a field **separate from `text`** — six tools parse `text` with regexes — and is assembled into
+  prose at render time. **Two per play at most**, gathered in the order a broadcast would reach for
+  them and with sign playing no part in the ordering; a milestone is *claimed* only when it survives
+  the cut (`want()` + `commit()` rather than `once()`), so one trimmed for line length comes back on a
+  later play instead of being lost. Fumbles-lost and giveaways are **local
   counters, not box keys** — `applyResult`
   folds the box into `p.gs`, so a new key would become a new per-player season stat and a save-shape
   change, which commentary has no business causing. Flags get their own hook (`flagStory`) because a
@@ -320,7 +324,7 @@ still serves it with zero config.
   `scheduleGameTick` captured its entry at *schedule* time and applied it whenever the timer fired —
   unreachable in the shipped app (`skipGame` and the Fast toggle clear the timer first), but it made a
   probe that moved `G.idx` replay a stale entry and open a second Q1 band after Q3. It re-reads at fire
-  time now. `simlab` → 160, `qa` → 328. *(→ `docs/phases/gameday.md`.)*
+  time now. `simlab` → 161, `qa` → 327. *(→ `docs/phases/gameday.md`.)*
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week

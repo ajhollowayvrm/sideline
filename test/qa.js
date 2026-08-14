@@ -605,10 +605,12 @@ function startServer() {
             hiddenBeats: [...feed.querySelectorAll('span[style*="opacity"]')].filter(s => s.style.opacity === '0').length,
             feedText: feed.innerText.replace(/\s+/g, ' ').trim().length,
             // the running story
-            smLines: feed.querySelectorAll('.sm-line').length,
-            smText: [...feed.querySelectorAll('.sm-line')].map(n => n.textContent),
-            // one register, deliberately: an interception reads in the same voice as a touchdown
-            smStyles: new Set([...feed.querySelectorAll('.sm-line')].map(n => getComputedStyle(n).color)).size,
+            // the running story is spoken INSIDE the call, as the last beat or two of the same
+            // line — never as its own annotation, and never in its own colour
+            smAside: feed.querySelectorAll('.sm-line').length,
+            smInline: [...feed.querySelectorAll('#g-feed > div')].filter(n =>
+              /yards on the ground|total offense|touchdown of the day|sacks for|This drive has been all|interception of the day|fumble lost by|turnovers now for|has given up|flag on |flags now on/.test(n.textContent)).length,
+            smText: (G.log.slice(0, G.idx).flatMap(e => e.sm || [])),
             fieldFirst: [...document.querySelector('.gamev').children].findIndex(n => n.classList.contains('ch-wrap'))
               < [...document.querySelector('.gamev').children].findIndex(n => n.id === 'g-feed'),
           };
@@ -666,13 +668,11 @@ function startServer() {
   check('Phase 55: skipping to the result leaves the play-by-play readable (beats not stuck hidden)',
     !!chartInfo && chartInfo.hiddenBeats === 0 && chartInfo.feedText > 800,
     chartInfo && `${chartInfo.hiddenBeats} hidden spans, ${chartInfo.feedText} chars of feed`);
-  check('Phase 55.1: the running story appears in the feed',
-    !!chartInfo && chartInfo.smLines > 0,
-    chartInfo && `${chartInfo.smLines} lines — e.g. ${JSON.stringify(chartInfo.smText[0] || '')}`);
-  check('Phase 55.1: the story tells both halves of the game in ONE voice',
-    !!chartInfo && chartInfo.smStyles === 1
-    && chartInfo.smText.some(t => /interception of the day|fumble lost by|turnovers now for|has given up|flag on |flags now on/.test(t)),
-    chartInfo && `${chartInfo.smStyles} register(s) — e.g. ${JSON.stringify(chartInfo.smText.find(t => /flag on |has given up|interception/.test(t)) || chartInfo.smText[0] || '')}`);
+  check('Phase 55.2: the story is spoken inside the call, not as an aside beside it',
+    !!chartInfo && chartInfo.smAside === 0 && chartInfo.smInline > 0
+    && chartInfo.smText.some(t => /interception of the day|fumble lost by|turnovers now for|has given up|flag on |flags now on/.test(t))
+    && chartInfo.smText.some(t => /yards on the ground|total offense|touchdown of the day|This drive has been all/.test(t)),
+    chartInfo && `${chartInfo.smInline} play lines carry it, ${chartInfo.smAside} asides — e.g. ${JSON.stringify(chartInfo.smText.find(t => /flag on |has given up|interception/.test(t)) || chartInfo.smText[0] || '')}`);
   check('Phase 55.1: the Stats tab totals agree with the score and the box it folded',
     !!statsInfo && statsInfo.shown && statsInfo.foldsToBox && statsInfo.yardsOK && statsInfo.leaders,
     statsInfo && JSON.stringify(statsInfo));

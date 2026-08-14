@@ -139,11 +139,6 @@ h2.sec:first-child{margin-top:6px}
 .ch-key{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:5px;font-size:9.5px;color:var(--ink3)}
 .ch-key i{display:inline-block;width:12px;height:4px;border-radius:2px;margin-right:4px;vertical-align:middle}
 
-/* the running story — a broadcast line under the play that earned it. ONE register: the rule marks it
-   out from the play text, not good news out from bad. */
-.sm-line{font-size:11.5px;line-height:1.35;color:var(--accent);opacity:.9;margin:0 0 5px 52px;
-  padding-left:8px;border-left:2px solid currentColor;font-style:italic}
-
 /* the game-stats tab */
 .gs-row{display:flex;align-items:center;gap:8px;padding:2px 2px}
 .gs-row .k{flex:1;text-align:center;color:var(--ink3);font-size:10px;text-transform:uppercase;letter-spacing:.07em}
@@ -3067,7 +3062,10 @@ function simEngine(home,away,seed,opts){
   // Sacks GIVEN UP by a team are the other side's sacks — only two teams are in this game, so anyone
   // not on this one is on that one.
   const sacksOn=tid=>{ let n=0; for(const id in box) if(teamOf[id]&&teamOf[id]!==tid) n+=bx(id,'sk'); return n; };
-  const once=(key,txt)=>{ if(!said||said[key])return null; said[key]=1; return txt; };
+  // A milestone is CLAIMED only when it actually gets said. `want` proposes one, and the commit at the
+  // bottom of `milestones` takes the best couple and marks those — because a line trimmed for length
+  // would otherwise be lost for the rest of the game, having been "said" by a call that never
+  // printed it.
   const cross=(v,marks)=>{ let hit=0; for(const m of marks) if(v>=m) hit=m; return hit; };
   // `dr` is the possession's own tally — who this drive has actually belonged to. `fumLost` and `tov`
   // are the two counters the box has no key for; ADDING one would flow into `p.gs` and so change the
@@ -3078,54 +3076,63 @@ function simEngine(home,away,seed,opts){
   const CNT=['','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve'];
   const ORD=['','first','second','third','fourth','fifth','sixth'];
   const TN=t=>t.name||t.abbr||'They';
+  // Two, at most. The story is spoken as the last beats of the play's own call now, so this is a
+  // bound on how long a line can get — five of them on one touchdown is a paragraph, not a call.
+  const SM_MAX=2;
+  const commit=cand=>{
+    if(!cand.length)return null;
+    const take=cand.slice(0,SM_MAX);
+    for(const c of take){ if(c[0]==='@drive')dr.said=1; else said[c[0]]=1; }
+    return take.map(c=>c[1]);
+  };
   function milestones(off,m){
     if(!said)return null;
-    const out=[], carrier=m.run, catcher=m.rec, qb=m.qb, owner=carrier||catcher;
-    const push=x=>{ if(x)out.push(x); };
+    // Proposed in the order a broadcast would reach for them: what one man just did, then what he has
+    // done all day, then what the team has. Sign doesn't order them — a third interception is as much
+    // the story as a third touchdown.
+    const cand=[], carrier=m.run, catcher=m.rec, qb=m.qb, owner=carrier||catcher;
+    const want=(key,txt)=>{ if(!said[key]&&!cand.some(c=>c[0]===key))cand.push([key,txt]); };
     if(dr&&owner&&m.gain){ dr.by[owner.id]=(dr.by[owner.id]||0)+m.gain; dr.tot+=m.gain; }
-    // ---- what went right
+    for(const p of [carrier,catcher,qb]){ if(!p)continue;
+      const n=cross(bx(p.id,'rTD')+bx(p.id,'reTD')+bx(p.id,'pTD'),MILE.td);
+      if(n)want('td'+n+':'+p.id,'That is the '+ORD[n]+' touchdown of the day for '+NM(p)+'.'); }
+    if(qb){ const n=cross(bx(qb.id,'pInt'),MILE.pick);
+      if(n)want('int'+n+':'+qb.id,'That is the '+ORD[n]+' interception of the day for '+NM(qb)+'.'); }
+    if(m.lost){ fumLost[m.lost.id]=(fumLost[m.lost.id]||0)+1;
+      const n=cross(fumLost[m.lost.id],MILE.fum);
+      if(n)want('fum'+n+':'+m.lost.id,'That is the '+ORD[n]+' fumble lost by '+NM(m.lost)+'.'); }
     const yardMark=(p,key,marks,tag,where)=>{ if(!p)return; const n=cross(bx(p.id,key),marks); if(!n)return;
-      push(once(tag+n+':'+p.id, NM(p)+' is over '+n+' yards '+where+'.')); };
+      want(tag+n+':'+p.id, NM(p)+' is over '+n+' yards '+where+'.'); };
     yardMark(carrier,'rYds',MILE.rush,'rush','on the ground');
     yardMark(catcher,'reYds',MILE.recv,'recv','receiving');
     yardMark(qb,'pYds',MILE.pass,'pass','through the air');
     if(m.sk){ const n=cross(bx(m.sk.id,'sk'),MILE.sack);
-      if(n)push(once('sk'+n+':'+m.sk.id,'That is '+CNT[n]+' sacks for '+NM(m.sk)+'!')); }
-    for(const p of [carrier,catcher,qb]){ if(!p)continue;
-      const n=cross(bx(p.id,'rTD')+bx(p.id,'reTD')+bx(p.id,'pTD'),MILE.td);
-      if(n)push(once('td'+n+':'+p.id,'That is the '+ORD[n]+' touchdown of the day for '+NM(p)+'.')); }
-    const tm=cross(teamYds(off.id),MILE.team);
-    if(tm)push(once('team'+tm+':'+off.id,TN(off)+' just went over '+tm+' yards of total offense.'));
-    // "This drive has been all Samuel" — one man carrying a possession, said once per possession and
+      if(n)want('sk'+n+':'+m.sk.id,'That is '+CNT[n]+' sacks for '+NM(m.sk)+'!'); }
+    // "This drive has been all Samuel" — one man carrying a possession, offered once per possession and
     // only when he genuinely owns it (40+ yards AND two thirds of everything the drive has gained).
     if(dr&&!dr.said&&dr.tot>=40){ let bestId=null,best=0; for(const id in dr.by) if(dr.by[id]>best){best=dr.by[id];bestId=id;}
-      if(bestId&&best>=40&&best>=dr.tot*0.66){ dr.said=1;
-        const p=pById[bestId]; if(p)push('This drive has been all '+NM(p)+' — '+best+' yards of it so far.'); } }
-    // ---- and what went wrong. Same rules, same voice: a game has two stories in it and the feed was
-    // only telling one of them. These state a number that has been reached, exactly as the ones above
-    // do, and they are not marked out as bad news — a third interception is a fact, not a verdict.
-    if(qb){ const n=cross(bx(qb.id,'pInt'),MILE.pick);
-      if(n)push(once('int'+n+':'+qb.id,'That is the '+ORD[n]+' interception of the day for '+NM(qb)+'.')); }
-    if(m.lost){ fumLost[m.lost.id]=(fumLost[m.lost.id]||0)+1;
-      const n=cross(fumLost[m.lost.id],MILE.fum);
-      if(n)push(once('fum'+n+':'+m.lost.id,'That is the '+ORD[n]+' fumble lost by '+NM(m.lost)+'.')); }
+      if(bestId&&best>=40&&best>=dr.tot*0.66){ const p=pById[bestId];
+        if(p)cand.push(['@drive','This drive has been all '+NM(p)+' — '+best+' yards of it so far.']); } }
+    const tm=cross(teamYds(off.id),MILE.team);
+    if(tm)want('team'+tm+':'+off.id,TN(off)+' just went over '+tm+' yards of total offense.');
     if(m.to){ tov[off.id]=(tov[off.id]||0)+1; const n=cross(tov[off.id],MILE.give);
-      if(n)push(once('give'+n+':'+off.id,'That is '+CNT[n]+' turnovers now for '+TN(off)+'.')); }
+      if(n)want('give'+n+':'+off.id,'That is '+CNT[n]+' turnovers now for '+TN(off)+'.'); }
     const sa=cross(sacksOn(off.id),MILE.sackAg);
-    if(sa)push(once('sackag'+sa+':'+off.id,TN(off)+' has given up '+CNT[sa]+' sacks.'));
-    return out.length?out:null;
+    if(sa)want('sackag'+sa+':'+off.id,TN(off)+' has given up '+CNT[sa]+' sacks.');
+    return commit(cand);
   }
   // Flags get their own hook, because a foul is reported by chargeFoul and never reaches the play
   // resolution above. Phase 49's whole finding was that ONE man commits 44.7% of a team's false
   // starts, so "that is the third flag on him" is the line that phase earned.
   function flagStory(team,who){
     if(!said)return null;
-    const out=[], push=x=>{ if(x)out.push(x); };
+    const cand=[];
+    const want=(key,txt)=>{ if(!said[key])cand.push([key,txt]); };
     if(who){ const n=cross(bx(who.id,'pen'),MILE.flagP);
-      if(n)push(once('flagp'+n+':'+who.id,'That is the '+ORD[n]+' flag on '+NM(who)+'.')); }
+      if(n)want('flagp'+n+':'+who.id,'That is the '+ORD[n]+' flag on '+NM(who)+'.'); }
     const nt=cross((pen[team.id]||{}).n||0,MILE.flagT);
-    if(nt)push(once('flagt'+nt+':'+team.id,'That is '+CNT[nt]+' flags now on '+TN(team)+'.'));
-    return out.length?out:null;
+    if(nt)want('flagt'+nt+':'+team.id,'That is '+CNT[nt]+' flags now on '+TN(team)+'.');
+    return commit(cand);
   }
   // Phase 26 injuries + fatigue (IN-GAME only — pure, deterministic, resets each game). An injured
   // player is skipped from selection (the backup is forced in → his matchup shows); a heavily-used
@@ -6765,13 +6772,6 @@ function gameEventEl(e){
     const dn=el('span','meta dim');dn.style.cssText='flex:none;width:46px';dn.textContent=e.dd||'';
     line.append(dn,beatBody(e));
   }
-  // Phase 55.1: the running story — the numbers a broadcast would say out loud, under the play that
-  // earned them. textContent, like the beats: these carry player names.
-  if(e.sm&&e.sm.length){
-    const wrap=el('div');wrap.append(line);
-    e.sm.forEach(t=>{const n=el('div','sm-line');n.textContent=t;wrap.append(n);});
-    return wrap;
-  }
   return line;
 }
 // Phase 53 made a play a SEQUENCE, and `bt` is that sequence — drops back / PRESSURE / escapes /
@@ -6783,17 +6783,24 @@ function gameEventEl(e){
 // from an IMPORTED roster, so names must never take that path.
 function beatBody(e){
   const body=el('span');body.style.cssText='flex:1;font-size:13px';
-  if(!(e.bt&&e.bt.length)){body.textContent=e.text;return body;}
+  const nb=(e.bt&&e.bt.length)||0, sm=(e.sm&&e.sm.length)?e.sm:null;
+  if(!nb&&!sm){body.textContent=e.text;return body;}
+  // Phase 55.2: the running story is part of the CALL, not a note underneath it — a broadcast says
+  // "…and that takes him past a hundred" in the same breath as the run. So a milestone is simply the
+  // last beat or two of the same sequence: same styling, same reveal, and `beatSpan` gives the line
+  // the extra time it now needs to land. A flag or a punt carries no beats, so its own text becomes
+  // beat one and the story follows it.
+  const parts=(nb?e.bt.slice():[e.text]).concat(sm||[]);
   // Setup beats sit back a shade so the feed stays scannable and the play's OUTCOME carries the line.
   // "Last beat" alone is the wrong rule: a completion that moves the chains ends on "FIRST DOWN!",
   // which would dim the completion itself. So a beat is foreground if it is the last one OR it shouts
   // — the engine writes the moments that matter in caps (PRESSURE, COMPLETE, SACKED, GONE), which is
-  // exactly the set worth lifting out.
-  const last=e.bt.length-1, loud=t=>/\b[A-Z]{3,}\b/.test(t);
-  e.bt.forEach((t,i)=>{
+  // exactly the set worth lifting out. A story beat is always foreground: it is the payoff.
+  const first=nb||1, last=parts.length-1, loud=t=>/\b[A-Z]{3,}\b/.test(t);
+  parts.forEach((t,i)=>{
     if(i){const d=el('span','dim');d.style.cssText='opacity:0;transition:opacity .18s ease';d.textContent=' … ';body.append(d);}
     const sp=el('span');
-    sp.style.cssText='opacity:0;transition:opacity .18s ease'+((i===last||loud(t))?'':';color:var(--ink2)');
+    sp.style.cssText='opacity:0;transition:opacity .18s ease'+((i>=first||i===last||loud(t))?'':';color:var(--ink2)');
     if(/!$/.test(t))sp.style.fontWeight='700';
     sp.textContent=t;body.append(sp);
   });
@@ -6806,7 +6813,12 @@ const BEAT_MS=900, BEAT_GAP=800;
 // Total time a line owns the screen: one beat's worth per beat, plus a gap before the next snap.
 // Derived from the actual beat count, so a two-beat checkdown moves on quickly and a six-beat
 // scramble-and-catch gets the room it needs — the pacing varies because the PLAY varied.
-function beatSpan(e){ return e&&e.bt&&e.bt.length?(e.bt.length-1)*BEAT_MS+BEAT_GAP:0; }
+function beatSpan(e){
+  if(!e)return 0;
+  const nb=(e.bt&&e.bt.length)||0, ns=(e.sm&&e.sm.length)||0;
+  const n=ns?(nb||1)+ns:nb;                    // a story beat needs its own turn on screen
+  return n?(n-1)*BEAT_MS+BEAT_GAP:0;
+}
 // Fade the beats in left to right. Purely visual — the log is already committed, so this changes
 // nothing about the result. Timers are tracked so leaving the viewer mid-play cancels them rather
 // than writing into a screen that is gone.
@@ -7033,7 +7045,7 @@ function scheduleGameTick(){
   // A line with beats owns the screen until its last beat has landed; everything else keeps the
   // short cadence it had. This is what makes the feed breathe at the pace of the play rather than
   // at a fixed tick.
-  const base=e.bt&&e.bt.length?beatSpan(e)
+  const base=(e.bt&&e.bt.length)||(e.sm&&e.sm.length)?beatSpan(e)
     :e.kind==='score'?760:e.kind==='drive'?260:e.kind==='final'?10:230;
   gameTimer=setTimeout(()=>{ if(UI.view!=='game'||!UI.game){gameTimer=null;clearBeatTimers();return;}
     // Re-read at FIRE time: `e` above only paces the timer, and G.idx may have moved under it.

@@ -820,13 +820,25 @@ rules — a number crossed, said once, never editorialised:
 
 Three notes on how they land:
 
-- **They are not marked out as bad news.** The first attempt gave them their own colour, on the theory
-  that a third interception reads in a different tone from a third touchdown. AJ's call, and the right
-  one: *don't single them out — work them in like a good milestone.* A broadcast does not change its
-  voice to tell you about a pick, and a feed that colours one set red is editorialising rather than
-  reporting. So `sm` stayed a plain array of strings, the `{t,d}` shape and the `.dn` class went, and
-  the viewer renders one register. `qa` asserts exactly **one** computed colour across the story lines
-  *and* that a downside line is among them, so a second register can't creep back in unnoticed.
+- **They are spoken inside the call, not beside it — and so is the upside.** Two corrections from AJ,
+  in order. First: the downside had its own colour, on the theory that a third interception reads in a
+  different tone from a third touchdown; it doesn't, and colouring one set red is editorialising rather
+  than reporting, so the `{t,d}` shape and the `.dn` class went and `sm` went back to plain strings.
+  Then the real one: **both** halves belong *in the commentary*, not as an annotation under it. A
+  milestone is now simply the last beat or two of the play's own sequence — "…dragged down — SACKED for
+  -8 … brought down by Whitfield … Missouri has given up six sacks" — with the same styling, the same
+  left-to-right reveal, and `beatSpan` giving the line the extra time it needs to land. An entry with
+  no beats (a flag, a punt) puts its own text in as beat one and the story follows it. `sm` stays a
+  **separate field from `text`**: six tools parse `text` with regexes, so the prose the viewer speaks
+  is assembled at render time and the machine-readable line is left exactly as it was.
+- **Two per play, at most — and a trimmed one is not lost.** Once the story lives inside the call, its
+  length is the call's length, and a touchdown could pile up five (third TD, past 100, past 400 as a
+  team, the drive he has carried…). So candidates are gathered in the order a broadcast would reach
+  for them — what one man just did, then what he has done all day, then what the team has, with sign
+  playing no part in the ordering — and only the two that survive are **claimed**. That's why `once()`
+  became `want()` + `commit()`: marking a milestone said at *generation* time would have lost anything
+  trimmed for the rest of the game. In practice the trimmed ones simply come back on a later play (the
+  40-game total moves 566 → 557, not 566 → 400).
 - **Two counters, not two box keys.** Fumbles lost and team giveaways have no key in the box, and
   adding one is not free — `applyResult` folds the box into `p.gs`, so a new key becomes a new
   per-player *season* stat and a save-shape change. A piece of commentary has no business doing that,
@@ -843,11 +855,13 @@ is in flight (`skipGame` and the Fast toggle both clear it first), so it was unr
 that set `G.idx` directly made the ticker replay a stale entry and open a **second Q1 quarter band
 after Q3**. The tick now re-reads the entry at fire time; `e` is only used to pace the timer.
 
-`simlab` → **160**: every downside category is reachable (a milestone nobody ever crosses is dead code,
-not a feature), every line is a plain string with nothing marking one set out, and the story stays a
-garnish — asserted on the **mean** (14.2 lines a game) with a ceiling on the tail, because one loud
-game is fine and a loud average is the feature eating the feed. `qa` → **328**: the feed tells both
-halves of the game in one voice.
+`simlab` → **161**: every downside category is reachable (a milestone nobody ever crosses is dead code,
+not a feature), every line is a plain string with nothing marking one set out, the story stays a
+garnish — asserted on the **mean** (13.9 lines a game) with a ceiling on the tail, because one loud
+game is fine and a loud average is the feature eating the feed — and **no one play carries more than
+two**, which is a bound on how long a call can get rather than a matter of taste. `qa` → **327**: the
+story appears inside play lines and as **zero** asides beside them, with both an upside and a downside
+line present.
 
 ### Deliberately out of scope
 The Stats tab is a box score, not analytics — no win probability, no EPA, nothing that is a model

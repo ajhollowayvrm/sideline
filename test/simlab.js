@@ -285,13 +285,14 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   // The running story: broadcast lines said the moment a number is crossed, and never again. Upside
   // and downside are the same kind of line in the same voice — a game has two stories in it and they
   // are told alike, so these are plain strings with nothing marking one set out as bad news.
-  let sm = [], smGames = 0, dupes = 0, worst = 0;
+  let sm = [], smGames = 0, dupes = 0, worst = 0, perEntry = 0;
   const seen = { rush: 0, team: 0, sack: 0, drive: 0, pick: 0, fum: 0, give: 0, sackAg: 0, flagP: 0, flagT: 0 };
   for (let s = 0; s < 40; s++) {
     const res = simEngine(w.teams[s % 8], w.teams[(s + 4) % 8], (hashStr('sm' + s) ^ 7) >>> 0, { log: true });
     const lines = res.log.flatMap(e => e.sm || []);
     if (lines.length) smGames++;
     worst = Math.max(worst, lines.length);
+    for (const e of res.log) if (e.sm) perEntry = Math.max(perEntry, e.sm.length);
     // Once-only applies to the MILESTONES (a hundred-yard game is crossed once). The drive line is
     // per-possession by construction, so it legitimately recurs and is excluded here.
     const marks = lines.filter(t => !/^This drive has been all/.test(t));
@@ -323,6 +324,9 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   // on the worst game alone — one loud game is fine, a loud average is the feature eating the feed.
   check('Phase 55.1: the story stays a garnish, not the feed',
     sm.length / 40 <= 18 && worst <= 32, `${(sm.length / 40).toFixed(1)} lines a game, worst ${worst}`);
+  // …and no single play carries so many that the CALL stops being readable — the story is spoken as
+  // the last beat or two of the line it belongs to, so this is a bound on line length, not on taste.
+  check('Phase 55.1: no one play carries more than a couple of them', perEntry <= 3, `worst play said ${perEntry}`);
   check('Phase 55.1: the story names a real man and carries no markup',
     sm.every(t => !/[<>]/.test(t)) && sm.filter(t => /yards on the ground|receiving|through the air/.test(t)).every(t => /^[A-Z][a-z]+ [A-Z]/.test(t)),
     sm[0] || 'none');
