@@ -21,17 +21,37 @@ const pick = (r, a) => a[Math.floor(r() * a.length)];
 function rng(seed) { let a = seed >>> 0; return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
 function hashStr(s) { let h = 2166136261; for (let i = 0; i < String(s).length; i++) { h ^= String(s).charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
 
-/* ---------- data arrays the engine reads (subset is fine for distribution) ---------- */
-const FN = ['Jaylen', 'Marcus', 'Cole', 'Tyler', 'Devon', 'Isaiah', 'Cam', 'Brock', 'Khalil', 'Trey'];
-const LN = ['Carter', 'Williams', 'Hayes', 'Brooks', 'Robinson', 'Bennett', 'Foster', 'Reed', 'Walker', 'Diaz'];
-const STATES = ['AL', 'CA', 'FL', 'GA', 'LA', 'OH', 'TX', 'MI', 'PA', 'NC', 'SC', 'TN', 'VA', 'NJ', 'AZ'];
-const POS = [["QB", "off", 4, 1.4], ["RB", "off", 5, 1], ["WR", "off", 11, 1.2], ["TE", "off", 5, .8],
-["OT", "off", 7, 1], ["OG", "off", 6, .9], ["C", "off", 3, .8],
-["DE", "def", 6, 1.1], ["DT", "def", 6, 1], ["LB", "def", 10, 1.1], ["CB", "def", 9, 1.1], ["S", "def", 8, 1],
-["K", "st", 2, .4], ["P", "st", 2, .3]];
-
 /* ---------- extract the RECRUIT ENGINE block from index.html ---------- */
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+
+/* ---------- data arrays the engine reads — PULLED LIVE, never copied ----------
+   These used to be hand-copied subsets, and they rotted. `STATES` held 15 of the real 50, so
+   in-state density ran 3.3x the shipped game and the geography check was far easier to pass than
+   reality. `POS` still carried the pre-Phase-52 `S`, which no longer exists: `posAttrW('S')` falls
+   back to the LINEBACKER row and `pickArch(r,'S')` returns null, so ~9.5% of every pool this lab
+   validated was generated through a degraded path — the same instrument defect Phase 53 fixed in
+   simlab. A sloppy eval leaks function declarations but NOT block-scoped consts, so the engine
+   blocks eval straight in while the data arrays have to be sliced out and eval'd as expressions. */
+function grabConst(name) {
+  const decl = 'const ' + name + '=';
+  const i = html.indexOf('\n' + decl);
+  if (i < 0) { console.error('Could not find `' + decl + '` in index.html'); process.exit(2); }
+  let j = i + 1 + decl.length, depth = 0, str = null;
+  for (; j < html.length; j++) {
+    const c = html[j];
+    if (str) { if (c === '\\') j++; else if (c === str) str = null; continue; }
+    if (c === '"' || c === "'" || c === '`') { str = c; continue; }
+    if (c === '[' || c === '{' || c === '(') depth++;
+    else if (c === ']' || c === '}' || c === ')') depth--;
+    else if (c === ';' && depth === 0) break;
+  }
+  return eval('(' + html.slice(i + 1 + decl.length, j) + ')');
+}
+const FN = grabConst('FN');
+const LN = grabConst('LN');
+const STATES = grabConst('STATES');
+const POS = grabConst('POS');
+const PREFS = grabConst('PREFS');
 const START = '// === RECRUIT ENGINE (Phase 4) START ===';
 const END = '// === RECRUIT ENGINE (Phase 4) END ===';
 const i0 = html.indexOf(START), i1 = html.indexOf(END);
@@ -93,23 +113,37 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('Prospect ratings are recruit-shaped (ov 58–99, pot ≥ ov)', pool.every(r => r.ov >= 58 && r.ov <= 99 && r.pot >= r.ov));
 })();
 
-/* 2) convergence: nearly everyone signs by Signing Day */
+/* 2) convergence: every program builds a real class, and the tail goes elsewhere
+   ------------------------------------------------------------------------------------------------
+   Phase 56 re-pointed this section. It used to assert POOL CONSUMPTION (`signed/haveSuitor ≥ .88`,
+   `signed/pool ≥ .85`), which docs/reference/cfb-recruiting.md §2 shows is not a health metric at
+   all: the real ranked board is ~4,158 against ~2,650 FBS signatures, so **36% of it signs FCS,
+   JUCO, preferred-walk-on or nowhere** and full consumption would be WRONG. It is a supply-versus-
+   capacity accounting identity, which is exactly why the number moved every time contestedness
+   moved (92% P33 → 91% P36 → ~80% P37) and why the bar was quietly lowered 88 → 85 at Phase 51 for
+   a shift nothing behavioural had caused. Note also that every generated prospect gets suitors, so
+   the two "different" denominators were always the same number.
+   What real recruiting is tight about is PER-TEAM FILL: class size 20.2 mean, p10 13, and only 3.3%
+   of programs sign under 10. Those are the numbers asserted now. */
 (function () {
   const { pool } = runCycle(2026);
-  const haveSuitor = pool.filter(r => Object.keys(r.iv).length > 0);
   const signed = pool.filter(r => r.committedTo && r.signed);
-  // Full national pool ≈ FBS capacity, so a small tail goes unsigned (those land via walk-on backfill at
-  // rollover) — the cycle still resolves deterministically with the vast majority signed.
-  check('Cycle converges: the vast majority sign by Signing Day (≥88%)', signed.length / haveSuitor.length >= 0.88, `${signed.length}/${haveSuitor.length}`);
+  const consumed = signed.length / pool.length;
+  // a BAND, not a floor — too high means the board is undersized against FBS capacity (real: 63.7%)
+  check('Board consumption sits in the measured band (a third goes elsewhere)',
+    consumed >= 0.55 && consumed <= 0.92, `${(100 * consumed).toFixed(1)}% of the pool signed`);
   check('All commits go to an actual suitor', pool.every(r => !r.committedTo || r.iv[r.committedTo] != null));
-  // no class exceeds the cap
   const counts = {}; pool.forEach(r => { if (r.committedTo) counts[r.committedTo] = (counts[r.committedTo] || 0) + 1; });
   check('No team signs more than the class cap (25)', Math.max(...Object.values(counts)) <= 25, 'max class ' + Math.max(...Object.values(counts)));
-  // every program builds a real, substantial class from the modeled national board (Phase 17)
-  const classSizes = teamsList => teamsList.map(t => counts[t.id] || 0);
-  const sizes = classSizes(genWorld(2026));
+  const sizes = genWorld(2026).map(t => counts[t.id] || 0);
   const filled = sizes.filter(n => n >= 18).length;
   check('Most programs land a substantial class (≥100 of 134 fill ≥18)', filled >= 100, `${filled}/134 teams filled ≥18`);
+  // the real check the old one was standing in for: essentially nobody whiffs on a class entirely
+  const tiny = sizes.filter(n => n < 10).length;
+  check('Almost no program signs under 10 (real: 3.3%)', tiny / sizes.length <= 0.10, `${tiny}/134 signed <10`);
+  const sorted = [...sizes].sort((a, b) => a - b);
+  const p10 = sorted[Math.floor(0.10 * sorted.length)];
+  check('The bottom decile still signs a real class (real p10: 13)', p10 >= 10, `p10 = ${p10}`);
 })();
 
 /* 3) prestige sensitivity: better programs sign better classes, top prospects go to powers */
@@ -144,6 +178,75 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   const pushed = chase(true), idle = chase(false);
   check('Player effort matters: pushing lands more than idling', pushed > idle, `pushed ${pushed} vs idle ${idle} of 20`);
   check('Pushing a fitting target lands a real share', pushed >= 6, `${pushed}/20 landed`);
+})();
+
+/* 4b) THE PASSIVE COACH — the scenario this lab never had (Phase 56)
+   ------------------------------------------------------------------------------------------------
+   Phase 44's playtest found a hands-off coach signing ZERO while AI programs signed 19-25, and
+   reclab was green through all of it. It could not see the bug: §4 above compares a scripted pusher
+   against an idler on the SAME 20 hand-seeded targets, which measures the value of effort — not
+   what happens to a program nobody recruits for. The cliff exists because `advanceRecruiting` skips
+   `playerTeamId` in the concentrated-effort pass by design (the player is supposed to act), so a
+   passive player team gets passive growth only, on the handful of prospects it already sits on.
+   That is a real and deliberate engine property. What it MEANS is that the app layer owes the
+   player team a recruiter — either his own intents or the Phase 44 `autoRecruitWeek` autopilot. So
+   this asserts the property directly, and pins its SIZE: if a future phase ever quietly narrows the
+   gap to zero the autopilot has become load-bearing in a way nobody decided, and if it widens the
+   cliff is back. (`autoRecruitWeek` itself is app-layer and cannot be tested here; lifting it into
+   the fence so the full three-way ladder is gate-visible is Phase 57 work.) */
+(function () {
+  const SEED = 4411;
+  function cycle(playerTeamId) {
+    const teams = genWorld(SEED);
+    const pool = genRecruits(SEED, teams);
+    const WEEKS = 15;
+    for (let w = 1; w <= WEEKS; w++) advanceRecruiting(pool, teams, w, WEEKS, SEED, w === WEEKS, undefined, undefined, playerTeamId);
+    return { teams, pool };
+  }
+  const classOf = (pool, id) => pool.filter(r => r.committedTo === id);
+  const teams0 = genWorld(SEED);
+  // a solid mid-major-to-power program: high enough to have a real board, not a blue-blood outlier
+  const me = teams0.find(t => t.prestige >= 66 && t.prestige <= 74) || teams0[30];
+
+  const recruited = classOf(cycle(undefined).pool, me.id);       // the AI brain works his board
+  const passive = classOf(cycle(me.id).pool, me.id);             // nobody works his board
+  const bc = c => c.filter(r => r.stars >= 4).length;
+
+  // What this actually measured, once written: NOTHING CHANGES. A prestige-71 program seeded as a
+  // suitor on 119 of 3,400 signs the same 25 players, 25 of them blue-chips, whether the AI brain
+  // works its board or nobody does. So the Phase 44 cliff is NOT an engine property — it is created
+  // in the app layer (the board model plus `decayNeglect` eating the player's seeded interest), and
+  // reclab structurally cannot see it while `advanceRecruiting` is all it drives. Worth pinning:
+  // if this ever starts differing, the engine's contract with the app changed.
+  check('Passive coach: the engine resolves a full class for him regardless',
+    passive.length >= 18 && recruited.length >= 18,
+    `passive ${passive.length}, AI-recruited ${recruited.length} — the Phase 44 cliff is app-layer`);
+  check('Passive coach: the AI concentrated-effort pass changes his class barely at all',
+    Math.abs(bc(passive) - bc(recruited)) <= 2,
+    `blue-chips ${bc(passive)} vs ${bc(recruited)}`);
+
+  /* And the reason for that, measured — the finding this scenario actually turned up.
+     `advanceRecruiting`'s passive growth is `iv += (1.0 + fit*3.2) * (0.6 + r()*0.9)` every week.
+     For a program whose `recruitFit` is good, that is ~4.4/week against a COMMIT_THRESH of 68 from a
+     seeded base near 46 — so the relationship clears the bar on its own by week 7 and pins at the
+     100 ceiling by week 13. Every mechanic Phases 33-38 layered on (the AI brain, NIL, the league
+     ripple, official visits, pitch angles, double-downs, diminishing returns) is therefore moving a
+     number that is already saturated, which is why an aggressive push cannot reliably poach and why
+     a hands-off program is indistinguishable from an engaged one here.
+     This asserts the CURRENT shape so Phase 57 has a number to move; see
+     docs/reference/cfb-recruiting.md. It is a characterization check, not a target. */
+  const t2 = genWorld(SEED), p2 = genRecruits(SEED, t2);
+  const him = t2.find(t => t.prestige >= 66 && t.prestige <= 74) || t2[30];
+  const track = p2.filter(r => r.iv[him.id] != null && r.stars === 4).slice(0, 60);
+  let clearedByWeek7 = 0;
+  for (let w = 1; w <= 15; w++) {
+    advanceRecruiting(p2, t2, w, 15, SEED, w === 15);
+    if (w === 7) clearedByWeek7 = track.filter(r => (r.iv[him.id] || 0) >= 68).length;
+  }
+  const pinned = track.filter(r => (r.iv[him.id] || 0) >= 99.9).length;
+  check('CHARACTERIZATION: interest saturates on passive growth alone (Phase 57 target)',
+    clearedByWeek7 >= track.length * 0.5 && pinned >= track.length * 0.5,
+    `${clearedByWeek7}/${track.length} past the commit bar by week 7, ${pinned}/${track.length} pinned at 100 by Signing Day`);
 })();
 
 /* 5) determinism: same seed → identical cycle outcome */

@@ -201,6 +201,37 @@ Every `reclab` invariant is green while this happens. `≥100 of 134 fill ≥18`
 and low tiers all fill 25; `5★ mean landing prestige ≥ 80` passes at 86.5; and the ~20 programs
 signing under 10 are precisely the blue-bloods nobody thought to check.
 
+### The race is over before anyone plays it
+
+The band table says `recruitFit` decides who is *on* a prospect's board. This says it also decides
+who *wins* him. `advanceRecruiting`'s passive growth is `iv += (1.0 + fit*3.2) * (0.6 + r()*0.9)`
+every week — for a good-fit program, ~4.4/week from a seeded base near 46, against a
+`COMMIT_THRESH` of 68. Tracking a prestige-71 program's seeded 4★ relationships through one cycle
+with **nobody acting at all**:
+
+| | |
+|---|--:|
+| Past the commit bar by **week 7**, on passive growth alone | **86.7%** |
+| Pinned at the 100 ceiling by Signing Day | **90.0%** |
+
+**Everything Phases 33–38 layered on is moving a number that is already at its maximum** — the AI
+concentrated-effort brain, NIL bidding, the league ripple, official-visit weekends, pitch angles,
+double-down tokens, diminishing returns. A prestige-71 program seeded as a suitor on 119 of 3,400
+signs **the same 25 players, 25 of them blue-chips**, whether the AI brain works its board or
+nobody does.
+
+This is the mechanical reason for three things already in the record: why Phase 37 had to weaken its
+"aggressive push lands the target" qa check to merely *leading* him into Signing Day; why an
+engaged coach is hard to distinguish from a hands-off one; and why the weekly loop reads as upkeep.
+Where fit is good the actions are noise on a saturated number, and where fit is bad they cannot
+overcome it.
+
+It also relocates the **Phase 44 recruiting cliff**. That was fixed with an autopilot on the
+assumption the engine starves a passive player — it does not. `advanceRecruiting` resolves a full
+25-man class for a passive player team. The cliff is created in the **app layer** (the board model
+plus `decayNeglect` eating the player's seeded interest), which is why `reclab` structurally could
+not see it and still cannot while `advanceRecruiting` is all it drives.
+
 **Two further instrument findings, recorded here because they change how the gates should be read.**
 Convergence measures **81.7%** on a world built from the game's real `TEAMS`/`TEAM_STATE` arrays
 against `reclab`'s **90%** on its own synthetic one — and 81.7% is exactly the "~80%" the Phase 37

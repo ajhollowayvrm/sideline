@@ -56,6 +56,16 @@ DISTRIBUTION — the question this phase exists to answer
 PERSISTENCE — does a program stay good at recruiting?
   class-score r, class N -> N+1  0.927
 
+SATURATION — is the interest race actually a race?
+  seeded 4* relationships tracked   60
+  past the commit bar (68) by wk 7  86.7%  on passive growth alone
+  pinned at the 100 ceiling by NSD  90.0%
+  ^ passive growth is (1.0 + fit*3.2) * (0.6 + r()*0.9) per week. For a good-fit program that
+    is ~4.4/week from a seeded base near 46, against a commit threshold of 68 -- so the
+    relationship clears on its own by mid-season and pins at the ceiling before Signing Day.
+    Everything Phases 33-38 layered on (AI brain, NIL, league ripple, visits, pitch angles,
+    double-downs, diminishing returns) is moving a number that is already at its maximum.
+
 GEOGRAPHY
   in-state share of a class      31.5%
   state          programs   recruit supply   supply per program

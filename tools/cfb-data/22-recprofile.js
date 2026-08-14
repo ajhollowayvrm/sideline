@@ -240,6 +240,24 @@ for (let wI = 0; wI < WORLDS; wI++) {
   }
 }
 
+/* ---------- saturation: is the interest race decided before anyone acts? ----------
+   Run one clean cycle with nobody acting and watch a good-fit program's seeded 4-star relationships.
+   This is the mechanism behind the band table above: `recruitFit` decides who is on the board AND,
+   through passive growth, who wins — so the weekly loop is operating on a settled number. */
+let satTracked = 0, satWeek7 = 0, satPinned = 0;
+(function () {
+  const world = buildWorld(20260814);
+  const pool = genRecruits(20260814 ^ 0x51ed, world);
+  const him = world.find(t => t.prestige >= 66 && t.prestige <= 74) || world[30];
+  const track = pool.filter(r => r.iv[him.id] != null && r.stars === 4).slice(0, 60);
+  satTracked = track.length;
+  for (let w = 1; w <= WEEKS; w++) {
+    advanceRecruiting(pool, world, w, WEEKS, 20260814 ^ 0x51ed, w === WEEKS);
+    if (w === 7) satWeek7 = track.filter(r => (r.iv[him.id] || 0) >= 68).length;
+  }
+  satPinned = track.filter(r => (r.iv[him.id] || 0) >= 99.9).length;
+})();
+
 /* ---------- report ---------- */
 const pct = x => (100 * x).toFixed(1) + '%';
 const nClasses = WORLDS * CLASSES_PER_WORLD;
@@ -299,6 +317,17 @@ say('');
 
 say('PERSISTENCE — does a program stay good at recruiting?');
 say(`  class-score r, class N -> N+1  ${mean(persistR).toFixed(3)}`);
+say('');
+
+say('SATURATION — is the interest race actually a race?');
+say(`  seeded 4* relationships tracked   ${satTracked}`);
+say(`  past the commit bar (68) by wk 7  ${pct(satWeek7 / satTracked)}  on passive growth alone`);
+say(`  pinned at the 100 ceiling by NSD  ${pct(satPinned / satTracked)}`);
+say('  ^ passive growth is (1.0 + fit*3.2) * (0.6 + r()*0.9) per week. For a good-fit program that');
+say('    is ~4.4/week from a seeded base near 46, against a commit threshold of 68 -- so the');
+say('    relationship clears on its own by mid-season and pins at the ceiling before Signing Day.');
+say('    Everything Phases 33-38 layered on (AI brain, NIL, league ripple, visits, pitch angles,');
+say('    double-downs, diminishing returns) is moving a number that is already at its maximum.');
 say('');
 
 say('GEOGRAPHY');
