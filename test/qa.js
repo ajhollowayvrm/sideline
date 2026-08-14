@@ -1145,11 +1145,19 @@ function startServer() {
     const coverage = /RECAP|PREVIEW/.test(document.querySelector('.view').innerText);
     UI.view = 'home'; render();
     const homeCard = !!document.querySelector('[data-tid="media-card"]');
+    // "moved over the season" was being tested as "moved since LAST week", inspected at week 15 —
+    // Championship Week, when only conference title games are played, so most of the Top 25 does not
+    // take the field and cannot move. Compare against the PRESEASON ordering instead, which is what
+    // the check claims: the preseason poll is straight score order, and with no records that is OVR.
+    const pre = [...S.world.teams].sort((a, b) => b.ratings.ovr - a.ratings.ovr).slice(0, 25).map(t => t.id);
+    const now = M.poll.top.map(e => e.teamId);
     return { ok: true, pollLen: M.poll.top.length, week: M.poll.week, feedLen: M.feed.length,
+      movedSeason: now.some((id, i) => pre[i] !== id),
       moved: M.poll.top.some(e => e.prev && e.prev !== e.rank), tags: [...new Set(M.feed.map(s => s.tag))],
       feedCard, pollRows, coverage, homeCard, capped: M.feed.length <= 60 };
   });
-  check('Phase 19a: the AP poll is a populated Top 25 that moved over the season', media.ok && media.pollLen === 25 && media.moved, `wk ${media.week}`);
+  check('Phase 19a: the AP poll is a populated Top 25 that moved over the season', media.ok && media.pollLen === 25 && media.movedSeason,
+    `wk ${media.week} len ${media.pollLen} vs-preseason ${media.movedSeason} vs-last-week ${media.moved}`);
   check('Phase 19a: the news feed populated with sane tags (capped)', media.feedLen > 0 && media.tags.length > 0 && media.capped, `${media.feedLen} stories: ${media.tags.join(',')}`);
   check('Phase 19a: the Media hub renders feed + poll + coverage', media.feedCard && media.pollRows >= 25 && media.coverage);
   check('Phase 19a: Home shows a headlines teaser', media.homeCard);

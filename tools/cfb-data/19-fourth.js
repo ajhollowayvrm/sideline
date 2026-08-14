@@ -36,11 +36,24 @@ const teams = []; for (let i = 0; i < N; i++) { const r = rng(0x5eed + i); const
 const BK = [[1, '4th-and-1', 45, 72], [3, '4th-and-2-3', 25, 55], [6, '4th-and-4-6', 15, 45], [10, '4th-and-7-10', 8, 32], [99, '4th-and-11+', 7, 25], [-1, '4th-and-goal', 0, 0]];
 const att = {}, cv = {}, punt = {}, fg = {}, all = {}; BK.forEach(([, n]) => { att[n] = cv[n] = punt[n] = fg[n] = all[n] = 0; });
 const bk = t => BK.find(([d]) => d > 0 && t <= d)[1];
+// real 3rd-down conversion by distance (modern FBS play-by-play), for reference
+const BK3 = [[1, '3rd-and-1', 68], [3, '3rd-and-2-3', 55], [6, '3rd-and-4-6', 44], [10, '3rd-and-7-10', 31], [99, '3rd-and-11+', 20]];
+const bk3 = t => BK3.find(([d]) => t <= d)[1];
+const d3all = {}, d3cv = {};
 let games = 0;
 for (let i = 0; i < N; i++) for (let d = 1; d <= G; d++) {
   const res = simEngine(teams[i], teams[(i + d) % N], (hashStr('d4_' + i + '_' + d) ^ 9) >>> 0, { log: true }); games++;
   for (const e of res.log) {
     // skip the "Turnover on downs" line — it repeats the failed play's 4th-down `dd` (see 4-simprofile)
+    // third down too — the single biggest lever on how often a drive reaches the red zone, because
+    // it COMPOUNDS: a drive needs about three of them, so a 1.5pp per-down deficit is a ~12% deficit
+    // in drives long enough to get there. (0.392/0.377)^3 = 1.12, which is exactly the trip gap.
+    const m3 = String(e.dd || '').match(/^3 & (\d+|goal)$/);
+    if (m3 && !/^🚩/.test(e.text)) {
+      const b3 = m3[1] === 'goal' ? '3rd-and-goal' : bk3(+m3[1]);
+      d3all[b3] = (d3all[b3] || 0) + 1;
+      if (/1ST DOWN/.test(e.text) || /TOUCHDOWN/.test(e.text)) d3cv[b3] = (d3cv[b3] || 0) + 1;
+    }
     const m = String(e.dd || '').match(/^4 & (\d+|goal)$/);
     if (!m || /^🚩/.test(e.text) || /Turnover on downs/.test(e.text)) continue;
     const b = m[1] === 'goal' ? '4th-and-goal' : bk(+m[1]); all[b]++;
@@ -61,3 +74,15 @@ BK.forEach(([, n, rShare, rConv]) => { const t = all[n] || 1;
     + String((100 * att[n] / A).toFixed(0) + '% (' + rShare + '%)').padStart(14)
     + String((100 * cv[n] / (att[n] || 1)).toFixed(0) + '% (' + rConv + '%)').padStart(14)); });
 console.log(`\nTOTAL go attempts/team-game ${(A / tg).toFixed(2)} (real 1.94)   conversion ${(100 * C / A).toFixed(1)}% (real 52.4%)`);
+
+console.log('');
+console.log('THIRD DOWN — the compounding lever on red-zone trips');
+console.log('bucket'.padEnd(16) + 'faced/g    conv%   (real)');
+{
+  let T3 = 0, C3 = 0;
+  BK3.forEach(([, n, rConv]) => { const a = d3all[n] || 0, c = d3cv[n] || 0; T3 += a; C3 += c;
+    console.log(n.padEnd(16) + String((a / tg).toFixed(2)).padStart(7) + String((100 * c / (a || 1)).toFixed(0)).padStart(9) + String('(' + rConv + '%)').padStart(9)); });
+  const ag = d3all['3rd-and-goal'] || 0, cg = d3cv['3rd-and-goal'] || 0; T3 += ag; C3 += cg;
+  console.log('3rd-and-goal'.padEnd(16) + String((ag / tg).toFixed(2)).padStart(7) + String((100 * cg / (ag || 1)).toFixed(0)).padStart(9));
+  console.log('TOTAL 3rd downs/team-game ' + (T3 / tg).toFixed(2) + '   conversion ' + (100 * C3 / T3).toFixed(1) + '% (real 39.2%)');
+}

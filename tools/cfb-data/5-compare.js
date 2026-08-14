@@ -72,6 +72,36 @@ console.log(row('10+ pt Q4 comebacks %', RE.drama.bigPct, SI.drama.bigPct));
 /* mismatch curve */
 console.log('');
 console.log('='.repeat(96));
+/* ---- schedule-standardized aggregates ----------------------------------------------------------
+   The synthetic slate pairs each team with the 15 that follow it in a prestige-BANDED list, and the
+   wrap puts the weakest teams onto the strongest. It therefore contains far more mismatches than real
+   FBS scheduling does: 28.9% of sim games sit at a 17.5+ point spread against a real 18.0%, and only
+   32.2% are inside a touchdown against a real 41.5%.
+
+   Average margin is a function of that composition as much as of the sim's behaviour, so comparing
+   the raw averages is not apples-to-apples however well the engine behaves. These lines re-weight the
+   sim's per-bucket figures by the REAL bucket shares, which is the honest comparison and the one the
+   calibration target in attributes-2.md §11 should be read against. The per-bucket table below is
+   already controlled this way, which is why it looked so much better than the headline margin did. */
+{
+  const rg = RE.gaps || [], sg = SI.gaps || [];
+  const rTot = rg.reduce((t, b) => t + b.games, 0), sTot = sg.reduce((t, b) => t + b.games, 0);
+  if (rTot && sTot && rg.length === sg.length) {
+    let mAdj = 0, pAdj = 0, mRaw = 0, pRaw = 0;
+    rg.forEach((rb, i) => { const sb = sg[i], w = rb.games / rTot;
+      mAdj += w * sb.margin; pAdj += w * sb.pts;
+      mRaw += (sb.games / sTot) * sb.margin; pRaw += (sb.games / sTot) * sb.pts; });
+    const rM = rg.reduce((t, b) => t + (b.games / rTot) * b.margin, 0);
+    const rP = rg.reduce((t, b) => t + (b.games / rTot) * b.pts, 0);
+    console.log('');
+    console.log('  SCHEDULE-STANDARDIZED (sim re-weighted to the real spread-bucket mix)');
+    console.log('  --------------------------------------------------------------------------------------------');
+    console.log(`  avg margin        real ${rM.toFixed(1).padStart(5)}   sim raw ${mRaw.toFixed(1).padStart(5)}   sim standardized ${mAdj.toFixed(1).padStart(5)}   (${(mAdj - rM >= 0 ? '+' : '') + (mAdj - rM).toFixed(1)})`);
+    console.log(`  points / team     real ${rP.toFixed(1).padStart(5)}   sim raw ${pRaw.toFixed(1).padStart(5)}   sim standardized ${pAdj.toFixed(1).padStart(5)}   (${(pAdj - rP >= 0 ? '+' : '') + (pAdj - rP).toFixed(1)})`);
+    console.log(`  the sim slate carries ${(100 * sg.filter((b, i) => i >= 5).reduce((t, b) => t + b.games, 0) / sTot).toFixed(1)}% of games at a 17.5+ spread against a real ${(100 * rg.filter((b, i) => i >= 5).reduce((t, b) => t + b.games, 0) / rTot).toFixed(1)}%`);
+  }
+}
+console.log('');
 console.log('  MISMATCH RESPONSE — favorite vs underdog, by |expected margin| bucket');
 console.log('='.repeat(96));
 console.log(`  ${'BUCKET'.padEnd(15)} ${'FAV%W r/s'.padStart(13)} ${'FAV PTS r/s'.padStart(14)} ${'DOG PTS r/s'.padStart(14)} ${'DOG RUSH r/s'.padStart(14)} ${'DOG PASS r/s'.padStart(14)}`);

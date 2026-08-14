@@ -2434,7 +2434,7 @@ const AT={
   // puts the DEFENDER's awr/tkl against the crease rather than his agility. Leaving all three out is
   // what made an awareness build lose the simlab build-vs-build check 73% to speed's 90%: §9a gives
   // awareness the floor, and the run had no offensive floor channel for it to reach.
-  pushStr:0.55, pushAwr:0.45, protAwr:0.40, creAgi:0.60, creAcc:0.45, brkElu:0.55, brkBtk:0.60,
+  pushStr:0.85, pushAwr:0.30, protAwr:0.40, creAgi:0.60, creAcc:0.45, brkElu:0.55, brkBtk:0.60,
   // regPush is deliberately small and floorPush large. §9a: push owns the FLOOR — fewer stuffs —
   // and explicitly contributes no tail. It is also a UNIT contest, so it correlates hard with team
   // quality; carried in the regime at 0.030 it became the single biggest term in the model and took
@@ -2677,7 +2677,11 @@ const PM={
                 // cfb-averages.md §5 recommends — 2.5 in a nothing game, 4.8 when both teams are ranked.
   // Game clock charged per snap. Real FBS runs ~135 plays in 3600s ≈ 26.7s a snap once you net out
   // the stopped clock on incompletions, out-of-bounds and changes of possession.
-  secRun:32, secPass:30, secQuick:13, secIncomp:6, secSack:32,
+  // RE-ANCHORED at step 4. These were fitted when a dropback was one roll; Phase 53 added the
+  // scramble and step 4 added fourth-down gambles and returned turnovers, all of which change how
+  // much clock a possession burns. At the old values the sim ran 64.2 plays against a real 67.5 —
+  // ~28.0 seconds a snap against a real 26.7 — which cost it ~20 yards and ~1.5 points a game.
+  secRun:30, secPass:28, secQuick:13, secIncomp:6, secSack:32,
 };
 // Sample a measured yardage distribution: u in [0,1) -> yards, by linear interpolation across the
 // percentile grid. `off` is the down/distance mean shift. Pure -> simlab-testable.
@@ -3166,6 +3170,7 @@ function simEngine(home,away,seed,opts){
           const e=regExp(AT.regSep*(AT.escElu*tilt(qb,'elu')+AT.escAgi*tilt(qb,'agi'))+AT.regAdv*adv);
           const u=regime(shapeDraw(r,qb,vAmp,oP.vol-dP.vol),e);
           gain=Math.max(-4,Math.round(qGain(u,PM.runQ[distKey(togo)],2)+tailAdd(u,tilt(qb,'spd'),AT.tailRun)));
+          if(los+gain>=100)gain=100-los;                   // capped at the goal line (see the run)
           time+=PM.secRun; add(qb&&qb.id,'rAtt'); add(qb&&qb.id,'rYds',gain); if(qb)touches[qb.id]=(touches[qb.id]||0)+1;
           txt=nm(qb)+' scrambles for '+gain; hero=qb;
           if(los+gain>=100){ scored=true; add(qb&&qb.id,'rTD'); }
@@ -3189,6 +3194,7 @@ function simEngine(home,away,seed,opts){
           // tight coverage (dPassY < 0) applies either way. Phase 52 paid it out unconditionally, which
           // let a defence be punished for the same call that had just produced the pressure.
           gain=Math.max(-3,Math.round(qGain(u,PM.recQ[distKey(togo)],vBoom*8)-ky*PASS_KEY+(dPassY>0&&pressed?0:dPassY)+vYds*vD-PC.ya*press+tailAdd(u,dSPD,AT.tailPass)+AT.thpDeep*qTHP*deepW+AT.yacPass*ADX(rec,oP.recvA,'elu',cov,dP.covA,'tkl')+(pkg==='spread'?3:0)));
+          if(los+gain>=100)gain=100-los;                   // capped at the goal line (see the run)
           hero=rec;
           add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
@@ -3243,6 +3249,11 @@ function simEngine(home,away,seed,opts){
         const u=regime(shapeDraw(r,rb,vAmp,oP.vol-dP.vol),e);  // speed reads the tail, the pile the floor
         gain=Math.max(-9,Math.round(qGain(u,PM.runQ[distKey(togo)],0)-ky*RUN_KEY+dRunY+vYds*vDr-PC.yc*press
           +tailAdd(u,dSPDr,AT.tailRun)+floorAdd(u,AT.floorPush*pushR+AT.floorBrk*breakR,AT.strRun)+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
+        // You cannot gain past the goal line. The box score caps a scoring play at the distance that
+        // was actually available, and the sim was crediting the raw draw — a 20-yard run from the
+        // opponent's 5 booked 20 rushing yards. Measured against the real per-down/distance table this
+        // showed up as goal-to-go plays gaining 5.61 where real ones gain 1.63.
+        if(los+gain>=100)gain=100-los;
         time+=PM.secRun; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain; hero=rb;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
         if(!scored && r()<clamp(PM.fumRate*(1+PC.fumMul*press)+AT.awrFum*AD(rb,oP.rushA,fr,dP.frontA,'awr')+AT.carFum*ADX(rb,oP.rushA,'car',fr,dP.frontA,'tkl'),0.002,0.05)){ turnover=true; toKind='fum'; toBy=fr; txt=nm(rb)+' FUMBLES — lost'; }
