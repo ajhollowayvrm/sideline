@@ -1,0 +1,73 @@
+SIDELINE recruiting — what the model produces
+================================================================
+worlds 4 x 5 classes = 20 national classes (68,000 prospects)
+
+SUPPLY — national star mix
+  5*     30  0.9%
+  4*    350  10.3%
+  3*   1520  44.7%
+  2*   1500  44.1%
+  blue-chip (4-5*)          11.2%
+
+CONVERGENCE
+  signed / pool                 81.7%
+  signed / has-a-suitor         81.7%
+  class size  mean 20.7   p10 7  median 25  p90 25   (cap 25)
+  programs signing < 10         15.1%
+
+DISTRIBUTION — the question this phase exists to answer
+  blue-chip share of all signees  13.7%   (pooled, the honest one)
+  blue-chip ratio, per class      mean 13.5%  (classes >= 10)
+  blue-chip ratio, rolling 4yr    mean 13.0%   max 100.0%
+  program-windows at BCR >= 50%   119 of 898  (13.3%)
+  Gini of blue-chips per team     0.835
+
+  WHERE the blue-chips go, by prestige band (non-cumulative):
+  band        teams  mean prestige   class size   share of blue-chips   BCR
+  1-10          10           86.8          4.2                 10.9%  100.0%
+  11-25         15           72.3         18.0                 67.0%   94.5%
+  26-50         25           59.3         14.7                 21.8%   22.5%
+  51-90         40           49.7         25.0                  0.2%    0.1%
+  91-134        44           38.2         25.0                  0.0%    0.0%
+
+  ^ class size is the column to read first. Recruiting pull is a BAND-PASS filter centred on
+    the recruit's tier (recruitFit targets prestige 88/70/50/32 by star, and the suitor draw at
+    genRecruits has no over-tier floor at all) — so a program ABOVE a tier is penalised exactly
+    like one below it. The best programs in the country make almost nobody's board.
+  mean landing prestige by star tier:
+    5*   86.5
+    4*   69.1
+    3*   50.8
+    2*   38.5
+
+  THE TEN MOST PRESTIGIOUS PROGRAMS, one representative class:
+  team     prestige   signed   blue-chips
+  UGA            98        1            1
+  ALA            93        3            3
+  OSU            89        5            5
+  ORE            89        5            5
+  OU             88        7            7
+  LSU            82        2            2
+  TEX            82        2            2
+  TENN           81        6            6
+  PSU            81        4            4
+  WASH           81        7            7
+
+PERSISTENCE — does a program stay good at recruiting?
+  class-score r, class N -> N+1  0.927
+
+GEOGRAPHY
+  in-state share of a class      31.5%
+  state          programs   recruit supply   supply per program
+  TX            13           2.0%                 5.2
+  OH             8           2.0%                 8.5
+  FL             7           2.1%                10.3
+  CA             7           2.0%                 9.8
+  NC             7           2.0%                 9.8
+  AL             6           2.0%                11.3
+  GA             5           2.0%                13.7
+  LA             5           2.1%                14.0
+  MI             5           2.0%                13.3
+  VA             5           2.0%                13.5
+
+  (supply per program = in-state prospects available per FBS program in that state)
