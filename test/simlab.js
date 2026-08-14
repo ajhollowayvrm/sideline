@@ -65,6 +65,11 @@ const POS = [["QB", "off", 4], ["RB", "off", 5], ["WR", "off", 11], ["TE", "off"
 ["FS", "def", 4], ["SS", "def", 4],
 ["K", "st", 2], ["P", "st", 2]];
 const sideOf = {}; POS.forEach(([c, s]) => sideOf[c] = s);
+// Synthetic players had NO NAMES, so anything name-shaped was invisible here: the play-by-play fell
+// back to the position code and read "TOUCHDOWN — RB!". Deliberately small pools — surnames collide
+// often, which is what exercises the same-play disambiguation in the engine's `nm`.
+const TFN = ['Marcus', 'Trey', 'Deion', 'Jalen', 'Cade', 'Rashad', 'Kyler', 'Bo', 'Nate', 'Omar', 'Silas', 'Reggie'];
+const TLN = ['Thomas', 'Bell', 'Whitfield', 'Okafor', 'Reyes', 'Sanders', 'Vaughn', 'Pierce', 'Grant', 'Doyle', 'Brown', 'Kelly'];
 
 function genRoster(r, prestige) {
   const out = [];
@@ -75,7 +80,8 @@ function genRoster(r, prestige) {
     // generator does. Without one every attribute falls back to `ov`, which collapses all six
     // channels onto the rating gap and makes them restate matchEdge six times over — the sim would
     // look far more rating-determined here than it is in the real game.
-    out.push(Object.assign({ id: 'p' + Math.floor(r() * 1e9).toString(36), pos: code, ov, so: 0 }, genAttrs(r, ov, code)));
+    out.push(Object.assign({ id: 'p' + Math.floor(r() * 1e9).toString(36), pos: code, ov, so: 0,
+      fn: TFN[Math.floor(r() * TFN.length)], ln: TLN[Math.floor(r() * TLN.length)] }, genAttrs(r, ov, code)));
   } });
   const byPos = {}; out.forEach(p => (byPos[p.pos] = byPos[p.pos] || []).push(p));
   Object.values(byPos).forEach(arr => {
@@ -204,6 +210,17 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   // the beats are rendered into the DOM as text; a name from an imported roster must not be able to
   // smuggle markup through them (index.html's `el` helper assigns innerHTML)
   check('Play log: beats carry no markup', withBt.every(e => e.bt.every(t => !/[<>]/.test(t))));
+  // Naming: the surname carries the routine call, the full name is the emphasis form. An initial is
+  // the disambiguator for two men sharing a surname IN THE SAME PLAY, so it should be rare — if it
+  // starts showing up everywhere, the per-play claim in `nm` has broken.
+  const opens = withBt.map(e => e.bt[0]);
+  check('Play log: routine calls use the surname, not an initial',
+    opens.filter(t => /\b[A-Z]\. /.test(t)).length <= opens.length * 0.12,
+    `${opens.filter(t => /\b[A-Z]\. /.test(t)).length}/${opens.length} opening beats carry an initial`);
+  const bigs = withBt.flatMap(e => e.bt).filter(t => /TOUCHDOWN —|is GONE|BREAKS FREE|INTERCEPTED by/.test(t));
+  check('Play log: the big moments name the man in full',
+    bigs.length > 0 && bigs.every(t => /[A-Z][a-z]+ [A-Z][a-z]+/.test(t)),
+    bigs[0] || 'none seen');
 })();
 
 // Phase 22 — the play-calling decision hook. The OC always draws its own suggestion, so a coach
@@ -314,7 +331,12 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Phase 51: specialising a roster does not change its OVERALL (redistribution, not addition)',
     ovrOf(fast) === ovrOf(strong) && ovrOf(strong) === ovrOf(aware),
     `spd ${ovrOf(fast)} / str ${ovrOf(strong)} / awr ${ovrOf(aware)}`);
-  const winPct = T => { let win = 0, n = 60;
+  // n=300, not 60. At 60 games a build's win rate carries an SE of ~6.4pp, so the max-minus-min of
+  // three of them swings ~17pp on noise alone — this check read 3pp and 17pp on two worlds that
+  // differ only by the rng draws that name players. Constants were tuned against it at n=60, which
+  // is the same mistake the kurtosis work made (see contests.md §5). Re-measured at n=400 the
+  // tuning does hold: 0.55/0.45 gives spd 56 / str 44 / awr 65, and 0.85/0.30 gives 59 / 56 / 59.
+  const winPct = T => { let win = 0, n = 300;
     for (let s = 0; s < n; s++) { const seed = (hashStr('spec' + s) ^ 3) >>> 0; const r = simEngine(T, opp, seed); if (r.hs > r.as) win++; }
     return win / n; };
   const wf = winPct(fast), ws = winPct(strong), wa = winPct(aware);

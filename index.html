@@ -2931,7 +2931,25 @@ function simEngine(home,away,seed,opts){
   // underdogs steal games and keeps the favorite from winning ~every time.
   const form={[home.id]:(r()+r()+r()-1.5)*PM.gameForm, [away.id]:(r()+r()+r()-1.5)*PM.gameForm};
   const flipTo=spot=>100-clamp(spot,1,99);                 // mirror a spot for the opponent
-  const nm=p=>p?((p.fn?p.fn[0]+'. ':'')+(p.ln||p.pos||'')).trim():'';
+  // How a broadcast actually says it: the SURNAME carries the call ("Jennings takes the handoff"),
+  // and the full name is saved for the moments that earn it (a touchdown, a takeaway, a play that
+  // breaks open). `NM` is that emphasis form.
+  //
+  // The one place a surname alone fails is two men named in the SAME play — there are 156 surnames
+  // against an 85-man roster, so 42% of a roster shares one with a team-mate, and "Whitfield drops
+  // back … COMPLETE to Whitfield" is nonsense. `usedLn` tracks who has claimed a surname within the
+  // current play and falls back to the initial for anyone else, which is what a commentator does.
+  // Across plays there is nothing to disambiguate — you don't carry a surname between drives.
+  let usedLn={};
+  const nm=p=>{
+    if(!p)return '';
+    const ln=p.ln||p.pos||''; if(!ln)return '';
+    const held=usedLn[ln];
+    if(held==null){usedLn[ln]=p.id;return ln;}
+    if(held===p.id)return ln;
+    return (p.fn?p.fn[0]+'. ':'')+ln;                  // someone else already owns it this play
+  };
+  const NM=p=>p?((p.fn?p.fn+' ':'')+(p.ln||p.pos||'')).trim():'';
   const fpos=l=>l===50?'midfield':(l<50?'own ':'opp ')+(l<50?l:100-l);
   // `l` is the line of scrimmage the entry happened at (offense's own yard line, 100 = the end zone
   // it attacks). Carried so a log can be measured for field-position questions — red-zone trip and
@@ -3049,7 +3067,7 @@ function simEngine(home,away,seed,opts){
             score[def.id]+=6; add(ret&&ret.id,'dTD');
             add(dP.k&&dP.k.id,'xpa'); if(r()<0.965){ add(dP.k&&dP.k.id,'xpm'); score[def.id]+=1; }
             L(off,'play','Punt',dd);
-            L(def,'score','TOUCHDOWN — '+nm(ret)+' returns the punt '+(100-pspot)+' yards',dd,true);
+            L(def,'score','TOUCHDOWN — '+NM(ret)+' returns the punt '+(100-pspot)+' yards',dd,true);
             return {nextLos:25,time,keep:true};
           }
           L(off,'play','Punt',dd);
@@ -3106,6 +3124,7 @@ function simEngine(home,away,seed,opts){
       // Beats are built ONLY when a log is being kept. Advancing a week sims 60+ games with no log,
       // and none of them should pay for prose nobody reads.
       const bt=log?[]:null, beat=t=>{ if(bt&&t)bt.push(t); };
+      usedLn={};                                       // surnames are claimed per PLAY (see nm)
       jr=[];        // Phase 49: start journalling this play's stat lines — a flag can wipe them
       // Phase 50: what this snap is worth. `vAmp` amplifies the composure reshape (mean-preserving,
       // so it moves WHO wobbles, not the league's scoring); the rest are the measured situational
@@ -3230,7 +3249,9 @@ function simEngine(home,away,seed,opts){
           beat(pressed?'throws on the run':sepR>4?nm(rec)+' has a step':deepW>=1.3?'takes a shot downfield':null);
           beat(dCTH>5?nm(rec)+' goes up and gets it':dCTH<-5?'contested at the catch point':null);
           beat('COMPLETE to '+nm(rec)+' for '+gain+(cov?' — over '+nm(cov):''));
-          beat(gain>=25?'and he is GONE':gain>=15?'into the open field':null);
+          // Save the full name for ONE beat in a play — if the TOUCHDOWN beat is about to carry it,
+          // the break-away beat uses the surname rather than saying it twice in a row.
+          beat(gain>=25?'and '+(los+gain>=100?nm(rec):NM(rec))+' is GONE':gain>=15?'into the open field':null);
           hero=rec;
           add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
@@ -3256,7 +3277,7 @@ function simEngine(home,away,seed,opts){
           if(r()<clamp((PM.intRate-adv*0.0008)*(1+PC.intMul*press)*(pressed?AT.intPress:1)+AT.awrInt*qAWR+AT.iqInt*qIQ+AT.thaInt*qTHA+AT.cthInt*(av(cov,'cth')-dP.covA.cth)+AT.zcvInt*(av(cov,'zcv')-dP.covA.zcv),0.020,0.14)){ turnover=true; add(qb&&qb.id,'pInt'); add(cov&&cov.id,'dInt');
             if(press>=0.5)add(cov&&cov.id,'cl');           // a pick in a big moment is a clutch play
             toKind='int'; toBy=cov; txt=nm(qb)+' INTERCEPTED by '+nm(cov);
-            if(bt)bt[bt.length-1]='INTERCEPTED by '+nm(cov); }
+            if(bt)bt[bt.length-1]='INTERCEPTED by '+NM(cov); }
         }
       } else {                                              // run
         const rb=wpick(oP.rush,r,injured)||qb;
@@ -3305,7 +3326,8 @@ function simEngine(home,away,seed,opts){
           :'through the hole');
         beat(gain>=4&&breakR>3?'shakes the first man':null);
         beat(gain>=12?'into the second level':null);
-        beat(gain<0?'STOPPED for '+gain:gain===0?'no gain':gain>=15?'BREAKS FREE for '+gain:'gains '+gain);
+        beat(gain<0?'STOPPED for '+gain:gain===0?'no gain'
+          :gain>=15?(los+gain>=100?nm(rb):NM(rb))+' BREAKS FREE for '+gain:'gains '+gain);
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
         if(!scored && r()<clamp(PM.fumRate*(1+PC.fumMul*press)+AT.awrFum*AD(rb,oP.rushA,fr,dP.frontA,'awr')+AT.carFum*ADX(rb,oP.rushA,'car',fr,dP.frontA,'tkl'),0.002,0.05)){ turnover=true; toKind='fum'; toBy=fr; txt=nm(rb)+' FUMBLES — lost'; }
         if(r()<INJ_RATE*injMul(rb))hurt(rb,off); if(r()<INJ_RATE*0.7*injMul(fr))hurt(fr,def);     // injuries on contact (Phase 26, Phase 51 durability)
@@ -3345,7 +3367,7 @@ function simEngine(home,away,seed,opts){
         if(press>=0.5){ add(hero&&hero.id,'cl'); if(wantPass)add(qb&&qb.id,'cl'); }   // Phase 50: made it when it mattered
         score[off.id]+=6;
         add(oP.k&&oP.k.id,'xpa'); const xp=r()<0.965; if(xp){ add(oP.k&&oP.k.id,'xpm'); score[off.id]+=1; }
-        beat('TOUCHDOWN!');
+        beat(hero?'TOUCHDOWN — '+NM(hero)+'!':'TOUCHDOWN!');
         L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true,undefined,los,bt);
         return {nextLos:25,time};
       }
@@ -3363,7 +3385,7 @@ function simEngine(home,away,seed,opts){
           score[def.id]+=6; add(toBy.id,'dTD');
           add(dP.k&&dP.k.id,'xpa'); if(r()<0.965){ add(dP.k&&dP.k.id,'xpm'); score[def.id]+=1; }
           if(press>=0.5)add(toBy.id,'cl');
-          L(def,'score','TOUCHDOWN — '+nm(toBy)+' returns the '+(toKind==='int'?'interception':'fumble')+' '+(100-spot)+' yards',dd,true);
+          L(def,'score','TOUCHDOWN — '+NM(toBy)+' returns the '+(toKind==='int'?'interception':'fumble')+' '+(100-spot)+' yards',dd,true);
           return {nextLos:25,time,keep:true};
         }
         beat('TURNOVER');
