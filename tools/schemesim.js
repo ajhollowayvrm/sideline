@@ -34,7 +34,8 @@
 
    Run:  node tools/schemesim.js            (default sizing, ~3 min, ~60k games)
          GAMES=200 node tools/schemesim.js  (games per matrix cell)
-         ONLY=C node tools/schemesim.js     (run one experiment: A, B, C, D or E)  */
+         ONLY=C node tools/schemesim.js     (run one experiment: A..F)
+         MODE=group ONLY=F node tools/...    (F: re-shape the whole position group, not one man)  */
 
 const fs = require('fs');
 const path = require('path');
@@ -69,7 +70,19 @@ const ATT = eval(grab('// === ATTRIBUTE ENGINE (Phase 52) START ===', '// === AT
   + '\n;({ATTRS,POS_ATTR_W,SCHEME_ATTR_W,PLAYER_ARCH});');
 eval(grab('// === SIM ENGINE (Phase 3) START ===', '// === SIM ENGINE (Phase 3) END ==='));
 const { OFF_SCHEMES, DEF_SCHEMES, SCHEME_EDGE } = SCH;
-const { PLAYER_ARCH } = ATT;
+const { PLAYER_ARCH, POS_ATTR_W } = ATT;
+
+/* An archetype authored here rather than shipped, balanced by the same rule balanceArch uses: subtract
+   the vector's WEIGHTED mean under its own position row, so a custom shape still changes WHAT a player
+   is and never HOW GOOD he is. Used to pin a matchup rather than wait for one to be drawn. */
+function customArch(pos, name, w) {
+  const row = POS_ATTR_W[pos], keys = Object.keys(row), sw = keys.reduce((s, k) => s + row[k], 0) || 1;
+  for (const k in w) if (row[k] == null) { console.error(`  ${pos} does not carry "${k}"`); process.exit(2); }
+  let m = 0; for (const k of keys) m += row[k] * (w[k] || 0);
+  m /= sw;
+  const off = {}; for (const k of keys) off[k] = (w[k] || 0) - m;
+  return { n: name, f: 0, w, off };
+}
 
 const GAMES = parseInt(process.env.GAMES || '0', 10);
 const ONLY = (process.env.ONLY || '').toUpperCase();
@@ -142,15 +155,18 @@ const DEF_ID = {
 // is still drawn first and identically, then shifted — so a lopsided team and a balanced one are
 // built from literally the same draws and differ only by the shift. That is what makes "same total
 // talent, distributed differently" a fact about the rosters rather than a hope about the averages.
-function mkRoster(abilitySeed, shapeSeed, pref, sideTilt) {
+function mkRoster(abilitySeed, shapeSeed, pref, sideTilt, starPref) {
   const ra = rng(abilitySeed >>> 0), rs = rng(shapeSeed >>> 0);
   const out = [];
   POS.forEach(([code, side, n]) => {
     for (let i = 0; i < n; i++) {
       const ov = clamp(Math.round(62 * 0.55 + ri(ra, -9, 9) + ri(ra, -1, 6) + 30 + (((sideTilt || {})[side]) || 0)), 44, 99);
       const want = (pref || {})[code];
-      const a = (want && rs() < PREF) ? archByName(code, want[Math.floor(rs() * want.length)]) : pickArch(rs, code);
-      const pur = clamp(0.35 + (rs() + rs() + rs()) / 3 * 1.5, 0.3, 1.7);
+      // a preference is either a shortlist of archetype NAMES, or a custom {arch,pur} pinned shape
+      const custom = want && want.arch;
+      const a = custom ? want.arch
+        : (want && rs() < PREF) ? archByName(code, want[Math.floor(rs() * want.length)]) : pickArch(rs, code);
+      const pur = custom ? want.pur : clamp(0.35 + (rs() + rs() + rs()) / 3 * 1.5, 0.3, 1.7);
       const p = Object.assign({ id: 'x', pos: code, so: 0 }, genAttrs(rs, ov, code, 15, a, pur));
       if (a) { p.arch = a.n; p.pur = pur; }
       p.ov = ovrBase(p);
@@ -162,9 +178,26 @@ function mkRoster(abilitySeed, shapeSeed, pref, sideTilt) {
     arr.sort((a, b) => b.ov - a.ov);
     arr.forEach((p, i) => {
       if (i >= 2) { shiftAttrs(p, -Math.min(2 + (i - 2) * 2.6, 26)); p.ov = clamp(ovrBase(p), 44, 99); }
-      p.so = i;
+      // Named by DEPTH, not by generation order, so a play-by-play log identifies the exact man in
+      // the matchup: 'WR0' is the starter. Depth is assigned here, after the sort — naming at draw
+      // time would label the best receiver by whatever index he happened to be generated at.
+      p.so = i; p.ln = p.pos + i;
     });
   });
+  // ONE player re-shaped, after depth is known: the starter at each named position keeps his ability
+  // and gets a new profile. This is the difference between "our receivers are fast" and "our number
+  // one is a burner", and the two are not the same experiment — every per-matchup channel reads a
+  // deviation from its POOL's mean, so shifting a whole position group shifts the mean with it and
+  // the channel never sees it. Only an intra-pool outlier moves anything.
+  if (starPref) {
+    for (const pos in starPref) {
+      const p = out.find(x => x.pos === pos && x.so === 0);
+      if (!p) continue;
+      const ov = ovrBase(p);
+      Object.assign(p, genAttrs(rs, ov, pos, 15, starPref[pos].arch, starPref[pos].pur));
+      p.ov = ovrBase(p); p.arch = starPref[pos].arch.n; p.pur = starPref[pos].pur;
+    }
+  }
   return out;
 }
 function teamRatings(roster) {
@@ -180,9 +213,11 @@ function install(team, offScheme, defScheme) {
   return team;
 }
 let _tag = 0;
-function mkTeam(id, name, abilitySeed, shapeSeed, offIdName, defIdName, offScheme, defScheme, sideTilt) {
-  const pref = Object.assign({}, OFF_ID[offIdName] || {}, DEF_ID[defIdName] || {});
-  const roster = mkRoster(abilitySeed, shapeSeed, pref, sideTilt);
+// `prefOverride` pins specific positions to a custom shape on top of whatever the identity wants —
+// how experiment F builds one exact matchup without disturbing the other twenty-odd players.
+function mkTeam(id, name, abilitySeed, shapeSeed, offIdName, defIdName, offScheme, defScheme, sideTilt, prefOverride, starPref) {
+  const pref = Object.assign({}, OFF_ID[offIdName] || {}, DEF_ID[defIdName] || {}, prefOverride || {});
+  const roster = mkRoster(abilitySeed, shapeSeed, pref, sideTilt, starPref);
   const tag = 't' + (_tag++) + '-';
   roster.forEach((p, i) => p.id = tag + p.pos + i);      // unique per team; the box score is id-keyed
   return install({ id, name, roster, offId: offIdName, defId: defIdName }, offScheme, defScheme);
@@ -555,4 +590,138 @@ if (run('E')) {
       lpad(mean(pf).toFixed(1), 7) + lpad(mean(pa).toFixed(1), 7) + lpad((mean(pf) + mean(pa)).toFixed(1), 8));
   }
   console.log('');
+}
+
+/* ================================================================================
+   F. Fast, big receivers against slow corners
+   ================================================================================
+   FIRST, AN HONEST LIMIT: there is no HEIGHT attribute in the 25, so "tall" cannot be asked for
+   directly. The vocabulary's nearest thing is the catch point — `cth`, plus `str`, which is what
+   §2 means by "contested catch is cth + str" and what the Contested X archetype is built from. So
+   the receiver below is fast AND big at the catch point, and that is what "tall" resolves to here.
+   Worth knowing, because it means the model cannot currently express a 6'5" possession receiver as
+   distinct from a strong one.
+
+   The design is a 2x2, not a single matchup: {burner WRs, ordinary WRs} x {slow CBs, ordinary CBs}.
+   A one-sided test cannot separate "these receivers are good" from "these corners are bad" from the
+   thing actually being asked about, which is the INTERACTION — whether the mismatch is worth more
+   than the sum of its parts. Phase 51's one-on-one clause says it should be:
+
+     "a lack of speed can be overcome, but in certain one-on-one situations it can't be" — a speed
+     DEFICIT past AT.oneOnOne, isolated deep or in man, steepens by AT.oneOnOneMul. A surplus is
+     left alone. It is the one deliberately asymmetric channel in the sim.
+
+   Every line is parsed out of the real play-by-play, matched on the exact man in coverage, so these
+   are per-matchup numbers and not team averages wearing a disguise. */
+if (run('F')) {
+  const N = GAMES || 1000, ROST = 4;
+  console.log('== F. FAST, BIG RECEIVERS vs SLOW CORNERS ==');
+  console.log('   no height attribute exists — "tall" resolves to the catch point (cth) plus str\n');
+
+  // fast AND big at the catch point. It costs route running, agility and elusiveness, because the
+  // weighted row still has to average to his overall — he is a straight-line mismatch, not a complete
+  // receiver, which is exactly the player being asked for.
+  const BURNER = customArch('WR', 'Tall Burner', { spd: 14, acc: 9, str: 11, cth: 6, rte: -12, agi: -10, elu: -9, awr: -5 });
+  // slow, but not bad: he keeps his technique and his brain, and gives up speed for them.
+  const PLODDER = customArch('CB', 'Plodder', { spd: -16, acc: -9, mcv: 7, awr: 9, zcv: 7, tkl: 4 });
+  const WRP = { WR: { arch: BURNER, pur: 1.3 } }, CBP = { CB: { arch: PLODDER, pur: 1.3 } };
+
+  // MODE matters more than the shapes do, and this is the point of the experiment.
+  //   'group'  — every receiver on the roster is a burner, every corner is slow.
+  //   'star'   — only WR0 is a burner, only CB0 is slow; their team-mates are ordinary.
+  // Both are reasonable readings of "fast receivers against slow corners". They do not measure the
+  // same thing, and under this architecture only one of them can move a number: every per-matchup
+  // channel is a deviation from its POOL's mean, so lifting a whole position group lifts the mean
+  // with it and `dSPD` never changes. Running both is what makes that visible instead of arguable.
+  const MODE = (process.env.MODE || 'star').toLowerCase();
+  const build = (k, pref, id) => MODE === 'group'
+    ? mkTeam(id + k, id, (0xFA57 + k * 7919) >>> 0, (0xB19 + k * 104729) >>> 0, 'Pro Style', '4-3', 'Pro Style', '4-3', null, pref)
+    : mkTeam(id + k, id, (0xFA57 + k * 7919) >>> 0, (0xB19 + k * 104729) >>> 0, 'Pro Style', '4-3', 'Pro Style', '4-3', null, null, pref);
+  console.log('   MODE=' + MODE + (MODE === 'group'
+    ? '  (the whole position group is re-shaped)'
+    : '  (only WR0 and CB0 are re-shaped; their team-mates are ordinary)') + '\n');
+
+  // The mirror. AT.oneOnOne is deliberately ASYMMETRIC — "a lack of speed can be overcome, but in
+  // certain one-on-one situations it can't be" — and it fires only when the RECEIVER is the slower
+  // man (dSPD < AT.oneOnOne), leaving a surplus untouched. So the forward mismatch and the reverse
+  // one are not mirror images of each other in the model, and the size of the gap between them is
+  // the clause's whole contribution. Measuring only the forward case would miss it entirely.
+  const SLOWWR = customArch('WR', 'Plodder WR', { spd: -16, acc: -9, str: 11, cth: 8, rte: 6, agi: -4 });
+  const FASTCB = customArch('CB', 'Burner CB', { spd: 14, acc: 9, mcv: 6, agi: 4, awr: -9, zcv: -7 });
+  const SWP = { WR: { arch: SLOWWR, pur: 1.3 } }, FCP = { CB: { arch: FASTCB, pur: 1.3 } };
+
+  const CELLS = [
+    { wr: null, cb: null, n: 'ordinary WR / ordinary CB' },
+    { wr: WRP, cb: null, n: 'BURNER WR  / ordinary CB' },
+    { wr: null, cb: CBP, n: 'ordinary WR / SLOW CB' },
+    { wr: WRP, cb: CBP, n: 'BURNER WR  / SLOW CB' },
+    { wr: SWP, cb: null, n: 'SLOW WR    / ordinary CB' },
+    { wr: SWP, cb: FCP, n: 'SLOW WR    / BURNER CB' },
+  ];
+  const shown = {};
+  const out = [];
+  for (const c of CELLS) {
+    const st = { tgt: 0, cmp: 0, yds: 0, td: 0, g: 0, e20: 0, e40: 0, gains: [] };
+    for (let k = 0; k < ROST; k++) {
+      const O = build(k, c.wr, 'Off'), D = build(k, c.cb, 'Def');
+      const wr0 = O.roster.find(p => p.pos === 'WR' && p.so === 0);
+      const cb0 = D.roster.find(p => p.pos === 'CB' && p.so === 0);
+      if (c.wr) shown.wr = shown.wr || wr0; else shown.wr0 = shown.wr0 || wr0;
+      if (c.cb) shown.cb = shown.cb || cb0; else shown.cb0 = shown.cb0 || cb0;
+      for (let g = 0; g < N; g++) {
+        const res = playGame(O, D, (0x7A11 ^ (g * 2654435761) ^ (k * 40503)) >>> 0, true);
+        st.g++;
+        // The BOX is the honest source for the rate stats: the sim charges cvTgt/cvCmp/cvYds/cvTD to
+        // the COVER MAN, and coverDef pairs by depth, so CB0's coverage line IS this matchup — every
+        // target included, not just the ones that were caught. The log cannot do this: it names a
+        // receiver only on a completion, so counting from it would silently measure catches per game
+        // while calling it targets.
+        const b = res.box[cb0.id];
+        if (b) { st.tgt += b.cvTgt || 0; st.cmp += b.cvCmp || 0; st.yds += b.cvYds || 0; st.td += b.cvTD || 0; }
+        // ...but only the log carries the GAIN of each individual catch, and speed is defined to own
+        // the tail rather than the mean, so the explosive counts have to come from here.
+        for (const e of res.log) {
+          if (!e.text || e.team !== O.id) continue;
+          const m = /pass to WR0 for (-?\d+) \(vs CB0\)/.exec(e.text);
+          if (m) { const y = +m[1]; st.gains.push(y); if (y >= 20) st.e20++; if (y >= 40) st.e40++; }
+        }
+      }
+    }
+    st.name = c.n; out.push(st);
+  }
+  const show = p => p ? ['spd', 'acc', 'agi', 'str', 'cth', 'rte', 'mcv', 'zcv', 'awr'].filter(k => p[k] != null).map(k => k + ' ' + p[k]).join('  ') : '';
+  console.log('   WR0, ordinary : ' + show(shown.wr0));
+  console.log('   WR0, burner   : ' + show(shown.wr));
+  console.log('   CB0, ordinary : ' + show(shown.cb0));
+  console.log('   CB0, slow     : ' + show(shown.cb));
+  console.log('\n   WR0 against CB0 — every target, taken from the cover man\'s box line\n');
+  console.log('   ' + pad('matchup', 26) + lpad('tgt/gm', 8) + lpad('catch%', 8) + lpad('Y/gm', 8) + lpad('Y/tgt', 8) +
+    lpad('Y/rec', 8) + lpad('TD/gm', 8) + lpad('20+/gm', 9) + lpad('40+/gm', 9) + lpad('long', 7));
+  for (const s of out)
+    console.log('   ' + pad(s.name, 26) + lpad((s.tgt / s.g).toFixed(2), 8) + lpad((100 * s.cmp / (s.tgt || 1)).toFixed(1), 8) +
+      lpad((s.yds / s.g).toFixed(1), 8) + lpad((s.yds / (s.tgt || 1)).toFixed(2), 8) + lpad((s.yds / (s.cmp || 1)).toFixed(2), 8) +
+      lpad((s.td / s.g).toFixed(3), 8) + lpad((s.e20 / s.g).toFixed(3), 9) + lpad((s.e40 / s.g).toFixed(3), 9) +
+      lpad(s.gains.length ? Math.max(...s.gains) : 0, 7));
+  // The 2x2 interaction: is the mismatch worth more than its two halves added together? Reported on
+  // Y/TARGET rather than Y/game, because targets are not held fixed across the cells — a receiver who
+  // gets open more also gets thrown at more, and a per-game total would confound volume with quality.
+  const yt = out.map(s => s.yds / (s.tgt || 1)), e20 = out.map(s => s.e20 / s.g), cp = out.map(s => 100 * s.cmp / (s.tgt || 1));
+  const inter = a => a[3] - a[0] - (a[1] - a[0]) - (a[2] - a[0]);
+  console.log('\n   ' + pad('', 26) + lpad('Y/tgt', 9) + lpad('catch%', 9) + lpad('20+/gm', 9));
+  console.log('   ' + pad('fast WR alone is worth', 26) + lpad(f1(yt[1] - yt[0]), 9) + lpad(f1(cp[1] - cp[0]), 9) + lpad(f1(e20[1] - e20[0]), 9));
+  console.log('   ' + pad('slow CB alone is worth', 26) + lpad(f1(yt[2] - yt[0]), 9) + lpad(f1(cp[2] - cp[0]), 9) + lpad(f1(e20[2] - e20[0]), 9));
+  console.log('   ' + pad('the two together', 26) + lpad(f1(yt[3] - yt[0]), 9) + lpad(f1(cp[3] - cp[0]), 9) + lpad(f1(e20[3] - e20[0]), 9));
+  console.log('   ' + pad('INTERACTION (over the sum)', 26) + lpad(f1(inter(yt)), 9) + lpad(f1(inter(cp)), 9) + lpad(f1(inter(e20)), 9));
+  console.log('\n   A positive interaction is the one-on-one clause firing: an isolated speed DEFICIT');
+  console.log('   steepens past AT.oneOnOne, so the mismatch beats the fast receiver and the slow');
+  console.log('   corner added together. Zero means the sim treats it as two independent edges.');
+
+  // outrunning your man, against being outrun by him
+  const e40 = out.map(s => s.e40 / s.g);
+  console.log('\n   THE ASYMMETRY — the clause only amplifies a DEFICIT, never a surplus\n');
+  console.log('   ' + pad('', 30) + lpad('Y/tgt', 9) + lpad('catch%', 9) + lpad('40+/gm', 9));
+  console.log('   ' + pad('baseline', 30) + lpad(yt[0].toFixed(2), 9) + lpad(cp[0].toFixed(1), 9) + lpad(e40[0].toFixed(3), 9));
+  console.log('   ' + pad('WR outruns his man', 30) + lpad(f1(yt[3] - yt[0]), 9) + lpad(f1(cp[3] - cp[0]), 9) + lpad(f1(e40[3] - e40[0]), 9));
+  console.log('   ' + pad('WR is outrun by his man', 30) + lpad(f1(yt[5] - yt[0]), 9) + lpad(f1(cp[5] - cp[0]), 9) + lpad(f1(e40[5] - e40[0]), 9));
+  console.log('\n   If being outrun costs more than outrunning gains, the clause is doing its job.\n');
 }

@@ -144,3 +144,42 @@ SIDELINE SCHEME SIM — randomized rosters, real archetypes, 25 attributes
    Offense U         2540  2260    52.9   31.2   30.2    61.3
    Defense Tech      2351  2449    49.0   13.7   14.1    27.8
 
+== F. FAST, BIG RECEIVERS vs SLOW CORNERS ==
+   no height attribute exists — "tall" resolves to the catch point (cth) plus str
+
+   MODE=star  (only WR0 and CB0 are re-shaped; their team-mates are ordinary)
+
+   WR0, ordinary : spd 92  acc 86  agi 76  str 55  cth 77  rte 85  awr 73
+   WR0, burner   : spd 98  acc 87  agi 65  str 89  cth 82  rte 74  awr 69
+   CB0, ordinary : spd 76  acc 70  agi 78  str 48  cth 75  mcv 77  zcv 83  awr 82
+   CB0, slow     : spd 60  acc 60  agi 75  str 61  cth 81  mcv 79  zcv 86  awr 95
+
+   WR0 against CB0 — every target, taken from the cover man's box line
+
+   matchup                     tgt/gm  catch%    Y/gm   Y/tgt   Y/rec   TD/gm   20+/gm   40+/gm   long
+   ordinary WR / ordinary CB     7.23    62.1    56.7    7.85   12.64   0.310    0.833    0.175     83
+   BURNER WR  / ordinary CB      7.25    61.4    56.5    7.80   12.70   0.328    0.809    0.212     84
+   ordinary WR / SLOW CB         7.24    63.5    58.5    8.08   12.71   0.342    0.829    0.221     87
+   BURNER WR  / SLOW CB          7.25    62.8    58.3    8.04   12.81   0.350    0.808    0.259     89
+   SLOW WR    / ordinary CB      7.24    61.6    54.7    7.55   12.26   0.294    0.826    0.132     76
+   SLOW WR    / BURNER CB        7.24    60.6    52.5    7.25   11.96   0.282    0.812    0.102     68
+
+                                 Y/tgt   catch%   20+/gm
+   fast WR alone is worth         -0.0     -0.7     -0.0
+   slow CB alone is worth         +0.2     +1.5     -0.0
+   the two together               +0.2     +0.7     -0.0
+   INTERACTION (over the sum)     +0.0     -0.1     +0.0
+
+   A positive interaction is the one-on-one clause firing: an isolated speed DEFICIT
+   steepens past AT.oneOnOne, so the mismatch beats the fast receiver and the slow
+   corner added together. Zero means the sim treats it as two independent edges.
+
+   THE ASYMMETRY — the clause only amplifies a DEFICIT, never a surplus
+
+                                     Y/tgt   catch%   40+/gm
+   baseline                           7.85     62.1    0.175
+   WR outruns his man                 +0.2     +0.7     +0.1
+   WR is outrun by his man            -0.6     -1.4     -0.1
+
+   If being outrun costs more than outrunning gains, the clause is doing its job.
+

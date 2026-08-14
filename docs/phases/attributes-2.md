@@ -801,3 +801,58 @@ makes building an offense marginally better than building a defense.
 Same total talent, same schemes, near-identical records — and one team plays 61-point shootouts while
 the other plays 28-point rock fights. Roster construction reaches the *texture* of a season and not
 just its win column, which is the thing an attribute model is for.
+
+### One receiver against one corner (experiment F)
+
+The directive was *"a team who has really fast tall WRs vs slower corners"*. Two things had to be
+said before it could be measured.
+
+**There is no height attribute.** The 25 do not include one. The vocabulary's nearest thing is the
+catch point — `cth`, plus `str`, which is what §2 means by *"contested catch is cth + str"* and what
+the Contested X archetype is built from. So "tall" resolves to "big at the catch point", and the
+model currently cannot express a 6'5" possession receiver as distinct from a strong one. Worth
+deciding whether that is a gap or a deliberate simplification.
+
+**"Fast receivers" and "a fast receiver" are different experiments, and only one of them can move a
+number.** Every per-matchup channel is a deviation from its POOL's mean. Re-shape the whole receiving
+corps and the pool mean moves with it, so `dSPD` is unchanged and the sim sees nothing — measured,
+exactly nothing: Y/target 7.86 → 7.91 with every receiver at spd 96 against every corner at spd 60.
+Only an intra-pool outlier registers. `MODE=group` reproduces it.
+
+So the real test pins **WR0 and CB0 only**, leaving their team-mates ordinary, in a 2×2 against
+ordinary controls. 4 roster draws × 1,000 games per cell, read off the cover man's box line so every
+target is counted and not just the completions.
+
+| matchup | tgt/gm | catch% | Y/tgt | 40+/gm | longest |
+|---|--:|--:|--:|--:|--:|
+| ordinary WR / ordinary CB | 7.24 | 62.2 | 7.86 | 0.177 | 83 |
+| BURNER WR / ordinary CB | 7.25 | 61.5 | 7.82 | 0.214 | 84 |
+| ordinary WR / SLOW CB | 7.25 | 63.6 | 8.10 | 0.228 | 87 |
+| **BURNER WR / SLOW CB** | 7.24 | 62.8 | **8.09** | **0.266** | **89** |
+
+**A 38-point speed mismatch is worth explosive plays and almost nothing else.** Forty-yard catches
+go 0.177 → 0.266 a game (+50%) and the longest catch grows 83 → 89, while yards per target moves 3%
+and catch rate barely at all. That is the design working as written — *speed owns the gain tail,
+never the mean* — combined with the house rule: the archetype is weighted-mean-zero, so the burner
+**pays** for his speed and strength in route running (74 vs 85) and agility (65 vs 76), and `rteCmp`
+(.0016) is weighted slightly above `deepCmp` (.0012). He is not a better receiver. He is a different
+one, who wins deep and loses everywhere else.
+
+**The asymmetry is real and is the one-on-one clause.** `AT.oneOnOne` fires only when the receiver is
+the *slower* man, leaving a surplus untouched — *"a lack of speed can be overcome, but in certain
+one-on-one situations it can't be"*. Measured against the same baseline:
+
+| | Y/tgt | catch% | 40+/gm |
+|---|--:|--:|--:|
+| WR outruns his man | +0.2 | +0.6 | +0.089 |
+| WR is outrun by his man | **−0.6** | **−1.4** | **−0.074** |
+
+Being outrun costs about three times what outrunning gains on yards per target. The clause is doing
+exactly its job, and it means the forward mismatch reading small is not a bug — the model is built to
+punish the deficit rather than reward the surplus.
+
+**One genuine gap this surfaced.** Targets are flat at ~7.25 per game in *every* cell. `wpick` draws
+the receiver from the depth-weighted pool and `coverDef` assigns the corner afterwards, so target
+allocation is blind to the matchup: an offense will not look for a burner who is being covered by a
+plodder. A real one would, and that — not the per-play channels — is where a speed mismatch should
+show up biggest.
