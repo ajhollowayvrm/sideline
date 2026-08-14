@@ -68,13 +68,23 @@ eval(html.slice(A0, A1));
 // eval into this scope so genRecruits/advanceRecruiting/coachMods/… leak out (sloppy eval)
 eval(html.slice(i0, i1));
 
-/* ---------- a faithful-enough synthetic world (mirrors genWorld prestige spread) ---------- */
+/* ---------- the lab world ----------
+   Teams stay BARE — `{id, prestige, needs:{}}`, with no fac / homeState / legends / rec — because
+   that is what tests the engine's guard-for-absence contract, and every optional term must read as
+   neutral. But the PRESTIGE SPREAD is now the game's own, derived from CONF_BASE + BUMP over the
+   real TEAMS list rather than approximated by a bump ladder.
+   Phase 57b forced this. The old approximation ran top 91 / median 42 / bottom 25 against the real
+   98 / ~50 / 20-with-13-teams-above-80, and under the band-pass model that barely mattered. Under a
+   prestige-MONOTONIC pull curve it decides everything: with almost nothing near the 5-star tier line
+   the lab's five-stars had no plausible destination, and checks failed for a property of the
+   harness rather than of the engine. Same lesson as the rotted data arrays above — approximating
+   the game is how a lab stops measuring it. */
+const TEAMS = grabConst('TEAMS'), CONF_BASE = grabConst('CONF_BASE'), BUMP = grabConst('BUMP');
 function genWorld(seed, n = 134) {
   const r = rng(seed); const teams = [];
   for (let i = 0; i < n; i++) {
-    // mirror the real spread: a handful of blue-bloods reach the high 80s/90s, a long tail down to ~25
-    const bump = i < 8 ? 50 : i < 24 ? 30 : i < 50 ? 14 : 0;
-    const prestige = clamp(Math.round(35 + ri(r, -10, 10) + bump), 20, 98);
+    const [name, , , conf] = TEAMS[i % TEAMS.length];
+    const prestige = clamp(Math.round((CONF_BASE[conf] || 45) + (BUMP[name] || 0) + ri(r, -7, 7)), 20, 98);
     teams.push({ id: 't' + i, prestige, needs: {} });
   }
   return teams;
@@ -137,9 +147,14 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('All commits go to an actual suitor', pool.every(r => !r.committedTo || r.iv[r.committedTo] != null));
   const counts = {}; pool.forEach(r => { if (r.committedTo) counts[r.committedTo] = (counts[r.committedTo] || 0) + 1; });
   check('No team signs more than the class cap (25)', Math.max(...Object.values(counts)) <= 25, 'max class ' + Math.max(...Object.values(counts)));
-  const sizes = genWorld(2026).map(t => counts[t.id] || 0);
-  const filled = sizes.filter(n => n >= 18).length;
-  check('Most programs land a substantial class (≥100 of 134 fill ≥18)', filled >= 100, `${filled}/134 teams filled ≥18`);
+  const world2026 = genWorld(2026);
+  const sizes = world2026.map(t => counts[t.id] || 0);
+  // Phase 57b re-pointed this. `≥18` was written when CLASS_CAP acted as a TARGET and every program
+  // filled to 25; with real per-team targets (mean 20.5, floor 12, matching a measured p10 of 13)
+  // a program that wanted 14 and signed 14 is a success, and the old check would call it a failure.
+  // Fill-against-target is what real recruiting is actually tight about.
+  const filledVsTarget = world2026.filter(t => (counts[t.id] || 0) >= 0.85 * classTarget(t, 2026)).length;
+  check('Almost every program fills its class target (≥120 of 134 reach 85%)', filledVsTarget >= 120, `${filledVsTarget}/134 reached 85% of target`);
   // the real check the old one was standing in for: essentially nobody whiffs on a class entirely
   const tiny = sizes.filter(n => n < 10).length;
   check('Almost no program signs under 10 (real: 3.3%)', tiny / sizes.length <= 0.10, `${tiny}/134 signed <10`);
@@ -235,8 +250,10 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
      ripple, official visits, pitch angles, double-downs, diminishing returns) is therefore moving a
      number that is already saturated, which is why an aggressive push cannot reliably poach and why
      a hands-off program is indistinguishable from an engaged one here.
-     This asserts the CURRENT shape so Phase 57 has a number to move; see
-     docs/reference/cfb-recruiting.md. It is a characterization check, not a target. */
+     Phase 57b FIXED it, so this flipped from a characterization check into a real assertion: growth
+     now approaches a ceiling set by fit (`CEIL_BASE + fit*(100-CEIL_BASE)`) instead of climbing
+     without bound, so a program's passive ceiling IS its fit and only a genuinely dominant pairing
+     clears the commit bar on its own. Pull sets the odds; actions decide the race. */
   const t2 = genWorld(SEED), p2 = genRecruits(SEED, t2);
   const him = t2.find(t => t.prestige >= 66 && t.prestige <= 74) || t2[30];
   const track = p2.filter(r => r.iv[him.id] != null && r.stars === 4).slice(0, 60);
@@ -246,9 +263,12 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
     if (w === 7) clearedByWeek7 = track.filter(r => (r.iv[him.id] || 0) >= 68).length;
   }
   const pinned = track.filter(r => (r.iv[him.id] || 0) >= 99.9).length;
-  check('CHARACTERIZATION: interest saturates on passive growth alone (Phase 57 target)',
-    clearedByWeek7 >= track.length * 0.5 && pinned >= track.length * 0.5,
-    `${clearedByWeek7}/${track.length} past the commit bar by week 7, ${pinned}/${track.length} pinned at 100 by Signing Day`);
+  check('The interest race does NOT settle itself: passive growth alone rarely clears the commit bar',
+    clearedByWeek7 <= track.length * 0.25,
+    `${clearedByWeek7}/${track.length} past the commit bar by week 7 (was 51/60 before Phase 57b)`);
+  check('The interest ceiling is fit, not 100: passive growth does not pin a relationship',
+    pinned <= track.length * 0.10,
+    `${pinned}/${track.length} pinned at 100 by Signing Day (was 52/60)`);
 })();
 
 /* 5) determinism: same seed → identical cycle outcome */

@@ -3656,7 +3656,15 @@ const PITCH_ANGLES=[
 // the measured 36.8% in-state share of a class. They used to be 0.3 / 0.10, tuned by feel against a
 // uniform 50-state draw — with real state weights that combination over-shot to 45.4%, because the
 // old values were silently compensating for a Texas that produced 2% of the country's talent.
-const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.20,GEO_FIT:0.10,COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:16,DECOMMIT_GAP:18,
+// Phase 57b — the talent economy. TIER* is the prestige a star tier belongs to; PULL_W is the width
+// of the logistic that turns a prestige gap into pull (smaller = a steeper, more concentrated
+// league). OVER_W/OVER_FLOOR are the mild above-tier taper that decides board MEMBERSHIP only.
+// PASSIVE_RATE is how fast interest approaches its fit-set ceiling. TGT_* size a real class.
+// All fitted jointly by tools/cfb-data/25-recfit.js against docs/reference/cfb-recruiting.md §2-3.
+const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.20,GEO_FIT:0.10,
+  TIER5:88,TIER4:70,TIER3:50,TIER2:32,PULL_W:15,OVER_W:60,OVER_FLOOR:0.35,SUIT_NOISE:0.55,
+  PASSIVE_RATE:0.18,CEIL_BASE:45,TGT_MEAN:20.5,TGT_SD:4.5,TGT_MIN:12,AI_VALUE:0.15,
+  COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:16,DECOMMIT_GAP:18,
   AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.3,NEGLECT_DECAY:3.5,
   AI_VISIT_P:0.25,FINALISTS:4,FINAL_READY:0.55,FINAL_BAR:58};
 
@@ -3680,10 +3688,37 @@ function coachMods(coach){
 }
 // How well a team fits a prospect (0..~1.1): prestige proximity to the recruit's tier, with a
 // floor for programs above the tier (they can always take down-tier talent), plus a needs nudge.
+// The prestige a star tier "belongs to". One definition now — it used to be inlined identically in
+// both recruitFit and genRecruits, which is two places to drift.
+function recruitTier(stars){return stars>=5?REC.TIER5:stars===4?REC.TIER4:stars===3?REC.TIER3:REC.TIER2;}
+// PULL — how hard a program of this prestige draws a recruit of this tier. Phase 57b made it a
+// LOGISTIC, and monotonic in prestige is the whole point: a better program must never pull a given
+// recruit *less* than a worse one does. What it replaced was `1 - |prestige - tier|/50` with a floor
+// that applied to recruitFit but NOT to the suitor draw — a band-pass filter centred on the
+// recruit's tier, under which being above a tier was penalised exactly as hard as being below it.
+// Measured consequence (docs/reference/cfb-recruiting.md): Georgia signed a ONE-MAN class, Alabama
+// three, while prestige-72 programs signed a full 25 that was essentially all blue-chip, against a
+// real top-10 band that signs 23.5 and takes 40.3% of every blue-chip in the country.
+// It stays strictly below 1 so it keeps DISCRIMINATING above the tier line — two blue-bloods on the
+// same recruit must not tie, or nothing ever clears LEAD_GAP and no one commits.
+function pedigreeFit(prestige,stars){return 1/(1+Math.exp(-(prestige-recruitTier(stars))/REC.PULL_W));}
+// APPEAL — whether the pairing is a realistic recruiting relationship at all, i.e. whether the
+// program bothers to be on his board. This is the ONLY place an above-tier taper survives, it is
+// mild (floored, and over a wide width), and it is deliberately separate from pull: a blue-blood is
+// not *worse* at recruiting a two-star, it simply has better things to do with the scholarship.
+function boardAppeal(prestige,stars){const d=prestige-recruitTier(stars);
+  return d<=0?1:clamp(1-d/REC.OVER_W,REC.OVER_FLOOR,1);}
+// A program's per-cycle class TARGET. Scholarships are a constant — cfb-recruiting.md §3 measures
+// class size essentially flat across program quality (23.5 at the top of the league, 19.9 at the
+// bottom) around a mean of 20.2. `CLASS_CAP` was being used as a target rather than a ceiling, so
+// every mid and low program filled to exactly 25. Deterministic per (team, cycle) so a cycle still
+// replays; a later phase can drive this from real roster churn (graduating + portal losses) instead.
+function classTarget(team,seed){
+  const r=rng((hashStr('ct'+(team&&team.id)+seed))>>>0);
+  return clamp(Math.round(REC.TGT_MEAN+(r()+r()+r()-1.5)*REC.TGT_SD),REC.TGT_MIN,REC.CLASS_CAP);
+}
 function recruitFit(team,rec){
-  const target=rec.stars>=5?88:rec.stars===4?70:rec.stars===3?50:32;
-  let prox=clamp(1-Math.abs(team.prestige-target)/50,0,1);
-  if(team.prestige>=target)prox=Math.max(prox,0.72+Math.min(team.prestige-target,22)/110);
+  let prox=pedigreeFit(team.prestige,rec.stars);
   const need=(team.needs&&team.needs[rec.pos])?0.12:0;
   // Facilities nudge fit (Phase 6 wiring): a strong NIL collective helps everywhere; academics
   // matters to recruits who value it. Guarded so fac-less teams (the recruit lab) are unaffected.
@@ -3755,11 +3790,14 @@ function genRecruits(seed,teams){
     const svc=(pot-ov>=13&&stars<5)?stars+1:stars;
     const pos=pick(r,posPool), st=pickState(r);
     const p1=pick(r,PREFS); let p2=pick(r,PREFS),guard=0; while(p2===p1&&guard++<6)p2=pick(r,PREFS);
-    const target=stars===5?88:stars===4?70:stars===3?50:32;
     const nSuit=stars===5?ri(r,4,6):stars===4?ri(r,4,6):ri(r,4,6);
-    // Spread suitors across the prestige band (more noise) so no tier of programs is wildly over- or
-    // under-subscribed — every program needs a reachable pool to fill its ~25-man class (Phase 17).
-    const ranked=teams.map(t=>({t,s:(1-Math.abs(t.prestige-target)/50)+r()*1.1+((t.homeState&&t.homeState===st)?REC.GEO_SUIT:0)}))
+    // Who ends up on his board. Phase 57b: the score is now `pull x appeal` — monotonic in prestige,
+    // with only the mild above-tier appeal taper keeping blue-bloods off a two-star's list. What this
+    // replaced was `1 - |prestige - target|/50` with NO over-tier floor at all, which is why the ten
+    // most prestigious programs in the league made almost nobody's board and signed 4.2 players.
+    // The noise term stays: it is what keeps a board from being a pure prestige ranking.
+    const ranked=teams.map(t=>({t,s:pedigreeFit(t.prestige,stars)*boardAppeal(t.prestige,stars)
+      +r()*REC.SUIT_NOISE+((t.homeState&&t.homeState===st)?REC.GEO_SUIT:0)}))
       .sort((a,b)=>b.s-a.s).slice(0,nSuit);
     const iv={};
     ranked.forEach((e,k)=>{const fit=recruitFit(e.t,{stars,pos,st});
@@ -3821,8 +3859,20 @@ function repeatFalloff(n){return clamp(1/(1+0.35*(n||0)),0.4,1);}
 // the app applies the recruit's NIL preference (nilWeight) and the program's collective facility. amountM = $M.
 function nilGain(amountM,nilWeight){return clamp(amountM,0,8)*3.2*clamp(nilWeight,0.2,1.6);}
 // Priority: concentrate where the team fits well AND already has traction (and on positions it needs).
+// Phase 57b: a program spends on the best recruit it can realistically win, so priority carries the
+// recruit's VALUE as well as the fit. Without this, monotonic pull backfires — a blue-blood's fit on
+// a two-star is now high (correctly: he'd love to go), so it would happily fill a class with them.
+// `boardAppeal` is the other half: it is what makes chasing far-below-tier talent a poor use of a
+// scholarship rather than something the program is bad at.
 function aiPriority(team,rec){const need=(team.needs&&team.needs[rec.pos])?6:0;
-  return recruitFit(team,rec)*12+(rec.iv[team.id]||0)*0.12+need;}
+  // EXPECTED VALUE — the chance of landing him times what landing him is worth. It has to be a
+  // PRODUCT, not a sum: monotonic pull means a blue-blood's fit on a two-star is ~0.99 while its fit
+  // on a five-star is ~0.86 (he is further above that tier line), so any additive form ranks the
+  // two-star higher and the best programs fill their classes with the tail. Multiplying by
+  // `recruitValue` fixes the ordering from the direction it actually comes from — Alabama is not
+  // worse at recruiting a two-star, the scholarship is just worth more spent elsewhere.
+  return recruitFit(team,rec)*boardAppeal(team.prestige,rec.stars)*recruitValue(rec)*REC.AI_VALUE
+    +(rec.iv[team.id]||0)*0.12+need;}
 // Advance one recruiting week: grow every suitor's interest, run the AI recruiting brain's concentrated
 // effort, resolve DECOMMITS (verbal flips), then resolve new commitments. Seeded per (seed, week) so a
 // cycle reproduces. During the season a commitment is a VERBAL (`committedTo` set, `signed` stays false);
@@ -3838,7 +3888,11 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
   const gap=gapBar==null?0:gapBar;      // lead margin over #2 required to sign (Early Period wants a firm lead)
   const counts={};pool.forEach(p=>{if(p.committedTo)counts[p.committedTo]=(counts[p.committedTo]||0)+1;
     if(p._flipped)delete p._flipped;});
-  const full=id=>(counts[id]||0)>=REC.CLASS_CAP;
+  // Phase 57b: a program stops at its own class TARGET, not at the league-wide cap. `CLASS_CAP` is a
+  // ceiling now, the way it always should have been — it was acting as a target, so every mid and
+  // low program filled to exactly 25 against a real mean class of 20.2.
+  const tgt={};teams.forEach(t=>tgt[t.id]=classTarget(t,seed));
+  const full=id=>(counts[id]||0)>=(tgt[id]||REC.CLASS_CAP);
   const readiness=clamp((week-2)/(weeks-3),0,1);
   // Phase 36 — once a recruit's FINALISTS are set, only they stay in the race (others are cut). isFinalist
   // gates every later pass (growth / AI / decommit / commit), so the field narrows the way it does in real life.
@@ -3857,7 +3911,22 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
     if(rec.signed)return;
     for(const tid in rec.iv){const t=byId[tid];if(!t||!isFinalist(rec,tid))continue;
       const fit=recruitFit(t,rec);
-      rec.iv[tid]=clamp(rec.iv[tid]+(1.0+fit*3.2)*(0.6+r()*0.9),0,100);}
+      // Phase 57b — growth APPROACHES A CEILING set by fit, instead of climbing without bound.
+      // The old `iv += (1.0 + fit*3.2) * (0.6 + r()*0.9)` added ~4.4/week from a seeded base near 46
+      // against a COMMIT_THRESH of 68, so with nobody acting at all 86.7% of a good-fit program's
+      // seeded 4-star relationships were past the commit bar by WEEK 7 and 90% pinned at 100 by
+      // Signing Day. Every mechanic Phases 33-38 layered on was moving a number already at its
+      // maximum, which is why an aggressive push could not reliably poach and why a hands-off
+      // program signed the same class as an engaged one.
+      // Now a program's PASSIVE ceiling is its fit: 0.87 fit settles near 87 and wins on its own,
+      // 0.55 settles near 55 and is stranded below the bar until somebody actually recruits him.
+      // That is the phase in one line — pull sets the odds, actions decide the race.
+      // CEIL_BASE keeps the mapping from being fit*100 flat. A prestige-38 program's fit on a
+      // two-star is ~0.6, and a ceiling of 60 sits under COMMIT_THRESH 68 — so the bottom of the
+      // league could not sign anyone at all, which is not de-saturation, it is a different bug.
+      // The floor says: a recruit's realistic best option still gets him over the line.
+      const ceil=clamp(REC.CEIL_BASE+fit*(100-REC.CEIL_BASE),0,100);
+      rec.iv[tid]=clamp(rec.iv[tid]+(ceil-rec.iv[tid])*REC.PASSIVE_RATE*(0.6+r()*0.9),0,100);}
   });
   // 1.5) AI concentrated effort (Phase 33): each AI team spends a scouting-facility budget on its top
   //      priority targets — the discrete weekly actions the player also takes (applied app-side, before
