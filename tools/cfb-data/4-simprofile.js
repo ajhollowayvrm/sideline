@@ -127,10 +127,22 @@ for (const g of slate) {
     else if (/FUMBLES/.test(e.text)) { s.dTO++; s.fum++; }
     const m = e.text.match(/sacked by .* for (-\d+)/); if (m) s.skYds += -parseInt(m[1], 10);
   }
+  // Sacks BY each defense, SNAPSHOTTED before the loop. `s.sk` is already what we want — the box
+  // charges the sacker, who plays for this team's defense — and the swap that used to sit here was
+  // both redundant and order-dependent: it overwrote home's count first, so away then read the
+  // already-overwritten value and BOTH teams ended up with the away defense's total. `plays` read the
+  // same corrupted value. That silently destroyed the team-to-team spread in every sack figure.
+  const skBy = { [g.home.id]: per[g.home.id].sk || 0, [g.away.id]: per[g.away.id].sk || 0 };
   for (const t of [g.home, g.away]) {
-    const s = per[t.id], o = per[t === g.home ? g.away.id : g.home.id];
-    s.sk = o.sk;                                   // sacks BY this team's defense (box charges the sacker)
-    s.plays = s.pAtt + s.rAtt + (o.sk || 0);       // NCAA counts a sack as a rushing attempt
+    const s = per[t.id], oid = (t === g.home ? g.away.id : g.home.id);
+    const skTaken = skBy[oid];                     // sacks this OFFENSE took = the opposing defense's
+    s.skTaken = skTaken;
+    s.plays = s.pAtt + s.rAtt + skTaken;           // NCAA counts a sack as a rushing attempt
+    // NCAA rushing convention, applied consistently to BOTH numerator and denominator. The real side
+    // (2-harvest) reads ESPN rushingAttempts/rushingYards, which already fold sacks in as negative
+    // rushes; the sim was netting sack yardage out of `ryds` while leaving them out of `ratt` and out
+    // of `ypc` entirely, so yards/carry was compared gross-against-net and read ~0.6 too high.
+    s.nratt = s.rAtt + skTaken; s.nryds = s.rYds - s.skYds;
     s.yds = s.pYds + s.rYds - s.skYds;             // NCAA nets sack yardage out of rushing
     s.pen = res.pen[t.id] ? res.pen[t.id].n : 0;
     s.peny = res.pen[t.id] ? res.pen[t.id].yds : 0;
@@ -172,8 +184,8 @@ function profile(rs, gs, label) {
     att: mean(rs, r => r.pAtt), cmp: mean(rs, r => r.pCmp),
     cmpPct: sum(rs, r => r.pCmp) / (sum(rs, r => r.pAtt) || 1) * 100,
     pyds: mean(rs, r => r.pYds), ypa: sum(rs, r => r.pYds) / (sum(rs, r => r.pAtt) || 1),
-    ratt: mean(rs, r => r.rAtt), ryds: mean(rs, r => r.rYds - r.skYds),
-    ypc: sum(rs, r => r.rYds) / (sum(rs, r => r.rAtt) || 1),
+    ratt: mean(rs, r => r.nratt), ryds: mean(rs, r => r.nryds),
+    ypc: sum(rs, r => r.nryds) / (sum(rs, r => r.nratt) || 1),
     fd: mean(rs, r => r.fd),
     d3: sum(rs, r => r.d3c) / (sum(rs, r => r.d3a) || 1) * 100,
     d4a: mean(rs, r => r.d4a), d4: sum(rs, r => r.d4c) / (sum(rs, r => r.d4a) || 1) * 100,
@@ -193,7 +205,7 @@ function profile(rs, gs, label) {
     favPts: mean(rs.filter(r => r.fav), r => r.pts), dogPts: mean(rs.filter(r => !r.fav), r => r.pts),
     favYds: mean(rs.filter(r => r.fav), r => r.yds), dogYds: mean(rs.filter(r => !r.fav), r => r.yds),
     favTO: mean(rs.filter(r => r.fav), r => r.int + r.fum), dogTO: mean(rs.filter(r => !r.fav), r => r.int + r.fum),
-    favRatt: mean(rs.filter(r => r.fav), r => r.rAtt), dogRatt: mean(rs.filter(r => !r.fav), r => r.rAtt),
+    favRatt: mean(rs.filter(r => r.fav), r => r.nratt), dogRatt: mean(rs.filter(r => !r.fav), r => r.nratt),
     favAtt: mean(rs.filter(r => r.fav), r => r.pAtt), dogAtt: mean(rs.filter(r => !r.fav), r => r.pAtt),
     dogD4a: mean(rs.filter(r => !r.fav), r => r.d4a),
   };
