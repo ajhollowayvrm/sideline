@@ -118,6 +118,11 @@ for (const g of slate) {
     else if (/field goal MISSED/.test(e.text)) s.dMISS++;
     else if (scored) s.dTD++;
     else if (/Turnover on downs/.test(e.text)) s.dDOWNS++;
+    // Phase 48 kills a drive that is still alive when the half expires (real football's ~6.5%).
+    // This bucket was never wired up, so those drives counted toward `drives` but landed in no
+    // outcome — the shares summed to 92% and the row read as a -100% MISS against a sim that was
+    // in fact modelling them.
+    else if (/^END OF (HALF|GAME)$/.test(e.text)) s.dEND++;
     else if (/INTERCEPTED/.test(e.text)) s.dTO++;
     else if (/FUMBLES/.test(e.text)) { s.dTO++; s.fum++; }
     const m = e.text.match(/sacked by .* for (-\d+)/); if (m) s.skYds += -parseInt(m[1], 10);
@@ -180,7 +185,7 @@ function profile(rs, gs, label) {
     dTD: sum(rs, r => r.dTD) / dn * 100, dFG: sum(rs, r => r.dFG) / dn * 100,
     dPUNT: sum(rs, r => r.dPUNT) / dn * 100, dDOWNS: sum(rs, r => r.dDOWNS) / dn * 100,
     dTO: sum(rs, r => r.dTO) / dn * 100, dMISS: sum(rs, r => r.dMISS) / dn * 100,
-    dEND: 0,
+    dEND: sum(rs, r => r.dEND) / dn * 100,
     margin: mean(gs, g => Math.abs(g.hs - g.as)), total: mean(gs, g => g.hs + g.as),
     homeWin: mean(gs, g => g.hs > g.as ? 100 : 0),
     otPct: mean(gs, g => g.ot ? 100 : 0),
