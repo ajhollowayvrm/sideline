@@ -628,14 +628,26 @@ function withTraits(w, seed) { const tr = rng(seed);
   const sh = tally({ down: 3, togo: 1, los: 50, runRate: 0.5 }), lo = tally({ down: 3, togo: 10, los: 50, runRate: 0.5 });
   check('Phase 29: AI DC stacks the box on short yardage (run-stop, no pure cover)', sh.run > sh.base && sh.cover === 0, JSON.stringify(sh));
   check('Phase 29: AI DC defends the pass on long downs (cover/blitz, never run-stop)', (lo.cover + lo.blitz) > lo.base && lo.run === 0, JSON.stringify(lo));
-  // keys tendency: a predictable all-pass offense fares worse vs the scheming DC than vs a base defense
-  const w = genWorld(707), O = w.teams[3], D = w.teams[8];
+  // keys tendency: a predictable all-pass offense fares worse vs the scheming DC than vs a base defense.
+  //
+  // Varied over EIGHT matchups, not one. The DC's edge is about a point, and a single team pairing
+  // carries matchup variance far larger than that — piling on seeds cannot average out something that
+  // does not vary between them. This check and qa's flipped sign in OPPOSITE directions during Phase
+  // 53 while both were single-world, which is what exposed it. Measured over 12 matchups x 150 seeds
+  // the effect is -1.41 pts vs an all-pass offense and +0.25 vs a balanced one — the DC punishes
+  // PREDICTABILITY and is close to inert against a real attack, which is the design.
+  const w = genWorld(707);
   const allPass = ctx => ctx.phase === 'fourth' ? ctx.ocAct : ctx.phase === 'def' ? 'base' : 'pass';
   let withDC = 0, noDC = 0, n = 0;
-  // n=200, not 30: with the Phase 48 possession model a 30-game sample is pure noise here
-  // (measured +2.7 pts at n=30, -1.4 at n=600 — the sign flips), so the check needs the sample.
-  for (let s = 0; s < 200; s++) { const seed = (hashStr('aidc' + s) ^ 2) >>> 0; withDC += simEngine(O, D, seed, { decideFor: O.id, aiDefVs: O.id, decide: allPass }).hs; noDC += simEngine(O, D, seed, { decideFor: O.id, decide: allPass }).hs; n++; }
-  check('Phase 29: a scheming AI DC lowers a predictable offense vs no DC', withDC < noDC, `${(withDC / n).toFixed(1)} vs ${(noDC / n).toFixed(1)} pts/g`);
+  for (let m = 0; m < 8; m++) {
+    const O = w.teams[m * 3 + 1], D = w.teams[m * 3 + 2];
+    for (let s = 0; s < 60; s++) {
+      const seed = (hashStr('aidc' + m + '_' + s) ^ 2) >>> 0;
+      withDC += simEngine(O, D, seed, { decideFor: O.id, aiDefVs: O.id, decide: allPass }).hs;
+      noDC += simEngine(O, D, seed, { decideFor: O.id, decide: allPass }).hs; n++;
+    }
+  }
+  check('Phase 29: a scheming AI DC lowers a predictable offense vs no DC', withDC < noDC, `${(withDC / n).toFixed(2)} vs ${(noDC / n).toFixed(2)} pts/g over ${n}`);
   // envelope safety: naming a team that isn't on offense is completely inert (AI-vs-AI byte-identical)
   const h = w.teams[0], a = w.teams[1], sd = 4242, plain = simEngine(h, a, sd), tagged = simEngine(h, a, sd, { aiDefVs: 'zzz_not_playing' });
   check('Phase 29: aiDefVs is inert when that team is not on offense (AI-vs-AI unaffected)', plain.hs === tagged.hs && plain.as === tagged.as && JSON.stringify(plain.box) === JSON.stringify(tagged.box));
@@ -665,11 +677,14 @@ function withTraits(w, seed) { const tr = rng(seed);
   check('Phase 31: heavyRunBonus — short/goal-line power, long = dead weight', heavyRunBonus(1, 50) === 4 && heavyRunBonus(3, 50) === 2 && heavyRunBonus(10, 50) === -3 && heavyRunBonus(8, 98) === 4);
   const w = genWorld(909), O = w.teams[2], D = w.teams[5];
   const oc = ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : ctx.ocCall;
-  // heavy on short yardage converts more → outscores no package
+  // heavy on short yardage converts more → outscores no package.
+  // n=400, not 40: this compares points per game, whose SD is ~15, so 40 paired games cannot resolve
+  // a 3-point effect and the check was passing or failing on the draw. Measured properly the package
+  // is worth +3.08 pts/g, which is a big edge — the old sample read it as 32.5 vs 32.6.
   const smart = ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : (ctx.togo <= 2 ? 'heavy' : ctx.ocCall);
   let sP = 0, nP = 0;
-  for (let s = 0; s < 40; s++) { const seed = (hashStr('pkg' + s) ^ 6) >>> 0; sP += simEngine(O, D, seed, { decideFor: O.id, decide: smart }).hs; nP += simEngine(O, D, seed, { decideFor: O.id, decide: oc }).hs; }
-  check('Phase 31: the heavy package on short yardage outscores no package', sP > nP, `${(sP / 40).toFixed(1)} vs ${(nP / 40).toFixed(1)} pts/g`);
+  for (let s = 0; s < 400; s++) { const seed = (hashStr('pkg' + s) ^ 6) >>> 0; sP += simEngine(O, D, seed, { decideFor: O.id, decide: smart }).hs; nP += simEngine(O, D, seed, { decideFor: O.id, decide: oc }).hs; }
+  check('Phase 31: the heavy package on short yardage outscores no package', sP > nP, `${(sP / 400).toFixed(2)} vs ${(nP / 400).toFixed(2)} pts/g`);
   // spread stresses coverage (more pass yds) but takes more sacks (fewer blockers)
   const allSpread = ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : 'spread';
   const allPass = ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : 'pass';
@@ -704,9 +719,19 @@ function withTraits(w, seed) { const tr = rng(seed);
   let coachFga = 0, aiFga = 0, calls = [];
   const kres = simEngine(O, D, 77, { decideFor: O.id, decide: ctx => { const c = kicker(ctx); calls.push(c); return c; } });
   const ares = simEngine(O, D, 77);
-  O.roster.concat(D.roster).forEach(p => { if (kres.box[p.id]) coachFga += kres.box[p.id].fga || 0; if (ares.box[p.id]) aiFga += ares.box[p.id].fga || 0; });
   let i = 0; const krep = simEngine(O, D, 77, { decideFor: O.id, decide: () => calls[i++] });
-  check('Phase 46: a coach can kick a field goal on any down (not just 4th)', coachFga > aiFga, `${coachFga} vs ${aiFga} FGA`);
+  // Counted over 120 seeds rather than the one this block replays. A coach who kicks on first down
+  // ends drives that would otherwise have continued, so he changes the whole possession sequence and
+  // a single game is chaos: seed 77 alone reads 4 vs 5 against a true 8.39 vs 3.06 per game. The
+  // determinism and outcome-changed assertions below still use the single replayed game, which is
+  // what they are about.
+  for (let s = 0; s < 120; s++) {
+    const sd = (hashStr('fgany' + s) ^ 5) >>> 0;
+    const kr = simEngine(O, D, sd, { decideFor: O.id, decide: kicker }), ar = simEngine(O, D, sd);
+    O.roster.concat(D.roster).forEach(p => { if (kr.box[p.id]) coachFga += kr.box[p.id].fga || 0; if (ar.box[p.id]) aiFga += ar.box[p.id].fga || 0; });
+  }
+  check('Phase 46: a coach can kick a field goal on any down (not just 4th)', coachFga > aiFga,
+    `${(coachFga / 120).toFixed(2)} vs ${(aiFga / 120).toFixed(2)} FGA/g`);
   check('Phase 46: an early-down FG changes the game vs the OC autopilot', kres.hs !== ares.hs || kres.as !== ares.as);
   check('Phase 46: play-calls incl. FG replay deterministically (watch == commit)', krep.hs === kres.hs && krep.as === kres.as && JSON.stringify(krep.box) === JSON.stringify(kres.box));
 

@@ -20,6 +20,12 @@ const tmp = path.join(require('os').tmpdir(), 'sideline-sweep');
 fs.mkdirSync(tmp, { recursive: true });
 
 const pad = (s, n) => String(s).padStart(n);
+/* WORLDS passes straight through to 4-simprofile. At the default of 1 league the kurtosis column has
+   a standard error of +-0.11 and MUST NOT be read as a signal — the header says so rather than
+   trusting the reader to remember. Use WORLDS=8 for any sweep whose point is the tail. */
+const WORLDS = +(process.env.WORLDS || 1);
+const seKurt = (Math.sqrt(24 / (2010 * WORLDS))).toFixed(3);
+console.log(`  (WORLDS=${WORLDS} -> ${2010 * WORLDS} games; kurtosis SE +-${seKurt}${WORLDS < 4 ? '  <-- TOO NOISY TO READ' : ''})`);
 console.log('label'.padEnd(30) + '  pts  margin    Y/C     Y/A   cmp%   sack    kurt    skew     SD');
 for (const c of combos) {
   let h = base;
@@ -30,7 +36,7 @@ for (const c of combos) {
   }
   const f = path.join(tmp, 'sw_' + c.label.replace(/[^a-z0-9]/gi, '_') + '.html');
   fs.writeFileSync(f, h);
-  const env = Object.assign({}, process.env, { INDEX: f });
+  const env = Object.assign({}, process.env, { INDEX: f, WORLDS: String(WORLDS) });
   const prof = cp.execSync('node ' + JSON.stringify(path.join(__dirname, '4-simprofile.js')), { env, cwd: ROOT }).toString();
   const out = cp.execSync('node ' + JSON.stringify(path.join(__dirname, '5-compare.js')), { cwd: ROOT }).toString();
   const g = (re, s) => { const m = s.match(re); return m ? m[1] : '?'; };

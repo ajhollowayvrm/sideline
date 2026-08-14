@@ -2399,7 +2399,7 @@ const AT={
   iqProt:0.45,            // he sets the protection
   // ESCAPE — the quarterback's own athleticism against the man who beat the block. P(no sack |
   // pressured) ≈ 0.80 for an average QB, which lands the league on the measured ~6% sack rate.
-  escBase:0.800, escK:0.030, escElu:0.42, escAgi:0.30, escStr:0.14, escBtk:0.14, escAwr:0.30, escPrs:0.55,
+  escBase:0.815, escK:0.030, escElu:0.42, escAgi:0.30, escStr:0.14, escBtk:0.14, escAwr:0.30, escPrs:0.38,
   scrRun:0.30,            // of the escapes, how many take off rather than throw on the run
   // SEPARATION — one physical quantity, in rating points, with two separate consumers below.
   sepRte:1.00, sepAgi:0.60, sepSpd:0.45, sepAcc:0.35,
@@ -2424,6 +2424,20 @@ const AT={
   // anyone's expected score. It is the Phase 50 move (clutch as variance, not bonus) applied to the
   // floor/tail rule, and the direct analogue of Phase 49's team-level SD.
   volK:0.075, volLo:0.55, volHi:1.55,
+  // THE RUN as a sequence (§7). pushR/creaseR/breakR are quantities in rating points; the reg*
+  // weights turn them into a place in the measured table and the floor* weights into a lifted bottom.
+  // §7 puts awareness in the push ("rbk + str + awr (OL) vs rst + str") and in blitz pickup, and
+  // puts the DEFENDER's awr/tkl against the crease rather than his agility. Leaving all three out is
+  // what made an awareness build lose the simlab build-vs-build check 73% to speed's 90%: §9a gives
+  // awareness the floor, and the run had no offensive floor channel for it to reach.
+  pushStr:0.55, pushAwr:0.45, protAwr:0.40, creAgi:0.60, creAcc:0.45, brkElu:0.55, brkBtk:0.60,
+  // regPush is deliberately small and floorPush large. §9a: push owns the FLOOR — fewer stuffs —
+  // and explicitly contributes no tail. It is also a UNIT contest, so it correlates hard with team
+  // quality; carried in the regime at 0.030 it became the single biggest term in the model and took
+  // the average margin to 24.1 with the favourite winning 93%. On the floor it does the job the
+  // directive describes without deciding the league.
+  regPush:0.005, regCrease:0.012, regAdvR:0.0050, regMatchR:0.0060,
+  floorPush:0.65, floorBrk:1.00,
 };
 // AT-END
 // --- Phase 53 primitives. cx is a CONTEST multiplier: log-symmetric, so edges multiply instead of
@@ -2604,6 +2618,19 @@ const PM={
   // team strength still apply on top, as deviations from what real football actually calls.
   mix:{'1|1':0.199,'1|2-3':0.177,'1|4-6':0.278,'1|7-10':0.437,'1|11+':0.509,'2|1':0.292,'2|2-3':0.326,'2|4-6':0.409,'2|7-10':0.531,'2|11+':0.618,'3|1':0.172,'3|2-3':0.405,'3|4-6':0.699,'3|7-10':0.785,'3|11+':0.741,'4|1':0.161,'4|2-3':0.598,'4|4-6':0.842,'4|7-10':0.871,'4|11+':0.862},
   passBase:0.45,                    // fallback when a situation has no measured sample
+  // THE SCOREBOARD, as an input to play-calling (Phase 53). Real offences throw when they trail and
+  // run when they lead, harder as the clock runs out. Phase 52 read down, distance and team strength
+  // and never the score, so a team down 21 in the 4th called the same game it would have called tied.
+  //
+  // This is the compounding loop §1 actually describes — "drives stall, the defence stays on the
+  // field, it gets worse" is a GAME-level feedback, not a per-snap one. It is also the only tail
+  // source available that is orthogonal to team quality: per-play variance shaping cannot fatten a
+  // game-level tail (a +-20% swing in one variance component is worth ~0.02 of excess kurtosis, and
+  // volK measured exactly that across a 5x sweep), whereas behaviour that changes WITH the score
+  // makes trailing teams throw, stop the clock, run more plays and both close gaps and lose bigger.
+  lean:0.16,                        // pass-rate swing at full urgency between a two-score deficit and
+                                    // a two-score lead. Real: ~65% passing down 14+ late vs ~35% up 14+.
+  leanScore:24,                     // points of deficit that saturate the lean
   cmpBase:0.6560,                   // completion rate before situation AND before pressure (Phase 53
                                     // re-anchor: the pocket now charges an explicit accuracy penalty
                                     // on ~30% of dropbacks, so the pre-pressure constant must rise
@@ -2966,7 +2993,10 @@ function simEngine(home,away,seed,opts){
       const dRunY =dcall==='blitz'?3:dcall==='cover'?1:dcall==='run'?-4:0;            // stack the box stuffs the run; blitz is gashed
 
       // ---- run / pass ----
-      let passProb=clamp((PM.mix[ddKey(down,togo)]!=null?PM.mix[ddKey(down,togo)]:PM.passBase)+adv*0.003+schemeTendency(off.offScheme),0.12,0.92);
+      // Phase 53: how urgent the situation is — nothing much in the 1st half, rising through the 2nd.
+      const urg=half===2?clamp(0.25+0.75*(1800-clkNow())/1800,0.25,1):0.22;
+      const lean=clamp(-(score[off.id]-score[def.id])/PM.leanScore,-1,1)*PM.lean*urg;
+      let passProb=clamp((PM.mix[ddKey(down,togo)]!=null?PM.mix[ddKey(down,togo)]:PM.passBase)+adv*0.003+lean+schemeTendency(off.offScheme),0.12,0.92);
       // Phase 30: the AI OC reads YOUR defensive tendency (so far) and biases its run/pass to exploit it.
       if(aiOffVs && def.id===aiOffVs && off.id!==aiOffVs) passProb=clamp(passProb+aiOffPassAdj(dusage[def.id]),0.12,0.92);
       // Phase 46: snapshot the defense's tendency BEFORE this snap's call is recorded, so the offense reads
@@ -3041,7 +3071,8 @@ function simEngine(home,away,seed,opts){
         // play reads. `dSack`/`vSack` (the defensive call and the play concept) move PRESSURE now
         // rather than sacks directly — a blitz that gets home is a worse throw far more often than
         // it is a sack, which is the compounding the additive model could not express.
-        const pressP=clamp(AT.pressBase*cx(-(dPRO+AT.iqProt*qIQ),AT.pressK)
+        const protAwrR=AT.protAwr*AUX(oP.olA,dP.rush4A,dP.olA,oP.rush4A,'awr','awr');   // blitz pickup (§7)
+        const pressP=clamp(AT.pressBase*cx(-(dPRO+AT.iqProt*qIQ+protAwrR),AT.pressK)
             *(dcall==='blitz'?AT.pressBlitz:dcall==='cover'?AT.pressCover:1)
             *(pkg==='spread'?AT.pressSpread:1)*(1+ky*AT.pressKey)
             +vSack*vD*AT.pressVar,0.04,0.80);
@@ -3103,21 +3134,33 @@ function simEngine(home,away,seed,opts){
         const rb=wpick(oP.rush,r,injured)||qb;
         const fr=wpick(dP.front,r,injured);                  // the front defender he meets (Phase 23)
         // Phase 50: the ball-carrier's nerve against the man who has to bring him down
-        const padv=adv+matchEdge(bov(rb),oP.rushAvg,bov(fr),dP.frontAvg)+(compClutch(rb)-compClutch(fr))*PC.mean*press;   // RB vs front matchup (mean-zero, pep-talk + fatigue aware)
-        // ---- Phase 51 channels. The run is where STRENGTH finally gives the offensive line a job:
-        // the back's own power plus his line against the front decides what happens in the pile.
+        const pmatR=matchEdge(bov(rb),oP.rushAvg,bov(fr),dP.frontAvg)+(compClutch(rb)-compClutch(fr))*PC.mean*press;   // RB vs front matchup (mean-zero, pep-talk + fatigue aware)
+        const padv=adv+pmatR;
+        // ---- Phase 53: the run as the SEQUENCE §7 describes — push, crease, break, burst, tail —
+        // rather than four independent deviations added onto one draw.
         const dSPDr=AD(rb,oP.rushA,fr,dP.frontA,'spd'), dAGIr=AD(rb,oP.rushA,fr,dP.frontA,'agi');
-        // THE FLOOR — what happens in the pile. His power to break the tackle, plus his line's run
-        // blocking against the front's ability to shed and fill. This is the job the offensive line
-        // finally has: Phase 51 gave it `str`, which was the same stat as the back's own power.
-        const dSTRr=ADX(rb,oP.rushA,'btk',fr,dP.frontA,'tkl')*AT.btkRun/AT.strRun
-          +AUX(oP.olA,dP.frontA,dP.olA,oP.frontA,'rbk','rst')*AT.rbkLine;
-        // THE CREASE — making him miss, against the man filling it.
-        const dELUr=ADX(rb,oP.rushA,'elu',fr,dP.frontA,'tkl');
+        // PUSH — the line against the front, in run blocking and in raw strength. A UNIT contest, so
+        // it is the same on every snap of the game: a team that cannot move the front does not merely
+        // average fewer yards, it lives in the bottom of the table all afternoon. That persistence is
+        // what makes push carry tail rather than spend it (see regMatch's note).
+        const pushR=AUX(oP.olA,dP.frontA,dP.olA,oP.frontA,'rbk','rst')
+          +AT.pushStr*AUX(oP.olA,dP.frontA,dP.olA,oP.frontA,'str','str')
+          +AT.pushAwr*AUX(oP.olA,dP.frontA,dP.olA,oP.frontA,'awr','awr');
+        // CREASE — the back finding it, against the man filling it.
+        const creaseR=AT.creAgi*ADX(rb,oP.rushA,'agi',fr,dP.frontA,'awr')
+          +AT.creAcc*ADX(rb,oP.rushA,'acc',fr,dP.frontA,'tkl');
+        // BREAK — making him miss, and running through him. §9a puts both on the FLOOR: breaking a
+        // tackle is what turns a stuff into four yards, and it is explicitly not what breaks a 60.
+        const breakR=AT.brkElu*ADX(rb,oP.rushA,'elu',fr,dP.frontA,'tkl')
+          +AT.brkBtk*ADX(rb,oP.rushA,'btk',fr,dP.frontA,'tkl');
         const vDr=clamp(1-AT.awrVariant*(av(fr,'awr')-dP.frontA.awr),0.4,1.6);
-        const u=compDraw(r,rb,vAmp);                         // Phase 51: speed reads the tail, strength the floor
-        gain=Math.max(-9,Math.round(qGain(u,PM.runQ[distKey(togo)],0)+padv*PM.advRun-ky*RUN_KEY+dRunY+vYds*vDr-PC.yc*press
-          +tailAdd(u,dSPDr,AT.tailRun)+floorAdd(u,dSTRr,AT.strRun)+AT.agiRun*dAGIr+AT.eluRun*dELUr+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
+        // Phase 52 added agility and elusiveness FLAT across the whole draw, which §9a forbids —
+        // neither should raise the floor and the tail alike. They now enter where they belong: the
+        // crease selects the regime, the break lifts the bottom of it.
+        const e=regExp(AT.regPush*pushR+AT.regCrease*creaseR+AT.regAdvR*adv+AT.regMatchR*pmatR);
+        const u=regime(shapeDraw(r,rb,vAmp,oP.vol-dP.vol),e);  // speed reads the tail, the pile the floor
+        gain=Math.max(-9,Math.round(qGain(u,PM.runQ[distKey(togo)],0)-ky*RUN_KEY+dRunY+vYds*vDr-PC.yc*press
+          +tailAdd(u,dSPDr,AT.tailRun)+floorAdd(u,AT.floorPush*pushR+AT.floorBrk*breakR,AT.strRun)+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
         time+=PM.secRun; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain; hero=rb;
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
         if(!scored && r()<clamp(PM.fumRate*(1+PC.fumMul*press)+AT.awrFum*AD(rb,oP.rushA,fr,dP.frontA,'awr')+AT.carFum*ADX(rb,oP.rushA,'car',fr,dP.frontA,'tkl'),0.002,0.05)){ turnover=true; txt=nm(rb)+' FUMBLES — lost'; }

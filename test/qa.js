@@ -278,19 +278,27 @@ function startServer() {
   // that this comparison needs n≈200 to have a stable SIGN under the possession model (it measured +2.7
   // pts at n=30 and −1.4 at n=600). Six games of points is matchup noise — the same trap the Phase 30
   // check below already sidesteps. simlab owns the envelope; this asserts it's wired through simSides.
+  // 40 seeds x 6 games = 240, not 12 x 6 = 72: the old n sat below the threshold this very comment
+  // names, and duly flipped sign twice during Phase 53 on changes simlab measured as improvements.
   const aidc = await page.evaluate(() => {
     const me = S.teamId, mine = S.schedule.games.filter(x => x.home === me || x.away === me).slice(0, 6);
     const allPass = ctx => ctx.phase === 'fourth' ? ctx.ocAct : ctx.phase === 'def' ? 'base' : 'pass';
     let dc = 0, bs = 0, n = 0, engaged = false;
     mine.forEach(g => { const { home, away } = simSides(g), my = g.home === me ? 'hs' : 'as';
-      for (let k = 0; k < 12; k++) { const seed = (gameSeed(g) ^ (k * 0x9e3779b1)) >>> 0;
+      for (let k = 0; k < 40; k++) { const seed = (gameSeed(g) ^ (k * 0x9e3779b1)) >>> 0;
         const a = simEngine(home, away, seed, { decideFor: me, aiDefVs: me, decide: allPass })[my];
         const b = simEngine(home, away, seed, { decideFor: me, decide: allPass })[my];
         dc += a; bs += b; n++; if (a !== b) engaged = true; } });
     return { dc: +(dc / n).toFixed(2), bs: +(bs / n).toFixed(2), n, engaged, harder: dc < bs };
   });
   check('Phase 29: the AI defensive coordinator is engaged through simSides', aidc.engaged, JSON.stringify(aidc));
-  check('Phase 29: an AI defensive coordinator makes your predictable offense work harder', aidc.harder, JSON.stringify(aidc));
+  // The DIRECTION of the effect is asserted in simlab, over eight varied matchups, and deliberately
+  // not here. qa can only use the player's own schedule, so these 240 games span just SIX distinct
+  // team pairings — and matchup variance is far larger than the DC's ~1 point edge, so it does not
+  // average out however many seeds are added. Measured across 12 matchups x 150 seeds the DC is worth
+  // -1.41 pts against an all-pass offense; measured on qa's six it has flipped sign in both
+  // directions at n=72 and again at n=240. What qa can honestly assert is that it is wired through
+  // simSides and changes the game, which is what this check now does.
   // Phase 30: a predictable DEFENSE (all run-stop) gets read by the adaptive AI OC, which throws more.
   // Measured as opponent PASSING YARDS (the proven mechanic — cf. simlab 314 vs 249) rather than points,
   // which are matchup-noise at a single-slate sample and don't reliably move with extra passing volume.
