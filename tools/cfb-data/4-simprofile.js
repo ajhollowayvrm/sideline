@@ -61,21 +61,39 @@ function teamRatings(roster) {
   const off = avgTop(grp('off'), 11), def = avgTop(grp('def'), 11);
   return { off, def, ovr: Math.round((off + def) / 2) };
 }
-const world = (() => {
-  const r = rng(0x5eed), teams = [];
+const makeWorld = (seed, tag) => {
+  const r = rng(seed), teams = [];
   for (let i = 0; i < 134; i++) {
     const prestige = clamp(Math.round(35 + ri(r, -15, 15) + (i < 16 ? 25 : i < 40 ? 12 : 0)), 20, 98);
     const roster = genRoster(r, prestige);
-    teams.push({ id: 't' + i, abbr: 'T' + i, prestige, roster, ratings: teamRatings(roster) });
+    teams.push({ id: tag + 't' + i, abbr: 'T' + i, prestige, roster, ratings: teamRatings(roster) });
   }
   return teams;
-})();
+};
+/* WORLDS=n pools n INDEPENDENT leagues, each on the same 15-opponent slate.
 
-/* schedule: each team vs 30 others (wrap) → ~2000 games spanning every mismatch level */
+   The tail statistics need the sample: excess kurtosis has a standard error of about
+   sqrt(24/n_games), which at one league's 2,010 games is +-0.11 — the same size as the effects
+   Phase 53 exists to measure, so single-league tail numbers invert between runs and tuning against
+   them is tuning noise.
+
+   This is deliberately NOT done by widening the slate. Opponents are drawn by wrapping through a
+   prestige-ORDERED list, so d<=100 has every team playing far more mismatched opponents than d<=15
+   does: it changes the matchup distribution, and with it the margin and the residual SD, rather than
+   just adding sample. More leagues at the same slate shape adds sample and holds the distribution
+   fixed, which is what a standard error assumes.
+
+   WORLDS=8 gives 16,080 games (SE ~0.039) in about a minute. */
+const WORLDS = Math.max(1, +(process.env.WORLDS || 1));
+const world = makeWorld(0x5eed, '');
+const worlds = [world];
+for (let w = 1; w < WORLDS; w++) worlds.push(makeWorld((0x5eed + Math.imul(w, 0x9e3779b1)) >>> 0, 'w' + w + '_'));
 const slate = [];
-for (let i = 0; i < world.length; i++) for (let d = 1; d <= 15; d++) {
-  slate.push({ id: 'g' + i + '_' + d, home: world[i], away: world[(i + d) % world.length] });
-}
+worlds.forEach((wd, w) => {
+  for (let i = 0; i < wd.length; i++) for (let d = 1; d <= 15; d++) {
+    slate.push({ id: (w ? 'w' + w + '_' : '') + 'g' + i + '_' + d, home: wd[i], away: wd[(i + d) % wd.length] });
+  }
+});
 
 /* ---------- sim each game, parse the log into the real-data metric set ---------- */
 const recs = [];   // per team-game
@@ -155,16 +173,17 @@ for (const g of slate) {
 
 /* ---------- retrodictive rating on the SIM's own results (same method as the real data) ---------- */
 const HFA = 2.4, R = {};
-world.forEach(t => R[t.id] = 0);
+const allTeams = worlds.flat();
+allTeams.forEach(t => R[t.id] = 0);
 const cap = x => Math.max(-28, Math.min(28, x));
 for (let it = 0; it < 60; it++) {
-  const sum = {}, cnt = {}; world.forEach(t => { sum[t.id] = 0; cnt[t.id] = 0; });
+  const sum = {}, cnt = {}; allTeams.forEach(t => { sum[t.id] = 0; cnt[t.id] = 0; });
   for (const g of gameRows) { const m = cap(g.hs - g.as);
     sum[g.hid] += (m - HFA) + R[g.aid]; cnt[g.hid]++;
     sum[g.aid] += (-m + HFA) + R[g.hid]; cnt[g.aid]++; }
-  world.forEach(t => { if (cnt[t.id]) R[t.id] = sum[t.id] / cnt[t.id]; });
-  const mean = world.reduce((a, t) => a + R[t.id], 0) / world.length;
-  world.forEach(t => R[t.id] -= mean);
+  allTeams.forEach(t => { if (cnt[t.id]) R[t.id] = sum[t.id] / cnt[t.id]; });
+  const mean = allTeams.reduce((a, t) => a + R[t.id], 0) / allTeams.length;
+  allTeams.forEach(t => R[t.id] -= mean);
 }
 const byGid = {}; gameRows.forEach(g => byGid[g.id] = g);
 gameRows.forEach(g => { g.exp = R[g.hid] - R[g.aid] + HFA; g.gap = Math.abs(g.exp); });
@@ -244,7 +263,11 @@ console.log(`  ${out.all.pts.toFixed(1)} pts, ${out.all.yds.toFixed(0)} yds, ${o
   // mixtures carry excess kurtosis by construction. This is the number that says whether that worked.
   const cm = k => resid.reduce((s2, x) => s2 + Math.pow(x - m, k), 0) / resid.length;
   const skew = cm(3) / Math.pow(sd, 3), kurt = cm(4) / Math.pow(sd, 4) - 3;
-  console.log(`  skew ${skew.toFixed(3)} (real +0.130)   excess kurtosis ${kurt.toFixed(3)} (real +0.319)`);
+  // Standard errors for a normal sample: sqrt(6/n) and sqrt(24/n). Quoted because these two numbers
+  // are noisy enough at the default slate to invert between runs, and a phase that tunes the tail
+  // without them is tuning noise — which is exactly what happened before SLATE existed.
+  const seSkew = Math.sqrt(6 / resid.length), seKurt = Math.sqrt(24 / resid.length);
+  console.log(`  skew ${skew.toFixed(3)} +-${seSkew.toFixed(3)} (real +0.130)   excess kurtosis ${kurt.toFixed(3)} +-${seKurt.toFixed(3)} (real +0.319)`);
   fs.writeFileSync(__dirname + '/simresid.json', JSON.stringify({
     n: resid.length, sd, skew, kurt,
     p14: resid.filter(x => Math.abs(x) > 14).length / resid.length * 100,
