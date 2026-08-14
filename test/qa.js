@@ -784,7 +784,18 @@ function startServer() {
   check('Recruiting: prospect sheet hides the raw potential number', !/Potential/.test(await page.locator('[data-tid="sheet"]').innerText()));
   // Phase 45.1: fog-safe projected identity on the recruit sheet (stars/pos/state always; trait tag only when scouted)
   const projTxt = await page.locator('[data-tid="sheet"]').innerText();
-  check('Phase 45.1: recruit sheet shows a fog-safe projected identity', /Projects as:/.test(projTxt) && /Scout him to project his temperament/.test(projTxt));
+  // The projection line is always there; the "scout him" prompt appears only while his temperament is
+  // still fogged. Phase 57b made the AI concentrate its scouting budget on blue-chips much harder
+  // (aiPriority is expected value now, so the field evaluates the top of the board faster), so an
+  // arbitrary blue-chip may ALREADY be revealed by the field — which is Phase 33's designed
+  // information asymmetry working, not a regression. Assert the fog RULE rather than one outcome.
+  const projRevealed = await page.evaluate(id => {
+    const r = S.recruiting.pool.find(x => x.id === id);
+    return traitRead('comp', r.id, compVal(r), r.scout).revealed;
+  }, tgt.id);
+  check('Phase 45.1: recruit sheet shows a fog-safe projected identity',
+    /Projects as:/.test(projTxt) && (projRevealed || /Scout him to project his temperament/.test(projTxt)),
+    projRevealed ? 'temperament already revealed by the field' : 'still fogged, prompt shown');
   await shot(page, '24-recruiting-prospect.png');
   await page.locator('[data-tid="rec-offer"]').click();
   await page.waitForTimeout(150);

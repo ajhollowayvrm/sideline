@@ -10,56 +10,56 @@ SUPPLY — national star mix
   blue-chip (4-5*)          11.1%
 
 CONVERGENCE
-  signed / pool                 64.7%
-  signed / has-a-suitor         64.7%
-  class size  mean 17.8   p10 6  median 20  p90 23   (cap 25)
-  programs signing < 10         13.6%
+  signed / pool                 67.0%
+  signed / has-a-suitor         67.0%
+  class size  mean 18.5   p10 15  median 18  p90 22   (cap 25)
+  programs signing < 10         0.0%
 
 DISTRIBUTION — the question this phase exists to answer
-  blue-chip share of all signees  5.3%   (pooled, the honest one)
-  blue-chip ratio, per class      mean 5.4%  (classes >= 10)
-  blue-chip ratio, rolling 4yr    mean 5.4%   max 90.8%
-  program-windows at BCR >= 50%   45 of 925  (4.9%)
-  Gini of blue-chips per team     0.923
+  blue-chip share of all signees  16.3%   (pooled, the honest one)
+  blue-chip ratio, per class      mean 16.5%  (classes >= 10)
+  blue-chip ratio, rolling 4yr    mean 16.5%   max 100.0%
+  program-windows at BCR >= 50%   168 of 1072  (15.7%)
+  Gini of blue-chips per team     0.824
 
   WHERE the blue-chips go, by prestige band (non-cumulative):
   band        teams  mean prestige   class size   share of blue-chips   BCR
-  1-10          10           86.8         20.2                 71.4%   44.6%
-  11-25         15           72.3         20.4                 18.5%    7.7%
-  26-50         25           59.3         20.6                  8.8%    2.2%
-  51-90         40           49.7         20.5                  1.4%    0.2%
-  91-134        44           38.2         12.4                  0.0%    0.0%
+  1-10          10           86.8         18.0                 44.6%   99.6%
+  11-25         15           72.3         18.3                 46.4%   67.8%
+  26-50         25           59.3         18.6                  8.7%    7.5%
+  51-90         40           49.7         18.5                  0.3%    0.1%
+  91-134        44           38.2         18.5                  0.0%    0.0%
 
   ^ class size is the column to read first. Recruiting pull is a BAND-PASS filter centred on
     the recruit's tier (recruitFit targets prestige 88/70/50/32 by star, and the suitor draw at
     genRecruits has no over-tier floor at all) — so a program ABOVE a tier is penalised exactly
     like one below it. The best programs in the country make almost nobody's board.
   mean landing prestige by star tier:
-    5*   80.1
-    4*   83.6
-    3*   59.9
-    2*   47.5
+    5*   88.1
+    4*   77.7
+    3*   53.4
+    2*   38.7
 
   THE TEN MOST PRESTIGIOUS PROGRAMS, one representative class:
   team     prestige   signed   blue-chips
-  UGA            98       22            9
-  ALA            93       18           15
-  OSU            89       20           15
-  ORE            89       20           18
-  OU             88       19           18
-  LSU            82       18            1
-  TEX            82       23            0
-  TENN           81       16            1
-  PSU            81       21            9
-  WASH           81       18            5
+  UGA            98       15           15
+  ALA            93       16           16
+  OSU            89       18           18
+  ORE            89       18           18
+  OU             88       16           16
+  LSU            82       15           15
+  TEX            82       22           20
+  TENN           81       14           12
+  PSU            81       19           18
+  WASH           81       15           15
 
 PERSISTENCE — does a program stay good at recruiting?
-  class-score r, class N -> N+1  0.893
+  class-score r, class N -> N+1  0.890
 
 SATURATION — is the interest race actually a race?
-  seeded 4* relationships tracked   20
-  past the commit bar (68) by wk 7  0.0%  on passive growth alone
-  pinned at the 100 ceiling by NSD  0.0%
+  seeded 4* relationships tracked   45
+  past the commit bar (68) by wk 7  4.4%  on passive growth alone
+  pinned at the 100 ceiling by NSD  4.4%
   ^ passive growth is (1.0 + fit*3.2) * (0.6 + r()*0.9) per week. For a good-fit program that
     is ~4.4/week from a seeded base near 46, against a commit threshold of 68 -- so the
     relationship clears on its own by mid-season and pins at the ceiling before Signing Day.
@@ -67,7 +67,7 @@ SATURATION — is the interest race actually a race?
     double-downs, diminishing returns) is moving a number that is already at its maximum.
 
 GEOGRAPHY
-  in-state share of a class      61.3%
+  in-state share of a class      36.1%
   state          programs   recruit supply   supply per program
   TX            13          12.0%                31.3
   OH             8           4.1%                17.5

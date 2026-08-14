@@ -798,6 +798,116 @@ it was never measuring recruiting health.
 
 ---
 
+## Phase 57b design — the talent economy
+
+Decided 2026-08-14 with AJ. The half of the rewrite that needs fitting judgment, and the one the
+whole arc exists for. Phase 56 found two defects; 57a fixed neither, because neither is a supply
+problem. They are the *same* defect seen twice — **`recruitFit` alone decided both who was on a
+prospect's board and who won him** — which is why they had to be fixed together. Fix the band-pass
+alone and blue-bloods reach 4★ boards and then win every one deterministically, because the race is
+still settled by week 7; fix saturation alone and the race becomes contestable among the wrong set
+of suitors, with Georgia still not on the board.
+
+> **One rule: pull is monotonic in program quality, and it sets the odds rather than the outcome.**
+
+### The engine
+
+**`pedigreeFit(prestige, stars)` is a logistic** in `prestige − recruitTier(stars)`. Monotonic in
+prestige is the entire point: a better program must never pull a given recruit *less* than a worse
+one does. It stays strictly below 1 by construction, so it keeps discriminating above the tier line
+— two blue-bloods on the same recruit must not tie, or nothing clears `LEAD_GAP` and nobody commits.
+`recruitTier` is now one definition; it had been inlined identically in `recruitFit` and
+`genRecruits`, which is two places to drift.
+
+**`boardAppeal`** carries the only surviving above-tier taper, and only for board *membership*. This
+is the honest half of what the old band-pass was groping at: a blue-blood is not *worse* at
+recruiting a two-star, it simply has better uses for the scholarship. Mild, floored, and separate
+from pull.
+
+**Growth approaches a ceiling set by fit** — `CEIL_BASE + fit×(100−CEIL_BASE)` — instead of climbing
+without bound. A program's *passive* ceiling is its fit, so a dominant pairing still wins on its own
+and a marginal one is stranded below the commit bar until somebody actually recruits him.
+
+**`classTarget`** makes `CLASS_CAP` a ceiling rather than a target — every mid and low program had
+been filling to exactly 25 against a measured mean of 20.2. It carries a small **prestige gradient**,
+because §3's class size is nearly but not quite flat: 23.5 at the top of the league against 19.9 at
+the bottom. That looks like a rounding detail and is not. It is what sets the top band's blue-chip
+*ratio*: sixteen blue-chips in a class of 18 reads 100%, and the same sixteen in a class of 23.5
+reads 70%, which is the measured number. Fitting without the gradient, top-10 BCR could not be pulled
+off 99% by any combination of the other eight constants, because there was nothing else in the class
+to dilute it with — the fitter grinding against that is what surfaced it.
+
+**`aiPriority` became a product** — `fit × appeal × recruitValue`, expected value rather than a
+weighted sum. This one is a direct consequence of monotonic pull and was missed on the first pass:
+a blue-blood's fit on a *two-star* is ~0.99 against ~0.86 on a five-star (it is further above that
+tier line), so **any additive form ranks the two-star higher** and the best programs fill their
+classes with the tail. The first fitter run was stopped and discarded rather than allowed to tune
+around it.
+
+### Three things that came out of building it
+
+**The one-way growth rule.** `iv += (ceil − iv) × rate` is an attractor, and an attractor pulls
+*down* as well as up — so a coach who spent a season pushing a recruit above his program's natural
+ceiling had the gain eroded every week, which destroys the exact thing the phase exists to create.
+It cost a full re-fit to find, because the constants had already been fitted around it. Growth is
+one-way now: **pull decides where you get for free, effort takes you above it, and you keep what you
+earned.** Losing ground belongs to `decayNeglect`, which is app-layer and deliberate.
+
+**The player is not subject to a class target.** The target models how many scholarships an AI
+program has decided to give. A target the player can neither see nor set, silently blocking the
+recruit he has worked all season because the autopilot filled the last slot with someone lesser, is
+not a simulation of scholarship management — it is a bug with a rationale. One team of 134, and 25
+is inside the real p90 of 27, so the measured distribution is untouched.
+
+**A shipped bug, found sideways.** Checking that the new per-team `classTarget` draw varied year to
+year turned up that nothing did: `initRecruiting` seeded the whole national class off `S.seed`, which
+never changes for the life of a career, so **every season generated the byte-identical 3,692
+prospects** — the same #1 recruit in the country, same name, position and home state, every year you
+coached. `recruitSeed()` folds the year in, keeping determinism (seed + year reproduces a cycle
+exactly) while making each class new. `S.recruiting.cycle` now tracks the year instead of being
+permanently 1.
+
+### Fitting
+`25-recfit.js` fits nine constants by alternating coordinate passes (the `15-penfit.js` shape),
+because they interact: a steeper `PULL_W` concentrates blue-chips, which starves the mid-tier, which
+changes how many programs fill a class, which changes the sign rate. The objective is eight measured
+targets from §2–3, each scaled by what a meaningful error looks like for that metric so none
+dominates by unit accident. `24-geofit.js` had to be re-run too — changing the *scale* of the suitor
+score left `GEO_SUIT` fitted against the old one, which blew in-state share out to 61.6%. That is the
+same compensating-error pattern 57a hit, and the second time it appeared in this arc.
+
+### Save & validation
+**No save bump, no `migrateState` step, no `SIM_MODEL` bump** — no field is added or changed, and
+`S.recruiting` is rebuilt at every kickoff, so an in-flight class is untouched. Generated boards
+change for a given seed, which is the phase.
+
+`reclab` → **75** (adds the band-table assertions Phase 56 deliberately deferred, flips the two
+saturation checks from characterizations into real assertions, and re-points `≥18 fill` to
+fill-against-target). `qa` → **330**. `rolllab` 40, `portallab` 17, `legacylab` 31, `draftlab` 22,
+`traitlab` 30.
+
+**`26-dynasty.js`** is new, and it covers the cross-gate risk this phase carries: concentrating
+talent widens the roster-quality spread, which widens the point spread, and `calibration.md` §7
+already has the sim's standardized margin at 19.2 against a real 16.2. Nothing existing can see it —
+`4-simprofile.js` builds its own prestige-scaled world rather than one that came out of recruiting,
+and `rolllab` asserts rollover *stability*, not spread. So it runs ten seasons of
+`genRecruits → advanceRecruiting → rolloverRoster` over a real-geography league and watches whether
+the top-10/bottom-10 talent gap **compounds**. The question is compounding, not level: a stable gap
+is fine at any width, since the sim's margin is calibrated against whatever spread it has, but a gap
+that climbs every season means the best programs are converting a recruiting edge into a talent edge
+into a bigger recruiting edge with nothing pushing back. Like `4-simprofile.js` it is a **tool rather
+than an npm gate** — too slow for `reclab` — and any later phase that moves the talent distribution
+owes it a run.
+
+### Known misses, recorded rather than tuned away
+Programs signing under 10 reads ~0% against a real 3.3%, because `TGT_MIN` floors a target at 12 —
+real attrition and transfer churn occasionally produce a genuinely tiny class and the model has no
+mechanism for one. The deep tail (band 51–90) landing the odd blue-chip is a **geography** effect and
+so is measured in `22-recprofile.js` rather than asserted in `reclab`, whose teams are bare by design
+and have no `homeState` for it to fire through.
+
+---
+
 ## Planned: non-conference series scheduling (Phase 8)
 
 Players (and AI schools) book the **non-conference** part of the schedule by agreeing to

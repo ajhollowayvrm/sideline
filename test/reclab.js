@@ -175,6 +175,60 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('5★ prospects land at high-prestige programs (avg ≥ 80)', avg(fiveLanded) >= 80, `avg landing prestige ${avg(fiveLanded).toFixed(0)}`);
 })();
 
+/* 3b) THE BAND TABLE — the assertions Phase 56 measured but could not yet make (Phase 57b)
+   ------------------------------------------------------------------------------------------------
+   Phase 56 deliberately left these out: a gate that fails is not a gate, and the band-pass filter
+   could not be fixed in a measurement-only phase. `22-recprofile.js` and `23-reccompare.js` held
+   them meanwhile. They are the pin on the phase's whole thesis, so they belong here now.
+   Real, from docs/reference/cfb-recruiting.md §3 (non-cumulative bands by program quality):
+     band     class size   share of blue-chips   BCR
+     1-10           23.5                 40.3%   69.6%
+     11-25          21.5                 35.4%   44.5%
+     51-90          19.5                  5.1%    2.6%
+   The two facts that matter are that class size is FLAT across program quality (scholarships are a
+   constant) and that the blue-chip decline is smooth rather than a cliff. */
+(function () {
+  const { teams, pool } = runCycle(2026);
+  const byPrestige = [...teams].sort((a, b) => b.prestige - a.prestige);
+  const cls = {}; pool.forEach(r => { if (r.committedTo) (cls[r.committedTo] = cls[r.committedTo] || []).push(r); });
+  const sizeOf = t => (cls[t.id] || []).length;
+  const bcOf = t => (cls[t.id] || []).filter(x => x.stars >= 4).length;
+  const band = (lo, hi) => {
+    const b = byPrestige.slice(lo, hi);
+    const n = b.reduce((s, t) => s + sizeOf(t), 0), bc = b.reduce((s, t) => s + bcOf(t), 0);
+    return { size: n / b.length, bc, bcr: n ? bc / n : 0 };
+  };
+  const top10 = band(0, 10), mid = band(10, 25), low = band(50, 90), bottom = band(90, 134);
+  const totalBC = byPrestige.reduce((s, t) => s + bcOf(t), 0);
+
+  // THE headline. Before Phase 57b the top-10 band signed 4.2 players — Georgia signed ONE.
+  check('Band 1-10 signs a real class, not a handful (real 23.5)',
+    top10.size >= 16, `top-10 band signs ${top10.size.toFixed(1)}`);
+  // Class size is flat in reality: 23.5 at the top of the league against 19.9 at the bottom.
+  const sizes = [top10.size, mid.size, low.size, bottom.size];
+  check('Class size does not invert with program quality (real spread 3.6)',
+    Math.max(...sizes) - Math.min(...sizes) <= 9,
+    `sizes ${sizes.map(s => s.toFixed(1)).join(' / ')}`);
+  check('The best programs are not OUT-recruited by the tier below them',
+    top10.bc >= mid.bc * 0.6, `top-10 ${top10.bc} blue-chips vs 11-25 ${mid.bc}`);
+  // Concentration is real but not total — the top ten take ~40% of every blue-chip in the country.
+  check('Blue-chips concentrate at the top (band 1-10 takes 25-60%)',
+    top10.bc / totalBC >= 0.25 && top10.bc / totalBC <= 0.60,
+    `${(100 * top10.bc / totalBC).toFixed(1)}% to the top 10`);
+  check('The decline is smooth, not a cliff (BCR falls monotonically by band)',
+    top10.bcr > mid.bcr && mid.bcr > low.bcr && low.bcr >= bottom.bcr,
+    `BCR ${[top10, mid, low, bottom].map(b => (100 * b.bcr).toFixed(1)).join(' / ')}`);
+  // Real band 26-50 takes 19.0% of blue-chips — the middle of the league is not shut out.
+  check('The middle of the league is not shut out of blue-chips',
+    band(25, 50).bc > 0, `band 26-50 landed ${band(25, 50).bc}`);
+  /* The DEEP tail (real band 51-90 takes 5.1%) is deliberately NOT asserted here. In the shipped
+     game a rank-60 program lands the occasional blue-chip almost entirely through geography — an
+     in-state kid it has a real relationship with — and this lab's teams are bare by design, with no
+     `homeState`, so that mechanism cannot fire and the band correctly reads zero. Asserting it would
+     be asserting a property of the harness. `22-recprofile.js` measures it on a real-geography world
+     (8.6% against a real 5.1%) and `23-reccompare.js` reports it. */
+})();
+
 /* 4) player effort matters: actively pushing a target lands more than idling */
 (function () {
   // pick a mid-prestige team; chase 4★ targets it isn't the natural leader for.
@@ -235,12 +289,17 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   // in the app layer (the board model plus `decayNeglect` eating the player's seeded interest), and
   // reclab structurally cannot see it while `advanceRecruiting` is all it drives. Worth pinning:
   // if this ever starts differing, the engine's contract with the app changed.
-  check('Passive coach: the engine resolves a full class for him regardless',
-    passive.length >= 18 && recruited.length >= 18,
+  check('Passive coach: the engine still resolves a real class for him',
+    passive.length >= 12 && recruited.length >= 12,
     `passive ${passive.length}, AI-recruited ${recruited.length} — the Phase 44 cliff is app-layer`);
-  check('Passive coach: the AI concentrated-effort pass changes his class barely at all',
-    Math.abs(bc(passive) - bc(recruited)) <= 2,
-    `blue-chips ${bc(passive)} vs ${bc(recruited)}`);
+  /* Phase 56 measured this at "no difference whatsoever" — a prestige-71 program signed the SAME 25
+     players, 25 of them blue-chips, whether the AI brain worked its board or nobody did, because the
+     interest race was already saturated. Phase 57b de-saturated it, so the concentrated-effort pass
+     is now worth something real. That flip is the phase's whole point, so it is asserted rather than
+     merely observed: recruiting effort must change the QUALITY of a class, not just its size. */
+  check('Recruiting effort now changes the class it lands (Phase 56 measured NO difference)',
+    bc(recruited) > bc(passive),
+    `blue-chips: worked ${bc(recruited)} vs unworked ${bc(passive)}`);
 
   /* And the reason for that, measured — the finding this scenario actually turned up.
      `advanceRecruiting`'s passive growth is `iv += (1.0 + fit*3.2) * (0.6 + r()*0.9)` every week.

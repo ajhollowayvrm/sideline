@@ -3661,9 +3661,9 @@ const PITCH_ANGLES=[
 // league). OVER_W/OVER_FLOOR are the mild above-tier taper that decides board MEMBERSHIP only.
 // PASSIVE_RATE is how fast interest approaches its fit-set ceiling. TGT_* size a real class.
 // All fitted jointly by tools/cfb-data/25-recfit.js against docs/reference/cfb-recruiting.md §2-3.
-const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.20,GEO_FIT:0.10,
-  TIER5:88,TIER4:70,TIER3:50,TIER2:32,PULL_W:15,OVER_W:60,OVER_FLOOR:0.35,SUIT_NOISE:0.55,
-  PASSIVE_RATE:0.18,CEIL_BASE:45,TGT_MEAN:20.5,TGT_SD:4.5,TGT_MIN:12,AI_VALUE:0.15,
+const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.08,GEO_FIT:0.08,
+  TIER5:88,TIER4:70,TIER3:50,TIER2:32,PULL_W:26,OVER_W:60,OVER_FLOOR:0.15,SUIT_NOISE:0.55,
+  PASSIVE_RATE:0.10,CEIL_BASE:60,TGT_MEAN:20.5,TGT_SD:4.0,TGT_PRES:0.7,TGT_MIN:12,AI_VALUE:0.10,
   COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:16,DECOMMIT_GAP:18,
   AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.3,NEGLECT_DECAY:3.5,
   AI_VISIT_P:0.25,FINALISTS:4,FINAL_READY:0.55,FINAL_BAR:58};
@@ -3715,7 +3715,13 @@ function boardAppeal(prestige,stars){const d=prestige-recruitTier(stars);
 // replays; a later phase can drive this from real roster churn (graduating + portal losses) instead.
 function classTarget(team,seed){
   const r=rng((hashStr('ct'+(team&&team.id)+seed))>>>0);
-  return clamp(Math.round(REC.TGT_MEAN+(r()+r()+r()-1.5)*REC.TGT_SD),REC.TGT_MIN,REC.CLASS_CAP);
+  // A prestige GRADIENT, because the measured one is not quite flat: the top band signs 23.5 and the
+  // bottom 19.9 (§3). It looks like a rounding detail and is not — it is what sets the top band's
+  // blue-chip RATIO. Sixteen blue-chips in a class of 18 reads 100%; the same sixteen in a class of
+  // 23.5 reads 70%, which is the measured number. Fitting without this knob, the top-10 BCR simply
+  // could not come down off 99%, because there was nothing else in the class for it to be diluted by.
+  const lift=REC.TGT_PRES*(((team&&team.prestige)||55)-55)/10;
+  return clamp(Math.round(REC.TGT_MEAN+lift+(r()+r()+r()-1.5)*REC.TGT_SD),REC.TGT_MIN,REC.CLASS_CAP);
 }
 function recruitFit(team,rec){
   let prox=pedigreeFit(team.prestige,rec.stars);
@@ -3892,7 +3898,12 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
   // ceiling now, the way it always should have been — it was acting as a target, so every mid and
   // low program filled to exactly 25 against a real mean class of 20.2.
   const tgt={};teams.forEach(t=>tgt[t.id]=classTarget(t,seed));
-  const full=id=>(counts[id]||0)>=(tgt[id]||REC.CLASS_CAP);
+  // The target models how many scholarships an AI program has decided to give. The PLAYER's class
+  // size is his own decision — he manages it by working the board — so he gets the full cap. Without
+  // this, a target he can neither see nor set silently blocks the recruit he has spent a season
+  // pushing, because the autopilot filled the last slot with someone lesser first. One team of 134,
+  // so the measured class-size distribution is unaffected, and 25 is inside the real p90 of 27.
+  const full=id=>(counts[id]||0)>=(id===playerTeamId?REC.CLASS_CAP:(tgt[id]||REC.CLASS_CAP));
   const readiness=clamp((week-2)/(weeks-3),0,1);
   // Phase 36 — once a recruit's FINALISTS are set, only they stay in the race (others are cut). isFinalist
   // gates every later pass (growth / AI / decommit / commit), so the field narrows the way it does in real life.
@@ -3926,7 +3937,13 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
       // league could not sign anyone at all, which is not de-saturation, it is a different bug.
       // The floor says: a recruit's realistic best option still gets him over the line.
       const ceil=clamp(REC.CEIL_BASE+fit*(100-REC.CEIL_BASE),0,100);
-      rec.iv[tid]=clamp(rec.iv[tid]+(ceil-rec.iv[tid])*REC.PASSIVE_RATE*(0.6+r()*0.9),0,100);}
+      // ONE-WAY, and that is load-bearing. An attractor (`iv += (ceil-iv)*rate` in both directions)
+      // drags a relationship back DOWN whenever effort has pushed it above the program's natural
+      // ceiling — which erodes exactly the thing this phase exists to make matter, and it beat a
+      // season of real pitching in the qa cycle. Pull decides where you get for FREE; effort takes
+      // you above it and you keep what you earned. Neglect is a separate, app-layer lever
+      // (`decayNeglect`), which is where losing ground belongs.
+      if(rec.iv[tid]<ceil)rec.iv[tid]=clamp(rec.iv[tid]+(ceil-rec.iv[tid])*REC.PASSIVE_RATE*(0.6+r()*0.9),0,100);}
   });
   // 1.5) AI concentrated effort (Phase 33): each AI team spends a scouting-facility budget on its top
   //      priority targets — the discrete weekly actions the player also takes (applied app-side, before
@@ -6002,7 +6019,7 @@ function earlySigningPeriod(){
 function nationalSigningDay(){
   const R=S.recruiting; if(!R||R.stage==='closed')return;
   applyPlayerIntents();                                          // Phase 33: spend the final-push intents first
-  advanceRecruiting(R.pool,S.world.teams,99,99,S.seed,true,30,undefined,S.teamId);   // mop-up: any real leader now signs
+  advanceRecruiting(R.pool,S.world.teams,99,99,recruitSeed(),true,30,undefined,S.teamId);   // mop-up: any real leader now signs
   R.stage='closed'; R.signed=true;
   openPortal();                                                   // the offseason transfer portal opens next (Phase 18)
 }
@@ -6484,13 +6501,20 @@ function weeklyPoints(){const t=controlled(),m=myMods();
   const sc=(t.fac&&t.fac.scouting)||5;
   return Math.max(4,Math.round(REC.BASE_POINTS+sc*1.6+m.points));}
 function boardSlots(){return Math.max(6,REC.SLOTS+myMods().slots);}
+// The seed for THIS recruiting cycle. Phase 57b — a real shipped bug, found while checking that the
+// new per-team `classTarget` draw varied year to year. It did not, and neither did anything else:
+// `initRecruiting` seeded the whole national class off `S.seed`, which never changes for the life of
+// a career, so EVERY season generated the byte-identical 3,692 prospects. The same #1 recruit in the
+// country, same name, same position, same home state, every year you coached. Folding the year in
+// keeps determinism (seed + year reproduces a cycle exactly) while making each class new.
+function recruitSeed(){return (S.seed^hashStr('cycle'+(S.year||0)))>>>0;}
 function initRecruiting(){
   // stage: 'open' (in-season, taking verbals) → 'national' (offseason, ESP done, NSD pending) → 'closed'
   // intents = the week's queued actions, keyed by recruit id → an ARRAY of ≤2 actions (Phase 35 double-down).
   // doubles = this week's double-down tokens (Phase 35) that let one recruit hold a 2nd action.
   // visitsLeft = the season-long official-visit budget; visitPlan = recruits booked per home-game
   //   weekend (Phase 38 scheduler — official visits are now a calendar, reserved at booking).
-  S.recruiting={cycle:1,points:weeklyPoints(),pool:genRecruits(S.seed,S.world.teams),board:[],signed:false,stage:'open',intents:{},doubles:doublesPerWeek(),visitsLeft:SEASON_VISITS,visitPlan:{},report:null,autopilot:true};   // Phase 44: staff works the board by default
+  S.recruiting={cycle:(S.year||1),points:weeklyPoints(),pool:genRecruits(recruitSeed(),S.world.teams),board:[],signed:false,stage:'open',intents:{},doubles:doublesPerWeek(),visitsLeft:SEASON_VISITS,visitPlan:{},report:null,autopilot:true};   // Phase 44: staff works the board by default
 }
 // Official visits remaining this season — reserved at booking onto a weekend (Phase 38).
 function visitsLeft(){const R=S.recruiting;return (R&&R.visitsLeft==null?SEASON_VISITS:R.visitsLeft);}
@@ -6633,7 +6657,7 @@ function resolveRecruitingWeek(week){
   const rippleNote=applyLeagueRipple(week); // Phase 35/37: every team's Saturday result moves its board (note=yours)
   applyAINil(week);                 // Phase 37: AI programs place NIL bids on the recruits they're chasing
   // in-season: verbal commitments only (finalize=false) — binding signatures wait for the offseason
-  const out=advanceRecruiting(S.recruiting.pool,S.world.teams,week,S.schedule.weeks,S.seed,false,undefined,undefined,S.teamId);
+  const out=advanceRecruiting(S.recruiting.pool,S.world.teams,week,S.schedule.weeks,recruitSeed(),false,undefined,undefined,S.teamId);
   const note=[visitNote,rippleNote].filter(Boolean).join(' · ')||null;   // Phase 38 visit + Phase 35/37 ripple
   buildRecruitReport(snaps,week,note);   // Phase 34/35: diff into a readable board report
 
