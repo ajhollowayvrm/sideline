@@ -264,6 +264,55 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   const punts = lg.filter(e => e.mv && e.mv.k === 'k' && e.text === 'Punt');
   check('Phase 55: a punt travels downfield in the punting team\'s frame',
     punts.length > 0 && punts.every(e => e.mv.b > e.mv.a), `${punts.length} punts`);
+
+  // --- Phase 55.1: `st` (the per-entry stat delta) and `sm` (the running story) ----------------
+  // The whole point of `st` is that the viewer can show the box score AS OF the play you're looking
+  // at rather than spoiling it with the final one — which is only true if folding every delta in
+  // order reproduces the engine's own box EXACTLY. This is the check that makes the Stats tab safe.
+  const fold = {};
+  for (const e of lg) for (const [id, k, d] of (e.st || [])) { (fold[id] = fold[id] || { gp: 1 })[k] = (fold[id][k] || 0) + d; }
+  for (const id in fold) for (const k in fold[id]) if (!fold[id][k] && k !== 'gp') delete fold[id][k];
+  const foldKeys = Object.keys(fold).sort(), boxKeys = Object.keys(logged.box).sort();
+  const foldMatch = JSON.stringify(foldKeys) === JSON.stringify(boxKeys)
+    && foldKeys.every(id => JSON.stringify(fold[id]) === JSON.stringify(logged.box[id]));
+  check('Phase 55.1: folding every `st` delta reproduces the engine\'s own box score exactly',
+    foldMatch, `${foldKeys.length} players folded vs ${boxKeys.length} in the box`);
+  // A flag that wipes a play must wipe its stat delta from the log too, or the running box drifts
+  // above the real one for the rest of the game — the check above is what catches that.
+  check('Phase 55.1: a wiped play leaves no stat delta behind',
+    lg.filter(e => /no play|TOUCHDOWN COMES BACK/.test(e.text)).every(e => (e.st || []).every(d => d[1] === 'pen' || d[1] === 'penYds')));
+
+  // The running story: broadcast lines said the moment a number is crossed, and never again.
+  let sm = [], smGames = 0, sawRush = 0, sawTeam = 0, sawSack = 0, sawDrive = 0, dupes = 0;
+  for (let s = 0; s < 40; s++) {
+    const res = simEngine(w.teams[s % 8], w.teams[(s + 4) % 8], (hashStr('sm' + s) ^ 7) >>> 0, { log: true });
+    const lines = res.log.flatMap(e => e.sm || []);
+    if (lines.length) smGames++;
+    // Once-only applies to the MILESTONES (a hundred-yard game is crossed once). The drive line is
+    // per-possession by construction, so it legitimately recurs and is excluded here.
+    const marks = lines.filter(t => !/^This drive has been all/.test(t));
+    if (new Set(marks).size !== marks.length) dupes++;
+    sawRush += lines.filter(t => /yards on the ground/.test(t)).length;
+    sawTeam += lines.filter(t => /total offense/.test(t)).length;
+    sawSack += lines.filter(t => /sacks for/.test(t)).length;
+    sawDrive += lines.filter(t => /^This drive has been all/.test(t)).length;
+    sm = sm.concat(lines);
+  }
+  check('Phase 55.1: the running story fires in most games', smGames >= 34, `${smGames}/40 games had a milestone`);
+  check('Phase 55.1: a milestone is said once and never repeated', dupes === 0, `${dupes} games repeated a line`);
+  check('Phase 55.1: every category is reachable — yardage, team total, sacks, a drive one man owned',
+    sawRush > 0 && sawTeam > 0 && sawSack > 0 && sawDrive > 0,
+    `rush ${sawRush} · team ${sawTeam} · sack ${sawSack} · drive ${sawDrive} over 40 games`);
+  check('Phase 55.1: the story names a real man and carries no markup',
+    sm.every(t => !/[<>]/.test(t)) && sm.filter(t => /yards on the ground|receiving|through the air/.test(t)).every(t => /^[A-Z][a-z]+ [A-Z]/.test(t)),
+    sm[0] || 'none');
+  // Milestones are prose over a box the engine already keeps — no rng, so a logged game and an
+  // unlogged one must still land on the same score. (The 60-seed parity above covers this, but this
+  // says WHY it has to.)
+  check('Phase 55.1: the running story consumes no rng',
+    (() => { const sd = (hashStr('smpar') ^ 11) >>> 0;
+      const a = simEngine(w.teams[2], w.teams[6], sd), b = simEngine(w.teams[2], w.teams[6], sd, { log: true });
+      return a.hs === b.hs && a.as === b.as && JSON.stringify(a.box) === JSON.stringify(b.box); })());
 })();
 
 // Phase 22 — the play-calling decision hook. The OC always draws its own suggestion, so a coach

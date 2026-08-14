@@ -6,7 +6,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > This file is the **working brief** — what you need loaded every session. The full
 > phase-by-phase design records (the "why" behind each system) live in **`docs/phases/`**
 > and are read on demand, not auto-loaded:
-> - `docs/phases/gameday.md` — sim engine + play-calling + the watch screen (Phases 3, 3.5, 21–31, 46, 55)
+> - `docs/phases/gameday.md` — sim engine + play-calling + the watch screen (Phases 3, 3.5, 21–31, 46, 55, 55.1)
 > - `docs/phases/recruiting.md` — recruiting, signing, portal, visits (Phases 4, 14, 16, 17, 33–38)
 > - `docs/phases/offseason.md` — rollover, program, postseason, draft, championships, camp, realignment (Phases 5, 6–9, 12, 13, 15, 18, 32, 39, 43, 44)
 > - `docs/phases/identity-media.md` — traits, morale, media, rivalries, records, contract, legends, identity (Phases 10, 11, 19, 20, 40, 41, 42, 45)
@@ -27,7 +27,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > (r=0.078) so there is no such thing as a clutch team, that late-and-close football genuinely
 > tightens, and that kickers measurably do not choke.
 >
-> **All roadmap phases 1–55 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–55.1 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -280,7 +280,28 @@ still serves it with zero config.
   the live tick ever raised them, so *every re-render* — Skip to result, the Fast toggle, and the coach
   screen, which rebuilds its whole feed after each call — was painting the play-by-play invisible and
   leaving a column of bare down-and-distances (visible in the committed `19b-coach-field.png`).
-  `simlab` → 150, `qa` → 323. *(→ `docs/phases/gameday.md`.)*
+  *(→ `docs/phases/gameday.md`.)*
+
+- **Phase 55.1 — the watch screen, revised.** Five changes on top of 55. **A loss is now the same
+  colour as a gain** (the grey read as a third kind of event when it's the same team with the same
+  ball; only a flag breaks out of the team's palette). **The field is a regulation field** —
+  aspect-locked to **120 × 53⅓ yards** and drawn in an SVG whose viewBox is those yards, so 10-yard end
+  zones (the band is exactly `100/12` = 8.3333%, now derived as `CH_EZ`/`CH_SPAN`), a line every five,
+  the numbers every ten with the far set upside down, and hash marks **60 feet in from each sideline**,
+  which is what makes them college and not NFL. **The field comes first, then the log** — and because
+  the field is aspect-locked there is no flex split any more: it takes the height its proportions ask
+  for and the log takes the rest (so the chart scrolls after ~3 drives on a phone, accepted up front).
+  **The lower pane is tabbed** — Play-by-play / Stats. And **the running story**: broadcast lines under
+  the play that earned them ("…is over 100 yards on the ground", "That is three sacks for X!",
+  "Alabama just went over 400 yards of total offense", "This drive has been all X — 53 yards of it").
+  The last two needed the engine to hand over its own arithmetic, since `buildGameLog` captured no box
+  and the engine's box is the FINAL one (showing it mid-game spoils the result). So an entry gains
+  **`st`** — its per-player stat delta `[[pid,key,d],…]`, which the viewer folds 0..`idx` for the box
+  *as of that play* — and **`sm`**, the story strings. `st` needed a **second** journal (`sj`): Phase
+  49's `jr` is nulled the moment a play can no longer be wiped, which is exactly when the extra point
+  and clutch credit are written; `sj` runs to the end, is **drained** by whoever reports the play (so a
+  pick-six's two entries split offense from return), and is cleared by `undoPlay`. Both rng-free →
+  **no save bump, no `SIM_MODEL` bump**. `simlab` → 157, `qa` → 327. *(→ `docs/phases/gameday.md`.)*
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
@@ -575,8 +596,9 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - **Stable selectors:** dynamic rows carry `data-id` (player id / coach `role` / team id);
   nav buttons `data-tid="nav-<view>"`, team tabs `data-tid="tab-<roster|coaches>"`;
   `#app` carries `data-screen` (= `UI.view`) and `data-tab`; sheets `data-tid="sheet"`.
-  The watch viewer: `data-tid="game-board"`, `#g-feed` (the log), `data-tid="drive-chart"` with
-  `#g-chart` (the scrolling rows) inside it.
+  The watch viewer: `data-tid="game-board"`, `data-tid="game-tabs"` (`[data-tab=log|stats]`),
+  `#g-feed` (the log), `#g-stats` (the box score), `data-tid="drive-chart"` with `#g-chart`
+  (the scrolling rows) inside it.
 - **State access:** it's a classic script, so `S`, `UI`, and `controlled()` are global —
   read them directly from `page.evaluate(() => ...)` instead of scraping the DOM.
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
@@ -627,8 +649,9 @@ score spread, home-win and favorite-win rates, no ties, the Phase 48 possession 
 drives dying at the horn, 4th-down decisions, gain-tier shape), and the Phase 49 penalty checks
 (rate, yardage, side/pre-snap splits, culprit attribution, and that rating does NOT buy discipline),
 and the Phase 50 clutch checks (pressure shape, a mean-preserving amplified reshape, kickers not
-choking, and that composure does NOT decide one-score games), and the Phase 55 `mv` checks (the
-movement each log entry records must reconcile with the yardage the line's own prose quotes). The envelope asserts
+choking, and that composure does NOT decide one-score games), and the Phase 55 `mv`/`st` checks (the
+movement each log entry records must reconcile with the yardage the line's own prose quotes, and folding
+every per-entry stat delta must reproduce the engine's own box exactly). The envelope asserts
 *ranges*; the numbers it should be centred on are the measured ones in
 `docs/reference/cfb-averages.md` — **check a sim change against that file, not just against the
 gate**, since totals-and-leaders assertions passed for nine phases while run/pass balance and drive

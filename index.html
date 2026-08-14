@@ -99,26 +99,26 @@ h2.sec:first-child{margin-top:6px}
 .cap{color:var(--accent);font-weight:700;font-size:11px}
 
 /* watch viewer (Phase 55) — a fixed-height column so the log/chart split is exact on any phone,
-   rather than two guessed vh numbers that leave a gap on a tablet and overlap on an iPhone SE. */
+   rather than two guessed vh numbers that leave a gap on a tablet and overlap on an iPhone SE.
+   The field is aspect-locked to a REGULATION NCAA field (120 × 53⅓ yards), so it takes exactly the
+   height its own proportions ask for and the log takes everything left over. */
 #app[data-screen="game"]{padding-bottom:0}     /* no bottom nav on the game screen */
 .gamev{display:flex;flex-direction:column;height:100dvh;padding-bottom:calc(10px + var(--safe-b))}
-.gsplit{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px;margin-top:12px}
-.gsplit>#g-feed{flex:6 1 0;min-height:64px;overflow-y:auto}
-.gsplit>.ch-wrap{flex:4 1 0;min-height:96px}
+.gtabs{flex:none;margin:9px 0 8px}
+.gpane{flex:1 1 0;min-height:80px;overflow-y:auto}
 
-/* drive chart — the game as movement. Field runs 8%..92%; the outer 8% each side is an end zone,
-   tinted per ROW (not on the fixed backdrop) because which team scores in which end swaps every
-   quarter, and the rows are what carry a quarter with them as they scroll. */
-.ch-wrap{position:relative;background:#0b2016;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
-.ch-grid{position:absolute;left:8%;right:8%;top:0;bottom:0;z-index:0;pointer-events:none;
-  background:repeating-linear-gradient(90deg,rgba(255,255,255,.09) 0 1px,transparent 1px 10%);
-  border-left:1px solid rgba(255,255,255,.22);border-right:1px solid rgba(255,255,255,.22)}
-.ch-grid::after{content:'';position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(255,255,255,.26)}
+/* drive chart — the game as movement. A regulation field: the outer 10 of 120 yards at each end is
+   an end zone (8.3333% of the width), tinted per ROW rather than on the fixed backdrop, because
+   which team scores in which end swaps every quarter and the rows are what carry a quarter with
+   them as they scroll. */
+.ch-wrap{position:relative;flex:none;aspect-ratio:120/53.3333;background:#0b2016;
+  border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.ch-grid{position:absolute;inset:0;z-index:0;pointer-events:none;width:100%;height:100%;display:block}
 .ch-rows{position:absolute;inset:0;z-index:1;overflow-y:auto;overflow-x:hidden;padding:3px 0 5px;scrollbar-width:none}
 .ch-rows::-webkit-scrollbar{display:none}
 .ch-row,.ch-drive{position:relative}
 .ch-row{height:6px}
-.ch-row::before,.ch-row::after,.ch-drive::before,.ch-drive::after{content:'';position:absolute;top:0;bottom:0;width:8%}
+.ch-row::before,.ch-row::after,.ch-drive::before,.ch-drive::after{content:'';position:absolute;top:0;bottom:0;width:8.3333%}
 .ch-row::before,.ch-drive::before{left:0;background:var(--ezl)}
 .ch-row::after,.ch-drive::after{right:0;background:var(--ezr)}
 .ch-bar{position:absolute;top:1px;height:4px;min-width:1.6%;border-radius:2px}
@@ -127,7 +127,7 @@ h2.sec:first-child{margin-top:6px}
 .ch-tag{position:absolute;top:1px;font-family:'Saira Condensed';font-weight:800;font-size:8px;
   letter-spacing:.06em;line-height:9px;color:var(--ink);text-shadow:0 0 3px #000}
 .ch-drive{height:13px}
-.ch-drive .ln{position:absolute;left:8%;right:8%;top:6px;height:1px;opacity:.22}
+.ch-drive .ln{position:absolute;left:8.3333%;right:8.3333%;top:6px;height:1px;opacity:.22}
 .ch-drive .tick{position:absolute;top:2px;width:2px;height:9px;border-radius:1px}
 .ch-drive .ab{position:absolute;top:2px;font-family:'Saira Condensed';font-weight:700;font-size:8.5px;
   line-height:9px;letter-spacing:.06em;text-shadow:0 0 3px #000;white-space:nowrap}
@@ -136,8 +136,20 @@ h2.sec:first-child{margin-top:6px}
   font-size:9.5px;letter-spacing:.09em;text-shadow:0 0 3px #000;
   border-top:1px solid rgba(255,255,255,.16);border-bottom:1px solid rgba(255,255,255,.16);
   background:rgba(0,0,0,.32)}
-.ch-key{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:5px;font-size:9.5px;color:var(--ink3)}
+.ch-key{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:5px;font-size:9.5px;color:var(--ink3)}
 .ch-key i{display:inline-block;width:12px;height:4px;border-radius:2px;margin-right:4px;vertical-align:middle}
+
+/* the running story — a broadcast line under the play that earned it */
+.sm-line{font-size:11.5px;line-height:1.35;color:var(--accent);opacity:.9;margin:0 0 5px 54px;font-style:italic}
+
+/* the game-stats tab */
+.gs-row{display:flex;align-items:center;gap:8px;padding:2px 2px}
+.gs-row .k{flex:1;text-align:center;color:var(--ink3);font-size:10px;text-transform:uppercase;letter-spacing:.07em}
+.gs-row .v{width:64px;font-family:'Saira Condensed';font-weight:700;font-size:15px}
+.gs-row .v.r{text-align:right}
+.gs-lead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12.5px;padding:2px 2px}
+.gs-lead .n{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gs-lead .s{flex:none;color:var(--ink2);font-family:'Saira Condensed';font-weight:600;font-size:13px}
 
 /* tabs */
 .tabs{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:14px;overflow-x:auto;scrollbar-width:none}
@@ -2951,8 +2963,18 @@ function simEngine(home,away,seed,opts){
   // be un-recorded — a 22-yard run brought back by holding must not survive in the box score. Null
   // outside a play, so nothing else pays for it.
   let jr=null;
-  const add=(id,k,v)=>{ if(!id)return; const d=(v==null?1:v); (box[id]=box[id]||{gp:1})[k]=(box[id][k]||0)+d; if(jr)jr.push([id,k,d]); };
-  const undoPlay=()=>{ if(!jr)return; for(const e of jr){ const b=box[e[0]]; if(!b)continue; b[e[1]]-=e[2]; if(!b[e[1]]&&e[1]!=='gp')delete b[e[1]]; } jr.length=0; };
+  // Phase 55.1: a SECOND journal, for the log rather than for undo. `jr` is nulled once a play can no
+  // longer be wiped, which is exactly when the last few stat lines (the extra point, the clutch
+  // credit) are written — so the log needs its own, drained by whoever reports the play. A `st` on an
+  // entry is that entry's per-player stat delta, which is what lets the viewer rebuild the box score
+  // AS OF the play you're looking at instead of spoiling the game with the final one.
+  let sj=log?[]:null;
+  const add=(id,k,v)=>{ if(!id)return; const d=(v==null?1:v); (box[id]=box[id]||{gp:1})[k]=(box[id][k]||0)+d; if(jr)jr.push([id,k,d]); if(sj)sj.push([id,k,d]); };
+  const undoPlay=()=>{ if(sj)sj.length=0;
+    if(!jr)return; for(const e of jr){ const b=box[e[0]]; if(!b)continue; b[e[1]]-=e[2]; if(!b[e[1]]&&e[1]!=='gp')delete b[e[1]]; } jr.length=0; };
+  // Drain: each reported entry takes the stat lines written since the previous one, so a pick-six's
+  // two entries split the offence's play from the defence's return rather than double-counting both.
+  const stTake=()=>{ if(!sj||!sj.length)return undefined; const s=sj.slice(); sj.length=0; return s; };
   const pools={[home.id]:gamePools(home,benched),[away.id]:gamePools(away,benched)};
   const score={[home.id]:0,[away.id]:0};
   // Phase 22 balance: a defense keys on a one-dimensional offense. Track each team's run/pass mix
@@ -3003,7 +3025,8 @@ function simEngine(home,away,seed,opts){
   // Deliberately a SEPARATE field from `text`. Six tools and gates parse `text` with regexes
   // (`pass to X for N`, `sacked by X for N`, `1ST DOWN`, …), so the machine-readable line is left
   // exactly as it was and the prose lives beside it. Strings only, no rng — `watch == commit` holds.
-  const L=(team,kind,text,dd,big,tg,l,bt,mv)=>{ if(log)log.push({q:L._q,team:team?team.id:null,kind,text,dd:dd||'',tg,l,bt,mv,hs:score[home.id],as:score[away.id],big:!!big}); };
+  const L=(team,kind,text,dd,big,tg,l,bt,x)=>{ if(log)log.push({q:L._q,team:team?team.id:null,kind,text,dd:dd||'',tg,l,bt,
+    mv:x&&x.mv, st:x&&x.st, sm:x&&x.sm, hs:score[home.id],as:score[away.id],big:!!big}); };
   L._q=1;
   // Phase 55: `mv` is the entry as MOVEMENT — the play reduced to what happened to the BALL, which is
   // the one thing the terse `text` never carried in a machine-readable form. `{o,a,b,k}`: the offense
@@ -3015,7 +3038,53 @@ function simEngine(home,away,seed,opts){
   // Strings and numbers only, built from state the engine already had — no rng, so the envelope and
   // watch == commit are untouched, exactly like `bt` and `l` before it.
   const MV=(o,a,b,k)=>({o:o.id,a:clamp(Math.round(a),0,100),b:clamp(Math.round(b),0,100),k});
-  const LM=(team,kind,text,dd,big,mv)=>L(team,kind,text,dd,big,undefined,undefined,undefined,mv);
+  const LM=(team,kind,text,dd,big,x)=>L(team,kind,text,dd,big,undefined,undefined,undefined,x);
+  // `X` bundles the three log-only fields an entry can carry. Calling it DRAINS the stat journal, so
+  // it is used exactly where an entry should own the stat lines written since the last one.
+  const X=(mv,sm)=>({mv,st:stTake(),sm:sm&&sm.length?sm:undefined});
+
+  // ---- Phase 55.1: the running story --------------------------------------------------------
+  // A box score is a table nobody reads mid-game. These are the handful of numbers a broadcast would
+  // actually say out loud — a hundred-yard game, a third sack, five hundred yards of offence — said
+  // the MOMENT they're crossed and never again. `said` is what makes them once-only; without it a
+  // back who crosses 100 would be announced on every carry after it.
+  //
+  // Pure bookkeeping over `box`, which is already written by the time an entry reports: no rng, no
+  // effect on anything the sim decides. Built only when a log is kept, like the beats.
+  const said=log?{}:null, teamOf={};
+  for(const t of [home,away]) for(const p of t.roster||[]) teamOf[p.id]=t.id;
+  const pById={}; for(const t of [home,away]) for(const p of t.roster||[]) pById[p.id]=p;
+  const bx=(id,k)=>((box[id]||{})[k]||0);
+  const teamYds=tid=>{ let y=0; for(const id in box) if(teamOf[id]===tid) y+=bx(id,'rYds')+bx(id,'reYds'); return y; };
+  const once=(key,txt)=>{ if(!said||said[key])return null; said[key]=1; return txt; };
+  const cross=(v,marks)=>{ let hit=0; for(const m of marks) if(v>=m) hit=m; return hit; };
+  // `dr` is the possession's own tally — who this drive has actually belonged to.
+  let dr=null;
+  const MILE={rush:[100,150,200], recv:[100,150,200], pass:[300,400,500], sack:[2,3,4,5], td:[2,3,4,5], team:[300,400,500,600]};
+  const CNT=['','one','two','three','four','five','six'], ORD=['','first','second','third','fourth','fifth','sixth'];
+  function milestones(off,carrier,catcher,qb,sacker,gain){
+    if(!said)return null;
+    const out=[], owner=carrier||catcher;
+    if(dr&&owner&&gain){ dr.by[owner.id]=(dr.by[owner.id]||0)+gain; dr.tot+=gain; }
+    const yardMark=(p,key,marks,tag,where)=>{ if(!p)return; const m=cross(bx(p.id,key),marks); if(!m)return;
+      const s=once(tag+m+':'+p.id, NM(p)+' is over '+m+' yards '+where+'.'); if(s)out.push(s); };
+    yardMark(carrier,'rYds',MILE.rush,'rush','on the ground');
+    yardMark(catcher,'reYds',MILE.recv,'recv','receiving');
+    yardMark(qb,'pYds',MILE.pass,'pass','through the air');
+    if(sacker){ const n=cross(bx(sacker.id,'sk'),MILE.sack);
+      if(n){ const s=once('sk'+n+':'+sacker.id,'That is '+CNT[n]+' sacks for '+NM(sacker)+'!'); if(s)out.push(s); } }
+    for(const p of [carrier,catcher,qb]){ if(!p)continue;
+      const tds=bx(p.id,'rTD')+bx(p.id,'reTD')+bx(p.id,'pTD'), n=cross(tds,MILE.td);
+      if(n){ const s=once('td'+n+':'+p.id,'That is the '+ORD[n]+' touchdown of the day for '+NM(p)+'.'); if(s)out.push(s); } }
+    const tm=cross(teamYds(off.id),MILE.team);
+    if(tm){ const s=once('team'+tm+':'+off.id,(off.name||off.abbr||'They')+' just went over '+tm+' yards of total offense.'); if(s)out.push(s); }
+    // "This drive has been all Samuel" — one man carrying a possession, said once per possession and
+    // only when he genuinely owns it (40+ yards AND two thirds of everything the drive has gained).
+    if(dr&&!dr.said&&dr.tot>=40){ let bestId=null,best=0; for(const id in dr.by) if(dr.by[id]>best){best=dr.by[id];bestId=id;}
+      if(bestId&&best>=40&&best>=dr.tot*0.66){ dr.said=1;
+        const p=pById[bestId]; if(p)out.push('This drive has been all '+NM(p)+' — '+best+' yards of it so far.'); } }
+    return out.length?out:null;
+  }
   // Phase 26 injuries + fatigue (IN-GAME only — pure, deterministic, resets each game). An injured
   // player is skipped from selection (the backup is forced in → his matchup shows); a heavily-used
   // ball-carrier fades late (fatigueCost). Mean-neutral-ish (symmetric across teams) → envelope holds.
@@ -3046,12 +3115,13 @@ function simEngine(home,away,seed,opts){
     pen[team.id].n++; pen[team.id].yds+=yds;
     (pen[team.id].t=pen[team.id].t||{})[f.F[0]]=((pen[team.id].t||{})[f.F[0]]||0)+1;   // per-type tally
     add(f.who&&f.who.id,'pen'); add(f.who&&f.who.id,'penYds',yds);
-    LM(team,'play','🚩 '+f.F[1]+', '+(team.abbr||'')+(f.who?' — '+nm(f.who)+' ('+f.who.pos+')':'')+' — '+yds+' yards'+(note||''),dd,false,mv);
+    LM(team,'play','🚩 '+f.F[1]+', '+(team.abbr||'')+(f.who?' — '+nm(f.who)+' ('+f.who.pos+')':'')+' — '+yds+' yards'+(note||''),dd,false,X(mv));
   };
 
   // One possession, start at `startLos` (offense's own yard line). Returns the spot the
   // opponent takes over (mutates `score` + `box`); ~drive time charged to the caller's clock.
   function playDrive(off,def,startLos,clk0,half){
+    dr=said?{by:{},tot:0,said:0}:null;                  // Phase 55.1: whose possession this has been
     const oP=pools[off.id], dP=pools[def.id];
     let adv=(off.ratings.off-def.ratings.def)+(off===home?HFA/2:-HFA/2)+form[off.id]-form[def.id];
     let los=startLos, down=1, togo=Math.min(10,100-startLos), time=0, pens=0;
@@ -3069,9 +3139,9 @@ function simEngine(home,away,seed,opts){
     // pressure-sensitive: docs/reference/cfb-clutch.md measured that kickers do not choke.
     const doFG=(dd,fgDist)=>{ time+=8; add(oP.k&&oP.k.id,'fga');
       const kk=oP.k, slope=0.013*clamp(1-AT.kLeg*tilt(kk,'kpw'),0.55,1.5);
-      if(r()<clamp(0.965+AT.kAcc*tilt(kk,'kac')-(fgDist-20)*slope,0.40,0.99)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; LM(off,'score',nm(oP.k)+' '+fgDist+'-yd field goal is GOOD',dd,true,MV(off,los,los,'s')); return {nextLos:25,time}; }
-      LM(off,'play',nm(oP.k)+' '+fgDist+'-yd field goal MISSED',dd,false,MV(off,los,los,'k')); return {nextLos:flipTo(los),time}; };
-    L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los),'',false,undefined,los,undefined,MV(off,los,los,'d'));
+      if(r()<clamp(0.965+AT.kAcc*tilt(kk,'kac')-(fgDist-20)*slope,0.40,0.99)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; LM(off,'score',nm(oP.k)+' '+fgDist+'-yd field goal is GOOD',dd,true,X(MV(off,los,los,'s'))); return {nextLos:25,time}; }
+      LM(off,'play',nm(oP.k)+' '+fgDist+'-yd field goal MISSED',dd,false,X(MV(off,los,los,'k'))); return {nextLos:flipTo(los),time}; };
+    L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los),'',false,undefined,los,undefined,{mv:MV(off,los,los,'d')});
     while(true){
       // Phase 48: the half expired mid-drive — the drive dies here (real football's ~6.5% of drives).
       if(timed&&clkNow()<=0){ L(off,'play',half===2?'END OF GAME':'END OF HALF',' ');
@@ -3118,11 +3188,11 @@ function simEngine(home,away,seed,opts){
             const ret=wpick(dP.cover,r,injured)||dP.cb[0];
             score[def.id]+=6; add(ret&&ret.id,'dTD');
             add(dP.k&&dP.k.id,'xpa'); if(r()<0.965){ add(dP.k&&dP.k.id,'xpm'); score[def.id]+=1; }
-            LM(off,'play','Punt',dd,false,MV(off,los,100-pspot,'k'));
-            LM(def,'score','TOUCHDOWN — '+NM(ret)+' returns the punt '+(100-pspot)+' yards',dd,true,MV(def,pspot,100,'s'));
+            LM(off,'play','Punt',dd,false,X(MV(off,los,100-pspot,'k')));
+            LM(def,'score','TOUCHDOWN — '+NM(ret)+' returns the punt '+(100-pspot)+' yards',dd,true,X(MV(def,pspot,100,'s')));
             return {nextLos:25,time,keep:true};
           }
-          LM(off,'play','Punt',dd,false,MV(off,los,100-pspot,'k'));
+          LM(off,'play','Punt',dd,false,X(MV(off,los,100-pspot,'k')));
           return {nextLos:pspot,time};   // Phase 51: his leg is worth field position
         } // else: go for it → fall through and run a normal play
       }
@@ -3183,6 +3253,7 @@ function simEngine(home,away,seed,opts){
       // deltas, applied to both teams alike so the moment tightens without favouring anyone.
       const press=pressNow(), vAmp=1+PC.varAmp*press;
       let hero=null;                                       // whoever made the play, for clutch credit
+      let mRun=null,mRec=null,mSk=null;                    // Phase 55.1: who this snap's stat lines belong to
 
       if(wantPass){                                          // dropback (sacks aren't pass attempts)
         const rec=wpick(oP.recv,r,injured);                  // intended target (pre-snap read; skip the injured)
@@ -3258,7 +3329,7 @@ function simEngine(home,away,seed,opts){
           // PM.sackQ has been measured since Phase 48.1 and was never read — sacks drew a flat
           // -ri(4,9). The measured table has the same mean and a real tail (a 29-yard loss exists).
           gain=Math.min(-1,Math.round(qGain(r(),PM.sackQ,0)));
-          time+=PM.secSack; add(rsh&&rsh.id,'sk'); txt=nm(qb)+' sacked by '+nm(rsh)+' for '+gain;
+          time+=PM.secSack; add(rsh&&rsh.id,'sk'); mSk=rsh; txt=nm(qb)+' sacked by '+nm(rsh)+' for '+gain;
           beat('dragged down — SACKED for '+gain);
           if(r()<clamp(PM.sackFumP+AT.carFum*tilt(qb,'car')*2.4,0.01,0.20)){ turnover=true; toKind='fum'; toBy=rsh; txt=nm(qb)+' STRIP-SACKED by '+nm(rsh)+' — fumble lost'; }   // Phase 48: the strip sack
         } else if(scrambled){
@@ -3268,7 +3339,7 @@ function simEngine(home,away,seed,opts){
           const u=regime(shapeDraw(r,qb,vAmp,oP.vol-dP.vol),e);
           gain=Math.max(-4,Math.round(qGain(u,PM.runQ[distKey(togo)],2)+tailAdd(u,tilt(qb,'spd'),AT.tailRun)));
           if(los+gain>=100)gain=100-los;                   // capped at the goal line (see the run)
-          time+=PM.secRun; add(qb&&qb.id,'rAtt'); add(qb&&qb.id,'rYds',gain); if(qb)touches[qb.id]=(touches[qb.id]||0)+1;
+          time+=PM.secRun; add(qb&&qb.id,'rAtt'); add(qb&&qb.id,'rYds',gain); mRun=qb; if(qb)touches[qb.id]=(touches[qb.id]||0)+1;
           txt=nm(qb)+' scrambles for '+gain; hero=qb;
           beat('escapes the pocket'); beat('scrambles for '+gain);
           if(los+gain>=100){ scored=true; add(qb&&qb.id,'rTD'); }
@@ -3306,7 +3377,7 @@ function simEngine(home,away,seed,opts){
           beat(gain>=25?'and '+(los+gain>=100?nm(rec):NM(rec))+' is GONE':gain>=15?'into the open field':null);
           hero=rec;
           add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
-          add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
+          add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); mRec=rec; if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
           add(cov&&cov.id,'cvTgt'); add(cov&&cov.id,'cvCmp'); add(cov&&cov.id,'cvYds',gain);   // coverage targeted / allowed
           time+=(r()<0.28?PM.secQuick:PM.secPass); txt=nm(qb)+' pass to '+nm(rec)+' for '+gain+(cov?' (vs '+nm(cov)+')':'');
           if(los+gain>=100){ scored=true; add(qb&&qb.id,'pTD'); add(rec&&rec.id,'reTD'); add(cov&&cov.id,'cvTD'); }
@@ -3368,7 +3439,7 @@ function simEngine(home,away,seed,opts){
         // opponent's 5 booked 20 rushing yards. Measured against the real per-down/distance table this
         // showed up as goal-to-go plays gaining 5.61 where real ones gain 1.63.
         if(los+gain>=100)gain=100-los;
-        time+=PM.secRun; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain; hero=rb;
+        time+=PM.secRun; add(rb&&rb.id,'rAtt'); add(rb&&rb.id,'rYds',gain); mRun=rb; if(rb)touches[rb.id]=(touches[rb.id]||0)+1; txt=nm(rb)+' run for '+gain; hero=rb;
         // push -> crease -> break is how the run actually resolves now (attributes-2.md §7), so the
         // beats say which stage decided it. pushR is the line's contest and is known before the draw.
         beat(nm(rb)+(pkg==='heavy'?' behind the heavy set':dcall==='run'?' into a stacked box':' takes the handoff'));
@@ -3420,7 +3491,7 @@ function simEngine(home,away,seed,opts){
         score[off.id]+=6;
         add(oP.k&&oP.k.id,'xpa'); const xp=r()<0.965; if(xp){ add(oP.k&&oP.k.id,'xpm'); score[off.id]+=1; }
         beat(hero?'TOUCHDOWN — '+NM(hero)+'!':'TOUCHDOWN!');
-        L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true,undefined,los,bt,MV(off,losAt,100,'s'));
+        L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true,undefined,los,bt,X(MV(off,losAt,100,'s'),milestones(off,mRun,mRec,qb,mSk,gain)));
         return {nextLos:25,time};
       }
       if(tackled){ const t=wpick(dP.tkl,r); add(t&&t.id,'tkl');
@@ -3433,21 +3504,21 @@ function simEngine(home,away,seed,opts){
         // which the alternating drive loop would otherwise hand to the wrong side.
         const spot=flipTo(clamp(los+gain,1,99));
         if(toBy && r()<(toKind==='int'?PM.pick6:PM.fumb6)){
-          L(off,'play',txt,dd,true,undefined,undefined,bt,MV(off,losAt,clamp(los+gain,1,99),'p'));   // the drive still ended in a turnover
+          L(off,'play',txt,dd,true,undefined,undefined,bt,X(MV(off,losAt,clamp(los+gain,1,99),'p'),milestones(off,mRun,mRec,qb,mSk,gain)));   // the drive still ended in a turnover
           score[def.id]+=6; add(toBy.id,'dTD');
           add(dP.k&&dP.k.id,'xpa'); if(r()<0.965){ add(dP.k&&dP.k.id,'xpm'); score[def.id]+=1; }
           if(press>=0.5)add(toBy.id,'cl');
-          LM(def,'score','TOUCHDOWN — '+NM(toBy)+' returns the '+(toKind==='int'?'interception':'fumble')+' '+(100-spot)+' yards',dd,true,MV(def,spot,100,'s'));
+          LM(def,'score','TOUCHDOWN — '+NM(toBy)+' returns the '+(toKind==='int'?'interception':'fumble')+' '+(100-spot)+' yards',dd,true,X(MV(def,spot,100,'s')));
           return {nextLos:25,time,keep:true};
         }
         beat('TURNOVER');
-        L(off,'play',txt,dd,true,undefined,undefined,bt,MV(off,losAt,clamp(los+gain,1,99),'p')); return {nextLos:spot,time}; }
+        L(off,'play',txt,dd,true,undefined,undefined,bt,X(MV(off,losAt,clamp(los+gain,1,99),'p'),milestones(off,mRun,mRec,qb,mSk,gain))); return {nextLos:spot,time}; }
 
       const wasFirst=togo-gain<=0;
       if(wasFirst&&press>=0.5){ add(hero&&hero.id,'cl'); if(wantPass)add(qb&&qb.id,'cl'); }   // Phase 50
       los=clamp(los+gain,1,99); togo-=gain;
       if(wasFirst)beat('FIRST DOWN!');
-      L(off,'play',txt+(wasFirst?' — 1ST DOWN':''),dd,false,togo0,los,bt,MV(off,losAt,los,'p'));
+      L(off,'play',txt+(wasFirst?' — 1ST DOWN':''),dd,false,togo0,los,bt,X(MV(off,losAt,los,'p'),milestones(off,mRun,mRec,qb,mSk,gain)));
       if(togo<=0){ down=1; togo=Math.min(10,100-los); }     // first down (goal-to-go aware)
       else if(++down>4){ L(off,'play','Turnover on downs',dd); return {nextLos:flipTo(los),time}; }
     }
@@ -6650,6 +6721,13 @@ function gameEventEl(e){
     const dn=el('span','meta dim');dn.style.cssText='flex:none;width:46px';dn.textContent=e.dd||'';
     line.append(dn,beatBody(e));
   }
+  // Phase 55.1: the running story — the numbers a broadcast would say out loud, under the play that
+  // earned them. textContent, like the beats: these carry player names.
+  if(e.sm&&e.sm.length){
+    const wrap=el('div');wrap.append(line);
+    e.sm.forEach(t=>{const n=el('div','sm-line');n.textContent=t;wrap.append(n);});
+    return wrap;
+  }
   return line;
 }
 // Phase 53 made a play a SEQUENCE, and `bt` is that sequence — drops back / PRESSURE / escapes /
@@ -6722,7 +6800,7 @@ function revealBeats(line,fast){
      columns rides on each ROW rather than on the fixed backdrop: rows carry their quarter with them
      as they scroll, and the flip is visible as the columns trading colour mid-chart.
    ------------------------------------------------------------ */
-const CHART_LOSS='#79818e', CHART_PEN='#a89440';    // grey for a loss, dull yellow for a flag
+const CHART_PEN='#a89440';                          // a flag is dull yellow; everything else is the team's
 function hexRGB(hex){const h=(hex||'#888888').replace('#','');
   const n=parseInt(h.length===3?h.split('').map(c=>c+c).join(''):h.slice(0,6),16)||0x888888;
   return [(n>>16)&255,(n>>8)&255,n&255];}
@@ -6739,8 +6817,30 @@ function chartInk(hex){const c=hexRGB(hex), lum=(c[0]*299+c[1]*587+c[2]*114)/100
 function chartOdd(q){ return (''+q).startsWith('OT') ? true : (+q)%2===1; }
 function chartRight(G,e){ return (e.mv.o===G.home)===chartOdd(e.q); }
 // `spot` is the offense's own yard line (100 = the end zone it attacks) → a percent across the wrap.
-// The field band is 8%..92%; the outer 8% each side is an end zone.
-function chartX(spot,right){ const p=right?spot:100-spot; return 8+clamp(p,0,100)/100*84; }
+// A regulation field is 120 yards long including two 10-yard end zones, so the playing field runs
+// 10/120 = 8.3333% to 91.6667% and everything outside that is an end zone.
+const CH_EZ=100/12, CH_SPAN=100-2*CH_EZ;            // 8.3333% each end, 83.3333% of playing field
+function chartX(spot,right){ const p=right?spot:100-spot; return CH_EZ+clamp(p,0,100)/100*CH_SPAN; }
+// The field itself, drawn once behind the scrolling rows: 120 × 53⅓ yards in the viewBox, so every
+// marking sits where it really sits. A line every five yards, the numbers every ten with the far
+// sideline's set upside down as they are on a real field, and hash marks 60 feet in from each
+// sideline — which is what makes them COLLEGE hashes and not the NFL's much narrower pair.
+// The numerals are drawn larger than the regulation 2 yards, deliberately: at this scale a true-size
+// number is six pixels tall and unreadable, and legibility is worth more here than that last detail.
+function chartFieldSVG(){
+  let g='';
+  for(let y=15;y<=105;y+=5){ const maj=y%10===0;
+    g+=`<line x1="${y}" y1="0" x2="${y}" y2="53.333" stroke="rgba(255,255,255,${maj?0.20:0.10})" stroke-width="${maj?0.30:0.20}"/>`; }
+  for(const hy of [20,33.333]) for(let y=11;y<=109;y++)
+    g+=`<line x1="${y}" y1="${hy-0.6}" x2="${y}" y2="${hy+0.6}" stroke="rgba(255,255,255,.20)" stroke-width="0.17"/>`;
+  const F=`font-family="'Saira Condensed',sans-serif" font-size="4" font-weight="700" fill="rgba(255,255,255,.16)" text-anchor="middle"`;
+  [[20,'10'],[30,'20'],[40,'30'],[50,'40'],[60,'50'],[70,'40'],[80,'30'],[90,'20'],[100,'10']].forEach(([x,t])=>{
+    g+=`<text x="${x}" y="12" ${F}>${t}</text><text x="${x}" y="43.5" ${F} transform="rotate(180 ${x} 42.1)">${t}</text>`; });
+  return `<svg class="ch-grid" viewBox="0 0 120 53.333" preserveAspectRatio="none" aria-hidden="true">${g}
+    <line x1="10" y1="0" x2="10" y2="53.333" stroke="rgba(255,255,255,.55)" stroke-width="0.45"/>
+    <line x1="110" y1="0" x2="110" y2="53.333" stroke="rgba(255,255,255,.55)" stroke-width="0.45"/>
+    <line x1="60" y1="0" x2="60" y2="53.333" stroke="rgba(255,255,255,.34)" stroke-width="0.40"/></svg>`;
+}
 // Each end zone is tinted with the colour of the team that SCORES there this quarter, so a bar
 // always points at its own colour.
 function chartEZ(G,q){ const odd=chartOdd(q), h=teamById(G.home), a=teamById(G.away);
@@ -6774,7 +6874,7 @@ function chartRowEl(G,e){
   const span=(a,b,css)=>`<span class="ch-bar" style="left:${Math.min(a,b).toFixed(2)}%;width:${Math.abs(b-a).toFixed(2)}%;${css}"></span>`;
   const dash=c=>`background:repeating-linear-gradient(90deg,${c} 0 3px,transparent 3px 7px)`;
   if(mv.k==='s'){
-    const td=/^TOUCHDOWN/.test(e.text), goal=right?92:8;
+    const td=/^TOUCHDOWN/.test(e.text), goal=right?100-CH_EZ:CH_EZ;
     // A field goal has no yardage to draw — what it is is a kick from the spot THROUGH the uprights,
     // so it's dashed to the goal line rather than faked as a gain.
     row.innerHTML=(td?span(x0,x1,`background:${col};box-shadow:0 0 5px ${hexA(t&&t.color,.85)}`):span(x0,goal,dash(col)))
@@ -6782,8 +6882,10 @@ function chartRowEl(G,e){
     return row;
   }
   if(mv.k==='k'){ row.innerHTML=span(x0,x1,dash('rgba(170,179,192,.55)')+';top:2px;height:2px'); return row; }
-  const col2=mv.k==='f'?CHART_PEN:(mv.b>mv.a?col:CHART_LOSS);   // gain → team colour; loss → grey; flag → dull yellow
-  row.innerHTML=span(x0,x1,`background:${col2}`);
+  // Gain or loss, it's the same colour — a bar IS that team's possession, and which way it ran is
+  // already told by where it sits against the bar above it. Only a flag breaks out of the team's
+  // palette, because a flag is the one thing that isn't football being played.
+  row.innerHTML=span(x0,x1,`background:${mv.k==='f'?CHART_PEN:col}`);
   return row;
 }
 // Append one event, opening a new quarter band when the clock has rolled over into one.
@@ -6795,7 +6897,7 @@ function chartAppend(rows,G,e){
 }
 function driveChart(G){
   const wrap=el('div','ch-wrap'); wrap.dataset.tid='drive-chart';
-  wrap.append(el('div','ch-grid'));
+  wrap.innerHTML=chartFieldSVG();
   const rows=el('div','ch-rows'); rows.id='g-chart';
   for(let i=0;i<(G.idx||0);i++)chartAppend(rows,G,(G.log||[])[i]);
   wrap.append(rows);
@@ -6803,12 +6905,72 @@ function driveChart(G){
 }
 function chartKey(){
   const k=el('div','ch-key');
-  k.innerHTML=`<span><i style="background:var(--accent)"></i>gain</span>`
-    +`<span><i style="background:${CHART_LOSS}"></i>loss</span>`
+  k.innerHTML=`<span><i style="background:var(--accent)"></i>the ball, toward the end zone they attack</span>`
     +`<span><i style="background:${CHART_PEN}"></i>penalty</span>`
     +`<span><i style="background:repeating-linear-gradient(90deg,rgba(170,179,192,.55) 0 3px,transparent 3px 7px)"></i>kick</span>`;
   return k;
 }
+/* ------------------------------------------------------------
+   GAME STATS (Phase 55.1) — the box score AS OF the play you're looking at.
+   Folded from the `st` deltas the engine attaches to each entry, up to `G.idx` and no further, so
+   watching a game never shows you a number the game hasn't reached yet. simlab asserts that folding
+   every delta reproduces the engine's own box exactly, which is what makes this safe to trust.
+   ------------------------------------------------------------ */
+function gameBoxAt(G){
+  const box={};
+  for(let i=0;i<(G.idx||0);i++){ const e=(G.log||[])[i]; if(!e||!e.st)continue;
+    for(const d of e.st){ const b=box[d[0]]=box[d[0]]||{}; b[d[1]]=(b[d[1]]||0)+d[2]; } }
+  return box;
+}
+function gameStats(G){
+  const box=gameBoxAt(G), home=teamById(G.home), away=teamById(G.away);
+  const who={}, side={};
+  [home,away].forEach(t=>(t.roster||[]).forEach(p=>{who[p.id]=p;side[p.id]=t.id;}));
+  const z=()=>({pass:0,rush:0,sk:0,pen:0,penY:0,fd:0,to:0,att:0,cmp:0,ra:0});
+  const T={[G.home]:z(),[G.away]:z()};
+  for(const id in box){ const t=T[side[id]]; if(!t)continue; const b=box[id];
+    t.pass+=b.pYds||0; t.rush+=b.rYds||0; t.att+=b.pAtt||0; t.cmp+=b.pCmp||0; t.ra+=b.rAtt||0;
+    t.sk+=b.sk||0; t.pen+=b.pen||0; t.penY+=b.penYds||0; }
+  // First downs and turnovers aren't box keys — they're events, so they're counted off the log the
+  // viewer has already reached, credited to whoever had the ball (`mv.o`, not the entry's team).
+  for(let i=0;i<(G.idx||0);i++){ const e=(G.log||[])[i]; if(!e||!e.mv)continue; const t=T[e.mv.o]; if(!t)continue;
+    if(/1ST DOWN/.test(e.text))t.fd++;
+    if(/INTERCEPTED|FUMBLES|STRIP-SACKED/.test(e.text))t.to++; }
+  const lead=(keys,score,fmt)=>Object.keys(box).filter(id=>who[id]&&score(box[id])>0)
+    .sort((a,b)=>score(box[b])-score(box[a])).slice(0,2)
+    .map(id=>({p:who[id],t:teamById(side[id]),line:fmt(box[id])}));
+  return {T,home,away,box,
+    passing:lead(0,b=>b.pYds||0,b=>`${b.pCmp||0}/${b.pAtt||0}, ${b.pYds||0} yd, ${b.pTD||0} TD${b.pInt?', '+b.pInt+' INT':''}`),
+    rushing:lead(0,b=>b.rYds||0,b=>`${b.rAtt||0} car, ${b.rYds||0} yd${b.rTD?', '+b.rTD+' TD':''}`),
+    recving:lead(0,b=>b.reYds||0,b=>`${b.rec||0} rec, ${b.reYds||0} yd${b.reTD?', '+b.reTD+' TD':''}`),
+    defense:lead(0,b=>(b.tkl||0)+(b.sk||0)*3+(b.dInt||0)*4,b=>`${b.tkl||0} tkl${b.sk?', '+b.sk+' sk':''}${b.dInt?', '+b.dInt+' INT':''}`)};
+}
+function statsPane(G){
+  const v=el('div','gpane'); v.id='g-stats'; v.dataset.tid='game-stats';
+  const S2=gameStats(G), h=S2.T[G.home], a=S2.T[G.away];
+  const row=(k,hv,av)=>`<div class="gs-row"><span class="v">${hv}</span><span class="k">${k}</span><span class="v r">${av}</span></div>`;
+  let s=`<div class="row spread" style="margin-bottom:4px">
+      <span class="cond" style="font-weight:800;color:${chartInk(S2.home.color)}">${S2.home.abbr}</span>
+      <span class="meta dim">Team</span>
+      <span class="cond" style="font-weight:800;color:${chartInk(S2.away.color)}">${S2.away.abbr}</span></div>`;
+  s+=row('Total yards',h.pass+h.rush,a.pass+a.rush);
+  s+=row('Passing',`${h.cmp}/${h.att} · ${h.pass}`,`${a.cmp}/${a.att} · ${a.pass}`);
+  s+=row('Rushing',`${h.ra} · ${h.rush}`,`${a.ra} · ${a.rush}`);
+  s+=row('First downs',h.fd,a.fd);
+  s+=row('Turnovers',h.to,a.to);
+  s+=row('Sacks made',h.sk,a.sk);
+  s+=row('Penalties',`${h.pen}–${h.penY}`,`${a.pen}–${a.penY}`);
+  const grp=(label,rows)=>rows.length?`<div class="meta dim" style="margin:9px 0 2px;font-weight:700">${label}</div>`
+    +rows.map(r=>`<div class="gs-lead"><span class="n" style="color:${chartInk(r.t.color)}">${r.t.abbr}</span>`
+      +`<span class="n" style="flex:1;color:var(--ink)">${r.p.pos} ${esc(r.p.fn[0])}. ${esc(r.p.ln)}</span>`
+      +`<span class="s">${r.line}</span></div>`).join(''):'';
+  s+=grp('Passing',S2.passing)+grp('Rushing',S2.rushing)+grp('Receiving',S2.recving)+grp('Defense',S2.defense);
+  if(!h.att&&!a.att&&!h.ra&&!a.ra)s+='<div class="hint" style="margin-top:10px">No snaps yet.</div>';
+  v.innerHTML=s;
+  return v;
+}
+// Player names can come from an IMPORTED roster and these go through innerHTML.
+function esc(t){return String(t==null?'':t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);}
 function applyGameEvent(e){
   const hs=$('#g-hs'),as=$('#g-as'),q=$('#g-q');
   if(hs)hs.textContent=e.hs; if(as)as.textContent=e.as; if(q&&e.q)q.textContent=qLabel(e.q);
@@ -6816,6 +6978,9 @@ function applyGameEvent(e){
   if(ln&&feed){feed.append(ln);revealBeats(ln,!!(UI.game&&UI.game.fast));feed.scrollTop=feed.scrollHeight;}
   const rows=$('#g-chart');
   if(rows&&UI.game){chartAppend(rows,UI.game,e);rows.scrollTop=rows.scrollHeight;}
+  // The Stats tab is live too — it reads the box AS OF this play, so it has to move with it.
+  const st=$('#g-stats');
+  if(st&&UI.game){const fresh=statsPane(UI.game);const top=st.scrollTop;st.innerHTML=fresh.innerHTML;st.scrollTop=top;}
 }
 function scheduleGameTick(){
   const G=UI.game; if(!G||G.done)return;
@@ -7216,14 +7381,22 @@ function renderGame(app){
       <div class="row" style="gap:8px;min-width:0;justify-content:flex-end"><div class="nm">${away.abbr}${away.id===t.id?' <span class="cap">YOU</span>':''}</div><span class="dot" style="background:${away.color};flex:none"></span></div></div>
     <div class="meta dim" style="text-align:center;margin-top:6px"><span id="g-q">${qLabel(cs.q)}</span> · ${G.replay?'Replay':'Live'} · ${home.name} vs ${away.name}</div>`;
   v.append(sb);
-  // Phase 55: the log keeps ~60% of what's left and the drive chart takes the rest. They're siblings
-  // in one flex column rather than two vh guesses, so the split holds on a small phone and a tablet.
-  const split=el('div','gsplit');
-  const feed=el('div');feed.id='g-feed';
-  for(let i=0;i<G.idx;i++){const ln=gameEventEl((G.log||[])[i]);if(ln){showBeats(ln);feed.append(ln);}}
-  split.append(feed,driveChart(G));
-  v.append(split,chartKey());
-  const ctr=el('div','btn-row');ctr.style.cssText='margin-top:10px;flex:none';
+  // The field first, at the proportions of a real one, then the tabbed pane under it. The field is
+  // aspect-locked rather than given a share of the column, so it is a football field at any width and
+  // whatever is left over is the pane's — which is why the chart scrolls sooner than a flex split did.
+  v.append(driveChart(G),chartKey());
+  const tabs=el('div','tabs gtabs');tabs.dataset.tid='game-tabs';
+  [['log','Play-by-play'],['stats','Stats']].forEach(([k,lbl])=>{
+    const b=el('button',(G.tab||'log')===k?'on':'');b.dataset.tab=k;b.textContent=lbl;
+    b.onclick=()=>{G.tab=k;render();};tabs.append(b);});
+  v.append(tabs);
+  if((G.tab||'log')==='stats'){ v.append(statsPane(G)); }
+  else{
+    const feed=el('div','gpane');feed.id='g-feed';
+    for(let i=0;i<G.idx;i++){const ln=gameEventEl((G.log||[])[i]);if(ln){showBeats(ln);feed.append(ln);}}
+    v.append(feed);
+  }
+  const ctr=el('div','btn-row');ctr.style.cssText='margin-top:8px;flex:none';
   if(G.done){
     const cont=el('button','btn',G.replay?'Done':'Continue → commit week');cont.dataset.tid='game-continue';
     cont.onclick=finishGame;ctr.append(cont);

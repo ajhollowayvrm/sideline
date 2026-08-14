@@ -739,3 +739,72 @@ The coach screen keeps `fieldSVG` and gains no chart — it needs the vertical s
 it already shows the ball live. No win-probability or momentum curve: this chart is a record of where
 the ball went, and nothing on it is a model output. No per-play tooltips — the feed beside it *is* the
 detail view.
+
+## Phase 55.1 — five revisions to the watch screen
+
+AJ, straight after seeing 55 land. Each one is short; two of them changed the shape of the screen.
+
+**1. A loss is the same colour as a gain.** The grey read as a third category of event when it isn't
+one — it's the same team with the same ball. `CHART_LOSS` is gone. Only a flag now breaks out of the
+team's palette, because a flag is the one thing on the chart that isn't football being played. Which
+way a snap ran is still legible: it's told by where the bar sits against the one above it.
+
+**2. The field is a regulation field.** It was a box of whatever height the flex split left it, with a
+line every ten yards — recognisably a chart, not recognisably a football field. It is now
+**aspect-locked to 120 × 53⅓ yards**, drawn in an SVG whose viewBox is those yards, so every marking
+sits where it really sits: 10-yard end zones (so the end-zone band is exactly `100/12` = 8.3333% of
+the width, which `CH_EZ`/`CH_SPAN` now derive rather than the old hand-picked 8%), a line every five,
+the numbers every ten with the far sideline's set upside down, and hash marks **60 feet in from each
+sideline** — which is what makes them college hashes and not the NFL's much narrower pair. One
+deliberate infidelity: the numerals are drawn larger than the regulation 2 yards, because at this
+scale a true-size numeral is six pixels tall. AJ pre-accepted the cost — a 2.25:1 box on a phone is
+~160px, so the chart scrolls after two or three drives.
+
+**3. The field comes first, then the log.** Which also resolves the tension the aspect lock creates:
+the field takes exactly the height its proportions ask for and the log takes everything left over, so
+there is no 60/40 flex split any more. qa asserts the *aspect ratio* now, not a pixel ratio.
+
+**4. Tabs: Play-by-play / Stats.** The lower pane is tabbed on `G.tab`.
+
+**5. The running story.** Broadcast lines under the play that earned them — a hundred-yard game, a
+third sack, five hundred yards of offense, a drive one man has carried.
+
+### What 4 and 5 needed: the engine had to hand over its own arithmetic
+
+Both wanted numbers *as of the play you're looking at*, and the viewer had neither. `buildGameLog`
+never captured a box at all, and the box the engine keeps is the FINAL one — showing it mid-game
+spoils the result you're watching.
+
+So an entry gains two more log-only fields beside `mv`:
+
+- **`st`** — that entry's per-player stat delta, `[[playerId, key, delta], …]`. The viewer folds them
+  0..`idx` and gets the exact box as of that play. This works because the engine already journals
+  every `add()` for Phase 49's undo; what it needed was a *second* journal, because `jr` is nulled the
+  moment a play can no longer be wiped — which is exactly when the last stat lines (the extra point,
+  the clutch credit) get written. `sj` runs to the end and is **drained** by whoever reports the play,
+  so a pick-six's two entries split the offense's snap from the defense's return instead of both
+  claiming everything. `undoPlay` clears it, so a play wiped by holding leaves no delta behind.
+- **`sm`** — the running story, an array of strings. Pure bookkeeping over the box the engine already
+  keeps: a `said` map makes each milestone once-only (without it a back who crosses 100 is announced
+  on every carry after it), and `dr` is a per-possession tally so "this drive has been all X" fires
+  once per drive and only when he genuinely owns it — 40+ yards **and** two thirds of everything the
+  drive gained.
+
+No rng in either, so the score, box and penalty tallies are unchanged — **no save bump, no `SIM_MODEL`
+bump**, old games still replay.
+
+### Validation
+`simlab` → **157**. The load-bearing one: **folding every `st` delta reproduces the engine's own box
+score exactly** (89/89 players) — that is the check that makes the Stats tab trustworthy, and it is
+also what catches a wiped play leaving a delta behind, which would drift the running box above the
+real one for the rest of the game. Plus: the story fires in 40/40 games, never repeats a milestone,
+reaches all four categories, names a real man, carries no markup, and consumes no rng.
+`qa` → **327**: the field's aspect ratio and end-zone fraction against a real field, that it carries
+18 numerals and 220+ lines, that the field precedes the log, that a loss now matches its gain's
+colour, and that the Stats tab's folded box equals the full-game one at the final whistle.
+
+### Deliberately out of scope
+The Stats tab is a box score, not analytics — no win probability, no EPA, nothing that is a model
+output rather than a record of what happened. The running story has no *negative* milestones (a fourth
+interception, a fifth sack allowed); it could, but a broadcast piling on a struggling player is a
+different tone decision and wasn't asked for.

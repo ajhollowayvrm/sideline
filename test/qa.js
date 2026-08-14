@@ -563,7 +563,7 @@ function startServer() {
   // advancing now opens the watch-then-commit viewer for your game; skip + commit each week.
   // bye weeks advance directly (no viewer). Capture the first watched game to verify its score
   // equals the committed result (the replay is faithful, not a re-roll).
-  let sawViewer = false, watchCheck = null, chartInfo = null;
+  let sawViewer = false, watchCheck = null, chartInfo = null, statsInfo = null;
   for (let i = 0; i < 3; i++) {
     await page.getByRole('button', { name: /Play Week/ }).click();
     await page.waitForTimeout(120);
@@ -575,13 +575,13 @@ function startServer() {
       if (!chartInfo) {
         chartInfo = await page.evaluate(() => {
           const G = UI.game, rows = document.querySelector('#g-chart'), feed = document.querySelector('#g-feed');
+          const wrap = rows.parentElement, r = wrap.getBoundingClientRect();
           const norm = c => { const d = document.createElement('div'); d.style.background = c; return d.style.background; };
-          const barOf = e => { const r = chartRowEl(G, e), b = r && r.querySelector('.ch-bar'); return b ? b.style.background : ''; };
-          const fh = feed.getBoundingClientRect().height, ch = rows.parentElement.getBoundingClientRect().height;
+          const barOf = e => { const el2 = chartRowEl(G, e), b = el2 && el2.querySelector('.ch-bar'); return b ? b.style.background : ''; };
           // a gain must run TOWARD the end zone its team attacks…
           const gains = G.log.filter(e => e.mv && e.mv.k === 'p' && e.mv.b > e.mv.a);
-          const toward = gains.length > 20 && gains.every(e => { const r = chartRight(G, e);
-            const x0 = chartX(e.mv.a, r), x1 = chartX(e.mv.b, r); return r ? x1 > x0 : x1 < x0; });
+          const toward = gains.length > 20 && gains.every(e => { const rt = chartRight(G, e);
+            const x0 = chartX(e.mv.a, rt), x1 = chartX(e.mv.b, rt); return rt ? x1 > x0 : x1 < x0; });
           // …and that end must swap every quarter, for both teams, in opposite senses
           const dir = (team, q) => chartRight(G, { q, mv: { o: team } });
           const flips = [1, 2, 3, 4].every(q => dir(G.home, q) !== dir(G.away, q))
@@ -589,19 +589,51 @@ function startServer() {
           const pen = G.log.find(e => e.mv && e.mv.k === 'f');
           const loss = G.log.find(e => e.mv && e.mv.k === 'p' && e.mv.b < e.mv.a);
           const gain = gains[0];
+          const teamCol = e => norm(chartInk(teamById(e.mv.o).color));
           return {
             bars: rows.querySelectorAll('.ch-bar').length, drives: rows.querySelectorAll('.ch-drive').length,
             bands: rows.querySelectorAll('.ch-q').length, plays: G.log.filter(e => e.mv && e.mv.k === 'p').length,
-            fh: Math.round(fh), ch: Math.round(ch), toward, flips,
-            penOK: !!pen && barOf(pen) === norm(CHART_PEN), lossOK: !!loss && barOf(loss) === norm(CHART_LOSS),
-            gainOK: !!gain && barOf(gain) === norm(chartInk(teamById(gain.mv.o).color)),
+            // the field is aspect-locked to a regulation 120 x 53 1/3 field
+            aspect: r.width / r.height, ezPct: CH_EZ, numbers: wrap.querySelectorAll('.ch-grid text').length,
+            hashes: wrap.querySelectorAll('.ch-grid line').length,
+            toward, flips,
+            penOK: !!pen && barOf(pen) === norm(CHART_PEN),
+            // a loss is now the SAME colour as a gain — the ball is the ball
+            lossSameAsGain: !!loss && !!gain && barOf(loss) === teamCol(loss) && barOf(gain) === teamCol(gain),
             // the play-by-play must survive a rebuild — beats are built at opacity 0 and only the
             // live tick ever raised them, so Skip used to leave a column of bare down-and-distances
             hiddenBeats: [...feed.querySelectorAll('span[style*="opacity"]')].filter(s => s.style.opacity === '0').length,
             feedText: feed.innerText.replace(/\s+/g, ' ').trim().length,
+            // the running story
+            smLines: feed.querySelectorAll('.sm-line').length,
+            smText: [...feed.querySelectorAll('.sm-line')].map(n => n.textContent),
+            fieldFirst: [...document.querySelector('.gamev').children].findIndex(n => n.classList.contains('ch-wrap'))
+              < [...document.querySelector('.gamev').children].findIndex(n => n.id === 'g-feed'),
           };
         });
         await shot(page, '19c-watch-chart.png');
+        // …then the other tab: the box score as of the play you're looking at.
+        await page.locator('[data-tid="game-tabs"] [data-tab="stats"]').click();
+        await page.waitForTimeout(90);
+        statsInfo = await page.evaluate(() => {
+          const G = UI.game, pane = document.querySelector('#g-stats');
+          const fold = gameBoxAt(G), full = {};
+          for (const e of G.log) for (const d of (e.st || [])) { (full[d[0]] = full[d[0]] || {})[d[1]] = (full[d[0]][d[1]] || 0) + d[2]; }
+          const st = gameStats(G), h = st.T[G.home], a = st.T[G.away];
+          const txt = pane.innerText.replace(/\s+/g, ' ');
+          return {
+            shown: !!pane && txt.length > 120,
+            // watching to the END means the running box must equal the whole game's
+            foldsToBox: JSON.stringify(fold) === JSON.stringify(full),
+            // a football game's totals: both teams moved the ball, and the numbers add up
+            yardsOK: h.pass + h.rush > 100 && a.pass + a.rush > 100 && h.fd > 5 && a.fd > 5,
+            leaders: st.passing.length > 0 && st.rushing.length > 0 && st.recving.length > 0 && st.defense.length > 0,
+            totals: `${h.pass + h.rush} vs ${a.pass + a.rush} yds`,
+          };
+        });
+        await shot(page, '19d-watch-stats.png');
+        await page.locator('[data-tid="game-tabs"] [data-tab="log"]').click();
+        await page.waitForTimeout(60);
       }
       const watched = await page.evaluate(() => UI.game ? { id: UI.game.gameId, hs: UI.game.hs, as: UI.game.as } : null);
       await page.locator('[data-tid="game-continue"]').click();
@@ -611,21 +643,33 @@ function startServer() {
   }
   check('Watch: advancing opens the watch-then-commit viewer', sawViewer);
   check('Watch: watched score == committed result (replay is faithful)', !!watchCheck && watchCheck.watched.hs === watchCheck.committed.hs && watchCheck.watched.as === watchCheck.committed.as && watchCheck.committed.played, JSON.stringify(watchCheck));
-  // --- Phase 55: the drive chart + the 60/40 split ---
+  // --- Phase 55: the drive chart, and 55.1's stats tab + running story ---
   check('Phase 55: the drive chart draws a bar per snap and a header per drive',
     !!chartInfo && chartInfo.bars >= chartInfo.plays && chartInfo.drives > 8 && chartInfo.bands >= 4,
     chartInfo && `${chartInfo.bars} bars / ${chartInfo.plays} snaps, ${chartInfo.drives} drives, ${chartInfo.bands} quarter bands`);
-  check('Phase 55: the log takes ~60% of the split and the chart the rest',
-    !!chartInfo && Math.abs(chartInfo.fh / (chartInfo.fh + chartInfo.ch) - 0.6) < 0.06,
-    chartInfo && `log ${chartInfo.fh}px / chart ${chartInfo.ch}px = ${(chartInfo.fh / (chartInfo.fh + chartInfo.ch) * 100).toFixed(0)}%`);
+  // A regulation field is 120 x 53 1/3 yards with 10-yard end zones — the box has to be that shape,
+  // and the end-zone band has to be exactly 10/120 of it, or nothing drawn on it sits where it sits.
+  check('Phase 55.1: the field is a regulation 120 x 53 1/3 yards, end zones 10 of 120',
+    !!chartInfo && Math.abs(chartInfo.aspect - 120 / (160 / 3)) < 0.03 && Math.abs(chartInfo.ezPct - 100 / 12) < 0.001,
+    chartInfo && `aspect ${chartInfo.aspect.toFixed(3)} vs ${(120 / (160 / 3)).toFixed(3)}, end zone ${chartInfo.ezPct.toFixed(3)}%`);
+  check('Phase 55.1: it is marked like a real field — yard lines, hashes and the numbers',
+    !!chartInfo && chartInfo.numbers === 18 && chartInfo.hashes > 200,
+    chartInfo && `${chartInfo.numbers} numerals, ${chartInfo.hashes} lines`);
+  check('Phase 55.1: the field comes before the log', !!chartInfo && chartInfo.fieldFirst);
   check('Phase 55: a gain runs toward the end zone its team is attacking', !!chartInfo && chartInfo.toward);
   check('Phase 55: the attacking end swaps every quarter, oppositely for the two teams', !!chartInfo && chartInfo.flips);
-  check('Phase 55: gain = the possessing team\'s colour, loss = grey, penalty = dull yellow',
-    !!chartInfo && chartInfo.gainOK && chartInfo.lossOK && chartInfo.penOK,
-    chartInfo && `gain ${chartInfo.gainOK} loss ${chartInfo.lossOK} pen ${chartInfo.penOK}`);
+  check('Phase 55.1: a loss is the same colour as a gain; only a flag breaks out of the palette',
+    !!chartInfo && chartInfo.lossSameAsGain && chartInfo.penOK,
+    chartInfo && `same-colour ${chartInfo.lossSameAsGain} pen ${chartInfo.penOK}`);
   check('Phase 55: skipping to the result leaves the play-by-play readable (beats not stuck hidden)',
     !!chartInfo && chartInfo.hiddenBeats === 0 && chartInfo.feedText > 800,
     chartInfo && `${chartInfo.hiddenBeats} hidden spans, ${chartInfo.feedText} chars of feed`);
+  check('Phase 55.1: the running story appears in the feed',
+    !!chartInfo && chartInfo.smLines > 0,
+    chartInfo && `${chartInfo.smLines} lines — e.g. ${JSON.stringify(chartInfo.smText[0] || '')}`);
+  check('Phase 55.1: the Stats tab totals agree with the score and the box it folded',
+    !!statsInfo && statsInfo.shown && statsInfo.foldsToBox && statsInfo.yardsOK && statsInfo.leaders,
+    statsInfo && JSON.stringify(statsInfo));
   const adv = await page.evaluate(() => {
     let W = 0, L = 0; S.world.teams.forEach(x => { W += x.rec.w; L += x.rec.l; });
     const t = controlled();
