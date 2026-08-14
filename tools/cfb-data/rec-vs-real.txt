@@ -1,0 +1,44 @@
+
+==================================================================================================
+  SIDELINE recruiting  vs  REAL college football recruiting
+  real = 11 signing classes 2015-2025   sim = 20 national classes (4 independent leagues)
+==================================================================================================
+  METRIC                               REAL      SIM      DELTA     OFF
+  ----------------------------------------------------------------------------------------------
+  SUPPLY  (the board per cycle)
+  ranked board size                    4158     3400       -758    -18%  MISS 
+    5-star share %                      0.9      0.9       -0.0     -3%   ok  
+    4-star share %                     10.2     10.3       +0.1     +1%   ok  
+    3-star share %                     58.9     44.7      -14.2    -24%  MISS 
+    2-star share %                     30.0     44.1      +14.1    +47%  MISS 
+  blue-chip share of board %           11.1     11.2       +0.1     +1%   ok  
+  CONVERGENCE
+  signs FBS %                          63.7     81.7      +18.0    +28%  MISS 
+  class size, mean                     20.2     20.7       +0.5     +2%   ok  
+  programs signing < 10 %               3.3     15.1      +11.8   +353%  MISS 
+  DISTRIBUTION
+  blue-chip share of signees %         15.3     13.7       -1.7    -11%   ~   
+  BCR per class, mean %                14.4     13.5       -1.0     -7%   ~   
+  BCR rolling 4yr, mean %              14.1     13.0       -1.1     -8%   ~   
+  BCR rolling 4yr, max %               89.5    100.0      +10.5    +12%   ~   
+  windows at BCR >= 50%                11.8     13.3       +1.5    +12%   ~   
+  Gini of blue-chips                  0.772    0.835     +0.063     +8%   ~   
+  WHERE THE BLUE-CHIPS GO  (by program-quality band — the phase in one table)
+  band         REAL size  SIM size   REAL BC%  SIM BC%   REAL BCR  SIM BCR
+  1-10              23.5       4.2       40.3     10.9       69.6    100.0
+  11-25             21.5      18.0       35.4     67.0       44.5     94.5
+  26-50             19.8      14.7       19.0     21.8       15.6     22.5
+  51-90             19.5      25.0        5.1      0.2        2.6      0.1
+  91-134            19.9      25.0        0.2      0.0        0.1      0.0
+  PERSISTENCE
+  class score r, N -> N+1             0.882    0.927     +0.045     +5%   ok  
+  GEOGRAPHY
+  in-state share of a class %          36.8     31.5       -5.3    -14%   ~   
+  talent production, top states (share of the board):
+    TX                                 12.5      2.0      -10.5    -84%  MISS %
+    FL                                 11.1      2.1       -9.0    -81%  MISS %
+    CA                                 10.9      2.0       -8.9    -81%  MISS %
+    GA                                  7.9      2.0       -5.8    -74%  MISS %
+    OH                                  3.9      2.0       -1.9    -49%  MISS %
+    AL                                  3.6      2.0       -1.6    -44%  MISS %
+

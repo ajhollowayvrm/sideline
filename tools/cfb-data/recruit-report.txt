@@ -1,0 +1,81 @@
+Real college football recruiting — measured
+==================================================================
+source: CollegeFootballData /recruiting/players + /recruiting/teams + /teams/fbs + /talent
+sample: 2015-2025, 11 signing classes, 45,735 high-school prospects on the ranked board
+
+COVERAGE CAVEATS — read before using any number below
+  prospects carrying a star rating   88.8%  (the rest are on the board unrated)
+  hometown lat/long present          98.5%  (distance stats are over these)
+  FBS programs joined to /talent     99.9%  (band table is over these)
+  NOT available in the free tier: commit DATES, offer lists, official visits, NIL money.
+  Nothing here can validate the commitment-window (P35) or visit-calendar (P38) mechanics.
+
+1. SUPPLY — the board per cycle
+  5*     34  0.9%
+  4*    375  10.2%
+  3*   2174  58.9%
+  2*   1109  30.0%
+  blue-chip (4-5*)          11.1%
+  ranked board per class    4,158
+
+2. CONVERGENCE — where the board actually goes
+  signs FBS                 63.7%   (2,647 per class)
+  signs FCS / non-FBS       18.1%
+  no listed commitment      18.3%
+  class size  mean 20.2   p10 13  median 20  p90 27
+  programs signing < 10         3.3%
+  ^ the ranked board deliberately EXCEEDS FBS capacity. A pool-consumption rate is therefore
+    not a health metric: 100% consumption would be wrong. Per-team fill is the real check.
+
+3. DISTRIBUTION — who gets the players
+  blue-chip share of all FBS signees  15.3%
+  blue-chip ratio, per class          mean 14.4%  (classes >= 10)
+  blue-chip ratio, rolling 4yr        mean 14.1%   max 89.5%
+  program-windows at BCR >= 50%       121 of 1027  (11.8%)
+  Gini of blue-chips per team         0.772
+
+  WHERE the blue-chips go, by TALENT-COMPOSITE band (non-cumulative):
+  band        teams  class size   share of blue-chips   BCR
+  1-10          10        23.5                 40.3%   69.6%
+  11-25         15        21.5                 35.4%   44.5%
+  26-50         25        19.8                 19.0%   15.6%
+  51-90         40        19.5                  5.1%    2.6%
+  91-134        44        19.9                  0.2%    0.1%
+
+  THE TEN MOST TALENTED PROGRAMS, 2023 class:
+  team                talent   signed   blue-chips
+  Alabama               1015       27           25
+  Georgia                978       26           22
+  Ohio State             975       24           19
+  Texas A&M              926       20           13
+  Clemson                918       26           19
+  Texas                  913       26           18
+  LSU                    899       28           18
+  USC                    896       27           13
+  Oklahoma               885       26           16
+  Oregon                 875       33           19
+
+4. PERSISTENCE — does a program stay good at recruiting?
+  class-points r, class N -> N+1      0.882
+
+5. GEOGRAPHY
+  in-state share of a class           36.8%
+  signing distance   median 271 mi   p90 1071 mi
+  within 250 mi                       47.6%
+  within 500 mi                       68.0%
+
+  talent production by state (share of the ranked board):
+  state    share      SIDELINE draws uniformly at 2.0%
+  TX        12.5%       6.2x
+  FL        11.1%       5.5x
+  CA        10.9%       5.5x
+  GA         7.9%       3.9x
+  OH         3.9%       2.0x
+  AL         3.6%       1.8x
+  NC         3.0%       1.5x
+  WA         3.0%       1.5x
+  LA         3.0%       1.5x
+  MI         2.9%       1.4x
+  TN         2.8%       1.4x
+  IL         2.8%       1.4x
+
