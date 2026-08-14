@@ -2353,30 +2353,33 @@ const AT={
   // can't be." A speed DEFICIT past this, isolated on a deep ball or in man coverage, steepens; a
   // surplus is unchanged. The single place a channel is deliberately asymmetric.
   oneOnOne:-6, oneOnOneMul:1.9,
-  deepCmp:0.0012,               // separation → completion, weighted toward the deep buckets
-  // AGILITY — short area.
-  agiCmp:0.0011, agiRun:0.045,
+  // Phase 53 retired the per-channel completion coefficients (deepCmp / agiCmp / cthCmp / rteCmp /
+  // thaCmp). They each added straight into a probability; separation is now ONE quantity in rating
+  // points (sepR) with two consumers — the completion in log-odds (sepZ) and the yardage regime
+  // (regSep) — which is what lets the same edge decide both whether the ball is caught and how far it
+  // goes. agiRun and eluRun went with them: they added yards FLAT across the whole draw, which §9a
+  // forbids, and are now the crease regime and the break floor respectively.
   // STRENGTH — the floor and the pocket. Deliberately the smallest per-unit coefficients of the six:
   // strength reaches a play through THREE routes at once (the carrier, his line against the front,
   // and the pocket), so equal coefficients would make a strength build strictly the best one. The
   // simlab build-vs-build check is what caught that — it ran 68% against an aware team's 48%.
-  strFloorU:0.30, strRun:0.15, pbkSack:-0.0018, rbkLine:0.45,
+  strFloorU:0.30, strRun:0.15,
+  // pbkSack and awrSack are gone: protection and the quarterback's awareness now decide PRESSURE and
+  // then ESCAPE (pressK / escAwr), not a sack probability directly. rbkLine and btkRun likewise —
+  // the line's run blocking is pushR and the back's power is breakR, both on the floor per §9a.
   // AWARENESS — errors only.
-  awrInt:-0.0022, awrSack:-0.0024, awrFum:-0.00028, awrVariant:0.020,
+  awrInt:-0.0022, awrFum:-0.00028, awrVariant:0.020,
   // FOOTBALL IQ — pre-snap mastery. Errors only, like awareness: a smart quarterback throws the ball
   // away, he does not throw it further.
   iqInt:-0.0012,
   // HANDS — the catch point, and the takeaway. Phase 51's `bal` split into the receiver's `cth` and
   // the defender's `cth`/`zcv`, which is the same contest with both sides finally named.
-  cthCmp:0.0013, cthInt:0.0014, zcvInt:0.0009,
-  // ROUTE RUNNING against COVERAGE — separation. The biggest genuinely new channel: Phase 51 had no
-  // term for a receiver beating his man on technique rather than on raw speed.
-  rteCmp:0.0016,
+  cthInt:0.0014, zcvInt:0.0009,
   // THROWING. Accuracy owns the completion mean and the interception; the arm owns the deep ball only,
   // weighted by how far the throw actually is (`deepW`), so a cannon is worth nothing on a checkdown.
-  thaCmp:0.0018, thaInt:-0.0020, thpDeep:0.028,
-  // ELUSIVENESS / BREAK TACKLE against TACKLING — the broken run and yards after the catch.
-  eluRun:0.050, btkRun:0.14, yacPass:0.026,
+  thaInt:-0.0020, thpDeep:0.028,
+  // ELUSIVENESS against TACKLING — yards after the catch.
+  yacPass:0.026,
   // BALL SECURITY — fumbles finally have a per-player owner (`car`), met by the tackler stripping.
   carFum:-0.00034,
   // DURABILITY — how often you get hurt, and how late you fade.
@@ -2653,7 +2656,11 @@ const PM={
                                     // for it. Raising it re-inflates the upset rate (see the design doc).
   // How hard team strength (and everything riding on it — home field, the Phase 23 individual
   // matchup) presses on a gain, in yards per rating point.
-  advPass:0.14, advRun:0.085, hfa:3.6,
+  // Phase 53 removed advPass/advRun. Team strength pressed LINEARLY on the yardage of every snap,
+  // which is what answered a 31-point spread with a 55-point favourite against a real 50. It now moves
+  // the CONTESTS — the completion in log-odds (AT.advCmpZ) and the yardage regime (AT.regAdv/regAdvR)
+  // — so a better team wins more downs rather than every down by more.
+  hfa:3.6,
   // Game clock charged per snap. Real FBS runs ~135 plays in 3600s ≈ 26.7s a snap once you net out
   // the stopped clock on incompletions, out-of-bounds and changes of possession.
   secRun:32, secPass:30, secQuick:13, secIncomp:6, secSack:32,
@@ -3135,7 +3142,7 @@ function simEngine(home,away,seed,opts){
             +AT.sepZ*sepR+AT.cpZ*dCTHb+AT.accZ*qTHA+AT.advCmpZ*padv
             +(pressed?-AT.accPress+AT.accTor*tilt(qb,'tor'):0))-PC.cmp*press,0.05,0.95)){    // completion (+ spread stresses coverage)
           // ---- 3. the REGIME the contest bought. `padv` no longer adds yards to every snap
-          // (PM.advPass); it moves the offense up the measured table, so an edge shows up as
+          // (the retired PM.advPass); it moves the offense up the measured table, so an edge shows up as
           // explosive plays rather than as a uniformly longer completion.
           const e=regExp(AT.regSep*sepR+AT.regAdv*adv+AT.regMatch*pmat-(pressed?AT.regPress:0));
           const u=regime(shapeDraw(r,rec,vAmp,oP.vol-dP.vol),e);   // Phase 51: keep the draw — speed reads its TAIL
@@ -4902,7 +4909,7 @@ function gameSeed(g){return (hashStr(g.id)^(S.seed>>>0))>>>0;}
 // than the one in the record book. Every game resolved from here on is stamped with the model that
 // produced it; replay is refused (not silently wrong) for anything older. Stored results, stats and
 // standings are untouched — only the play-by-play re-sim is unavailable.
-const SIM_MODEL=7;   // 7 = Phase 52 (position-specific attributes); 6 = Phase 51 (attributes are the ability model); 5 = Phase 50 (big moments); 4 = Phase 49 (roster-driven penalties); 3 = Phase 48.1 (measured gain tables)
+const SIM_MODEL=8;   // 8 = Phase 53 (play resolution as sequential contests); 7 = Phase 52 (position-specific attributes); 6 = Phase 51 (attributes are the ability model); 5 = Phase 50 (big moments); 4 = Phase 49 (roster-driven penalties); 3 = Phase 48.1 (measured gain tables)
 function gameReplayable(g){ return !!g && (!g.played || g.eng===SIM_MODEL); }
 // Phase 22: if the coach play-called this game, `g.calls` is the ordered list of his controlled-offense
 // decisions. Replaying it (the OC default fills any gap) reproduces the EXACT play-called result on

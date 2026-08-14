@@ -8,6 +8,10 @@
 > envelope intact (22.6 → 22.8 pts/team) so nothing needs re-fitting, and it leaves steps 3b–5
 > (compounding contests, calibration to the §3 curve, the new gates) as the next phase. The sections
 > below are the design record; **§12 records what shipping actually measured.**
+>
+> **Steps 3b is now SHIPPED as Phase 53 — see `contests.md`.** Read its §4 before acting on §1's tail
+> argument here, and its §5 before trusting §11's or §12's numbers: two of the three calibration
+> targets in §11 and the tail claim in §12 were measurement artefacts.
 
 Two directives, given together, that turn out to be one phase:
 
@@ -681,8 +685,13 @@ confirmation of §1 — additive mean-zero channels Gaussianize, and more of the
    finish. Red zone, 4th down, and whatever is converting yardage into punts.
 2. **Narrow the average margin from 20.9 to 16.2** while *widening* the extreme tail. Fewer ordinary
    blowouts, more rare catastrophic ones — the §6 shape.
-3. **Y/C from 5.20 to 4.27**, the largest remaining per-play error and a plausible contributor to
-   (1) via drive length.
+3. ~~**Y/C from 5.20 to 4.27**, the largest remaining per-play error and a plausible contributor to
+   (1) via drive length.~~ **CORRECTED at Phase 53 — this target was mostly a measurement bug.**
+   `4-simprofile` compared yards per carry gross-against-net: the real side reads ESPN
+   rushingAttempts/rushingYards, which fold sacks in as negative rushes, while the sim excluded sacks
+   from attempts and netted their yardage out of the numerator only. Phase 52's true figure is **4.61
+   against a real 4.27** — an 8% error, not 22%. Targets (1) and (2) survive intact. See
+   `contests.md` §5.
 
 Targets (1) and (2) are in direct tension under the current architecture — anything that tightens
 margins also flattens the tail. That is the strongest practical argument for the rebuild: compounding
@@ -726,6 +735,14 @@ This is §1's argument paying off a phase early. The league is now a MIXTURE of 
 than a cloud of independent tilts, and mixtures carry excess kurtosis by construction — the sim
 crossed from thinner-than-Gaussian to fatter, closing ~40% of the gap with no knob touched. The
 remaining 0.28 is what the compounding rebuild (step 3b) is for.
+
+> **CORRECTED at Phase 53. This paragraph is not supported by its own measurement.** Excess kurtosis
+> has a standard error of ~sqrt(24/n); at the 2,010 games these figures were taken over that is
+> **+-0.11**, so the -0.154 -> +0.037 move is a difference of 0.19 against an SE on the difference of
+> ~0.15 — about 1.2 sigma. Re-measured over 16,080 games with the corrected tool, Phase 52 sits at
+> **-0.005 +-0.039**. The archetype mixture's effect on the tail is not established, and "closing ~40%
+> of the gap" should not be relied on. Worse, step 3b then found that the compounding rebuild does not
+> close the rest either, and why. See `contests.md` §4 and §5.
 
 ### The bug this phase would otherwise have shipped
 

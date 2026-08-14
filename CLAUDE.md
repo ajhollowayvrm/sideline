@@ -198,6 +198,39 @@ still serves it with zero config.
   because the node labs extract engine blocks with a sloppy-mode eval that leaks function declarations
   but not block-scoped consts.
 
+- **Phase 53 — play resolution as sequential contests.** Step 3b of `attributes-2.md`: the
+  architectural inversion. A dropback is now protection → **pressure, a real per-snap STATE** → escape
+  (sack / scramble / throw on the run) → separation as ONE quantity in rating points → completion
+  composed in **log-odds** → yardage drawn from Phase 48.1's measured table *at a percentile the
+  contest bought* (`regime`). The run is §7's sequence — push, crease, break — with push and break on
+  the FLOOR and speed on the TAIL, per §9a. Turnovers read the pocket (a pressured throw is picked far
+  more often) and gain the **fumble after the catch**, a real category the sim did not have. Three §7
+  items that had never been wired: awareness in the push, awareness as blitz pickup, and the
+  DEFENDER's `awr`/`tkl` against the crease. **`PM.advPass`/`advRun` are retired** — team strength no
+  longer adds yards to every snap, it moves the contests, which is the phase in one line. Play-calling
+  finally reads the **scoreboard**. Save v48 unchanged (no shape change); `SIM_MODEL` **8**, so
+  pre-Phase-53 games decline replay. *(→ `docs/phases/contests.md`.)*
+
+  **What it measured** (16,080 games): the mismatch RESPONSE largely arrived — a 31-point spread now
+  answers 48.0 favourite points against a real 50.1, where Phase 52 answered 55.5, and favourite win
+  rate tracks `cfb-averages.md` §3 almost bucket for bucket. Turnovers, interceptions, fumbles, sacks
+  and rush attempts all land. What did NOT move is the **tail** (excess kurtosis −0.005 → +0.062
+  ±0.039 against a target +0.319), and §1's prediction that compounding contests would fix it is
+  **measured wrong**. Per-play variance shaping provably cannot: a mixture needs a variance RATIO near
+  2 and per-play shaping moves one component ±20%, worth ~0.02 — swept across a 5× range it did
+  nothing. Persistent per-game properties do buy tail, but every one available is a unit contest
+  correlated with team quality, so it buys margin at the same time. The one lever that is persistent
+  AND orthogonal to quality is **game-state feedback**, which is where step 4 should look.
+
+  **It also had to fix its own instruments first.** Excess kurtosis was being read at ±0.11 — one
+  sigma, the size of the effects in question — so `WORLDS=n` now pools independent leagues and the SE
+  is printed. Y/C was compared gross-against-net; sacks were order-corrupted; the end-of-half drive had
+  no bucket. **This revises two claims in `attributes-2.md`**: §12's "the tail moved ~40% of the way"
+  is ~1.2 sigma and Phase 52 actually measures −0.005, and §11's "Y/C +22%, the largest remaining
+  per-play error" was mostly the gross/net bug (true: +8%). And **simlab's synthetic world still had
+  no FS/SS**, so the primary sim gate was validating a league whose safeties carried a linebacker's
+  attribute row and appeared in no coverage or tackle pool.
+
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
 stays fast). This is a design choice, not a backlog. Per-doc "Deliberately out of scope"
