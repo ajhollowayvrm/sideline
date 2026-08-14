@@ -6,7 +6,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > This file is the **working brief** — what you need loaded every session. The full
 > phase-by-phase design records (the "why" behind each system) live in **`docs/phases/`**
 > and are read on demand, not auto-loaded:
-> - `docs/phases/gameday.md` — sim engine + play-calling + the watch screen (Phases 3, 3.5, 21–31, 46, 55, 55.1)
+> - `docs/phases/gameday.md` — sim engine + play-calling + the watch screen (Phases 3, 3.5, 21–31, 46, 55, 55.1, 55.2)
 > - `docs/phases/recruiting.md` — recruiting, signing, portal, visits (Phases 4, 14, 16, 17, 33–38)
 > - `docs/phases/offseason.md` — rollover, program, postseason, draft, championships, camp, realignment (Phases 5, 6–9, 12, 13, 15, 18, 32, 39, 43, 44)
 > - `docs/phases/identity-media.md` — traits, morale, media, rivalries, records, contract, legends, identity (Phases 10, 11, 19, 20, 40, 41, 42, 45)
@@ -27,7 +27,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > (r=0.078) so there is no such thing as a clutch team, that late-and-close football genuinely
 > tightens, and that kickers measurably do not choke.
 >
-> **All roadmap phases 1–55.1 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–55.2 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -301,7 +301,24 @@ still serves it with zero config.
   49's `jr` is nulled the moment a play can no longer be wiped, which is exactly when the extra point
   and clutch credit are written; `sj` runs to the end, is **drained** by whoever reports the play (so a
   pick-six's two entries split offense from return), and is cleared by `undoPlay`. Both rng-free →
-  **no save bump, no `SIM_MODEL` bump**. `simlab` → 157, `qa` → 327. *(→ `docs/phases/gameday.md`.)*
+  **no save bump, no `SIM_MODEL` bump**. *(→ `docs/phases/gameday.md`.)*
+
+- **Phase 55.2 — the other half of the story.** The running story only had upside, which made the feed
+  a highlight reel of one team's good afternoon rather than an account of the game. Six **downside**
+  categories now run on the same rules (a number crossed, said once, never editorialised): picks thrown
+  (`box.pInt`), fumbles lost, team giveaways, **sacks given up** (the other side's `box.sk`), flags on
+  one man (`box.pen` — the line Phase 49 earned, since one man commits 44.7% of a team's false starts),
+  and flags on a team. `sm` entries become **`{t,d}`** — the line plus a downside flag, because the
+  engine is what knows whether a number is something you did or something done to you; the viewer gives
+  the two registers a **left rule as well as** colour, since a crimson programme's accent sits close to
+  the downside red. Fumbles-lost and giveaways are **local counters, not box keys** — `applyResult`
+  folds the box into `p.gs`, so a new key would become a new per-player season stat and a save-shape
+  change, which commentary has no business causing. Flags get their own hook (`flagStory`) because a
+  foul is reported by `chargeFoul` and never reaches the play resolution. **Also fixed a latent bug:**
+  `scheduleGameTick` captured its entry at *schedule* time and applied it whenever the timer fired —
+  unreachable in the shipped app (`skipGame` and the Fast toggle clear the timer first), but it made a
+  probe that moved `G.idx` replay a stale entry and open a second Q1 band after Q3. It re-reads at fire
+  time now. `simlab` → 160, `qa` → 328. *(→ `docs/phases/gameday.md`.)*
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week

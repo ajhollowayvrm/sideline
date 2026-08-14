@@ -282,30 +282,48 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   check('Phase 55.1: a wiped play leaves no stat delta behind',
     lg.filter(e => /no play|TOUCHDOWN COMES BACK/.test(e.text)).every(e => (e.st || []).every(d => d[1] === 'pen' || d[1] === 'penYds')));
 
-  // The running story: broadcast lines said the moment a number is crossed, and never again.
-  let sm = [], smGames = 0, sawRush = 0, sawTeam = 0, sawSack = 0, sawDrive = 0, dupes = 0;
+  // The running story: broadcast lines said the moment a number is crossed, and never again. An
+  // entry is {t, d} — the line, and `d` when it is the downside, because a game has two stories in it.
+  let sm = [], smGames = 0, dupes = 0, worst = 0;
+  const seen = { rush: 0, team: 0, sack: 0, drive: 0, pick: 0, fum: 0, give: 0, sackAg: 0, flagP: 0, flagT: 0 };
   for (let s = 0; s < 40; s++) {
     const res = simEngine(w.teams[s % 8], w.teams[(s + 4) % 8], (hashStr('sm' + s) ^ 7) >>> 0, { log: true });
     const lines = res.log.flatMap(e => e.sm || []);
     if (lines.length) smGames++;
+    worst = Math.max(worst, lines.length);
     // Once-only applies to the MILESTONES (a hundred-yard game is crossed once). The drive line is
     // per-possession by construction, so it legitimately recurs and is excluded here.
-    const marks = lines.filter(t => !/^This drive has been all/.test(t));
+    const marks = lines.filter(m => !/^This drive has been all/.test(m.t)).map(m => m.t);
     if (new Set(marks).size !== marks.length) dupes++;
-    sawRush += lines.filter(t => /yards on the ground/.test(t)).length;
-    sawTeam += lines.filter(t => /total offense/.test(t)).length;
-    sawSack += lines.filter(t => /sacks for/.test(t)).length;
-    sawDrive += lines.filter(t => /^This drive has been all/.test(t)).length;
+    const hit = (k, re) => { seen[k] += lines.filter(m => re.test(m.t)).length; };
+    hit('rush', /yards on the ground/); hit('team', /went over \d+ yards of total offense/);
+    hit('sack', /sacks for/); hit('drive', /^This drive has been all/);
+    hit('pick', /interception of the day/); hit('fum', /fumble lost by/);
+    hit('give', /turnovers now for/); hit('sackAg', /has given up/);
+    hit('flagP', /flag on/); hit('flagT', /flags now on/);
     sm = sm.concat(lines);
   }
   check('Phase 55.1: the running story fires in most games', smGames >= 34, `${smGames}/40 games had a milestone`);
   check('Phase 55.1: a milestone is said once and never repeated', dupes === 0, `${dupes} games repeated a line`);
-  check('Phase 55.1: every category is reachable — yardage, team total, sacks, a drive one man owned',
-    sawRush > 0 && sawTeam > 0 && sawSack > 0 && sawDrive > 0,
-    `rush ${sawRush} · team ${sawTeam} · sack ${sawSack} · drive ${sawDrive} over 40 games`);
+  check('Phase 55.1: every UPSIDE category is reachable — yardage, team total, sacks, a drive one man owned',
+    seen.rush > 0 && seen.team > 0 && seen.sack > 0 && seen.drive > 0,
+    `rush ${seen.rush} · team ${seen.team} · sack ${seen.sack} · drive ${seen.drive} over 40 games`);
+  // The other half of the game. Each has its own counter or box key, and each has to actually fire —
+  // a downside milestone nobody ever crosses is a line of dead code, not a feature.
+  check('Phase 55.1: every DOWNSIDE category is reachable — picks, lost fumbles, giveaways, sacks given up, flags',
+    seen.pick > 0 && seen.fum > 0 && seen.give > 0 && seen.sackAg > 0 && seen.flagP > 0 && seen.flagT > 0,
+    `pick ${seen.pick} · fumble ${seen.fum} · giveaway ${seen.give} · sacks-allowed ${seen.sackAg} · man-flag ${seen.flagP} · team-flag ${seen.flagT}`);
+  check('Phase 55.1: the downside is tagged as the downside, and the upside is not',
+    sm.filter(m => /interception of the day|fumble lost by|turnovers now for|has given up|flag on |flags now on/.test(m.t)).every(m => m.d === 1)
+    && sm.filter(m => /yards on the ground|touchdown of the day|^This drive has been all/.test(m.t)).every(m => !m.d),
+    `${sm.filter(m => m.d).length} downside of ${sm.length} lines`);
+  // A feed is commentary, not a ticker. Asserted on the MEAN with a ceiling on the tail, rather than
+  // on the worst game alone — one loud game is fine, a loud average is the feature eating the feed.
+  check('Phase 55.1: the story stays a garnish, not the feed',
+    sm.length / 40 <= 18 && worst <= 32, `${(sm.length / 40).toFixed(1)} lines a game, worst ${worst}`);
   check('Phase 55.1: the story names a real man and carries no markup',
-    sm.every(t => !/[<>]/.test(t)) && sm.filter(t => /yards on the ground|receiving|through the air/.test(t)).every(t => /^[A-Z][a-z]+ [A-Z]/.test(t)),
-    sm[0] || 'none');
+    sm.every(m => !/[<>]/.test(m.t)) && sm.filter(m => /yards on the ground|receiving|through the air/.test(m.t)).every(m => /^[A-Z][a-z]+ [A-Z]/.test(m.t)),
+    sm[0] ? sm[0].t : 'none');
   // Milestones are prose over a box the engine already keeps — no rng, so a logged game and an
   // unlogged one must still land on the same score. (The 60-seed parity above covers this, but this
   // says WHY it has to.)

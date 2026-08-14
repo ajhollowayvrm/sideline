@@ -803,8 +803,52 @@ reaches all four categories, names a real man, carries no markup, and consumes n
 18 numerals and 220+ lines, that the field precedes the log, that a loss now matches its gain's
 colour, and that the Stats tab's folded box equals the full-game one at the final whistle.
 
+### 55.2 — the other half of the story
+
+The first pass had only upside milestones, which made the feed a highlight reel of one team's good
+afternoon rather than an account of the game. Six downside categories now run on exactly the same
+rules — a number crossed, said once, never editorialised:
+
+| | source | marks |
+|---|---|---|
+| interceptions thrown | `box.pInt` | 2, 3, 4 |
+| fumbles lost | `fumLost` counter | 2, 3 |
+| team giveaways | `tov` counter | 3, 4, 5 |
+| sacks given up | the *other* side's `box.sk` | 4, 6, 8 |
+| flags on one man | `box.pen` | 3, 4 |
+| flags on a team | `pen[tid].n` | 8, 10, 12 |
+
+Three notes on how they land:
+
+- **`sm` entries are now `{t, d}`** — the line, and `d` when it is the downside. The engine decides the
+  tone because the engine is what knows whether a number is something you did or something that was
+  done to you. The viewer renders the two in different registers, distinguished by a **left rule as
+  well as** colour: a crimson programme's accent sits close to the downside red, so hue alone can't be
+  load-bearing.
+- **Two counters, not two box keys.** Fumbles lost and team giveaways have no key in the box, and
+  adding one is not free — `applyResult` folds the box into `p.gs`, so a new key becomes a new
+  per-player *season* stat and a save-shape change. A piece of commentary has no business doing that,
+  so they're local counters in the engine, incremented at the resolution point (which is *after* every
+  penalty branch, so a turnover a defensive flag erased is never counted).
+- **Flags get their own hook.** A foul is reported by `chargeFoul` and never reaches the play
+  resolution, so `flagStory` runs there. This is the line Phase 49 earned: its whole finding was that
+  one man commits 44.7% of his team's false starts, and "that is the third flag on him" is what that
+  looks like from the couch.
+
+**A latent bug this turned up.** `scheduleGameTick` captured `const e = G.log[G.idx]` at *schedule*
+time and applied it whenever the timer fired. Nothing in the shipped app moves `G.idx` while a timer
+is in flight (`skipGame` and the Fast toggle both clear it first), so it was unreachable — but a probe
+that set `G.idx` directly made the ticker replay a stale entry and open a **second Q1 quarter band
+after Q3**. The tick now re-reads the entry at fire time; `e` is only used to pace the timer.
+
+`simlab` → **160**: every downside category is reachable (a milestone nobody ever crosses is dead code,
+not a feature), the tone flag is right in both directions, and the story stays a garnish — asserted on
+the **mean** (14.2 lines a game) with a ceiling on the tail, because one loud game is fine and a loud
+average is the feature eating the feed. `qa` → **328**: the downside appears in the feed in its own
+register, alongside the upside.
+
 ### Deliberately out of scope
 The Stats tab is a box score, not analytics — no win probability, no EPA, nothing that is a model
-output rather than a record of what happened. The running story has no *negative* milestones (a fourth
-interception, a fifth sack allowed); it could, but a broadcast piling on a struggling player is a
-different tone decision and wasn't asked for.
+output rather than a record of what happened. The running story states numbers and never
+grades a performance — there is no "worst game of his career" line, and no editorialising about a
+player struggling; a threshold crossed is a fact, an opinion about it is not.
