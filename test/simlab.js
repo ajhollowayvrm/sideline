@@ -355,10 +355,21 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
   }
   check('Phase 24: shadowing a stud WR with a better defender cuts his production', shadY < baseY,
     `${(shadY / 200).toFixed(1)} vs ${(baseY / 200).toFixed(1)} rec yds/g`);
-  // pep-talk / settle the beaten corner (+18 effective) → he covers better, WR1 dips
+  // pep-talk / settle the beaten corner (+18 effective) → he covers better, WR1 dips.
+  // Averaged over 300 seeds for the SAME reason the shadow check above is: one game is chaos, not a
+  // measurement. Phase 53 is what exposed it — the old model added the rating edge straight onto every
+  // completion's yardage, a linear term strong enough to survive n=1; the boost now flows through the
+  // completion odds and the yardage regime instead, which is a truer model and a noisier single game.
+  // Measured over 300 seeds the effect is a clean 55.1 -> 45.9 rec yds/g.
   const pep = [{ at: 0, plan: { shadow: {}, boost: { [cb1.id]: 18 } } }];
-  const pr = simEngine(O, D, seed, { adjustFor: D.id, adjusts: pep });
-  check('Phase 24: a pep-talk (rating bump) to the beaten corner helps the defense', wrY(pr) < wrY(base), `${wrY(pr)} vs ${wrY(base)} rec yds`);
+  let pepY = 0, pepBase = 0;
+  for (let i = 0; i < 300; i++) {
+    const sd = (hashStr('pep' + i) ^ 7) >>> 0;
+    pepBase += wrY(simEngine(O, D, sd));
+    pepY += wrY(simEngine(O, D, sd, { adjustFor: D.id, adjusts: pep }));
+  }
+  check('Phase 24: a pep-talk (rating bump) to the beaten corner helps the defense', pepY < pepBase,
+    `${(pepY / 300).toFixed(1)} vs ${(pepBase / 300).toFixed(1)} rec yds/g`);
   // determinism: same timeline → byte-identical
   const a = simEngine(O, D, seed, { adjustFor: D.id, adjusts: shadow }), b = simEngine(O, D, seed, { adjustFor: D.id, adjusts: shadow });
   check('Phase 24: adjustments are deterministic (replay matches)', a.hs === b.hs && a.as === b.as && JSON.stringify(a.box) === JSON.stringify(b.box));

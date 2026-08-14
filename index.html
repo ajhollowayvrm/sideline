@@ -2386,8 +2386,59 @@ const AT={
   // indistinguishable from a 70 on anything else. Neither is pressure-sensitive: cfb-clutch.md
   // measured that kickers do not choke.
   kLeg:0.010, kAcc:0.0016, puntLeg:0.16,
+  // === Phase 53 (step 3b) — THE POCKET. Protection is contested before anything else and produces a
+  // real intermediate STATE that everything downstream reads. This is where the compounding lives:
+  // a beaten line does not merely give up sacks, it degrades the throw, shortens the read, and costs
+  // the route the time it needed to come open. Phase 52 had one sack roll and no such state.
+  pressBase:0.285,        // league pressure rate on a dropback (real CFB ≈ 30%)
+  pressK:0.080,           // protection edge → pressure, MULTIPLICATIVELY (cx). A rush that doubles
+                          // the pressure rate against a bad line halves it against a good one.
+  pressBlitz:1.65, pressCover:0.80, pressSpread:1.20, pressKey:0.55,
+  pressVar:5.0,           // a play concept's SACK delta (vSack) converted to a PRESSURE delta:
+                          // sack ≈ pressure × (1 - escape) ≈ pressure × 0.20, so the reciprocal.
+  iqProt:0.45,            // he sets the protection
+  // ESCAPE — the quarterback's own athleticism against the man who beat the block. P(no sack |
+  // pressured) ≈ 0.80 for an average QB, which lands the league on the measured ~6% sack rate.
+  escBase:0.800, escK:0.030, escElu:0.42, escAgi:0.30, escStr:0.14, escBtk:0.14, escAwr:0.30, escPrs:0.55,
+  scrRun:0.30,            // of the escapes, how many take off rather than throw on the run
+  // SEPARATION — one physical quantity, in rating points, with two separate consumers below.
+  sepRte:1.00, sepAgi:0.60, sepSpd:0.45, sepAcc:0.35,
+  // …consumer 1: the completion, composed in LOG-ODDS so two edges on one play COMPOUND in odds
+  // rather than averaging in probability. The measured situational terms (Phase 49/50, red zone)
+  // stay additive in probability, because that is the space they were measured in.
+  sepZ:0.0165, cpZ:0.0125, accZ:0.0180, advCmpZ:0.0300,
+  accPress:0.52, accTor:0.022,   // a pressured throw is a worse throw; `tor` is what buys it back
+  // …consumer 2: the REGIME. A contest resolves into a place in the measured distribution, not a
+  // yardage bonus. Winning does not add yards to every snap — it moves you up the table, so a
+  // dominant matchup produces EXPLOSIVE plays rather than uniformly bigger ones. This is the mixture
+  // that carries the fat tail, and the reason team strength can decide games without flattening them.
+  regK:1.00, regLo:0.55, regHi:1.70,
+  // regMatch is deliberately SMALL. The matchup edge varies snap to snap, so weight here is
+  // independent per-play noise, and independent noise Gaussianizes a team's total by the central
+  // limit theorem — measured: 0.006->0.032 took excess kurtosis from +0.231 to +0.037 while barely
+  // moving the margin. Persistent per-GAME properties (shapeVol, the protection contest) buy the tail;
+  // per-play ones spend it. That distinction is the practical form of §1's argument.
+  regSep:0.045, regAdv:0.0060, regMatch:0.0060, regPress:0.42,
+  // ROSTER SHAPE → outcome VARIANCE (shapeVol). Mean-preserving by construction — compReshape is
+  // symmetric about 0.5 — so this buys the league a mixture of distribution SHAPES without moving
+  // anyone's expected score. It is the Phase 50 move (clutch as variance, not bonus) applied to the
+  // floor/tail rule, and the direct analogue of Phase 49's team-level SD.
+  volK:0.075, volLo:0.55, volHi:1.55,
 };
 // AT-END
+// --- Phase 53 primitives. cx is a CONTEST multiplier: log-symmetric, so edges multiply instead of
+// summing. lz/iz move a probability into log-odds and back. `regime` reshapes the uniform draw that
+// indexes a measured quantile table — e<1 pushes it up the table, e>1 down — which is how a contest
+// buys a distribution rather than a constant. All pure → simlab-testable.
+const cx=(g,k)=>Math.exp(clamp(k*g,-1.5,1.5));
+const lz=p=>Math.log(clamp(p,1e-4,1-1e-4)/(1-clamp(p,1e-4,1-1e-4)));
+const iz=z=>1/(1+Math.exp(-clamp(z,-8,8)));
+const regime=(u,e)=>Math.pow(clamp(u,1e-9,1),e);
+const regExp=g=>clamp(Math.exp(-AT.regK*g),AT.regLo,AT.regHi);
+// The play draw, shaped by BOTH the player's composure (Phase 10/50) and his team's boom-or-bust
+// roster construction (Phase 53). Both are compReshape exponents, so they compose by multiplying and
+// both are mean-preserving; an average player on an average roster reproduces a flat uniform draw.
+const shapeDraw=(r,p,amp,vol)=>compReshape(r(),compExp(p,amp)*clamp(1-AT.volK*(vol||0),AT.volLo,AT.volHi));
 // A mean-zero attribute channel: how far this offensive player sits above his group in attribute k,
 // minus how far his defender sits above his. Identical construction to matchEdge (Phase 23).
 const AD=(o,oA,d,dA,k)=>((av(o,k)-oA[k])-(av(d,k)-dA[k]));
@@ -2416,6 +2467,37 @@ const floorAdd=(u,d,w)=>u>=AT.strFloorU?0:w*d*((AT.strFloorU-u)/AT.strFloorU);
 // DURABILITY: how likely this player is to get hurt, for his level. The deviation is mean-zero, so
 // league-wide injury volume is unchanged — it just stops landing uniformly on everyone.
 const injMul=p=>clamp(1-AT.durInj*tilt(p,'dur'),0.35,2.0);
+// Phase 53 — the SHAPE of a team's outcome distribution, at equal ability. attributes-2.md §9a:
+// awareness and IQ own the FLOOR (fewer stuffs, fewer mistakes, and explicitly NO tail), while speed,
+// acceleration, elusiveness and route running own the TAIL (explosive plays, and explicitly no floor).
+// A roster built on one is boom-or-bust; a roster built on the other is narrow and dull. Same overall,
+// different variance.
+//
+// This is the only source of excess kurtosis that does NOT also widen the average margin, which is
+// why the phase needs it: routing the talent gap through a convex response fattens the tail and blows
+// the margin out together (measured — regAdv 0.006→0.020 moved kurtosis 0.051→0.118 and margin
+// 20.1→21.6 in lockstep). Roster shape varies across the league WITHOUT tracking how good a team is,
+// so it makes the league a mixture of shapes at a fixed spread of means.
+//
+// Each term is a `tilt` — mean-zero per player by construction — so the league mean of this is 0 and
+// an average roster reproduces the unshaped draw exactly.
+const VOL_TAIL=['spd','acc','elu','rte'], VOL_FLOOR=['awr','iq'];
+function shapeVol(pools){
+  // Count ONLY the attributes a player actually carries. `av` falls back to `p.ov` for an absent one,
+  // and a player's overall sits systematically ABOVE his own unweighted attribute mean (anchorOff), so
+  // reading a missing attribute yields a large positive fake tilt. Receivers do not carry `iq`; with
+  // the naive guard this term measured a league mean of -1.20 instead of 0 — the same class of bug
+  // attributes-2.md §12 records for `tilt` itself. A deviation is only mean-zero against the right
+  // reference, and "the player carries this attribute" is part of that reference.
+  const has=(p,k)=>!!p&&p[k]!=null;
+  const grp=(pool,ks)=>{ let t=0,w=0;
+    for(const e of (pool||[])){ let s=0,n=0; for(const k of ks){ if(has(e[0],k)){s+=tilt(e[0],k);n++;} }
+      if(n){t+=(s/n)*e[1];w+=e[1];} }
+    return w?t/w:0; };
+  const qb=pools.qb, qbF=qb?(VOL_FLOOR.reduce((s,k)=>s+(has(qb,k)?tilt(qb,k):0),0)/(VOL_FLOOR.filter(k=>has(qb,k)).length||1)):0;
+  return clamp(0.55*grp(pools.recv,VOL_TAIL)+0.30*grp(pools.rush,VOL_TAIL)
+              -0.35*grp(pools.recv,VOL_FLOOR)-0.25*grp(pools.ol,VOL_FLOOR)-0.40*qbF,-16,16);
+}
 // Depth-weighted usage pools for one team-game (starters get the lion's share of touches).
 function gamePools(team,benched){
   // Phase 27: injured players sit. `benched` (a Set of ids, frozen per game) is used when given so a
@@ -2439,7 +2521,7 @@ function gamePools(team,benched){
   const ol=W([['OT',1.0],['OG',0.95],['C',0.8]],1);       // Phase 49: who false-starts — Phase 51: and who blocks
   const rush4=W([['DE',1.0],['DT',0.7],['LB',0.5]],1);    // pass rush (sacks)
   const byso=c=>(byPos[c]||[]).slice().sort((a,b)=>(a.so||0)-(b.so||0));
-  return {
+  const P={
     // Phase 51 attribute means, per pool — the baselines the channels deviate from.
     recvA:avgA(recv), covA:avgA(cover), rushA:avgA(rush), frontA:avgA(front), olA:avgA(ol), rush4A:avgA(rush4),
     qb:(byPos.QB||[])[0]||null,
@@ -2454,6 +2536,10 @@ function gamePools(team,benched){
     cover, front, cb:byso('CB'), saf:byso('SS').concat(byso('FS')), lbk:byso('LB'),
     recvAvg:wavg(recv), rushAvg:wavg(rush), covAvg:wavg(cover), frontAvg:wavg(front)
   };
+  // Phase 53: how boom-or-bust this roster is, computed once per team-game (the Phase 49 precedent —
+  // a team-level property read off the players, not a league constant with noise).
+  P.vol=shapeVol(P);
+  return P;
 }
 // The defender matched to a target (Phase 23) — DETERMINISTIC (no rng), by depth, so coverage is a
 // persistent storyline (their WR1 vs your CB1) you can read ("getting cooked") and later adjust.
@@ -2518,7 +2604,10 @@ const PM={
   // team strength still apply on top, as deviations from what real football actually calls.
   mix:{'1|1':0.199,'1|2-3':0.177,'1|4-6':0.278,'1|7-10':0.437,'1|11+':0.509,'2|1':0.292,'2|2-3':0.326,'2|4-6':0.409,'2|7-10':0.531,'2|11+':0.618,'3|1':0.172,'3|2-3':0.405,'3|4-6':0.699,'3|7-10':0.785,'3|11+':0.741,'4|1':0.161,'4|2-3':0.598,'4|4-6':0.842,'4|7-10':0.871,'4|11+':0.862},
   passBase:0.45,                    // fallback when a situation has no measured sample
-  cmpBase:0.6200,                   // completion rate before situation
+  cmpBase:0.6560,                   // completion rate before situation AND before pressure (Phase 53
+                                    // re-anchor: the pocket now charges an explicit accuracy penalty
+                                    // on ~30% of dropbacks, so the pre-pressure constant must rise
+                                    // for the league to still land on a measured 61.1%)
   fgMax:50,                         // longest field goal the AI will try on a normal down
   intRate:0.068,                    // pick chance on an incompletion (→ ~0.82 INT/team-game)
   fumRate:0.0125, sackFumP:0.075,   // ball-security: on a carry / stripped on a sack
@@ -2868,7 +2957,10 @@ function simEngine(home,away,seed,opts){
       else if(aiDefVs && off.id===aiDefVs && def.id!==aiDefVs){   // Phase 29: AI DC schemes vs the controlled offense
         const u=usage[off.id], tot=u.run+u.pass, runRate=(u.run+2)/(tot+4);
         dcall=aiDefCall({down,togo,los,runRate},dcR()); }
-      const dSack =dcall==='blitz'?0.05:dcall==='cover'?-0.012:0;   // blitz → pressure; cover (3-man rush) → less
+      // Phase 53: the defensive call's effect on the pass rush is now the PRESSURE multipliers
+      // (AT.pressBlitz / AT.pressCover), which is where it belongs — a blitz that gets home is far
+      // more often a bad throw than a sack. The old `dSack` probability delta is gone; keeping both
+      // double-counted the call and measurably inverted the Phase 29 AI-DC check.
       const dComp =dcall==='cover'?-0.10:dcall==='run'?0.06:dcall==='blitz'?-0.03:0;  // cover takes the pass; stack-box opens it
       const dPassY=dcall==='blitz'?5:dcall==='run'?3:dcall==='cover'?-3:0;            // light coverage → bigger gains
       const dRunY =dcall==='blitz'?3:dcall==='cover'?1:dcall==='run'?-4:0;            // stack the box stuffs the run; blitz is gashed
@@ -2915,7 +3007,13 @@ function simEngine(home,away,seed,opts){
         // Phase 50: the mean nudge, drawn from THIS matchup — his QB and his receiver against their
         // corner. Mean-zero across the league (composure is centred at 50 on both sides), bounded by
         // PC.mean, and the only channel allowed to bias a close game at all.
-        const padv=adv+mEdge+(compClutch(qb)+compClutch(rec)-compClutch(cov))*PC.mean*press;
+        // Phase 53 splits what Phase 52 bundled. `pmat` is THIS receiver against THIS corner; `adv`
+        // is the two teams. They belong in different places: an individual mismatch should produce
+        // explosive plays (it is a matchup, and matchups are where football's tail comes from), while a
+        // team-quality gap should mostly win more downs rather than lengthen every catch. Bundling them
+        // is what made the sim answer a 31-point spread with a 55-point favourite against a real 50.
+        const pmat=mEdge+(compClutch(qb)+compClutch(rec)-compClutch(cov))*PC.mean*press;
+        const padv=adv+pmat;
         // ---- Phase 51 attribute channels, all mean-zero against the pools they come from ----
         const dAGI=AD(rec,oP.recvA,cov,dP.covA,'agi'), dCTH=AD(rec,oP.recvA,cov,dP.covA,'cth');
         // SEPARATION — his route running against the coverage the defence is actually playing. The
@@ -2924,6 +3022,7 @@ function simEngine(home,away,seed,opts){
         const dPRO=AUX(oP.olA,dP.rush4A,dP.olA,oP.rush4A,'pbk','prs');   // the pocket — protection vs rush
         const qAWR=tilt(qb,'awr'), qIQ=tilt(qb,'iq');        // does he see it coming, and did he set the protection
         const qTHA=tilt(qb,'tha'), qTHP=tilt(qb,'thp');      // accuracy owns the mean, the arm owns the deep ball
+        const dACC=AD(rec,oP.recvA,cov,dP.covA,'acc');       // the release and the break out of it
         let dSPD=AD(rec,oP.recvA,cov,dP.covA,'spd');
         // The one-on-one clause: isolated deep or in man, a speed DEFICIT is not something technique
         // covers, so it steepens past the threshold. A surplus is left alone — this is the only
@@ -2933,12 +3032,60 @@ function simEngine(home,away,seed,opts){
         const deepW=variant==='deep'?1.6:togo>=11?1.3:togo>=7?1.0:0.6;
         // A sharp cover man is not fooled by the play concept (play action, screen); a poor one bites.
         const vD=clamp(1-AT.awrVariant*(av(cov,'awr')-dP.covA.awr),0.4,1.6);
-        if(r()<clamp(0.062-adv*0.0012+ky*0.05+dSack+vSack*vD+AT.pbkSack*dPRO+AT.awrSack*qAWR+(pkg==='spread'?(dcall==='blitz'?0.08:0.02):0),0.02,0.25)){  // sack (+ spread = fewer blockers, exposed to the blitz)
-          gain=-ri(r,4,9); time+=PM.secSack; const s=wpick(dP.rush4,r,injured); add(s&&s.id,'sk'); txt=nm(qb)+' sacked by '+nm(s)+' for '+gain;
-          if(r()<clamp(PM.sackFumP+AT.carFum*tilt(qb,'car')*2.4,0.01,0.20)){ turnover=true; txt=nm(qb)+' STRIP-SACKED by '+nm(s)+' — fumble lost'; }   // Phase 48: the strip sack
-        } else if(r()<clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)+padv*0.007-ky*0.22+dComp+vComp*vD-PC.cmp*press+AT.deepCmp*dSPD*deepW+AT.agiCmp*dAGI+AT.cthCmp*dCTH+AT.rteCmp*dRTE+AT.thaCmp*qTHA+(pkg==='spread'?0.05:0),0.28,0.88)){    // completion (+ spread stresses coverage)
-          const u=compDraw(r,rec,vAmp);                      // Phase 51: keep the draw — speed reads its TAIL
-          gain=Math.max(-3,Math.round(qGain(u,PM.recQ[distKey(togo)],vBoom*8)+padv*PM.advPass-ky*PASS_KEY+dPassY+vYds*vD-PC.ya*press+tailAdd(u,dSPD,AT.tailPass)+AT.thpDeep*qTHP*deepW+AT.yacPass*ADX(rec,oP.recvA,'elu',cov,dP.covA,'tkl')+(pkg==='spread'?3:0)));
+        // SEPARATION as ONE physical quantity, in rating points — his route running, quickness and
+        // speed against the coverage actually being played. Phase 52 had four separate coefficients
+        // adding straight into a probability; here it is a single number with two consumers, which is
+        // what lets the same edge decide BOTH whether the ball is caught and how far it goes.
+        const sepR=AT.sepRte*dRTE+AT.sepAgi*dAGI+AT.sepSpd*dSPD*deepW+AT.sepAcc*dACC;
+        // ---- 1. THE POCKET (Phase 53). Contested first, and it produces a STATE the rest of the
+        // play reads. `dSack`/`vSack` (the defensive call and the play concept) move PRESSURE now
+        // rather than sacks directly — a blitz that gets home is a worse throw far more often than
+        // it is a sack, which is the compounding the additive model could not express.
+        const pressP=clamp(AT.pressBase*cx(-(dPRO+AT.iqProt*qIQ),AT.pressK)
+            *(dcall==='blitz'?AT.pressBlitz:dcall==='cover'?AT.pressCover:1)
+            *(pkg==='spread'?AT.pressSpread:1)*(1+ky*AT.pressKey)
+            +vSack*vD*AT.pressVar,0.04,0.80);
+        const pressed=r()<pressP;
+        let sacked=false, scrambled=false, rsh=null;
+        if(pressed){
+          // the man who beat his block, and the quarterback's own athleticism against him. Awareness
+          // belongs here for the Phase 51 reason — a sack taken is a MISTAKE, not lost yardage.
+          rsh=wpick(dP.rush4,r,injured);
+          const esc=AT.escElu*tilt(qb,'elu')+AT.escAgi*tilt(qb,'agi')+AT.escStr*tilt(qb,'str')
+            +AT.escBtk*tilt(qb,'btk')+AT.escAwr*qAWR-AT.escPrs*(av(rsh,'prs')-dP.rush4A.prs);
+          if(r()<clamp(AT.escBase*cx(esc,AT.escK),0.15,0.96)) scrambled=r()<AT.scrRun;
+          else sacked=true;
+        }
+        if(sacked){
+          // PM.sackQ has been measured since Phase 48.1 and was never read — sacks drew a flat
+          // -ri(4,9). The measured table has the same mean and a real tail (a 29-yard loss exists).
+          gain=Math.min(-1,Math.round(qGain(r(),PM.sackQ,0)));
+          time+=PM.secSack; add(rsh&&rsh.id,'sk'); txt=nm(qb)+' sacked by '+nm(rsh)+' for '+gain;
+          if(r()<clamp(PM.sackFumP+AT.carFum*tilt(qb,'car')*2.4,0.01,0.20)){ turnover=true; txt=nm(qb)+' STRIP-SACKED by '+nm(rsh)+' — fumble lost'; }   // Phase 48: the strip sack
+        } else if(scrambled){
+          // He got out and took off. §7: this books as a RUSH, because that is what the box score
+          // says — and it is most of why the sim ran 10% light on rush attempts.
+          const e=regExp(AT.regSep*(AT.escElu*tilt(qb,'elu')+AT.escAgi*tilt(qb,'agi'))+AT.regAdv*adv);
+          const u=regime(shapeDraw(r,qb,vAmp,oP.vol-dP.vol),e);
+          gain=Math.max(-4,Math.round(qGain(u,PM.runQ[distKey(togo)],2)+tailAdd(u,tilt(qb,'spd'),AT.tailRun)));
+          time+=PM.secRun; add(qb&&qb.id,'rAtt'); add(qb&&qb.id,'rYds',gain); if(qb)touches[qb.id]=(touches[qb.id]||0)+1;
+          txt=nm(qb)+' scrambles for '+gain; hero=qb;
+          if(los+gain>=100){ scored=true; add(qb&&qb.id,'rTD'); }
+        } else if(r()<clamp(iz(lz(clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)-ky*0.22+dComp+vComp*vD-PC.cmp*press+(pkg==='spread'?0.05:0),0.15,0.92))
+            // ---- 2. the completion, composed in LOG-ODDS. The measured situational effects above
+            // stay additive in probability (the space they were measured in); the MATCHUP compounds.
+            +AT.sepZ*sepR+AT.cpZ*dCTH+AT.accZ*qTHA+AT.advCmpZ*padv
+            +(pressed?-AT.accPress+AT.accTor*tilt(qb,'tor'):0)),0.05,0.95)){    // completion (+ spread stresses coverage)
+          // ---- 3. the REGIME the contest bought. `padv` no longer adds yards to every snap
+          // (PM.advPass); it moves the offense up the measured table, so an edge shows up as
+          // explosive plays rather than as a uniformly longer completion.
+          const e=regExp(AT.regSep*sepR+AT.regAdv*adv+AT.regMatch*pmat-(pressed?AT.regPress:0));
+          const u=regime(shapeDraw(r,rec,vAmp,oP.vol-dP.vol),e);   // Phase 51: keep the draw — speed reads its TAIL
+          // Phase 53: a blitz gashes you when it FAILS, not when it works. The vacated-coverage yardage
+          // (dPassY > 0, from blitz/run-stop) is now conditional on the quarterback having been clean;
+          // tight coverage (dPassY < 0) applies either way. Phase 52 paid it out unconditionally, which
+          // let a defence be punished for the same call that had just produced the pressure.
+          gain=Math.max(-3,Math.round(qGain(u,PM.recQ[distKey(togo)],vBoom*8)-ky*PASS_KEY+(dPassY>0&&pressed?0:dPassY)+vYds*vD-PC.ya*press+tailAdd(u,dSPD,AT.tailPass)+AT.thpDeep*qTHP*deepW+AT.yacPass*ADX(rec,oP.recvA,'elu',cov,dP.covA,'tkl')+(pkg==='spread'?3:0)));
           hero=rec;
           add(qb&&qb.id,'pAtt'); add(qb&&qb.id,'pCmp'); add(qb&&qb.id,'pYds',gain);
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
