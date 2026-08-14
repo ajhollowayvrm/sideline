@@ -58,6 +58,11 @@ const BAND_LABEL = ['1-10', '11-25', '26-50', '51-90', '91-134'];
 const bandBC = PRESTIGE_BANDS.map(() => 0), bandSigned = PRESTIGE_BANDS.map(() => 0), bandTeams = PRESTIGE_BANDS.map(() => 0);
 
 let ranked = 0, unranked = 0, toFBS = 0, toOther = 0, uncommitted = 0;
+/* SIDELINE's pool is entirely ranked — every generated recruit carries 2-5 stars — so the numbers
+   23-reccompare.js holds it to must be the RANKED-ONLY ones. Mixing in the ~466 unranked prospects
+   on a real board (which sign FBS at only 33.7%) drags the comparison sign rate down by ~4 points
+   and inflates the board size by 11%, i.e. it would have credited the sim for a supply error. */
+let rankedFBS = 0, rankedOther = 0, rankedNone = 0;
 const starMix = {};
 const classSizes = [], bcrAll = [], inStateShares = [], distances = [];
 const bcrByTeamYear = {};                   // team -> {year: {bc, n}}
@@ -87,9 +92,9 @@ for (const y of YEARS) {
     if (p.recruitType && p.recruitType !== 'HighSchool') continue;
     if (p.stars) { ranked++; starMix[p.stars] = (starMix[p.stars] || 0) + 1; } else unranked++;
     if (p.stateProvince) stateSupply[p.stateProvince] = (stateSupply[p.stateProvince] || 0) + 1;
-    if (!p.committedTo) { uncommitted++; continue; }
-    if (!isFBS(p.committedTo)) { toOther++; continue; }
-    toFBS++;
+    if (!p.committedTo) { uncommitted++; if (p.stars) rankedNone++; continue; }
+    if (!isFBS(p.committedTo)) { toOther++; if (p.stars) rankedOther++; continue; }
+    toFBS++; if (p.stars) rankedFBS++;
     (cls[p.committedTo] = cls[p.committedTo] || []).push(p);
   }
 
@@ -180,6 +185,14 @@ say(`  signs FCS / non-FBS       ${pct(toOther / tot)}`);
 say(`  no listed commitment      ${pct(uncommitted / tot)}`);
 say(`  class size  mean ${mean(classSizes).toFixed(1)}   p10 ${qtl(classSizes, 0.1)}  median ${median(classSizes)}  p90 ${qtl(classSizes, 0.9)}`);
 say(`  programs signing < ${MIN_CLASS}         ${pct(classSizes.filter(n => n < MIN_CLASS).length / classSizes.length)}`);
+say('');
+say('  RANKED-ONLY — the numbers to hold SIDELINE to, since its pool is entirely ranked:');
+say(`    ranked board per class  ${Math.round(ranked / YEARS.length).toLocaleString()}`);
+say(`    signs FBS               ${pct(rankedFBS / ranked)}`);
+say(`    signs FCS / non-FBS     ${pct(rankedOther / ranked)}`);
+say(`    no listed commitment    ${pct(rankedNone / ranked)}`);
+say(`  (the ~${Math.round(unranked / YEARS.length)} unranked prospects a real board also carries sign FBS at only ` +
+  `${pct((toFBS - rankedFBS) / unranked)} — they are the walk-on backfill, not modelled)`);
 say('  ^ the ranked board deliberately EXCEEDS FBS capacity. A pool-consumption rate is therefore');
 say('    not a health metric: 100% consumption would be wrong. Per-team fill is the real check.');
 say('');
@@ -226,8 +239,11 @@ say('');
 fs.writeFileSync(path.join(__dirname, 'recruit-report.txt'), out.join('\n') + '\n');
 fs.writeFileSync(path.join(__dirname, 'recruit-profile.json'), JSON.stringify({
   years: YEARS, classes: YEARS.length,
-  starMix, rankedPerClass: (ranked + unranked) / YEARS.length,
-  fbsSignRate: toFBS / tot, otherRate: toOther / tot, uncommittedRate: uncommitted / tot,
+  // the comparison keys are RANKED-ONLY, matching what SIDELINE actually models
+  starMix, rankedPerClass: ranked / YEARS.length,
+  fbsSignRate: rankedFBS / ranked, otherRate: rankedOther / ranked, uncommittedRate: rankedNone / ranked,
+  boardPerClassInclUnranked: (ranked + unranked) / YEARS.length,
+  fbsSignRateInclUnranked: toFBS / tot,
   classSizeMean: mean(classSizes), classSizeMedian: median(classSizes),
   smallClassShare: classSizes.filter(n => n < MIN_CLASS).length / classSizes.length,
   bcrPooled: pooledBC / pooledSigned, bcrMean: mean(bcrAll),

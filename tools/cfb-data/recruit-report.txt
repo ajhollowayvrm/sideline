@@ -24,6 +24,13 @@ COVERAGE CAVEATS — read before using any number below
   no listed commitment      18.3%
   class size  mean 20.2   p10 13  median 20  p90 27
   programs signing < 10         3.3%
+
+  RANKED-ONLY — the numbers to hold SIDELINE to, since its pool is entirely ranked:
+    ranked board per class  3,692
+    signs FBS               67.4%
+    signs FCS / non-FBS     12.0%
+    no listed commitment    20.6%
+  (the ~466 unranked prospects a real board also carries sign FBS at only 33.7% — they are the walk-on backfill, not modelled)
   ^ the ranked board deliberately EXCEEDS FBS capacity. A pool-consumption rate is therefore
     not a health metric: 100% consumption would be wrong. Per-team fill is the real check.
 

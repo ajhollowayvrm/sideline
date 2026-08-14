@@ -736,6 +736,68 @@ gate that fails is not a gate. `22-recprofile.js` + `23-reccompare.js` hold them
 
 ---
 
+## Phase 57a design — supply and geography
+
+Decided 2026-08-14 with AJ, the first half of the talent-economy rewrite. Phase 56 found three
+defects; this phase fixes the two that are **directly measured and need no fitting judgment**, and it
+goes first for one reason: *supply and geography are inputs to fitting everything else.* Fit the pull
+curve against a wrong supply and the constants absorb the supply error where nobody will find it
+again.
+
+**One correction to Phase 56's own numbers first.** §2 quoted a 4,158-prospect board and a 63.7% FBS
+sign rate. Both mix ranked and unranked prospects, and SIDELINE's pool is **entirely ranked** — every
+generated recruit carries 2–5 stars. The numbers to hold it to are the ranked-only ones: **3,692 per
+class signing FBS at 67.4%**. The ~466 unranked prospects on a real board sign FBS at only 33.7% and
+are the walk-on backfill `rolloverRoster` already provides. `21-recanalyze.js` now reports both and
+exports the ranked-only pair as the comparison keys.
+
+### What changed
+- **`REC.POOL` 3,400 → 3,692**, and the star cutoffs become named constants `N5/N4/N3` (33 / 410 /
+  2,585 cumulative) set from the measured mix. The old tail split 44.7/44.1 — a barbell — where the
+  real board is a broad three-star middle over a smaller two-star tail (58.9 / 30.0).
+- **`REC_GEO`** — a 50-entry table, parts per 10,000 aligned index-for-index to `STATES`, measured
+  from 40,161 ranked prospects. `pickState(r)` replaces `pick(r,STATES)` and consumes **exactly one
+  rng draw**, so the pool's draw sequence is unchanged. Maine and Vermont measure a true zero across
+  the whole sample and are floored at 1 so no `coach.homeState` is structurally impossible.
+- **`REC.GEO_SUIT` 0.3 → 0.20**, fitted. Fixing the state table immediately exposed a compensating
+  error: in-state share jumped 31.5% → **45.4%** against a measured 36.8%, because the home-state
+  pull had been hand-tuned against a world where Texas produced 2% of the country's talent. New tool
+  `24-geofit.js` sweeps the pair; `GEO_SUIT 0.20 / GEO_FIT 0.10` lands **exactly** on 36.8%. Note
+  what that says: the `recruitFit` bonus was always right, only the suitor-draw weight was over-set.
+
+### What it landed
+Supply is now exact and geography tracks:
+
+| | real | sim before | sim after |
+|---|--:|--:|--:|
+| ranked board | 3,692 | 3,400 | **3,692** ok |
+| 3★ / 2★ share | 58.9 / 30.0% | 44.7 / 44.1% | **58.9 / 30.0%** ok |
+| blue-chip share of board | 11.1% | 11.2% | 11.1% ok |
+| BCR per class | 14.4% | 13.5% | **14.2%** ok |
+| in-state share | 36.8% | 31.5% | **36.1%** ok |
+| TX / FL / CA / GA | 12.5 / 11.1 / 10.9 / 7.9% | 2.0 each | **12.0 / 11.1 / 11.8 / 7.7%** ok |
+| class-score persistence | 0.882 | 0.927 | 0.925 ok |
+
+**Deliberately still missing, and all owed to 57b:** FBS sign rate 77.6% against 67.4%, programs
+signing under 10 at 13.4% against 3.3%, and the band table essentially unmoved (top-10 class size
+4.9 against a real 23.5). Those are the band-pass filter and `CLASS_CAP` acting as a target rather
+than a ceiling — neither is a supply problem, and neither can be fitted honestly until pull is
+monotonic.
+
+### Save & validation
+**No save bump and no `migrateState` step** — no field is added or changed, and `S.recruiting` is
+rebuilt by `initRecruiting` at every kickoff, so an in-flight class is untouched and the next one is
+new. Recruiting has no replay contract, so no `SIM_MODEL` bump either. Generated boards **do** change
+for a given seed, which is expected and is the phase.
+
+`reclab` 68/68 (two supply assertions re-pointed at the measured board), `rolllab` 40, `portallab`
+17, `traitlab` 30, `legacylab` 31, `draftlab` 22, **`qa` 330/330** — which needed the *third* site of
+the pool-consumption identity re-pointed (reclab had two; this one was `Phase 14: the vast majority
+sign by the close of Signing Day`). Three sites of the same wrong metric is itself the argument that
+it was never measuring recruiting health.
+
+---
+
 ## Planned: non-conference series scheduling (Phase 8)
 
 Players (and AI schools) book the **non-conference** part of the schedule by agreeing to

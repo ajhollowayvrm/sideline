@@ -104,7 +104,9 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   const four = pool.filter(r => r.stars === 4).length;
   const three = pool.filter(r => r.stars === 3).length;
   const two = pool.filter(r => r.stars === 2).length;
-  check('Pool is the full national class (~3,400)', pool.length >= 3200 && pool.length <= 3600, pool.length + ' prospects');
+  // Phase 57a: the bar is the MEASURED ranked board — 3,692 prospects carrying a star rating per
+  // cycle (cfb-recruiting.md §1). The old 3,200-3,600 was a hand-set band around a hand-set 3,400.
+  check('Pool is the measured national ranked board (~3,692)', pool.length >= 3500 && pool.length <= 3900, pool.length + ' prospects');
   check('Star mix is top-heavy (5★ < 4★ < 3★, with a deep 2★ tail)', five < four && four < three && two > four, `${five}/${four}/${three}/${two}`);
   check('A handful of 5★, the vast majority are 3★ or below', five >= 18 && five <= 50 && (three + two) > pool.length * 0.7, `${five} 5★, ${three + two} 3★/2★`);
   // every prospect has at least one suitor, fewer suitors are not absurd
@@ -409,7 +411,13 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   // chunk of the class unsigned. It sat at 88.0% against a >=88% bar, which made it a knife edge —
   // Phase 51 shifted the generated board once (genRecruits no longer spends three pool draws on
   // inline attributes) and it landed at 87.6%, tripping a threshold nothing behavioural had moved.
-  check('Commitment windows: the cycle still converges (≥85% signed)', signed / pool.length >= 0.85, (100 * signed / pool.length).toFixed(1) + '%');
+  // Phase 56 re-pointed this off pool consumption for the reasons in §2 above; this is the second
+  // site (it read `signed/pool` where the other read `signed/haveSuitor`, which was always the same
+  // number since every generated prospect gets suitors). Same measured band. Real ranked-board FBS
+  // sign rate is 67.4%; Phase 57a's supply resize moved the sim 90% -> 80%, and the rest is owed to
+  // class TARGETS in 57b — `CLASS_CAP` is still acting as a target rather than a ceiling, so the
+  // mid and low tiers all fill to exactly 25 against a real mean class of 20.2.
+  check('Commitment windows: board consumption stays in the measured band', signed / pool.length >= 0.55 && signed / pool.length <= 0.92, (100 * signed / pool.length).toFixed(1) + '%');
   // gameRecruitVibe: a ranked win is the biggest boost; a blowout loss is negative; bounded
   const rankedWin = gameRecruitVibe(35, 10, 30, 5), badLoss = gameRecruitVibe(3, 45, 12, 40), closeWin = gameRecruitVibe(24, 21, 40, 50);
   check('Season ripple: a ranked statement win > a close win > a blowout loss', rankedWin > closeWin && closeWin > badLoss, `${rankedWin}/${closeWin}/${badLoss}`);

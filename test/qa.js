@@ -1347,7 +1347,14 @@ function startServer() {
   check('Phase 14: National Signing Day closes the class (all commits signed)', nsd.stage === 'closed' && nsd.signed && nsd.unsigned === 0, `stage ${nsd.stage}, unsigned ${nsd.unsigned}`);
   check('Phase 14: the Early Signing Period inked the firm verbal commits', esp.earlySigned > 40, esp.earlySigned + ' signed early');
   check('Phase 14: National Signing Day resolves the contested remainder', nsd.totalSigned - esp.earlySigned > 0, `+${nsd.totalSigned - esp.earlySigned} on Signing Day`);
-  check('Phase 14: the vast majority sign by the close of Signing Day (full national pool)', nsd.totalSigned / nsd.haveSuitor >= 0.80, `${nsd.totalSigned}/${nsd.haveSuitor}`);
+  // Phase 56/57a re-pointed this (the third site of the same identity — reclab had two). Board
+  // CONSUMPTION is not a health metric: the real ranked board is ~3,692 against ~2,490 ranked FBS
+  // signatures, so a third of it goes to FCS/JUCO/PWO and full consumption would be WRONG
+  // (docs/reference/cfb-recruiting.md §2). It is a supply-vs-capacity accounting identity, which is
+  // why it drifted every time contestedness moved. A BAND now; real is 67.4%.
+  check('Phase 14: board consumption sits in the measured band by the close of Signing Day',
+    nsd.totalSigned / nsd.haveSuitor >= 0.55 && nsd.totalSigned / nsd.haveSuitor <= 0.92,
+    `${nsd.totalSigned}/${nsd.haveSuitor} = ${(100 * nsd.totalSigned / nsd.haveSuitor).toFixed(1)}%`);
   check('Phase 14: still in the Offseason — the transfer portal comes next', nsd.phase === 'Offseason');
   check('Phase 14: the controlled team’s class is fully signed', nsd.classSigned && nsd.myClass > 0, nsd.myClass + ' signed');
   await shot(page, '25c-signing-day.png');

@@ -3650,7 +3650,13 @@ const PITCH_ANGLES=[
 // Tuning — tweaked in test/reclab.js.
 // Phase 33: BASE_POINTS is now a small floor; the weekly budget is dominated by the scouting facility
 // (see weeklyPoints / aiBudget). AI_* drive the AI recruiting brain's concentrated weekly effort.
-const REC={POOL:3400,COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:16,DECOMMIT_GAP:18,
+// Phase 57a: POOL and the star-tier cutoffs are the MEASURED ranked board (cfb-recruiting.md §1),
+// not hand-set. N5/N4/N3 are cumulative indices into the pool: [0,N5) are 5★, [N5,N4) 4★, etc.
+// GEO_SUIT/GEO_FIT are the home-state pull, and they are FITTED (tools/cfb-data/24-geofit.js) against
+// the measured 36.8% in-state share of a class. They used to be 0.3 / 0.10, tuned by feel against a
+// uniform 50-state draw — with real state weights that combination over-shot to 45.4%, because the
+// old values were silently compensating for a Texas that produced 2% of the country's talent.
+const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.20,GEO_FIT:0.10,COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:16,DECOMMIT_GAP:18,
   AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.3,NEGLECT_DECAY:3.5,
   AI_VISIT_P:0.25,FINALISTS:4,FINAL_READY:0.55,FINAL_BAR:58};
 
@@ -3688,7 +3694,7 @@ function recruitFit(team,rec){
   }
   // AI geography (Phase 8): an in-state program is a stronger fit. Guarded so home-state-less
   // teams (the recruit lab) are unaffected. The player also feels this via coach.homeState.
-  if(team.homeState&&rec.st&&team.homeState===rec.st)fac+=0.10;
+  if(team.homeState&&rec.st&&team.homeState===rec.st)fac+=REC.GEO_FIT;
   // Program legacy (Phase 11): a storied Ring of Honor draws talent on name alone. Small + clamped
   // so it complements prestige, never replaces it. Guarded so legend-less teams (recruit lab) unaffected.
   if(team.legends&&team.legends.length)fac+=legacyAura(team);
@@ -3710,15 +3716,33 @@ function classScore(team,pool){
   for(const r of pool)if(r.committedTo===team.id)s+=recruitValue(r);
   return Math.round(s);
 }
-// Build the FULL national recruiting class (~3,400 — roughly 134 teams × a 25-man class), deterministic
-// from the world seed (Phase 17). Star mix is top-heavy: a handful of 5★, a few hundred 4★, then a long
-// 3★/2★ tail that fills out every program's board.
+// Where the country's talent actually comes from — parts per 10,000, aligned index-for-index to
+// STATES (Phase 57a). Measured from 40,161 ranked FBS prospects, 2015-2025
+// (docs/reference/cfb-recruiting.md §5). This replaces a uniform `pick(r,STATES)` draw, under which
+// every state produced 2% of the board: 13 FBS programs sit in Texas and were fighting over ~68
+// in-state prospects a year, while the four states that really produce 42% of the country's talent
+// (TX/CA/FL/GA) were handed 8% between them. Maine and Vermont measure a true ZERO across the whole
+// sample and are floored at 1 so no `coach.homeState` is structurally impossible. Sums to 10,000.
+const REC_GEO=[370,5,189,87,1177,83,50,10,1131,767,80,72,288,
+159,71,61,97,310,1,163,52,304,106,186,142,18,
+40,81,2,180,14,72,266,7,412,105,139,185,2,
+183,10,294,1224,146,1,208,330,24,91,5];
+// One rng draw, exactly like the `pick(r,STATES)` it replaces, so the pool's draw sequence is unchanged.
+function pickState(r){let x=r()*1e4;
+  for(let i=0;i<REC_GEO.length;i++){x-=REC_GEO[i];if(x<=0)return STATES[i];}
+  return STATES[STATES.length-1];}
+// Build the FULL national recruiting class, deterministic from the world seed (Phase 17).
+// Phase 57a sized it to the MEASURED ranked board: 3,692 prospects carrying a star rating per cycle,
+// mixed 33 / 377 / 2,175 / 1,107 by tier (0.9% / 10.2% / 58.9% / 30.0%). The old 3,400 was 8% short
+// and, more importantly, split the tail 44.7/44.1 — a barbell, where the real board is a broad
+// three-star middle over a smaller two-star tail. The ~466 UNRANKED prospects on a real board are
+// deliberately not modelled; they are the walk-on backfill `rolloverRoster` already provides.
 function genRecruits(seed,teams){
   const r=rng((seed^0x2ec54172)>>>0);
   const posPool=[];POS.forEach(([c,,n])=>{for(let i=0;i<n;i++)posPool.push(c);});
   const pool=[];
   for(let i=0;i<REC.POOL;i++){
-    const stars=i<30?5:i<380?4:i<1900?3:2;
+    const stars=i<REC.N5?5:i<REC.N4?4:i<REC.N3?3:2;
     const ovBase=stars===5?92:stars===4?85:stars===3?77:68;
     const ov=clamp(ovBase+ri(r,-4,5),58,99);
     const pot=clamp(ov+ri(r,3,13),ov,99);
@@ -3729,13 +3753,13 @@ function genRecruits(seed,teams){
     // service ranking that moved those would not be a ranking any more — it would be ability. `svc`
     // is what the board shows you; `stars` remains what he actually is.
     const svc=(pot-ov>=13&&stars<5)?stars+1:stars;
-    const pos=pick(r,posPool), st=pick(r,STATES);
+    const pos=pick(r,posPool), st=pickState(r);
     const p1=pick(r,PREFS); let p2=pick(r,PREFS),guard=0; while(p2===p1&&guard++<6)p2=pick(r,PREFS);
     const target=stars===5?88:stars===4?70:stars===3?50:32;
     const nSuit=stars===5?ri(r,4,6):stars===4?ri(r,4,6):ri(r,4,6);
     // Spread suitors across the prestige band (more noise) so no tier of programs is wildly over- or
     // under-subscribed — every program needs a reachable pool to fill its ~25-man class (Phase 17).
-    const ranked=teams.map(t=>({t,s:(1-Math.abs(t.prestige-target)/50)+r()*1.1+((t.homeState&&t.homeState===st)?0.3:0)}))
+    const ranked=teams.map(t=>({t,s:(1-Math.abs(t.prestige-target)/50)+r()*1.1+((t.homeState&&t.homeState===st)?REC.GEO_SUIT:0)}))
       .sort((a,b)=>b.s-a.s).slice(0,nSuit);
     const iv={};
     ranked.forEach((e,k)=>{const fit=recruitFit(e.t,{stars,pos,st});

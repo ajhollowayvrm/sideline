@@ -33,7 +33,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > band-pass and saturation defects Phase 56 measured. Reproduce with `tools/cfb-data/20–23`
 > (needs a free `CFBD_API_KEY`).
 >
-> **All roadmap phases 1–56 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–57a are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -356,6 +356,25 @@ still serves it with zero config.
   the 92→91→80 drift and the quiet 88→85 bar drop. And the **Phase 44 recruiting cliff was
   relocated** — it is app-layer, not engine: `advanceRecruiting` resolves a full class for a passive
   player team. `reclab` → 68. *(→ `docs/phases/recruiting.md`, `docs/reference/cfb-recruiting.md`.)*
+
+- **Phase 57a — supply and geography.** The first half of the talent-economy rewrite: the two Phase 56
+  defects that are *directly measured* and need no fitting judgment. It goes first because supply is an
+  input to fitting everything else. `REC.POOL` 3,400 → **3,692** with the star cutoffs as named
+  constants (`N5/N4/N3`) from the measured mix — the old tail split 44.7/44.1, a barbell, where the
+  real board is a broad three-star middle (58.9/30.0). **`REC_GEO`** replaces the uniform
+  `pick(r,STATES)` draw: 50 weights in parts per 10,000 measured from 40,161 ranked prospects, with
+  `pickState(r)` consuming exactly one rng draw so the pool's draw sequence is unchanged (ME/VT measure
+  a true zero and are floored at 1). That immediately exposed a **compensating error** — in-state share
+  jumped 31.5% → 45.4% against a measured 36.8%, because the home-state pull was hand-tuned against a
+  world where Texas produced 2% of the talent; `24-geofit.js` fits it, and `GEO_SUIT 0.3 → 0.20` lands
+  exactly on 36.8% (the `recruitFit` bonus was always right, only the suitor-draw weight was over-set).
+  Also corrects Phase 56's own headline: the sim's pool is entirely ranked, so the targets are the
+  **ranked-only** 3,692 / 67.4%, not 4,158 / 63.7%. Supply, star mix, BCR, persistence and geography
+  now all read `ok`. **Still owed to 57b:** sign rate 77.6% vs 67.4%, programs signing <10 at 13.4% vs
+  3.3%, and the band table unmoved — the band-pass filter and `CLASS_CAP` acting as a target rather
+  than a ceiling. **No save bump** (no field changes; the pool is rebuilt at kickoff), no `SIM_MODEL`
+  bump. `qa` → 330, which needed the *third* site of the pool-consumption identity re-pointed.
+  *(→ `docs/phases/recruiting.md`.)*
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
