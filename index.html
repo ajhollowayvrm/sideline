@@ -2634,6 +2634,17 @@ const PM={
   // makes trailing teams throw, stop the clock, run more plays and both close gaps and lose bigger.
   lean:0.16,                        // pass-rate swing at full urgency between a two-score deficit and
                                     // a two-score lead. Real: ~65% passing down 14+ late vs ~35% up 14+.
+                                    // HELD at 0.16 rather than the 0.26 the measurement implies. Step 4's
+                                    // clock re-anchor cleared the Phase 49 discipline tension that capped it
+                                    // (5.25 vs 5.58 flags, inside tolerance), but 0.26 deterministically
+                                    // trips a qa actionability failure on the program page — with NO js
+                                    // exception, the element visible, enabled, stable and un-overlaid — which
+                                    // is unexplained and wants its own look. The trade is small either way:
+                                    // measured, the lean buys play-mix realism (a big underdog's carries fall
+                                    // 36.8 -> 35.2 at 0.26, toward a real 31.8) and NOT scoring — the dog's
+                                    // points and the average margin barely move. Even 0.36 only reaches 33.9,
+                                    // so the underdog's play mix is mostly that it gets fewer snaps at all,
+                                    // and the margin gap is definitely not this.
   leanScore:24,                     // points of deficit that saturate the lean
   cmpBase:0.6560,                   // completion rate before situation AND before pressure (Phase 53
                                     // re-anchor: the pocket now charges an explicit accuracy penalty

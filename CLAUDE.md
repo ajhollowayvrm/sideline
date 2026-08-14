@@ -231,6 +231,37 @@ still serves it with zero config.
   no FS/SS**, so the primary sim gate was validating a league whose safeties carried a linebacker's
   attribute row and appeared in no coverage or tackle pool.
 
+- **Phase 54 — calibration (step 4).** The scoring aggregate, decomposed rather than guessed at:
+  real football scores 26.9 a team against 25.1 of offensive TDs and field goals, so **~1.8 points a
+  game is NON-OFFENSIVE and the sim scored 0.06 of it** — 43% of the whole shortfall, and a missing
+  category rather than a mis-calibration. Pick-sixes, fumble returns and punt returns now exist (`keep`
+  stops the drive loop swapping possession, because a scoring defence kicks off). Yardage is **capped
+  at the goal line** — the engine credited the raw draw, so a 20-yard run from the opponent's 5 booked
+  20 rushing yards. The clock is re-anchored (Phase 53's scramble and step 4's gambles changed how much
+  a possession burns). Fourth down is a real decision: a flat 24% "coach loses his nerve" roll fired as
+  often on 4th-and-inches as on 4th-and-15, and is distance-aware now. Save v48 and `SIM_MODEL` 8 both
+  unchanged. *(→ `docs/phases/calibration.md`.)*
+
+  **Landed**: points 22.8 → **25.5** (real 26.9), plays 67.9 (67.5), total yards 381 (383), yards/play
+  5.62 (5.67), Y/C 4.53 (4.27), sacks 2.07 (2.06), turnovers 1.44 (1.38), red-zone TD% 69.8 (67.5),
+  drive start 30.1 (29.8). **Did not land**: the margin, and the tail (+0.064 against +0.319).
+
+  **Half the margin MISS is the harness.** The synthetic slate carries 30.4% of games at a 17.5+ spread
+  against a real 18.1%, because opponents are drawn by wrapping through a prestige-ordered list and the
+  weakest teams get the strongest. `5-compare` now prints aggregates re-weighted to the real bucket mix
+  — margin **19.2** standardized against a raw 21.7 — and that is the number `attributes-2.md` §11
+  target 2 should be read against. What is left of it is the UNDERDOG, which scores 2–3 points too few
+  in every bucket; favourite win rate already tracks the real curve almost exactly.
+
+  **Three more instrument defects, each of which had inverted its own diagnosis.** Fourth-down attempts
+  were double-counted ("Turnover on downs" repeats the failed play's `dd`) and goal-to-go was bucketed
+  as 4th-and-1, which together reported 38% conversion on 1.94 attempts for a sim actually converting
+  60.4% on 1.39 — going for it too rarely and converting too well, the exact opposite. Red zone, drive
+  start and per-down/distance gains had never been measured at all; all three turned out already right,
+  which is how the residual was localised to the number of red-zone TRIPS. Two hypotheses were measured
+  and **rejected**: per-play variance is not what puts the sim in 3rd-and-long (its draws match the
+  measured tables to ~1.5%), and the play-caller honours `PM.mix` per cell.
+
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
 stays fast). This is a design choice, not a backlog. Per-doc "Deliberately out of scope"
