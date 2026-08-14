@@ -1761,6 +1761,28 @@ function startServer() {
     UI.view = 'cloud'; render();
     out.screen = !!document.querySelector('[data-tid="cloud-code"]') && !!document.querySelector('[data-tid="cloud-sync-now"]');
 
+    // 5b) …and it renders as a REAL login form. This is the whole reason iOS/Safari offers
+    //     "Save Password" and autofills both halves on the next device, so it's load-bearing:
+    //     a <form>, an autocomplete=username field, an autocomplete=*-password field, exactly
+    //     one type=submit, and no bare <button> (a bare button inside a form IS a submit).
+    const f = document.querySelector('[data-tid="cloud-form"]');
+    const u = f && f.querySelector('[data-tid="cloud-endpoint"]');
+    const pw = f && f.querySelector('[data-tid="cloud-code-input"]');
+    out.formIsForm = !!f && f.tagName === 'FORM';
+    out.formUser = !!u && u.name === 'username' && u.getAttribute('autocomplete') === 'username';
+    out.formPass = !!pw && pw.name === 'password' && /password$/.test(pw.getAttribute('autocomplete') || '') && pw.type === 'password';
+    out.formPrefilled = !!pw && cloudValidCode(pw.value) === cloudCfg().code && u.value === cloudCfg().endpoint;
+    out.formSubmit = !!f && f.querySelectorAll('button[type="submit"]').length === 1;
+    out.formNoStray = !!f && Array.from(f.querySelectorAll('button')).every(b => b.type === 'submit' || b.type === 'button');
+
+    // 5c) and the SUBMIT EVENT is the connect action — a password manager only captures a
+    //     credential off a real submit, so clicking a handler-on-a-button wouldn't count.
+    u.value = 'https://qa.example.com/';
+    pw.value = 'SIDE-ABCD-EFGH-JKMN';
+    f.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await new Promise(r => setTimeout(r, 80));
+    out.submitted = cloudCfg().endpoint === 'https://qa.example.com/' && cloudCfg().code === 'ABCDEFGHJKMN';
+
     // 6) an unreachable endpoint degrades quietly instead of throwing
     window.fetch = async () => { throw new TypeError('Failed to fetch'); };
     out.offlineSafe = (await cloudRefresh()) === null && ['error', 'offline'].includes(CLOUD_STATUS.state);
@@ -1780,6 +1802,10 @@ function startServer() {
   check('Phase 47: a stale push conflicts instead of overwriting', cloud.conflictStatus === 'conflict' && cloud.conflictSheet && cloud.serverIntact);
   check('Phase 47: keeping this device’s save resolves the conflict', cloud.forcedRev === 6 && cloud.afterForce === 'insync');
   check('Phase 47: the Cloud screen renders when connected', cloud.screen);
+  check('Phase 47: the connection card is a real login form (iOS save/autofill)',
+    cloud.formIsForm && cloud.formUser && cloud.formPass && cloud.formSubmit && cloud.formNoStray);
+  check('Phase 47: a linked device prefills both halves so the keychain can capture them', cloud.formPrefilled);
+  check('Phase 47: submitting the form is what connects (not a button onclick)', cloud.submitted);
   check('Phase 47: an unreachable cloud fails soft (no throw)', cloud.offlineSafe);
   check('Phase 47: disconnecting leaves the game local-only', cloud.torndown);
 

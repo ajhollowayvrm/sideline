@@ -1671,74 +1671,96 @@ function renderCloud(app){
   const v=el('div','view');
   v.append(headerBar('Cloud Saves','Continue this career on any device',()=>{UI.view=UI.cloudBack||'menu';render();}));
 
-  // 1) endpoint
-  v.append(el('h2','sec','Endpoint'));
-  const ec=el('div','card');
-  if(!c.endpoint)ec.append(el('div','hint','Paste the API URL from your deployed backend (infra/README.md → sam deploy prints it as ApiUrl). Until then, saves stay on this device only.'));
-  let epDraft=c.endpoint;
-  const epIn=inputEl(c.endpoint,val=>{epDraft=val;},'https://….lambda-url.us-east-1.on.aws/','url');
-  epIn.dataset.tid='cloud-endpoint';
-  const epFld=fld('API URL',epIn);epFld.style.marginTop='12px';ec.append(epFld);
-  const save=el('button','btn sm',c.endpoint?'Update':'Connect');save.dataset.tid='cloud-connect';
-  save.onclick=async()=>{
-    const url=(epDraft||'').trim();
-    if(url&&!/^https?:\/\//i.test(url)){toast('That doesn’t look like a URL');return;}
-    cloudSetCfg({endpoint:url});UI.cloudCareers=null;
-    if(url&&cloudCfg().code)await cloudRefresh();
-    render();toast(url?'Endpoint saved':'Endpoint cleared');
-  };
-  const br0=el('div','btn-row');br0.append(save);ec.append(br0);
-  v.append(ec);
+  // 1) the credential pair — endpoint + career code, in ONE real <form>.
+  //    The endpoint and the code were two loose inputs with onclick handlers, which is a shape
+  //    no password manager recognises. They're the same secret in practice — you need both to
+  //    reach a career — so they're now a login: a <form> with real autocomplete tokens (the URL
+  //    is the `username`, the code the `password`) and a real submit button that fires a real
+  //    submit event. That's the pattern iOS/Safari (and Chrome, and 1Password) match on to offer
+  //    "Save Password", and it's what makes both halves autofill together on the next device.
+  //    Every other button in here MUST carry type='button' — a bare <button> inside a form
+  //    submits it.
+  const linked=cloudLinked();
+  v.append(el('h2','sec','Connection'));
+  const form=el('form','card');form.dataset.tid='cloud-form';
+  form.method='post';form.setAttribute('action','#');form.setAttribute('autocomplete','on');
+  if(!c.endpoint)form.append(el('div','hint','Paste the API URL from your deployed backend (infra/README.md → sam deploy prints it as ApiUrl). Until then, saves stay on this device only.'));
 
-  // 2) career code — the whole identity model
-  v.append(el('h2','sec','Career code'));
-  const cc=el('div','card');
-  if(c.code){
-    const shown=UI.cloudShowCode?cloudFormatCode(c.code):'SIDE-••••-••••-••••';
-    const box=el('div','cond');box.dataset.tid='cloud-code';
-    box.style.cssText='font-size:22px;font-weight:700;letter-spacing:2px;padding:8px 0';
-    box.textContent=shown;
-    cc.append(box,el('div','hint','Type this on your other device to reach the same careers. Anyone with it can load your saves — treat it like a password.'));
-    const br=el('div','btn-row');
-    const rev=el('button','btn sm',UI.cloudShowCode?'Hide':'Reveal');
-    rev.onclick=()=>{UI.cloudShowCode=!UI.cloudShowCode;render();};
-    const cp=el('button','btn sm','Copy');
-    cp.onclick=()=>{const t=cloudFormatCode(c.code);
-      if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t).then(()=>toast('Code copied'),()=>toast(t));
-      else{UI.cloudShowCode=true;render();toast(t);}};
-    const dc=el('button','btn sm danger','Disconnect');
-    dc.onclick=()=>confirmSheet('Disconnect this device?','Cloud copies stay put. You’ll need the code again to reconnect — make sure it’s written down.',
-      ()=>{cloudDisconnect();UI.cloudCareers=null;cloudSetStatus('idle','');render();toast('Disconnected');});
-    br.append(rev,cp,dc);cc.append(br);
-  }else{
-    cc.append(el('div','hint','Mint a code on the device you play on most, then enter that same code on your other devices.'));
-    const mint=el('button','btn sm','Create a career code');mint.dataset.tid='cloud-mint';
+  // username half. type=text (not url) — Safari only offers the username autofill chip on a
+  // text/email/tel field; inputmode keeps the URL keyboard on iOS.
+  const epIn=inputEl(c.endpoint,()=>{},'https://….lambda-url.us-east-1.on.aws/');
+  epIn.dataset.tid='cloud-endpoint';epIn.name='username';epIn.autocomplete='username';
+  epIn.inputMode='url';epIn.spellcheck=false;
+  epIn.setAttribute('autocapitalize','none');epIn.setAttribute('autocorrect','off');
+  const epFld=fld('API URL',epIn);epFld.style.marginTop='12px';form.append(epFld);
+
+  // password half. Prefilled with the real code when there is one, so an already-linked device
+  // can still hand it to the keychain (hit Update) instead of the secret only ever living here.
+  const ci=inputEl(c.code?cloudFormatCode(c.code):'',()=>{},'SIDE-XXXX-XXXX-XXXX','password');
+  ci.dataset.tid='cloud-code-input';ci.name='password';ci.autocomplete='current-password';
+  ci.spellcheck=false;
+  ci.setAttribute('autocapitalize','none');ci.setAttribute('autocorrect','off');
+  if(UI.cloudShowCode)ci.type='text';
+  const cFld=fld('Career code',ci);cFld.dataset.tid='cloud-code';form.append(cFld);
+  form.append(el('div','hint',c.code
+    ?'Type this on your other device to reach the same careers. Anyone with it can load your saves — treat it like a password, and let your phone remember it.'
+    :'Create a code on the device you play on most, then enter that same code on your other devices.'));
+
+  form.onsubmit=async e=>{
+    e.preventDefault();
+    // Read the DOM, not a draft closure: an autofilled field is filled by the browser and we
+    // don't want to depend on whether it fired an input event on the way in.
+    const url=(epIn.value||'').trim(),raw=(ci.value||'').trim();
+    if(!url){toast('Paste the API URL first');return;}
+    if(!/^https?:\/\//i.test(url)){toast('That doesn’t look like a URL');return;}
+    const code=cloudValidCode(raw);
+    if(!code){toast(raw?'That code doesn’t look right — 12 letters/digits':'Create a code, or enter your existing one');return;}
+    cloudSetCfg({endpoint:url,code});UI.cloudCareers=null;UI.cloudShowCode=false;
+    const list=await cloudRefresh();
+    // A freshly minted code has nothing up there yet — push the open career so the other
+    // device has something to pull.
+    if(S&&list&&!list.some(x=>x.careerId===cloudCareerId(S)))cloudFlush(true);
+    render();
+    toast(list?(list.length?list.length+' career'+(list.length>1?'s':'')+' found':'Connected — no careers yet'):'Connected — couldn’t reach the cloud');
+  };
+
+  const br=el('div','btn-row');br.style.flexWrap='wrap';
+  const go=el('button','btn sm',linked?'Update':'Connect');go.type='submit';go.dataset.tid='cloud-connect';
+  const rev=el('button','btn sm line',UI.cloudShowCode?'Hide':'Reveal');rev.type='button';
+  // Toggle in place rather than through render() — a re-render mid-typing would drop the field
+  // (and whatever the keychain had just put in it).
+  rev.onclick=()=>{UI.cloudShowCode=!UI.cloudShowCode;
+    ci.type=UI.cloudShowCode?'text':'password';rev.textContent=UI.cloudShowCode?'Hide':'Reveal';};
+  br.append(go,rev);
+  if(!c.code){
+    const mint=el('button','btn sm line','Create a code');mint.type='button';mint.dataset.tid='cloud-mint';
     mint.onclick=()=>{
       const rand=(window.crypto&&window.crypto.getRandomValues)
         ? ()=>window.crypto.getRandomValues(new Uint32Array(1))[0]/4294967296
         : Math.random;
-      cloudSetCfg({code:cloudMintCode(rand)});UI.cloudShowCode=true;UI.cloudCareers=null;
-      render();toast('Code created — write it down');
-      if(S)cloudFlush(true);
+      const code=cloudMintCode(rand);
+      cloudSetCfg({code});                       // written now so a code is never lost unsubmitted
+      ci.value=cloudFormatCode(code);
+      ci.setAttribute('autocomplete','new-password');   // tell the manager this one is new
+      ci.type='text';UI.cloudShowCode=true;rev.textContent='Hide';
+      ci.dispatchEvent(new Event('input',{bubbles:true}));
+      toast('Code created — hit Connect to save it');
     };
-    const brm=el('div','btn-row');brm.append(mint);cc.append(brm);
-    let codeDraft='';
-    const ci=inputEl('',val=>{codeDraft=val;},'SIDE-XXXX-XXXX-XXXX');ci.dataset.tid='cloud-code-input';
-    cc.append(fld('Or enter an existing code',ci));
-    const join=el('button','btn sm','Use this code');join.dataset.tid='cloud-join';
-    join.onclick=async()=>{
-      const code=cloudValidCode(codeDraft);
-      if(!code){toast('That code doesn’t look right — 12 letters/digits');return;}
-      if(!cloudCfg().endpoint){toast('Set the endpoint first');return;}
-      cloudSetCfg({code});UI.cloudCareers=null;UI.cloudShowCode=false;
-      const list=await cloudRefresh();render();
-      toast(list?(list.length?list.length+' career'+(list.length>1?'s':'')+' found':'Connected — no careers yet'):'Connected — couldn’t reach the cloud');
-    };
-    const br=el('div','btn-row');br.append(join);cc.append(br);
+    br.append(mint);
+  }else{
+    const cp=el('button','btn sm line','Copy');cp.type='button';
+    cp.onclick=()=>{const t=cloudFormatCode(c.code);
+      if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t).then(()=>toast('Code copied'),()=>toast(t));
+      else{ci.type='text';UI.cloudShowCode=true;rev.textContent='Hide';toast(t);}};
+    const dis=el('button','btn sm danger','Disconnect');dis.type='button';
+    dis.onclick=()=>confirmSheet('Disconnect this device?','Cloud copies stay put. You’ll need the code again to reconnect — make sure it’s written down.',
+      ()=>{cloudDisconnect();UI.cloudCareers=null;cloudSetStatus('idle','');render();toast('Disconnected');});
+    br.append(cp,dis);
   }
-  v.append(cc);
+  form.append(br);
+  v.append(form);
 
-  // 3) this device
+  // 2) this device
   if(cloudLinked()){
     v.append(el('h2','sec','This device'));
     const dc=el('div','card');
@@ -1760,7 +1782,7 @@ function renderCloud(app){
     if(!S)dc.append(el('div','hint','No career is open — “Sync now” just refreshes the list below.'));
     v.append(dc);
 
-    // 4) what's up there
+    // 3) what's up there
     v.append(el('h2','sec','Careers in the cloud'));
     const list=UI.cloudCareers;
     if(!list){

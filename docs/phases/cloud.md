@@ -50,6 +50,36 @@ phone" work without accounts — and it's why the code is a password, stated pla
 storage to serve one person who can write a code down. Lose the code and the cloud copies are
 unreachable — the local saves are untouched.)*
 
+### Setup is a login, so the phone can remember it
+
+If the code is a password, the screen that takes it has to *look* like a password field to the
+one piece of software that will actually keep it safe. It didn't: the endpoint and the code were
+two loose inputs in two cards, each with an `onclick` handler, which is a shape no password
+manager recognises — so iOS never offered to save the one secret in the whole game that cannot
+be recovered, and the second device had to be typed at by hand.
+
+They are now a single `<form>`, because the two halves are one credential in practice — you need
+both to reach a career, so they should be saved and filled **together**:
+
+| element | why it's shaped that way |
+|---|---|
+| `<form method="post" autocomplete="on">` | The container the heuristics look for. |
+| API URL → `name="username" autocomplete="username"` | `type="text"` + `inputmode="url"`, **not** `type="url"` — Safari only offers the username chip on a text/email/tel field, and inputmode keeps the URL keyboard. |
+| Career code → `name="password" autocomplete="current-password"` | Flipped to `new-password` the moment "Create a code" mints one, so the manager files it as new rather than looking for a match. |
+| One `<button type="submit">` | **The submit event is the connect action.** A manager captures a credential off a real submit; a handler hanging off a button click is invisible to it. The handler `preventDefault()`s and does the work. |
+| Every other button carries `type="button"` | A bare `<button>` inside a form *is* a submit button. Reveal, Copy, Create and Disconnect all opt out explicitly — this is the easy way to break the screen. |
+
+Two details that follow from it. The submit handler reads `input.value` off the DOM rather than
+an `oninput` draft closure, because an autofilled field is filled by the browser and shouldn't
+depend on whether it fired an event on the way in. And a **linked** device still renders the form
+with both halves prefilled (the code masked, behind Reveal) rather than as static text, so a
+device that connected before any of this existed can still hand the pair to the keychain by
+hitting Update. Reveal toggles `input.type` in place instead of going through `render()` — a
+re-render mid-typing would drop the field and whatever had just been autofilled into it.
+
+Saved credentials are scoped to the **origin**, which is the same reason `localStorage` saves are:
+the deployed Pages URL remembers, a local `file://` open does not.
+
 ### Sync: local first, always
 
 `writeSlot` is unchanged in its contract — it writes `localStorage` and returns. The cloud push
@@ -121,7 +151,12 @@ is `meta.careerId`, and it's re-derivable from the state when absent.
   divergence would put one person in two namespaces.
 - **QA** — `test/qa.js` stands up an in-memory implementation of the real API inside the page
   (same routes, same rev semantics) and drives push → list → pull → conflict → force-resolve
-  → offline, asserting all 11,377 players survive the gzip round-trip byte-for-byte.
+  → offline, asserting all 11,377 players survive the gzip round-trip byte-for-byte. It also
+  gates the setup screen's **form shape** — that it is a `<form>` carrying an
+  `autocomplete="username"` field, an `autocomplete=*-password` field, exactly one
+  `type="submit"` and no bare `<button>` — and that dispatching the **submit event** is what
+  connects the device. Those are the properties iOS reads; none of them shows up in a
+  screenshot, so nothing else would notice them going away.
 
 ### Deliberately out of scope
 
