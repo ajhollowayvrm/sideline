@@ -2399,7 +2399,7 @@ const AT={
   iqProt:0.45,            // he sets the protection
   // ESCAPE — the quarterback's own athleticism against the man who beat the block. P(no sack |
   // pressured) ≈ 0.80 for an average QB, which lands the league on the measured ~6% sack rate.
-  escBase:0.815, escK:0.030, escElu:0.42, escAgi:0.30, escStr:0.14, escBtk:0.14, escAwr:0.30, escPrs:0.38,
+  escBase:0.815, escK:0.030, escElu:0.42, escAgi:0.30, escStr:0.14, escBtk:0.14, escAwr:0.30, escPrs:0.28,
   scrRun:0.30,            // of the escapes, how many take off rather than throw on the run
   // SEPARATION — one physical quantity, in rating points, with two separate consumers below.
   sepRte:1.00, sepAgi:0.60, sepSpd:0.45, sepAcc:0.35,
@@ -2412,6 +2412,7 @@ const AT={
   // yardage bonus. Winning does not add yards to every snap — it moves you up the table, so a
   // dominant matchup produces EXPLOSIVE plays rather than uniformly bigger ones. This is the mixture
   // that carries the fat tail, and the reason team strength can decide games without flattening them.
+  intPress:1.55,          // a pressured throw is picked far more often (§7)
   regK:1.00, regLo:0.55, regHi:1.70,
   // regMatch is deliberately SMALL. The matchup edge varies snap to snap, so weight here is
   // independent per-play noise, and independent noise Gaussianizes a team's total by the central
@@ -2636,8 +2637,13 @@ const PM={
                                     // on ~30% of dropbacks, so the pre-pressure constant must rise
                                     // for the league to still land on a measured 61.1%)
   fgMax:50,                         // longest field goal the AI will try on a normal down
-  intRate:0.068,                    // pick chance on an incompletion (→ ~0.82 INT/team-game)
+  intRate:0.060,                    // pick chance on an incompletion (→ ~0.82 INT/team-game).
+                                    // Re-anchored at Phase 53: the pressured throw now carries its
+                                    // own multiplier (AT.intPress), so the pre-pressure base must fall
+                                    // for the league to still land on the measured 0.82.
   fumRate:0.0125, sackFumP:0.075,   // ball-security: on a carry / stripped on a sack
+  fumCatch:0.0070,                  // ...and after a catch (Phase 53). Real fumbles lost are 0.56 a
+                                    // team-game and carries plus strip sacks alone reached 0.40.
   // Red zone. Measured: 4.68 trips per team-game, 67.5% end in a touchdown, 17.7% in a field goal.
   // Goal-to-go is now handled by the DD table above (1st-and-goal from the 3 really does average
   // 1.6 yards); this is the residual 'no room to throw' effect from the 20 in.
@@ -2767,7 +2773,15 @@ function foulPool(P,key){
 const PC={
   // Measured at FULL pressure, standardized to the normal down/distance mix, then fitted so the
   // sim's Q4-within-one-score bucket reproduces the real one (tools/cfb-data/17-simclutch.js).
-  cmp:0.0340,             // completion probability, absolute — the one real passing effect
+  cmp:0.0730,             // completion probability, absolute — the one real passing effect.
+                          // RE-FITTED at Phase 53. This constant was never a measurement: 17-simclutch
+                          // fitted it so the sim's Q4-within-one-score bucket reproduced the real one,
+                          // and the model underneath it changed. Score-aware play-calling alone offsets
+                          // it by ~1.1pp (measured: the standardized drop reads 1.67pp at lean 0 and
+                          // 0.60pp at lean 0.16), because who throws in the clutch is no longer the
+                          // same population. Response is linear at 0.67pp per 0.01, so 0.073 puts the
+                          // realised drop back on Phase 50's 3.25pp target. 17-simclutch should be
+                          // re-run properly in step 4 rather than trusting this arithmetic.
   ya:0,                   // yards per COMPLETION is flat in the clutch: real Y/A falls 7.18 → 6.84
                           // only because completions do (11.64 → 11.71 yds each). Charging a yardage
                           // penalty on top of the completion drop would double-count it.
@@ -3066,7 +3080,15 @@ function simEngine(home,away,seed,opts){
         // speed against the coverage actually being played. Phase 52 had four separate coefficients
         // adding straight into a probability; here it is a single number with two consumers, which is
         // what lets the same edge decide BOTH whether the ball is caught and how far it goes.
-        const sepR=AT.sepRte*dRTE+AT.sepAgi*dAGI+AT.sepSpd*dSPD*deepW+AT.sepAcc*dACC;
+        // Phase 53: a Phase 24 pep-talk lifts a player's EFFECTIVE ABILITY, and under Phase 51's model
+        // ability IS his attributes — so the boost has to reach the channels, not only the matchEdge
+        // readout. Every channel is linear in (his attribute − his defender's), so a uniform +b on one
+        // man is exactly +b on each deviation. Without this the lever nearly vanished once team
+        // strength stopped adding yards to every snap: 104.3 vs 103.2 rec yds/g, against a true
+        // 55.1 -> 45.9 with it wired through.
+        const bAdj=((boost&&rec&&boost[rec.id])||0)-((boost&&cov&&boost[cov.id])||0);
+        const sepR=AT.sepRte*(dRTE+bAdj)+AT.sepAgi*(dAGI+bAdj)+AT.sepSpd*(dSPD+bAdj)*deepW+AT.sepAcc*(dACC+bAdj);
+        const dCTHb=dCTH+bAdj;
         // ---- 1. THE POCKET (Phase 53). Contested first, and it produces a STATE the rest of the
         // play reads. `dSack`/`vSack` (the defensive call and the play concept) move PRESSURE now
         // rather than sacks directly — a blitz that gets home is a worse throw far more often than
@@ -3102,11 +3124,16 @@ function simEngine(home,away,seed,opts){
           time+=PM.secRun; add(qb&&qb.id,'rAtt'); add(qb&&qb.id,'rYds',gain); if(qb)touches[qb.id]=(touches[qb.id]||0)+1;
           txt=nm(qb)+' scrambles for '+gain; hero=qb;
           if(los+gain>=100){ scored=true; add(qb&&qb.id,'rTD'); }
-        } else if(r()<clamp(iz(lz(clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)-ky*0.22+dComp+vComp*vD-PC.cmp*press+(pkg==='spread'?0.05:0),0.15,0.92))
+        // PC.cmp is subtracted from the FINAL probability, not folded into the pre-logit base. It was
+        // measured as an absolute -3.4pp at full pressure, and a fixed shift in the base survives the
+        // logit round trip only where dp/dz happens to match — with the matchup terms moving z the
+        // realised effect measured 0.68pp against the 3.25pp Phase 50 fitted. Keeping it in
+        // probability space preserves the measurement it came from.
+        } else if(r()<clamp(iz(lz(clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)-ky*0.22+dComp+vComp*vD+(pkg==='spread'?0.05:0),0.15,0.92))
             // ---- 2. the completion, composed in LOG-ODDS. The measured situational effects above
             // stay additive in probability (the space they were measured in); the MATCHUP compounds.
-            +AT.sepZ*sepR+AT.cpZ*dCTH+AT.accZ*qTHA+AT.advCmpZ*padv
-            +(pressed?-AT.accPress+AT.accTor*tilt(qb,'tor'):0)),0.05,0.95)){    // completion (+ spread stresses coverage)
+            +AT.sepZ*sepR+AT.cpZ*dCTHb+AT.accZ*qTHA+AT.advCmpZ*padv
+            +(pressed?-AT.accPress+AT.accTor*tilt(qb,'tor'):0))-PC.cmp*press,0.05,0.95)){    // completion (+ spread stresses coverage)
           // ---- 3. the REGIME the contest bought. `padv` no longer adds yards to every snap
           // (PM.advPass); it moves the offense up the measured table, so an edge shows up as
           // explosive plays rather than as a uniformly longer completion.
@@ -3123,10 +3150,19 @@ function simEngine(home,away,seed,opts){
           add(cov&&cov.id,'cvTgt'); add(cov&&cov.id,'cvCmp'); add(cov&&cov.id,'cvYds',gain);   // coverage targeted / allowed
           time+=(r()<0.28?PM.secQuick:PM.secPass); txt=nm(qb)+' pass to '+nm(rec)+' for '+gain+(cov?' (vs '+nm(cov)+')':'');
           if(los+gain>=100){ scored=true; add(qb&&qb.id,'pTD'); add(rec&&rec.id,'reTD'); add(cov&&cov.id,'cvTD'); }
+          // FUMBLE AFTER THE CATCH — his ball security against the man bringing him down. The sim had
+          // fumbles on carries and on the strip sack only, so a whole real category was missing and
+          // fumbles lost measured 0.40 against 0.56. The reception and its yards still stand, which is
+          // the box-score convention.
+          if(!scored && r()<clamp(PM.fumCatch*(1+PC.fumMul*press)+AT.carFum*ADX(rec,oP.recvA,'car',cov,dP.covA,'tkl'),0.001,0.05)){
+            turnover=true; txt=nm(rec)+' FUMBLES after the catch — lost'; }
           if(r()<INJ_RATE*injMul(rec))hurt(rec,off); if(r()<INJ_RATE*0.7*injMul(cov))hurt(cov,def);   // injuries on contact (Phase 26, Phase 51 durability)
         } else {                                            // incomplete (maybe picked)
           time+=PM.secIncomp; tackled=false; add(qb&&qb.id,'pAtt'); add(cov&&cov.id,'cvTgt'); txt=nm(qb)+' incomplete';
-          if(r()<clamp((PM.intRate-adv*0.0008)*(1+PC.intMul*press)+AT.awrInt*qAWR+AT.iqInt*qIQ+AT.thaInt*qTHA+AT.cthInt*(av(cov,'cth')-dP.covA.cth)+AT.zcvInt*(av(cov,'zcv')-dP.covA.zcv),0.020,0.14)){ turnover=true; add(qb&&qb.id,'pInt'); add(cov&&cov.id,'dInt');
+          // §7: the interception reads PRESSURE. A throw made with a rusher arriving is a different
+          // throw, and this is the last place the pocket state was not being carried through — which
+          // is the whole point of having a state rather than a sack roll.
+          if(r()<clamp((PM.intRate-adv*0.0008)*(1+PC.intMul*press)*(pressed?AT.intPress:1)+AT.awrInt*qAWR+AT.iqInt*qIQ+AT.thaInt*qTHA+AT.cthInt*(av(cov,'cth')-dP.covA.cth)+AT.zcvInt*(av(cov,'zcv')-dP.covA.zcv),0.020,0.14)){ turnover=true; add(qb&&qb.id,'pInt'); add(cov&&cov.id,'dInt');
             if(press>=0.5)add(cov&&cov.id,'cl');           // a pick in a big moment is a clutch play
             txt=nm(qb)+' INTERCEPTED by '+nm(cov); }
         }
@@ -3147,8 +3183,9 @@ function simEngine(home,away,seed,opts){
           +AT.pushStr*AUX(oP.olA,dP.frontA,dP.olA,oP.frontA,'str','str')
           +AT.pushAwr*AUX(oP.olA,dP.frontA,dP.olA,oP.frontA,'awr','awr');
         // CREASE — the back finding it, against the man filling it.
-        const creaseR=AT.creAgi*ADX(rb,oP.rushA,'agi',fr,dP.frontA,'awr')
-          +AT.creAcc*ADX(rb,oP.rushA,'acc',fr,dP.frontA,'tkl');
+        const bAdjR=((boost&&rb&&boost[rb.id])||0)-((boost&&fr&&boost[fr.id])||0);   // see the pass note
+        const creaseR=AT.creAgi*(ADX(rb,oP.rushA,'agi',fr,dP.frontA,'awr')+bAdjR)
+          +AT.creAcc*(ADX(rb,oP.rushA,'acc',fr,dP.frontA,'tkl')+bAdjR);
         // BREAK — making him miss, and running through him. §9a puts both on the FLOOR: breaking a
         // tackle is what turns a stuff into four yards, and it is explicitly not what breaks a 60.
         const breakR=AT.brkElu*ADX(rb,oP.rushA,'elu',fr,dP.frontA,'tkl')

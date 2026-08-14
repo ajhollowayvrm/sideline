@@ -57,7 +57,12 @@ eval(engineSrc + '\nvar PM_TIERS = PM; globalThis.PN = PN; globalThis.AT = AT; g
 /* ---------- a faithful-enough synthetic world (mirrors genRoster/teamRatings) ---------- */
 const POS = [["QB", "off", 4], ["RB", "off", 5], ["WR", "off", 11], ["TE", "off", 5],
 ["OT", "off", 7], ["OG", "off", 6], ["C", "off", 3],
-["DE", "def", 6], ["DT", "def", 6], ["LB", "def", 10], ["CB", "def", 9], ["S", "def", 8],
+["DE", "def", 6], ["DT", "def", 6], ["LB", "def", 10], ["CB", "def", 9],
+// Phase 52 split S into FS/SS in the game and in 4-simprofile, but never here. A world built with
+// `S` gives every safety a LINEBACKER's attribute row (posAttrW falls back to LB for an unknown
+// code) and leaves the FS/SS entries of the coverage and tackle pools empty — so the primary sim
+// gate was validating a league whose safeties are invisible to coverage and to tackling.
+["FS", "def", 4], ["SS", "def", 4],
 ["K", "st", 2], ["P", "st", 2]];
 const sideOf = {}; POS.forEach(([c, s]) => sideOf[c] = s);
 
@@ -332,10 +337,16 @@ function check(name, cond, detail = '') { results.push({ name, pass: !!cond, det
 (function () {
   const w = genWorld(321);
   const O = JSON.parse(JSON.stringify(w.teams[0]));
-  const wr1 = O.roster.filter(p => p.pos === 'WR').sort((a, b) => a.so - b.so)[0]; wr1.ov = 95; O.ratings = teamRatings(O.roster);
+  // Phase 51 retired writing `ov` to make a player good — it is a derived READOUT, so a direct write
+  // leaves every attribute channel reading his old profile while matchEdge reads the new number. This
+  // block did exactly that, and it went unnoticed because simlab's world had no FS/SS: safeties fell
+  // back to a linebacker's attribute row and the shadow measured something else entirely. Re-rate by
+  // shifting the profile and reading `ov` back off it, as the shipped generator does.
+  const rate = (p, lvl) => { shiftAttrs(p, lvl - p.ov); p.ov = clamp(ovrBase(p), 40, 99); return p; };
+  const wr1 = rate(O.roster.filter(p => p.pos === 'WR').sort((a, b) => a.so - b.so)[0], 95); O.ratings = teamRatings(O.roster);
   const D = JSON.parse(JSON.stringify(w.teams[1]));
-  const cb1 = D.roster.filter(p => p.pos === 'CB').sort((a, b) => a.so - b.so)[0]; cb1.ov = 55;   // weak default corner on WR1
-  const sft = D.roster.filter(p => p.pos === 'S').sort((a, b) => a.so - b.so)[0]; sft.ov = 92;    // your shutdown safety
+  const cb1 = rate(D.roster.filter(p => p.pos === 'CB').sort((a, b) => a.so - b.so)[0], 55);   // weak default corner on WR1
+  const sft = rate(D.roster.filter(p => p.pos === 'FS' || p.pos === 'SS').sort((a, b) => a.so - b.so)[0], 92);   // your shutdown safety
   D.ratings = teamRatings(D.roster);
   const seed = 4242, wrY = res => (res.box[wr1.id] || {}).reYds || 0;
   const base = simEngine(O, D, seed);
@@ -780,7 +791,7 @@ check('Rushing-yards leader realistic (1000–2400 / 12g)', rushY[0].v >= 1000 &
 check('Receiving leader is WR/TE/RB', ['WR', 'TE', 'RB'].includes(recY[0].pos), `${recY[0].pos} ${recY[0].v} yds`);
 check('Receiving-yards leader realistic (700–1900 / 12g)', recY[0].v >= 700 && recY[0].v <= 1900, recY[0].v + ' yds');
 check('Passing-TD leader realistic (18–55 / 12g)', passTD[0].v >= 18 && passTD[0].v <= 55, passTD[0].v + ' TD');
-check('Tackle leader is a defender, realistic (70–170 / 12g)', ['LB', 'S', 'CB', 'DE', 'DT'].includes(tkl[0].pos) && tkl[0].v >= 70 && tkl[0].v <= 170, `${tkl[0].pos} ${tkl[0].v}`);
+check('Tackle leader is a defender, realistic (70–170 / 12g)', ['LB', 'FS', 'SS', 'CB', 'DE', 'DT'].includes(tkl[0].pos) && tkl[0].v >= 70 && tkl[0].v <= 170, `${tkl[0].pos} ${tkl[0].v}`);
 check('Sack leader realistic (7–22 / 12g)', sk[0].v >= 7 && sk[0].v <= 22, `${sk[0].pos} ${sk[0].v}`);
 
 // Phase 48 — the possession model: two halves, a real 4th-down brain, tiered gains, red-zone
@@ -896,7 +907,7 @@ check('Sack leader realistic (7–22 / 12g)', sk[0].v >= 7 && sk[0].v <= 22, `${
   const w = genWorld(2026);
   const offScore = s => (s.pYds || 0) * 0.04 + (s.pTD || 0) * 4 + (s.rYds || 0) * 0.1 + (s.rTD || 0) * 6 + (s.reYds || 0) * 0.1 + (s.reTD || 0) * 6 - (s.pInt || 0) * 2;
   const defScore = s => (s.tkl || 0) + (s.sk || 0) * 4 + (s.dInt || 0) * 6;
-  const SKILL = new Set(['QB', 'RB', 'WR', 'TE']), DEF = new Set(['DE', 'DT', 'LB', 'CB', 'S']);
+  const SKILL = new Set(['QB', 'RB', 'WR', 'TE']), DEF = new Set(['DE', 'DT', 'LB', 'CB', 'FS', 'SS']);
   let offSkill = 0, offTot = 0, defD = 0, defTot = 0;
   for (let i = 0; i < 134; i++) {
     const j = (i + 3) % 134, res = simEngine(w.teams[i], w.teams[j], (hashStr('pow' + i) ^ 7) >>> 0);

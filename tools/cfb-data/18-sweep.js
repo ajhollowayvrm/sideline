@@ -26,7 +26,7 @@ const pad = (s, n) => String(s).padStart(n);
 const WORLDS = +(process.env.WORLDS || 1);
 const seKurt = (Math.sqrt(24 / (2010 * WORLDS))).toFixed(3);
 console.log(`  (WORLDS=${WORLDS} -> ${2010 * WORLDS} games; kurtosis SE +-${seKurt}${WORLDS < 4 ? '  <-- TOO NOISY TO READ' : ''})`);
-console.log('label'.padEnd(30) + '  pts  margin    Y/C     Y/A   cmp%   sack    kurt    skew     SD');
+console.log('label'.padEnd(30) + '  pts  margin    Y/C     Y/A   cmp%   sack    INT    FUM    kurt    skew     SD');
 for (const c of combos) {
   let h = base;
   for (const k in c.set) {
@@ -47,6 +47,8 @@ for (const c of combos) {
     pad(g(/^  yards \/ attempt\s+[\d.]+\s+([\d.]+)/m, out), 6),
     pad(g(/^  completion %\s+[\d.]+\s+([\d.]+)/m, out), 6),
     pad(g(/^  sacks \(by defense\)\s+[\d.]+\s+([\d.]+)/m, out), 6),
+    pad(g(/^    interceptions\s+[\d.]+\s+([\d.]+)/m, out), 6),
+    pad(g(/^    fumbles lost\s+[\d.]+\s+([\d.]+)/m, out), 6),
     pad(g(/excess kurtosis (-?[\d.]+)/, prof), 7),
     pad(g(/skew (-?[\d.]+)/, prof), 7),
     pad(g(/residual SD ([\d.]+)/, prof), 6));

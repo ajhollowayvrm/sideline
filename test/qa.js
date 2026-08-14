@@ -631,7 +631,7 @@ function startServer() {
   check('Honors: weekly POW recorded for each played week', honors.weeks === 3, honors.weeks + ' weeks');
   check('Honors: national Offensive + Defensive POW present', honors.hasNatOff && honors.hasNatDef);
   check('Honors: per-conference POW computed', honors.confs >= 8, honors.confs + ' conferences');
-  check('Honors: Off POW is a skill player, Def POW a defender', ['QB', 'RB', 'WR', 'TE'].includes(honors.offPos) && ['DE', 'DT', 'LB', 'CB', 'S'].includes(honors.defPos), `off ${honors.offPos} / def ${honors.defPos}`);
+  check('Honors: Off POW is a skill player, Def POW a defender', ['QB', 'RB', 'WR', 'TE'].includes(honors.offPos) && ['DE', 'DT', 'LB', 'CB', 'FS', 'SS'].includes(honors.defPos), `off ${honors.offPos} / def ${honors.defPos}`);
   // Phase 45.1: nicknames flow into the weekly honors snapshot + the media POW story
   const powNick = await page.evaluate(() => {
     const last = S.weeklyHonors[S.weeklyHonors.length - 1], o = last && last.national.off;
