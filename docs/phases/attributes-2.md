@@ -767,3 +767,37 @@ enforced by paired ability streams, so the worst `ovrBase` gap between any ident
   were **not** separated — a real roster has weak links a flat one does not.
 - **Defensive scheme choice is worth 0.8 points.** Defenses have no tendency lever and the table's
   columns sum to zero, so outside a specific matchup the call is close to inert.
+
+### Offense against defense, at equal talent
+
+`schemesim` experiment E, added on the same directive. Two teams built from the SAME ability draws,
+shifted +12 on one side of the ball and −12 on the other, both running neutral schemes so nothing is
+play-calling. 4,800 games head-to-head plus 4,800 each against a balanced team of identical talent.
+
+|  | W–L | win% | PF | PA |
+|---|---|--:|--:|--:|
+| Offense U (86 off / 61 def) | 2438–2362 | **50.8** | 21.2 | 20.7 |
+| Defense Tech (62 off / 85 def) | 2362–2438 | 49.2 | 20.7 | 21.2 |
+
+**The sim is close to indifferent, with a thumb on the scale for offense.** That is the structurally
+correct answer — the matchup is symmetric by construction, since an offense-heavy team hands its
+opponent exactly as large an edge on defense as it takes on offense — and the residual ~1–3 points of
+win rate is the sim expressing a preference. It does **not** grow with the imbalance (51.7–52.6%
+across tilts from ±4 to ±20), so it is a constant asymmetry rather than a runaway.
+
+Its source is visible in the head-to-head scoring: both halves of the game run at `adv` ≈ 0, yet the
+elite-offense-vs-elite-defense half produces ~0.5 more points per team than the weak-vs-weak half.
+Bad offense against bad defense scores less than good against good, which is defensible as football —
+real bad-vs-bad games *are* low-scoring — but it is worth knowing it is there, because it is what
+makes building an offense marginally better than building a defense.
+
+**The vivid result is the character of the games, not the records.** Against a balanced opponent:
+
+| challenger | win% | PF | PA | total points |
+|---|--:|--:|--:|--:|
+| Offense U | 52.9 | 31.2 | 30.2 | **61.3** |
+| Defense Tech | 49.0 | 13.7 | 14.1 | **27.8** |
+
+Same total talent, same schemes, near-identical records — and one team plays 61-point shootouts while
+the other plays 28-point rock fights. Roster construction reaches the *texture* of a season and not
+just its win column, which is the thing an attribute model is for.

@@ -34,7 +34,7 @@
 
    Run:  node tools/schemesim.js            (default sizing, ~3 min, ~60k games)
          GAMES=200 node tools/schemesim.js  (games per matrix cell)
-         ONLY=C node tools/schemesim.js     (run one experiment: A, B, C or D)  */
+         ONLY=C node tools/schemesim.js     (run one experiment: A, B, C, D or E)  */
 
 const fs = require('fs');
 const path = require('path');
@@ -138,12 +138,16 @@ const DEF_ID = {
 // (archetype, purity, within-profile noise) and is free to diverge. Without the split, an identity
 // that happened to consume a different number of draws would shift every later ability draw and the
 // comparison would silently become a talent comparison.
-function mkRoster(abilitySeed, shapeSeed, pref) {
+// `sideTilt` ({off:+n, def:-n}) moves one side of the ball up and the other down. The ABILITY stream
+// is still drawn first and identically, then shifted — so a lopsided team and a balanced one are
+// built from literally the same draws and differ only by the shift. That is what makes "same total
+// talent, distributed differently" a fact about the rosters rather than a hope about the averages.
+function mkRoster(abilitySeed, shapeSeed, pref, sideTilt) {
   const ra = rng(abilitySeed >>> 0), rs = rng(shapeSeed >>> 0);
   const out = [];
-  POS.forEach(([code, , n]) => {
+  POS.forEach(([code, side, n]) => {
     for (let i = 0; i < n; i++) {
-      const ov = clamp(Math.round(62 * 0.55 + ri(ra, -9, 9) + ri(ra, -1, 6) + 30), 48, 99);
+      const ov = clamp(Math.round(62 * 0.55 + ri(ra, -9, 9) + ri(ra, -1, 6) + 30 + (((sideTilt || {})[side]) || 0)), 44, 99);
       const want = (pref || {})[code];
       const a = (want && rs() < PREF) ? archByName(code, want[Math.floor(rs() * want.length)]) : pickArch(rs, code);
       const pur = clamp(0.35 + (rs() + rs() + rs()) / 3 * 1.5, 0.3, 1.7);
@@ -176,9 +180,9 @@ function install(team, offScheme, defScheme) {
   return team;
 }
 let _tag = 0;
-function mkTeam(id, name, abilitySeed, shapeSeed, offIdName, defIdName, offScheme, defScheme) {
+function mkTeam(id, name, abilitySeed, shapeSeed, offIdName, defIdName, offScheme, defScheme, sideTilt) {
   const pref = Object.assign({}, OFF_ID[offIdName] || {}, DEF_ID[defIdName] || {});
-  const roster = mkRoster(abilitySeed, shapeSeed, pref);
+  const roster = mkRoster(abilitySeed, shapeSeed, pref, sideTilt);
   const tag = 't' + (_tag++) + '-';
   roster.forEach((p, i) => p.id = tag + p.pos + i);      // unique per team; the box score is id-keyed
   return install({ id, name, roster, offId: offIdName, defId: defIdName }, offScheme, defScheme);
@@ -457,4 +461,98 @@ if (run('D')) {
     console.log('   ' + pad(idName, 20) + net.map((v, i) => lpad((OFF_SCHEMES[i] === idName ? '*' : ' ') + f1(v), 9)).join('') + lpad(f1(own - worst) + ' pts', 14));
   }
   console.log('   (* = the system the roster was recruited for)\n');
+}
+
+/* ================================================================================
+   E. All offense against all defense
+   ================================================================================
+   Two teams at the SAME total talent, distributed to opposite extremes: one pours everything into
+   the offense and fields a bad defense, the other the reverse. Both run neutral schemes (Pro Style /
+   4-3), so nothing here is about play-calling — it is purely about how the sim values one side of
+   the ball against the other.
+
+   The head-to-head is the fun question, but the honest one is each of them against a BALANCED team.
+   That matchup is symmetric by construction: an offense-heavy team hands its opponent exactly as
+   large an advantage on defense as it takes on offense. Anything other than a coin flip there is the
+   sim expressing a preference — telling you whether it is better to score or to stop people. */
+if (run('E')) {
+  const N = GAMES || 400, ROST = 6, TILT = 12;
+  console.log('== E. ALL OFFENSE vs ALL DEFENSE ==');
+  console.log('   same ability draws, shifted +' + TILT + ' on one side of the ball and -' + TILT + ' on the other;');
+  console.log('   neutral schemes both sides, so none of this is play-calling\n');
+
+  const build = (k, tilt, id) => mkTeam(id + k, id, (0x0FFDEF + k * 7919) >>> 0, (0x5A9E1 + k * 104729) >>> 0,
+    'Pro Style', '4-3', 'Pro Style', '4-3', tilt);
+
+  const rec = { O: { w: 0, l: 0, t: 0, pf: [], pa: [] }, D: { w: 0, l: 0, t: 0, pf: [], pa: [] } };
+  const bx = { O: { pAtt: 0, pCmp: 0, pYds: 0, rAtt: 0, rYds: 0, int: 0, sk: 0 }, D: { pAtt: 0, pCmp: 0, pYds: 0, rAtt: 0, rYds: 0, int: 0, sk: 0 } };
+  const ratings = { O: { off: [], def: [] }, D: { off: [], def: [] } };
+  const samples = [];
+  for (let k = 0; k < ROST; k++) {
+    const O = build(k, { off: TILT, def: -TILT }, 'Offense U');
+    const D = build(k, { off: -TILT, def: TILT }, 'Defense Tech');
+    ratings.O.off.push(O.ratings.off); ratings.O.def.push(O.ratings.def);
+    ratings.D.off.push(D.ratings.off); ratings.D.def.push(D.ratings.def);
+    for (let g = 0; g < N; g++) {
+      for (const gm of series(O, D, (0xBA771E ^ (g * 2654435761) ^ (k * 40503)) >>> 0)) {
+        rec.O.pf.push(gm.a.pts); rec.O.pa.push(gm.b.pts);
+        rec.D.pf.push(gm.b.pts); rec.D.pa.push(gm.a.pts);
+        if (gm.a.pts > gm.b.pts) { rec.O.w++; rec.D.l++; } else if (gm.b.pts > gm.a.pts) { rec.D.w++; rec.O.l++; } else { rec.O.t++; rec.D.t++; }
+        for (const kk of ['pAtt', 'pCmp', 'pYds', 'rAtt', 'rYds', 'int', 'sk']) { bx.O[kk] += gm.a[kk]; bx.D[kk] += gm.b[kk]; }
+        if (samples.length < 12) samples.push(gm.a.pts + '-' + gm.b.pts);
+      }
+    }
+  }
+  console.log('   ' + pad('team', 16) + lpad('off', 6) + lpad('def', 6) + '   built as');
+  console.log('   ' + pad('Offense U', 16) + lpad(mean(ratings.O.off).toFixed(1), 6) + lpad(mean(ratings.O.def).toFixed(1), 6) + '   everything on the ball, nothing on defense');
+  console.log('   ' + pad('Defense Tech', 16) + lpad(mean(ratings.D.off).toFixed(1), 6) + lpad(mean(ratings.D.def).toFixed(1), 6) + '   the reverse');
+  const gp = rec.O.w + rec.O.l + rec.O.t;
+  console.log('\n   HEAD TO HEAD (' + gp + ' games)\n');
+  console.log('   ' + pad('team', 16) + lpad('W', 6) + lpad('L', 6) + lpad('win%', 8) + lpad('PF', 7) + lpad('PA', 7));
+  for (const pair of [['O', 'Offense U'], ['D', 'Defense Tech']])
+    console.log('   ' + pad(pair[1], 16) + lpad(rec[pair[0]].w, 6) + lpad(rec[pair[0]].l, 6) + lpad((100 * rec[pair[0]].w / gp).toFixed(1), 8) +
+      lpad(mean(rec[pair[0]].pf).toFixed(1), 7) + lpad(mean(rec[pair[0]].pa).toFixed(1), 7));
+  console.log('\n   a dozen actual results (Offense U first): ' + samples.join('  '));
+  console.log('\n   ' + pad('team', 16) + lpad('att', 6) + lpad('cmp%', 7) + lpad('Y/A', 6) + lpad('car', 6) + lpad('Y/C', 6) + lpad('int', 6) + lpad('sacked', 8));
+  for (const pair of [['O', 'Offense U'], ['D', 'Defense Tech']]) {
+    const b = bx[pair[0]], g = rec[pair[0]].pf.length;
+    console.log('   ' + pad(pair[1], 16) + lpad((b.pAtt / g).toFixed(1), 6) + lpad((100 * b.pCmp / b.pAtt).toFixed(1), 7) +
+      lpad((b.pYds / b.pAtt).toFixed(2), 6) + lpad((b.rAtt / g).toFixed(1), 6) + lpad((b.rYds / b.rAtt).toFixed(2), 6) +
+      lpad((b.int / g).toFixed(2), 6) + lpad((bx[pair[0] === 'O' ? 'D' : 'O'].sk / g).toFixed(2), 8));
+  }
+
+  console.log('\n   HOW IT SCALES (same test at each level of lopsidedness)\n');
+  console.log('   ' + lpad('tilt', 7) + lpad('O off/def', 12) + lpad('D off/def', 12) + lpad('O win%', 9) + lpad('score', 12));
+  for (const T of [4, 8, 12, 16, 20]) {
+    let w = 0, l = 0; const pf = [], pa = [];
+    let ro = null, rd = null;
+    for (let k = 0; k < ROST; k++) {
+      const O = build(k, { off: T, def: -T }, 'O'), D = build(k, { off: -T, def: T }, 'D');
+      if (!ro) { ro = O.ratings; rd = D.ratings; }
+      for (let g = 0; g < Math.round(N / 2); g++)
+        for (const gm of series(O, D, (0x5CA1E ^ (g * 2654435761) ^ (k * 40503)) >>> 0)) {
+          pf.push(gm.a.pts); pa.push(gm.b.pts);
+          if (gm.a.pts > gm.b.pts) w++; else if (gm.b.pts > gm.a.pts) l++;
+        }
+    }
+    console.log('   ' + lpad('+/-' + T, 7) + lpad(ro.off + '/' + ro.def, 12) + lpad(rd.off + '/' + rd.def, 12) +
+      lpad((100 * w / (w + l)).toFixed(1), 9) + lpad(mean(pf).toFixed(1) + '-' + mean(pa).toFixed(1), 12));
+  }
+
+  console.log('\n   AGAINST A BALANCED TEAM OF THE SAME TALENT\n');
+  console.log('   ' + pad('challenger', 16) + lpad('W', 6) + lpad('L', 6) + lpad('win%', 8) + lpad('PF', 7) + lpad('PA', 7) + lpad('total', 8));
+  for (const pair of [['Offense U', { off: TILT, def: -TILT }], ['Defense Tech', { off: -TILT, def: TILT }]]) {
+    let w = 0, l = 0; const pf = [], pa = [];
+    for (let k = 0; k < ROST; k++) {
+      const X = build(k, pair[1], pair[0]), B = build(k, null, 'Balanced');
+      for (let g = 0; g < N; g++)
+        for (const gm of series(X, B, (0xBA1A2CE ^ (g * 2654435761) ^ (k * 40503)) >>> 0)) {
+          pf.push(gm.a.pts); pa.push(gm.b.pts);
+          if (gm.a.pts > gm.b.pts) w++; else if (gm.b.pts > gm.a.pts) l++;
+        }
+    }
+    console.log('   ' + pad(pair[0], 16) + lpad(w, 6) + lpad(l, 6) + lpad((100 * w / (w + l)).toFixed(1), 8) +
+      lpad(mean(pf).toFixed(1), 7) + lpad(mean(pa).toFixed(1), 7) + lpad((mean(pf) + mean(pa)).toFixed(1), 8));
+  }
+  console.log('');
 }

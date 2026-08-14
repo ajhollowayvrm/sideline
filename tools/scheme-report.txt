@@ -109,3 +109,38 @@ SIDELINE SCHEME SIM — randomized rosters, real archetypes, 25 attributes
    Pro Style                +0.0     +0.0     +0.0    *+0.0     +0.0     +0.0     +0.0      +0.0 pts
    (* = the system the roster was recruited for)
 
+== E. ALL OFFENSE vs ALL DEFENSE ==
+   same ability draws, shifted +12 on one side of the ball and -12 on the other;
+   neutral schemes both sides, so none of this is play-calling
+
+   team               off   def   built as
+   Offense U         85.8  61.3   everything on the ball, nothing on defense
+   Defense Tech      61.8  85.3   the reverse
+
+   HEAD TO HEAD (4800 games)
+
+   team                 W     L    win%     PF     PA
+   Offense U         2438  2362    50.8   21.2   20.7
+   Defense Tech      2362  2438    49.2   20.7   21.2
+
+   a dozen actual results (Offense U first): 13-17  10-34  21-40  3-24  17-14  26-17  27-30  23-14  29-24  27-31  10-13  20-24
+
+   team               att   cmp%   Y/A   car   Y/C   int  sacked
+   Offense U         31.0   60.5  7.31  33.0  5.05  0.81    1.88
+   Defense Tech      30.7   60.5  7.29  32.9  5.09  0.94    2.15
+
+   HOW IT SCALES (same test at each level of lopsidedness)
+
+      tilt   O off/def   D off/def   O win%       score
+      +/-4       79/71       71/79     51.9   21.1-20.5
+      +/-8       83/67       67/83     52.6   21.3-20.2
+     +/-12       87/63       63/87     52.6   21.3-20.5
+     +/-16       91/59       59/91     51.7   21.4-20.6
+     +/-20       95/55       55/95     51.7   20.9-20.4
+
+   AGAINST A BALANCED TEAM OF THE SAME TALENT
+
+   challenger           W     L    win%     PF     PA   total
+   Offense U         2540  2260    52.9   31.2   30.2    61.3
+   Defense Tech      2351  2449    49.0   13.7   14.1    27.8
+
