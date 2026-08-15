@@ -50,6 +50,15 @@ function startServer() {
   const jsErrors = [];
   page.on('console', m => { if (m.type() === 'error') jsErrors.push('console: ' + m.text()); });
   page.on('pageerror', e => jsErrors.push('pageerror: ' + e.message));
+  // The app must fetch NOTHING off-origin: it ships as one file to file://, to Pages over https://,
+  // and to the app:// scheme the iOS shell serves, and the shell has no network origin at all. Only
+  // subresources are policed here — fetch/xhr is the Phase 47 cloud layer, which has its own tests.
+  const externalAssets = [];
+  page.on('request', r => {
+    const t = r.resourceType();
+    if (t === 'fetch' || t === 'xhr') return;
+    if (!/^(http:\/\/localhost|data:|blob:|about:)/.test(r.url())) externalAssets.push(t + ' ' + r.url());
+  });
 
   // ---------- ?seed determinism (hook) ----------
   async function worldSig(seed) {
@@ -73,6 +82,15 @@ function startServer() {
     await page.getByRole('button', { name: 'Load Game' }).isVisible());
   check('Menu: no horizontal overflow', await overflow(page));
   check('Menu: gold default accent (#c9a227)', (await accent(page)) === '#c9a227', await accent(page));
+  const fonts = await page.evaluate(async () => {
+    await document.fonts.ready;
+    const fams = new Set(); document.fonts.forEach(f => fams.add(f.family));
+    return { size: document.fonts.size, fams: [...fams].sort() };
+  });
+  check('Fonts: all five faces embedded (4× Saira Condensed + variable Inter)', fonts.size === 5,
+    `${fonts.size} faces: ${fonts.fams.join(', ')}`);
+  check('Fonts: both display families present', fonts.fams.includes('Saira Condensed') && fonts.fams.includes('Inter'),
+    fonts.fams.join(', '));
 
   // ---------- NEW GAME WIZARD (deterministic seed for reproducibility) ----------
   await page.goto(`${BASE}?seed=2026&reset=1`, { waitUntil: 'networkidle' });
@@ -1973,6 +1991,8 @@ function startServer() {
   check('Phase 19c: retiring shows the career retrospective with both stops', retired.phase === 'Retired' && retired.summary && retired.menuBtn && retired.stops >= 2, retired.stops + ' stops');
 
   check('No uncaught JS / console errors', jsErrors.length === 0, jsErrors.slice(0, 3).join(' | '));
+  check('Self-contained: nothing loaded off-origin across the whole run', externalAssets.length === 0,
+    externalAssets.slice(0, 3).join(' | '));
   await ctx.close();
 
   // ---------- DESKTOP (centered column) ----------
