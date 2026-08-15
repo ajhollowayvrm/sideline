@@ -91,6 +91,18 @@ function startServer() {
     `${fonts.size} faces: ${fonts.fams.join(', ')}`);
   check('Fonts: both display families present', fonts.fams.includes('Saira Condensed') && fonts.fams.includes('Inter'),
     fonts.fams.join(', '));
+  // The iOS shell is a wrapper around the game, never a dependency of it: with no shell injecting
+  // window.__SIDELINE_NATIVE__, every bridge has to be a silent no-op that falls back to the web path.
+  const bridge = await page.evaluate(() => {
+    let threw = null;
+    try { haptic('success'); haptic(); } catch (e) { threw = e.message; }
+    return { native: NATIVE, threw, sent: nativeMsg('haptics', 'light'),
+             touch: getComputedStyle(document.body).touchAction };
+  });
+  check('Native bridge: inert in a browser (no shell → no throw, nothing sent)',
+    bridge.native === false && !bridge.threw && bridge.sent === false, JSON.stringify(bridge));
+  check('Touch: manipulation set (kills iOS double-tap zoom + the 300ms tap delay)',
+    bridge.touch === 'manipulation', bridge.touch);
 
   // ---------- NEW GAME WIZARD (deterministic seed for reproducibility) ----------
   await page.goto(`${BASE}?seed=2026&reset=1`, { waitUntil: 'networkidle' });

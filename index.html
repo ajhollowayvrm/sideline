@@ -31,14 +31,23 @@
   --r:12px;
   --safe-b: env(safe-area-inset-bottom, 0px);
 }
-*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+/* touch-action:manipulation is the ONE thing a web page can do about iOS double-tap zoom — Safari
+   has ignored user-scalable=no since iOS 10, but it honours this, and it drops the 300ms tap delay
+   with it. Pinch is still the browser's business (the native shell shuts that off at the scroll
+   view). -webkit-touch-callout kills the long-press magnifier/menu over the UI chrome. */
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;
+  -webkit-touch-callout:none;touch-action:manipulation}
 html,body{height:100%}
 body{
   background:var(--bg); color:var(--ink);
   font-family:'Inter',system-ui,-apple-system,sans-serif;
   font-size:15px; line-height:1.45;
   overscroll-behavior-y:none;
+  /* App chrome shouldn't select on a long press the way a document does. Real text entry opts
+     back in below — the career code in particular has to stay selectable, it's unrecoverable. */
+  -webkit-user-select:none; user-select:none;
 }
+input,select,textarea{-webkit-user-select:text;user-select:text}
 .cond{font-family:'Saira Condensed','Inter',sans-serif;letter-spacing:.01em}
 button{font-family:inherit;color:inherit;cursor:pointer;border:none;background:none}
 input,select{font-family:inherit;font-size:16px;color:var(--ink);background:var(--panel2);
@@ -1562,6 +1571,32 @@ const _QS=new URLSearchParams(location.search);
 const TEST_SEED=_QS.has('seed')?((parseInt(_QS.get('seed'),10)||0)>>>0):null;
 if(_QS.get('reset')==='1'){SLOTS.forEach(n=>deleteSlot(n));cloudDisconnect();}   // Phase 47: unlink too, so a test run is hermetic
 
+/* ---------- native shell bridge (iOS) ----------
+   ios/Sources/Shell.swift injects window.__SIDELINE_NATIVE__ at document start when the game is
+   running inside the WKWebView shell. Every call below is guarded and falls back to the web path,
+   so this same file still runs from file:// and from GitHub Pages with no shell at all. Keep it
+   that way: the shell is a wrapper around the game, never a dependency of it. */
+const NATIVE=typeof window!=='undefined'&&window.__SIDELINE_NATIVE__===true;
+function nativeMsg(name,body){
+  try{
+    const h=NATIVE&&window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers[name];
+    if(h){h.postMessage(body);return true;}
+  }catch(e){}
+  return false;
+}
+// Deliberately NOT on every tap — a haptic that fires constantly stops reading as feedback and
+// starts reading as noise. Reserved for the handful of moments that have weight: a snap called, a
+// week committed, a class signed, a game won or lost.
+function haptic(kind){nativeMsg('haptics',kind||'light');}
+// `URL.createObjectURL` + `a.download` is inert inside a WKWebView — it is why the blank-roster
+// template button silently did nothing there. The shell takes {name,text} and opens the share sheet.
+function saveTextFile(name,text){
+  if(nativeMsg('saveFile',{name:name,text:text}))return true;
+  const a=el('a'),url=URL.createObjectURL(new Blob([text],{type:'application/json'}));
+  a.href=url;a.download=name;a.click();URL.revokeObjectURL(url);
+  return false;
+}
+
 /* ---------- live game state ---------- */
 let S=null;            // current state
 let UI={view:'menu',tab:'roster',newgame:null};
@@ -1973,9 +2008,8 @@ const TEMPLATE={format:"sideline-roster",version:1,teams:[{
   players:[{first:"John",last:"Smith",pos:"QB",year:"JR",age:21,homeState:"TX",stars:4,overall:88,potential:92,
     spd:80,agi:78,str:70,awr:86,bal:82,dur:74,captain:true}]}]};
 function downloadTemplate(){
-  const blob=new Blob([JSON.stringify(TEMPLATE,null,2)],{type:'application/json'});
-  const a=el('a');a.href=URL.createObjectURL(blob);a.download='sideline-roster-template.json';a.click();
-  toast('Template downloaded');
+  const native=saveTextFile('sideline-roster-template.json',JSON.stringify(TEMPLATE,null,2));
+  toast(native?'Choose where to save it':'Template downloaded');
 }
 function importRosters(ng){
   const inp=el('input');inp.type='file';inp.accept='.json,application/json';
@@ -7528,7 +7562,7 @@ function enterInteractive(){
 }
 // Leave halftime → resume into the 2nd half (halfShown blocks it re-firing; the driver picks up the flow).
 function resumeHalf(){const G=UI.game;if(!G)return;G.halfShown=true;G.atHalf=false;G.pending=null;runInteractive();}
-function pickCall(c){const G=UI.game;if(!G||!G.pending)return;G.pending=null;G.atHalf=false;G.decisions.push(c);runInteractive();}
+function pickCall(c){const G=UI.game;if(!G||!G.pending)return;haptic('medium');G.pending=null;G.atHalf=false;G.decisions.push(c);runInteractive();}
 // Phase 24: bank the current adjustment plan onto the timeline at the current play index (so it applies
 // forward + replays on commit), then re-run. Cumulative snapshots — planAt() reads the latest.
 function recordAdjust(){
@@ -7843,7 +7877,9 @@ function finishGame(){
   UI.view='home';
   if(champ)advanceChampWeek(); else if(post)advancePostseason(); else advanceWeek();   // commit (re-sims deterministically, with g.calls)
   const g=findAnyGame(gid); render();
-  if(g){const gv=gameView(g,controlled().id);toast((gv.cls==='good'?'Won ':'Lost ')+gv.res.slice(2)+(gv.home?' vs ':' @ ')+gv.opp.abbr);}
+  if(g){const gv=gameView(g,controlled().id);
+    haptic(gv.cls==='good'?'success':'warning');   // the result of a game is worth feeling
+    toast((gv.cls==='good'?'Won ':'Lost ')+gv.res.slice(2)+(gv.home?' vs ':' @ ')+gv.opp.abbr);}
 }
 function renderGame(app){
   const G=UI.game; if(!G){UI.view='home';return renderHome(app);}
@@ -10186,6 +10222,7 @@ function renderNav(app){
     const b=el('button',(UI.view===v||(v==='menu'&&false))?'on':'');b.dataset.tid='nav-'+v;
     b.innerHTML=`<svg viewBox="0 0 24 24"><path d="${d}" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${l}</span>`;
     b.onclick=()=>{
+      haptic('select');                      // the one place a tick belongs on every tap: changing tab
       if(v==='menu')return menuSheet();
       UI.view=v;if(v==='team')UI.tab=UI.tab||'roster';render();
     };

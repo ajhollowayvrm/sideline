@@ -3,3 +3,8 @@ test/shots/
 package-lock.json
 infra/.aws-sam/
 infra/samconfig.toml
+# The Xcode project is generated from ios/project.yml by XcodeGen — never committed, so there is
+# no .pbxproj to merge-conflict over and no Mac needed to create one.
+ios/Sideline.xcodeproj/
+ios/Sideline-Info.plist
+ios/build/

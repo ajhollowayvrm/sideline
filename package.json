@@ -26,7 +26,10 @@
     "realignlab": "node test/realignlab.js",
     "identitylab": "node test/identitylab.js",
     "cloudlab": "node test/cloudlab.js",
-    "lambdalab": "node test/lambdalab.js"
+    "lambdalab": "node test/lambdalab.js",
+    "ios:project": "cd ios && xcodegen generate",
+    "ios:icon": "node tools/ios/make-icon.js",
+    "fonts": "node tools/fonts/inline-fonts.js"
   },
   "devDependencies": {
     "playwright": "^1.61.1"
