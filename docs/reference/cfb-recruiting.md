@@ -23,6 +23,26 @@ penalties, finally applied to the system that decides who is on the field in the
 mechanic (Phase 35) or the visit-weekend calendar (Phase 38). Those are *designed*, not measured,
 and a later phase should not "fix" them against a number nobody has.
 
+**Ranked versus all — read this before comparing any number to the sim.** A real board carries
+~3,692 prospects with a star rating plus **~466 unranked**, and the unranked sign FBS at only 33.7%.
+SIDELINE's pool is *entirely* ranked: every generated recruit carries 2–5 stars. So the quantities to
+hold it to are the **ranked-only** ones throughout, and the two differ by more than they look:
+
+| | all signees | ranked only |
+|---|--:|--:|
+| Board per class | 4,158 | **3,692** |
+| Signs FBS | 63.7% | **67.4%** |
+| Class size, mean | 20.2 | **19.0** |
+| Class size by band | 23.5 / 21.5 / 19.8 / 19.5 / 19.9 | **23.3 / 21.0 / 19.2 / 18.5 / 17.7** |
+| Class-size spread, top to bottom | 3.6 | **5.5** |
+| Programs signing < 10 | 3.3% | **6.3%** |
+
+The gap widens as you go down the league — 0.2 at the top, 2.2 at the bottom — because weak programs
+lean hardest on unranked signees and preferred walk-ons. Comparing an all-signee class size against
+the sim inflates every class target by about a player and moves the implied league sign rate five
+points, which is enough to make a fitted constant absorb the error invisibly. `21-recanalyze.js`
+reports both and exports the ranked-only set as the comparison keys.
+
 **Program quality is ordered by the `/talent` composite**, not by class rank. That is the honest
 analogue of SIDELINE's `prestige` — how good the roster is, independent of the class being signed.
 Banding by class rank would make "good programs sign good classes" true by construction.

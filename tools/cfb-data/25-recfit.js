@@ -11,8 +11,8 @@
      top-10 band's class BCR             69.6%
      blue-chip share of all signees      15.3%     <- catches blue-chips going unsigned
      ranked-board FBS sign rate          67.4%
-     programs signing under 10            3.3%     <- catches a band that cannot fill
-     class-size spread across bands       3.6      <- real is FLAT: 23.5 at the top, 19.9 at the bottom
+     programs signing under 10            6.3%     <- RANKED-only; catches a band that cannot fill
+     class-size spread across bands       5.5      <- RANKED-only: 23.3 top, 17.7 bottom (see 21-recanalyze)
      Gini of blue-chips per team         0.772
      4-year windows at BCR >= 50%        11.8%
 
@@ -68,7 +68,7 @@ function buildWorld(seed) {
 
 const TARGET = {
   bcTop10: 40.3, bcrTop10: 69.6, bcShare: 15.3, signRate: 67.4,
-  smallClass: 3.3, sizeSpread: 3.6, gini: 0.772, over50: 11.8, inState: 36.8,
+  smallClass: 6.3, sizeSpread: 5.5, gini: 0.772, over50: 11.8, inState: 36.8,
 };
 /* what a "one unit of wrong" looks like for each metric — keeps the objective commensurate */
 const SCALE = { bcTop10: 8, bcrTop10: 10, bcShare: 3, signRate: 5, smallClass: 3, sizeSpread: 4, gini: 0.06, over50: 4, inState: 3 };

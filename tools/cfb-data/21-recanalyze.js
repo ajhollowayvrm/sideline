@@ -55,7 +55,7 @@ const pct = x => (100 * x).toFixed(1) + '%';
 const MIN_CLASS = 10;                       // same bar the sim profiler uses, for comparability
 const PRESTIGE_BANDS = [[0, 10], [10, 25], [25, 50], [50, 90], [90, 134]];
 const BAND_LABEL = ['1-10', '11-25', '26-50', '51-90', '91-134'];
-const bandBC = PRESTIGE_BANDS.map(() => 0), bandSigned = PRESTIGE_BANDS.map(() => 0), bandTeams = PRESTIGE_BANDS.map(() => 0);
+const bandBC = PRESTIGE_BANDS.map(() => 0), bandSigned = PRESTIGE_BANDS.map(() => 0), bandTeams = PRESTIGE_BANDS.map(() => 0), bandRanked = PRESTIGE_BANDS.map(() => 0);
 
 let ranked = 0, unranked = 0, toFBS = 0, toOther = 0, uncommitted = 0;
 /* SIDELINE's pool is entirely ranked — every generated recruit carries 2-5 stars — so the numbers
@@ -64,7 +64,7 @@ let ranked = 0, unranked = 0, toFBS = 0, toOther = 0, uncommitted = 0;
    and inflates the board size by 11%, i.e. it would have credited the sim for a supply error. */
 let rankedFBS = 0, rankedOther = 0, rankedNone = 0;
 const starMix = {};
-const classSizes = [], bcrAll = [], inStateShares = [], distances = [];
+const classSizes = [], classSizesRanked = [], bcrAll = [], inStateShares = [], distances = [];
 const bcrByTeamYear = {};                   // team -> {year: {bc, n}}
 const pointsByYear = {};                    // year -> {team: points}
 const stateSupply = {};
@@ -102,6 +102,7 @@ for (const y of YEARS) {
   for (const school of Object.keys(campus)) {
     const list = cls[school] || [];
     classSizes.push(list.length);
+    classSizesRanked.push(list.filter(p => p.stars).length);   // the comparable quantity — see the band note
     const bc = bcOf(school);
     (bcrByTeamYear[school] = bcrByTeamYear[school] || {})[y] = { bc, n: list.length };
     if (list.length >= MIN_CLASS) {
@@ -123,6 +124,13 @@ for (const y of YEARS) {
     const band = ranking.slice(lo, hi);
     bandBC[k] += sum(band.map(bcOf));
     bandSigned[k] += sum(band.map(s => (cls[s] || []).length));
+    // RANKED-only class size is the number to hold SIDELINE to, for the same reason the board size
+    // and sign rate are: its pool is entirely ranked, so a class size that counts the unranked
+    // signees a real program also takes is not the same quantity. It matters more than it looks —
+    // the two differ by 0.2 at the top of the league and by 2.2 at the bottom, which turns a
+    // measured class-size spread of 3.6 into one of 5.6 and moves the implied league sign rate by
+    // five points. Fitting against the all-signee number quietly inflated every class target.
+    bandRanked[k] += sum(band.map(s => (cls[s] || []).filter(p => p.stars).length));
     bandTeams[k] += band.length;
   });
 
@@ -244,13 +252,15 @@ fs.writeFileSync(path.join(__dirname, 'recruit-profile.json'), JSON.stringify({
   fbsSignRate: rankedFBS / ranked, otherRate: rankedOther / ranked, uncommittedRate: rankedNone / ranked,
   boardPerClassInclUnranked: (ranked + unranked) / YEARS.length,
   fbsSignRateInclUnranked: toFBS / tot,
-  classSizeMean: mean(classSizes), classSizeMedian: median(classSizes),
-  smallClassShare: classSizes.filter(n => n < MIN_CLASS).length / classSizes.length,
+  classSizeMean: mean(classSizesRanked), classSizeMedian: median(classSizesRanked),
+  classSizeMeanAllSignees: mean(classSizes),
+  smallClassShare: classSizesRanked.filter(n => n < MIN_CLASS).length / classSizesRanked.length,
   bcrPooled: pooledBC / pooledSigned, bcrMean: mean(bcrAll),
   bcr4Mean: mean(bcr4), bcr4Max: Math.max(...bcr4), bcr4Over50: over50 / bcr4.length,
   giniBlueChip: mean(giniAll),
   bands: PRESTIGE_BANDS.map(([lo, hi], k) => ({
-    band: BAND_LABEL[k], teams: hi - lo, classSize: bandSigned[k] / bandTeams[k],
+    band: BAND_LABEL[k], teams: hi - lo, classSize: bandRanked[k] / bandTeams[k],
+    classSizeAllSignees: bandSigned[k] / bandTeams[k],
     blueChipShare: bandBC[k] / pooledBC, bcr: bandSigned[k] ? bandBC[k] / bandSigned[k] : 0,
   })),
   persistence: mean(persistR),
