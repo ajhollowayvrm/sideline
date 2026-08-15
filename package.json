@@ -29,6 +29,8 @@
     "lambdalab": "node test/lambdalab.js",
     "ios:project": "cd ios && xcodegen generate",
     "ios:icon": "node tools/ios/make-icon.js",
+    "ios:web": "node tools/ios/web.js",
+    "ios:sim": "node tools/ios/shell.js",
     "fonts": "node tools/fonts/inline-fonts.js"
   },
   "devDependencies": {

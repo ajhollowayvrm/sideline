@@ -10,6 +10,10 @@ const { chromium } = require('playwright');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+// The touch audit the two iPhone loops run, so the gate and the loops measure the same thing rather
+// than drifting into two opinions about what a 44pt target is. The module is pure — it returns
+// JavaScript source strings and requires nothing from Xcode or Playwright.
+const SCENARIOS = require('../tools/ios/scenarios');
 
 const ROOT = path.join(__dirname, '..');
 const SHOTS = path.join(__dirname, 'shots');
@@ -1840,6 +1844,59 @@ function startServer() {
   check('Phase 9: codec preserves top-level state (seed/year/awards/…)', codec.topOk);
   check('Phase 9: encoded save is meaningfully smaller', codec.encLen < codec.full * 0.78, `${(codec.full / 1024 | 0)}KB → ${(codec.encLen / 1024 | 0)}KB`);
   check('Phase 9: encode tags the blob, decode strips the tag', codec.encMarker && codec.decClean);
+
+  // ---------- STORAGE: the save has to actually FIT (the check that was missing) ----------
+  // Every codec check above passes on a save that localStorage then REFUSES, which is exactly what
+  // shipped: an in-season autosave threw QuotaExceededError every week, writeSlot swallowed it into
+  // a toast, and the career stayed frozen at its preseason state. So assert the write, and assert
+  // the slot on disk holds the live week — a codec round-trip in memory proves neither.
+  const store = await page.evaluate(() => {
+    const n = findSlotFor(S) || 1;
+    const wrote = writeSlot(n, S);
+    const raw = localStorage.getItem(slotKey(n)) || '';
+    const back = readSlot(n);
+    return { wrote, chars: raw.length, ascii: /^[\x00-\x7f]*$/.test(raw),
+             savedWeek: back && back.state ? back.state.week : null, liveWeek: S.week };
+  });
+  const mb = n => (n / 1048576).toFixed(2) + 'MB';
+  check('Storage: an in-season save is written, not refused', store.wrote && store.chars > 2e6, mb(store.chars));
+  check('Storage: the slot holds the LIVE week, not a stale preseason one',
+    store.savedWeek === store.liveWeek, `saved week ${store.savedWeek}, live ${store.liveWeek}`);
+  // Non-ASCII doubles the cost of the WHOLE value, because the quota is charged against the
+  // string's backing store rather than its content. One en dash is enough to do it.
+  check('Storage: the stored save is pure ASCII (one byte a character)', store.ascii);
+  check('Storage: headroom left under the ~5MB origin quota', store.chars < 4.2e6,
+    mb(store.chars) + ' of ~4.97MB');
+
+  // ---------- TOUCH: 44pt targets and press feedback ----------
+  // Both are invisible in a screenshot, which is how the app came to suppress the iOS tap highlight
+  // and put nothing in its place — every control looked right and none of them answered a finger.
+  // Targets are hit-tested rather than measured off the box, since a pseudo-element may legitimately
+  // extend the target past the paint.
+  const touchViews = ['home', 'team', 'season', 'recruit', 'media', 'browse', 'program'];
+  const touch = { small: [], pressGap: 0, controls: 0, screens: 0 };
+  const uiBefore = await page.evaluate(() => ({ view: UI.view, tab: UI.tab }));
+  for (const v of touchViews) {
+    await page.evaluate(view => { closeSheet(); UI.view = view; if (view === 'team') UI.tab = 'roster'; render(); }, v);
+    const a = await page.evaluate(`(async () => {${SCENARIOS.audit()}\n})()`);
+    touch.small.push(...a.worst.map(w => v + ': ' + w));
+    touch.pressGap += a.pressTotal - a.pressable;
+    touch.controls += a.checked;
+    touch.screens++;
+  }
+  await page.evaluate(ui => { UI.view = ui.view; UI.tab = ui.tab; render(); }, uiBefore);
+  check('Touch: every control clears Apple\'s 44pt minimum', touch.small.length === 0,
+    `${touch.controls} controls over ${touch.screens} screens` + (touch.small.length ? ' — ' + touch.small.slice(0, 3).join(', ') : ''));
+  check('Touch: every pressable control has a press state', touch.pressGap === 0,
+    touch.pressGap ? touch.pressGap + ' with no :active rule' : 'all covered');
+  // The tap highlight is deliberately off, so a missing press state is silent. Assert both halves.
+  const tapCss = await page.evaluate(() => {
+    const b = document.querySelector('.btn') || document.querySelector('button');
+    return { highlightOff: /transparent|rgba\(0, 0, 0, 0\)/.test(getComputedStyle(b).webkitTapHighlightColor || ''),
+             hasTransition: /transform|filter/.test(getComputedStyle(b).transition || '') };
+  });
+  check('Touch: the iOS tap highlight stays suppressed', tapCss.highlightOff);
+  check('Touch: press feedback is transitioned, not a jump', tapCss.hasTransition);
 
   // ---------- PHASE 47: cloud saves (push → pull → conflict, against a mocked endpoint) ----------
   // Stands up an in-memory implementation of the real API inside the page (same routes, same

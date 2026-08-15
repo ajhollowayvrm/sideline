@@ -510,10 +510,42 @@ still serves it with zero config.
   self-contained file that renders identically from `file://`, `https://` and `sideline://`. CI
   builds an **unsigned** `.ipa` on a free macOS runner with **no certificates or secrets** —
   compiling needs macOS, signing needs an Apple ID, and SideStore does the second half locally,
-  which is what makes the path work from Windows. Verified end to end: `ARCHIVE SUCCEEDED`, and the
-  bundled `index.html` is byte-identical to the repo's. **No save bump** (v49 unchanged), no
-  `SIM_MODEL` bump — the sim was not touched. `qa` 344 → **351**.
+  which is what makes the path work from Windows. **No save bump** (v49 unchanged), no `SIM_MODEL`
+  bump — the sim was not touched. `qa` 344 → **351**.
   *(→ `docs/phases/ios.md`, `ios/README.md`.)*
+
+  **"Verified end to end" meant the BUILD, not the APP — and the app was broken.** The phase closed
+  on `ARCHIVE SUCCEEDED` plus a byte-identical bundled `index.html`, neither of which runs anything.
+  The first time the shell was actually driven (Phase 61.1) it rendered the game as **plain text**:
+  `BundleSchemeHandler` passed `"text/html; charset=utf-8"` as `URLResponse.mimeType`, which takes
+  the bare type with the encoding in `textEncodingName`. WebKit did not recognise it, fell back to
+  plain text, and drew the whole file as a `<pre>` of its own source — an app that launches, shows
+  something, and is completely dead. Fixed by splitting the two. The lesson is the phase's own: a
+  wrapper is not verified by compiling it.
+
+- **Phase 61.2 — the native-feel pass.** The other half of *"feels cheap"*, now that the loop can
+  measure it. **The load-bearing find is press feedback**: the app suppressed the iOS tap highlight —
+  correctly, it is the wrong shape and colour for these controls — and put **nothing** in its place,
+  so across the whole app a tap produced *no response at all* until the screen redrew. A native
+  control answers the FINGER, not the result. `:active` now lightens and shrinks every interactive
+  element, scoped to `button`/`a`/`[role=button]` rather than to the card and row CLASSES, because
+  half the `.lrow` rows are static divs and lighting those up would be a lie about what is tappable.
+  Brightness, not opacity: on a palette this dark a dimmed control reads as disabled. **It needs one
+  line of JS to exist at all** — iOS applies `:active` only while some touch listener is registered
+  up the tree, so an empty `touchstart` listener is what keeps the whole layer from being dead on the
+  phone while working perfectly in every desktop browser.
+  **Touch targets: 21 under Apple's 44pt minimum → 0**, from four causes (every tab strip at 40pt,
+  the header back button at 38, the "flag need" pill at 26, one 42pt button). Where the design wants
+  a control shorter than 44, the **hit** box is extended past the paint with a pseudo-element, so the
+  layout is pixel-identical and the finger still gets its 44pt. Also: sheets rise instead of
+  appearing (in only — `closeSheet` stays synchronous, a dozen call sites carry straight on into
+  `render()`), re-tapping the current tab returns to the top of it, and **`bounces` went back to
+  true** in the shell (see `ios/README.md`: 61's reasoning holds in Safari and not inside a shell).
+  Two non-findings worth recording: scroll position already survives a re-render (measured, 1200 →
+  1200), and screen-to-screen transitions were deliberately NOT added — a tab bar does not animate
+  between tabs on this platform. `qa` 355 → **359**, and the gate now imports the audit from
+  `tools/ios/scenarios.js` so the gate and the two loops cannot drift into separate opinions about
+  what a 44pt target is. *(→ `ios/README.md`.)*
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
@@ -795,8 +827,20 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 - **No build step yet.** Everything is global in one `<script>`. If splitting into modules,
   preserve the deterministic seed → `genWorld` contract. Saves store the full world, but rosters
   (98% of the bytes) serialize **columnar** via the Phase 9 storage codec (`encodeState`/
-  `decodeState` around `writeSlot`/load), cutting a ~2.3 MB save to ~1.4 MB (vs the ~5 MB/origin
-  `localStorage` cap). The codec is pure serialization (no seed dependency), so it's deploy-safe.
+  `decodeState` around `writeSlot`/load). The codec is pure serialization (no seed dependency), so
+  it's deploy-safe. **Measured (Phase 61.1), not estimated:** an in-season save is **3.1 MB at
+  kickoff and 3.5 MB by week 16** — the old "~1.4 MB" figure predated the Phase 17 national board
+  and the Phase 57a pool — against an origin quota of **~4.97 MB**. `world` (2.1 MB) and
+  `recruiting` (1.2 MB) are the whole of it, and both are roughly flat year to year.
+- **A stored value is charged against its string's BACKING STORE, not its content.** WebKit holds a
+  string at one byte a character only while every character fits Latin-1. A career carries ~59 that
+  don't — all en dashes, from score lines — and those 59 doubled a 3.4 M-character save to ~6.9 MB,
+  so **every in-season autosave failed** and `writeSlot` swallowed it into a toast. `asciiJSON`
+  escapes them AND rebuilds the string through `JSON.parse`, because a string returned by
+  `.replace()` keeps its source's 16-bit backing even when its content is now pure ASCII. Both steps
+  are load-bearing and measured. Four `qa` checks hold the line: an in-season save must be written
+  rather than refused, the slot must hold the LIVE week, the value must be pure ASCII, and it must
+  stay under 4.2 MB. Anything that grows the save is now on a budget.
 - After any roster/ratings/staff edit, call `teamRatings(roster, staff)` then
   `recomputeRanks(S.world)` (staff boosts feed into the rating, so pass the team's staff).
 - `autosave()` writes to the slot matching `S.createdAt`; explicit "Save game" is in the
@@ -835,10 +879,21 @@ change; bump the save `version` + `migrateState` on any save-shape change.
 
 **Non-gate build scripts** (Phase 61): `npm run fonts` re-embeds `assets/fonts/*.woff2` into
 `index.html`, `npm run ios:icon` regenerates the app icon, `npm run ios:project` runs XcodeGen
-(needs macOS). The iOS build itself is CI-only — `.github/workflows/ios.yml`. Three `qa` checks
-police the properties the shell depends on: **nothing loads off-origin** across the whole run, the
-five font faces are embedded, and every native bridge is a **silent no-op in a browser** — the
-shell is a wrapper around the game, never a dependency of it.
+(needs macOS). CI builds the shippable **unsigned** `.ipa` — `.github/workflows/ios.yml`. Three `qa`
+checks police the properties the shell depends on: **nothing loads off-origin** across the whole
+run, the five font faces are embedded, and every native bridge is a **silent no-op in a browser** —
+the shell is a wrapper around the game, never a dependency of it.
+
+**Non-gate feel loops** (Phase 61.1): `npm run ios:web` renders every screen in real WebKit at
+iPhone metrics and reports overflow + under-44pt tap targets (~30 s, no Xcode); `npm run ios:sim`
+builds the shell, installs it on a booted simulator and drives it there. `simctl` cannot tap a
+simulator, so `Shell.swift` carries a **`DevBridge`** — a loopback listener that runs JS inside the
+live WKWebView, fenced `#if DEBUG` (CI archives Release), bound to `127.0.0.1`, exposing **no JS
+API** so no game code can depend on it. Both loops share `tools/ios/scenarios.js`, so a difference
+between their shots is a difference in the *engine*. Neither is a gate — they need Xcode, and
+`test/shots/iphone/` is gitignored. The loop paid for itself on its first run: it found the plain-text
+render below, and the storage bug in "Conventions & gotchas" that had been silently freezing every
+career at its preseason state. `qa` 351 → **355**. *(→ `ios/README.md`.)*
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Non-controlled games are resolved instantly by `simEngine`; only the controlled team's game

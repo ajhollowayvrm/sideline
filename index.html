@@ -48,6 +48,28 @@ body{
   -webkit-user-select:none; user-select:none;
 }
 input,select,textarea{-webkit-user-select:text;user-select:text}
+
+/* ---------- press feedback ----------
+   The tap highlight is transparent above, and that is right: the grey iOS flash is the wrong shape
+   and the wrong colour for these controls. But nothing ever replaced it, so a tap produced NO
+   response at all until the screen redrew. That is the loudest "this is a web page" tell there is,
+   because a native control answers the FINGER, not the result.
+   Scoped to genuinely interactive ELEMENTS rather than to the card and row classes: half the .lrow
+   list rows are static divs, and lighting those up under a finger would be a lie about what is
+   tappable. Brightness rather than opacity, because on a palette this dark a dimmed control reads
+   as disabled rather than as pressed. */
+button,a,[role=button]{transition:transform .09s ease-out,filter .09s ease-out}
+button:active,a:active,[role=button]:active{filter:brightness(1.4);transform:scale(.985)}
+.nav button:active{transform:scale(.93)}   /* a tab bar item is small, so it needs a bigger move */
+
+/* Apple's minimum touch target is 44pt. Where the design wants a control SHORTER than that — a tab
+   inside a 4px-padded strip, a small pill — the HIT box is extended past the paint with a pseudo
+   element rather than the control being grown, so the layout keeps its proportions and the finger
+   still gets its 44pt. Vertical only: these controls sit side by side, so extending sideways would
+   steal from the neighbour. */
+.tabs button,button.tag,.btn.sm{position:relative}
+.tabs button::after,button.tag::after,.btn.sm::after{content:'';position:absolute;
+  left:0;right:0;top:50%;height:44px;transform:translateY(-50%)}
 .cond{font-family:'Saira Condensed','Inter',sans-serif;letter-spacing:.01em}
 button{font-family:inherit;color:inherit;cursor:pointer;border:none;background:none}
 input,select{font-family:inherit;font-size:16px;color:var(--ink);background:var(--panel2);
@@ -221,7 +243,14 @@ h2.sec:first-child{margin-top:6px}
   z-index:50;opacity:0;transition:opacity .2s, transform .2s;pointer-events:none;white-space:nowrap}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
 
-.sheet-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:40;display:flex;align-items:flex-end;justify-content:center}
+/* A sheet that simply APPEARS is the other half of the same tell — every modal on the platform
+   travels in from the edge it belongs to. In only: closing stays synchronous, because closeSheet()
+   empties #sheet and a dozen call sites carry straight on into render(). */
+@keyframes sheet-rise{from{transform:translateY(100%)}to{transform:translateY(0)}}
+@keyframes sheet-fade{from{opacity:0}to{opacity:1}}
+.sheet-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:40;display:flex;align-items:flex-end;justify-content:center;
+  animation:sheet-fade .18s ease-out}
+.sheet{animation:sheet-rise .26s cubic-bezier(.32,.72,0,1)}
 .sheet{width:100%;max-width:560px;background:var(--panel);border-top-left-radius:18px;border-top-right-radius:18px;
   border:1px solid var(--line);padding:18px 16px calc(18px + var(--safe-b));max-height:88vh;overflow:auto}
 .sheet h3{font-family:'Saira Condensed';font-weight:700;font-size:20px;margin-bottom:4px}
@@ -233,7 +262,13 @@ hr.div{border:none;border-top:1px solid var(--line);margin:14px 0}
 .hint{font-size:12px;color:var(--ink3);line-height:1.5}
 .center{text-align:center}
 .empty{text-align:center;color:var(--ink3);padding:40px 20px;font-size:14px}
-@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+/* Motion is opt-out, and the press states have to survive it: a filter change is feedback, not
+   animation, so only the movement is dropped. The sheet still opens, it just does not travel. */
+@media (prefers-reduced-motion:reduce){
+  *{transition:none!important}
+  button:active,a:active,[role=button]:active,.nav button:active{transform:none}
+  .sheet-bg,.sheet{animation:none}
+}
 </style>
 </head>
 <body>
@@ -1242,6 +1277,24 @@ function decodeState(s){
   return out;
 }
 function readSlot(n){try{const raw=localStorage.getItem(slotKey(n));return raw?JSON.parse(raw):null;}catch(e){return null;}}
+/* JSON, rewritten into a string the storage layer charges ONE byte a character for.
+   WebKit holds a JS string in an 8-bit backing store while every character fits Latin-1, and a
+   16-bit one the moment one does not — and a localStorage value is charged against the BACKING
+   STORE, not against what the string now contains. A career carries about 59 characters that don't
+   fit: every one an en dash, out of score lines like "W 33-13". Those 59 doubled the cost of a
+   3.4M-character save to ~6.9MB against a ~5MB quota, so an in-season autosave failed EVERY week,
+   on iOS and in the browser alike, and the only sign was a toast. The career persisted at its
+   preseason state and nothing after it was ever written.
+
+   Two steps, and BOTH are load-bearing (measured against the real WKWebView, `npm run ios:sim`):
+     1. escape every non-ASCII character, which costs 5 extra characters each, 295 in all;
+     2. rebuild the result through JSON.parse. A string returned by `.replace()` keeps the 16-bit
+        backing store of the string it came from even when every character it now holds is ASCII.
+        The escaped string alone is still refused; the rebuilt one is accepted.
+
+   `readSlot` needs no partner: `\uXXXX` is ordinary JSON, so JSON.parse restores the exact string,
+   old saves still load, and a save written here still loads in a build without this. */
+function asciiJSON(v){const esc=JSON.stringify(v).replace(/[^\x00-\x7f]/g,c=>'\\u'+c.charCodeAt(0).toString(16).padStart(4,'0'));return JSON.parse(JSON.stringify(esc));}
 function writeSlot(n,state){
   state.lastSaved=Date.now();
   const team=state.world.teams.find(t=>t.id===state.teamId);
@@ -1249,7 +1302,7 @@ function writeSlot(n,state){
     teamAbbr:team?team.abbr:'',color:team?team.color:'#c9a227',
     week:state.week,phase:state.phase,savedAt:state.lastSaved,
     careerId:cloudCareerId(state)};   // Phase 47: the cloud's identity for this career
-  try{localStorage.setItem(slotKey(n),JSON.stringify({meta,state:encodeState(state)}));}
+  try{localStorage.setItem(slotKey(n),asciiJSON({meta,state:encodeState(state)}));}
   catch(e){toast('Save failed — storage full');return false;}
   if(state===S){setActiveSlot(n);cloudQueue();}   // Phase 47: local write first, cloud push debounced behind it
   return true;
@@ -1580,6 +1633,12 @@ if(_QS.get('reset')==='1'){SLOTS.forEach(n=>deleteSlot(n));cloudDisconnect();}  
    so this same file still runs from file:// and from GitHub Pages with no shell at all. Keep it
    that way: the shell is a wrapper around the game, never a dependency of it. */
 const NATIVE=typeof window!=='undefined'&&window.__SIDELINE_NATIVE__===true;
+function reducedMotion(){try{return window.matchMedia('(prefers-reduced-motion: reduce)').matches;}catch(e){return false;}}
+/* iOS applies :active only while SOME touch listener exists up the tree from the element. Without
+   this line every press state in the stylesheet is dead on the phone and in the shell while working
+   perfectly in every desktop browser — which is exactly how a press state comes to ship broken.
+   Passive, empty, and registered once: it exists to be present, not to do anything. */
+document.addEventListener('touchstart',function(){},{passive:true});
 function nativeMsg(name,body){
   try{
     const h=NATIVE&&window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers[name];
@@ -10227,6 +10286,9 @@ function renderNav(app){
     b.onclick=()=>{
       haptic('select');                      // the one place a tick belongs on every tap: changing tab
       if(v==='menu')return menuSheet();
+      // Tapping the tab you are already on returns you to the top of it. Every list-driven app on
+      // the platform does this, and it is the only way back up a 15,000px roster without dragging.
+      if(UI.view===v)return window.scrollTo({top:0,behavior:reducedMotion()?'auto':'smooth'});
       UI.view=v;if(v==='team')UI.tab=UI.tab||'roster';render();
     };
     nav.append(b);
@@ -10255,7 +10317,9 @@ function autosave(){const n=findSlotFor(S);if(n)writeSlot(n,S);}
    ============================================================ */
 function headerBar(title,sub,back){
   const c=el('div','topbar');c.style.paddingLeft='0';c.style.paddingRight='0';
-  if(back){const b=el('button');b.style.cssText='width:38px;height:38px;border-radius:9px;background:var(--panel2);border:1px solid var(--line);font-size:20px;flex:none';b.innerHTML='&#8249;';b.onclick=back;c.append(b);}
+  // 44px, not 38: this is a corner target reached with the thumb at full stretch, which is the worst
+  // place in the app to be under Apple's minimum.
+  if(back){const b=el('button');b.style.cssText='width:44px;height:44px;border-radius:11px;background:var(--panel2);border:1px solid var(--line);font-size:20px;flex:none';b.innerHTML='&#8249;';b.dataset.tid='back';b.onclick=back;c.append(b);}
   c.append(el('div',null,`<h1>${title}</h1>${sub?'<div class="sub">'+sub+'</div>':''}`));
   return c;
 }

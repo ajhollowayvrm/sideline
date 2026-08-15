@@ -26,7 +26,12 @@ wrapping rather than shipping a PWA:
 - **Origin.** A career is ~1.4 MB of `localStorage`, and storage is keyed to origin. The page is
   served over a custom `sideline://` scheme rather than `file://`, which gives it a real, stable,
   secure origin — so saves survive app updates and `navigator.clipboard` works.
-- **Bounce.** The rubber-band overscroll is the strongest "this is a web page" tell there is.
+- **Bounce.** Phase 61 switched rubber-band off outright, calling it the strongest "this is a web
+  page" tell. **Phase 61.2 put it back**, because that is true in *Safari* — where the bounce exposes
+  the browser behind the page — and false here: this is a real `UIScrollView` over a background that
+  matches the page, so a bounce exposes the app's own colour, and every native list on the platform
+  bounces. `alwaysBounceVertical` stays off, which is the half worth keeping: a screen whose content
+  does not fill the frame should not wobble.
 - **`a.download` is inert** in a WKWebView, which is how the blank-roster-template button came to
   silently do nothing. It goes through the share sheet now.
 
@@ -86,6 +91,62 @@ that split is what makes this work without a Mac.
 On a **free** Apple ID the install expires after 7 days and you may hold 3 sideloaded apps at once.
 SideStore refreshes the signature on-device from the same `.ipa`; from a Mac it's just ⌘R again. A
 paid account ($99/yr) removes both limits.
+
+---
+
+## Testing how it feels
+
+Two loops, neither of them a gate. Both put the game into a named state and take a picture, so a
+change to how the app FEELS can be checked without a phone in your hand.
+
+```sh
+npm run ios:web     # real WebKit at iPhone metrics — ~30s for every screen, no Xcode
+npm run ios:sim     # the native shell on a booted simulator — the truth
+```
+
+| | `ios:web` | `ios:sim` |
+|---|---|---|
+| Engine | Playwright WebKit | the real WKWebView |
+| Needs | `npx playwright install webkit` | Xcode + a simulator runtime |
+| Speed | ~30 s, all screens | ~2 min with a build |
+| Answers | layout, overflow, tap-target size, font metrics | plus origin, safe-area insets, zoom lock, bounce, the bridges |
+
+`tools/ios/scenarios.js` holds the screen list **and the audit**, shared by both drivers and by the
+`qa` gate, so a difference between the two sets of shots is a difference in the **engine** and never
+in the setup. Shots land in `test/shots/iphone/`. Each line reads:
+
+```
+roster   overflow    0px   under-44pt   0/13    press  13/13
+```
+
+- **overflow** — how far the page scrolls sideways. Anything but 0 is a bug.
+- **under-44pt** — controls whose *tappable* height is under Apple's minimum, out of those measured.
+  Measured by **hit testing**, not by the bounding box: the box is what a control paints, the target
+  is what the finger gets, and a pseudo-element may legitimately extend one past the other. Controls
+  the probe cannot measure — clipped by the screen edge, or half under the fixed tab bar — are
+  excluded rather than counted, because a scroll position is not a design defect.
+- **press** — controls a `:active` rule answers. The tap highlight is deliberately suppressed, so a
+  control without one gives the finger **nothing at all**, and a screenshot cannot show it.
+
+**How `ios:sim` drives the app.** `simctl` can screenshot a simulator but it cannot tap one. So
+`Shell.swift` carries a `DevBridge` — a loopback HTTP listener that runs JavaScript inside the live
+web view. A simulator process shares the host loopback, so a POST from the command line reaches the
+app. Three things keep it out of the product: `#if DEBUG` (CI archives Release), it binds `127.0.0.1`
+by name, and it adds **no** JavaScript API, so no game code can come to depend on it.
+
+```sh
+npm run ios:sim -- build                       # build, install, launch, stop
+npm run ios:sim -- eval 'return S.week'        # run JS in the app
+npm run ios:sim -- shot rivals                 # screenshot what is on screen
+npm run ios:sim -- --keep                      # skip the build, drive what is running
+```
+
+**If the build fails on the asset catalog** with `No simulator runtime version … available to use
+with iphonesimulator SDK version`, then Xcode updated ahead of its simulator runtimes. Fix it once:
+
+```sh
+xcodebuild -downloadPlatform iOS
+```
 
 ---
 
