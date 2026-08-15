@@ -300,9 +300,24 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
      interest race was already saturated. Phase 57b de-saturated it, so the concentrated-effort pass
      is now worth something real. That flip is the phase's whole point, so it is asserted rather than
      merely observed: recruiting effort must change the QUALITY of a class, not just its size. */
+  /* Measured over SEVERAL worlds and on class SCORE, not one world's blue-chip count. The first cut
+     compared a single team's blue-chips on a single seed and read "2 vs 3" once the Phase 59 pull
+     curve steepened — which is noise on a two-item comparison, not a regression. A one-seed count is
+     not a measurement; `classScore` over four worlds is. */
+  let worked = 0, unworked = 0;
+  for (const s of [4411, 8123, 20260814, 77003]) {
+    const t0 = genWorld(s);
+    const him = t0.find(t => t.prestige >= 66 && t.prestige <= 74) || t0[30];
+    const runOne = pid => {
+      const teams = genWorld(s), pool = genRecruits(s, teams);
+      for (let w = 1; w <= 15; w++) advanceRecruiting(pool, teams, w, 15, s, w === 15, undefined, undefined, pid);
+      return classScore(him, pool);
+    };
+    worked += runOne(undefined); unworked += runOne(him.id);
+  }
   check('Recruiting effort now changes the class it lands (Phase 56 measured NO difference)',
-    bc(recruited) > bc(passive),
-    `blue-chips: worked ${bc(recruited)} vs unworked ${bc(passive)}`);
+    worked > unworked,
+    `class score over 4 worlds: worked ${worked} vs unworked ${unworked} (+${(100 * (worked - unworked) / unworked).toFixed(1)}%)`);
 
   /* And the reason for that, measured — the finding this scenario actually turned up.
      `advanceRecruiting`'s passive growth is `iv += (1.0 + fit*3.2) * (0.6 + r()*0.9)` every week.

@@ -1046,6 +1046,85 @@ bounded, never leaking at zero), never a magnitude.
 
 ---
 
+## Phase 59 design — the top band, and why effort did nothing
+
+Decided 2026-08-14 with AJ, taking on the residual Phase 57b recorded and Phase 58 shipped with: the
+top-10 band took **31.6%** of blue-chips against a real 40.3%, while total concentration (Gini 0.774
+vs 0.772) was right to three decimals. The sim was spreading them across ranks 11–25 instead.
+
+### First: the recorded explanation was wrong
+57b's doc said reality has *"something convex at the very top that team quality alone does not
+explain — national brand"*, and deliberately declined to model it on one number's evidence. That was
+the right instinct and the wrong conclusion. **`27-toplean.js`** tests it, because the cheaper
+hypothesis had never been checked: maybe the sim's *prestige ladder* is too compressed at the top, in
+which case the pull curve is innocent and the fix is measured rather than invented.
+
+It is not the ladder. As a multiple of the bottom band, top-10 against 11–25 is **real 1.154, sim
+1.191** — the sim's top band is if anything *more* separated. What differs is what the lead buys:
+blue-chips per team, top ten against 11–25, **real 1.71×, sim 1.08×**. A near-identical quality gap
+was converting into a large recruiting advantage in reality and almost none here. A **conversion**
+defect, with no missing mechanism.
+
+### Second: it was a fitting error, not a model error
+`bcPerTeam` — blue-chips per team, top band against the next — went into `25-recfit.js`'s objective,
+and that alone unlocked it. With no term valuing top-band concentration, the fitter had been sitting
+at `PULL_W 26`, the *widest* pull in its grid; given one, it found 21 plus a geography rebalance
+(`GEO_SUIT` 0.15→0.22, `GEO_FIT` 0.04→0.02) and cost fell 17.86 → 4.94 with `bcPerTeam` landing 1.70.
+
+**A hypothesis that did not survive, recorded because it was persuasive.** `CEIL_BASE 60` compresses
+every fit into a 40-point band, so on a four-star a top-ten program's passive ceiling sat 86.1 against
+a rank-15 rival's 81.0 — a gap of 5.1, *under* a `LEAD_GAP` of 7, meaning the blue-blood literally
+could not pull far enough ahead to trigger a commit. That is true, and it is not what was wrong:
+`CEIL_BASE` and `COMMIT_THRESH` were both made knobs and the fitter left both exactly where they were.
+
+### Third, and the real find: recruiting effort did nothing
+The gate that broke on the new constants was Phase 57b's *"recruiting effort now changes the class it
+lands"*, and it broke because it had been a one-seed comparison of blue-chip counts — 2 against 3 is
+noise, not a measurement. Rewritten over four worlds on `classScore`, it read the AI-worked class as
+**9% worse**. That turned out to be a confound in the harness (57b exempts the *player's* team from
+`classTarget`, so the two runs were different capacity regimes). Capacity-controlled over ten worlds:
+
+> **class score 938 worked, 939 ignored — the concentrated-effort pass moved a class by 0.1%.**
+
+Phase 33's AI recruiting brain, and the Phase 44 autopilot that shares its priority function, had been
+spending their entire weekly budget to no effect. Under the pre-57b saturated model this was invisible
+because everything pinned at 100 anyway; de-saturating it should have exposed it, and 57b's assertion
+passed on luck instead.
+
+The cause was the traction term. `aiPriority` carried `+ iv*0.12`, which with a fitted `AI_VALUE` of
+0.06 **dominated the expected-value product** — so the brain ranked highest the recruits it was
+already winning, and spent the budget where it could not change an outcome. Phase 33 called it
+"concentrate where you have a chance"; in practice it concentrated where there was nothing left to
+win. It is now multiplied by **how pivotal the push is** — `exp(−(gap/AI_PIVOT)²)` on the margin
+between this program and the best rival — so effort goes where the race is close, not where it is
+already decided in either direction. Being recruited is now worth **+22% class score** and **+6.4
+blue-chips** a class.
+
+### And one mechanism deleted
+`AI_SCOUT_STAR`, added earlier in this session, weighted the AI's scouting roll by star tier to
+restore Phase 33's information asymmetry (the field evaluates the top of the board; the player keeps
+his edge in the foggy tail), which had collapsed to 18-vs-14. That was treating the symptom — scouting
+follows effort, and effort was going to the wrong places. With the pivotal weighting it falls out on
+its own at **42 against 7** with no tier term at all, so the tier term is gone and `AI_SCOUT_P` is
+back at its original 0.3. Two mechanisms producing one behaviour is one too many, and the one that
+survives is the one that explains it.
+
+### What it landed
+Top band **31.6% → 36.3%** of blue-chips (real 40.3) and BCR **56.0 → 64.8** (real 69.6); per-team
+ratio **1.08× → 1.70×** against a real 1.71×. Everything else held: sign rate 68.6 (67.4), class size
+18.9 (19.0), blue-chip share 15.6 (15.3), BCR 14.0 (14.4), Gini 0.782 (0.772), in-state 37.9 (36.8).
+`26-dynasty.js` still reads **STABLE** — talent sd 5.36 → 5.39 across the steady state.
+
+**No save bump, no `SIM_MODEL` bump.** All 23 gates green: `reclab` 87, `qa` 338.
+
+### Still open
+The top band remains ~4 points short (36.3 against 40.3) with ranks 11–25 correspondingly long, and
+`programs signing < 10` is still 0.0% against 6.3% — the sim has no mechanism for a program leaning on
+unranked signees, which is the same gap as the unmodelled ~466 unranked prospects seen from the other
+end. Both are recorded rather than tuned away.
+
+---
+
 ## Planned: non-conference series scheduling (Phase 8)
 
 Players (and AI schools) book the **non-conference** part of the schedule by agreeing to

@@ -3661,12 +3661,12 @@ const PITCH_ANGLES=[
 // league). OVER_W/OVER_FLOOR are the mild above-tier taper that decides board MEMBERSHIP only.
 // PASSIVE_RATE is how fast interest approaches its fit-set ceiling. TGT_* size a real class.
 // All fitted jointly by tools/cfb-data/25-recfit.js against docs/reference/cfb-recruiting.md §2-3.
-const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.15,GEO_FIT:0.04,
-  TIER5:88,TIER4:70,TIER3:50,TIER2:32,PULL_W:26,OVER_W:60,OVER_FLOOR:0.45,SUIT_NOISE:1.1,
-  PASSIVE_RATE:0.10,CEIL_BASE:60,TGT_MEAN:19.2,TGT_SD:4,TGT_PRES:1.15,TGT_MIN:12,AI_VALUE:0.06,
+const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.22,GEO_FIT:0.02,
+  TIER5:88,TIER4:70,TIER3:50,TIER2:32,PULL_W:21,OVER_W:60,OVER_FLOOR:0.3,SUIT_NOISE:1.1,
+  PASSIVE_RATE:0.10,CEIL_BASE:60,TGT_MEAN:19.2,TGT_SD:5.5,TGT_PRES:1.15,TGT_MIN:12,AI_VALUE:0.06,AI_PIVOT:14,
   FOG_ATTR:10,FOG_ARCH:35,FOG_PUR:70,
   COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:16,DECOMMIT_GAP:18,
-  AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.18,AI_SCOUT_STAR:1.2,NEGLECT_DECAY:3.5,
+  AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.3,NEGLECT_DECAY:3.5,
   AI_VISIT_P:0.25,FINALISTS:4,FINAL_READY:0.55,FINAL_BAR:58};
 
 // Coach archetype/history effects — Phase 4 is the first system to apply them. Returns a bag of
@@ -3876,8 +3876,17 @@ function aiPriority(team,rec){const need=(team.needs&&team.needs[rec.pos])?6:0;
   // two-star higher and the best programs fill their classes with the tail. Multiplying by
   // `recruitValue` fixes the ordering from the direction it actually comes from — Alabama is not
   // worse at recruiting a two-star, the scholarship is just worth more spent elsewhere.
-  return recruitFit(team,rec)*boardAppeal(team.prestige,rec.stars)*recruitValue(rec)*REC.AI_VALUE
-    +(rec.iv[team.id]||0)*0.12+need;}
+  // PIVOTAL — and times the chance the push CHANGES anything. This replaced a flat `+iv*0.12`
+  // traction term, which was the Phase 33 idea of "concentrate where you have a chance" but in
+  // practice ranked highest the recruits a program was already winning. Measured capacity-controlled
+  // over ten worlds, the whole concentrated-effort pass moved a team's class score by 0.1%: the
+  // budget was being spent where it could not change an outcome. Effort is worth most where the race
+  // is CLOSE — not where it is already won, and not where it is already lost.
+  const mine=rec.iv[team.id]||0;
+  let best=0; for(const tid in rec.iv){if(tid!==team.id&&rec.iv[tid]>best)best=rec.iv[tid];}
+  const gap=(mine-best)/REC.AI_PIVOT;
+  const pivotal=Math.exp(-gap*gap);
+  return recruitFit(team,rec)*boardAppeal(team.prestige,rec.stars)*recruitValue(rec)*REC.AI_VALUE*pivotal+need;}
 // Advance one recruiting week: grow every suitor's interest, run the AI recruiting brain's concentrated
 // effort, resolve DECOMMITS (verbal flips), then resolve new commitments. Seeded per (seed, week) so a
 // cycle reproduces. During the season a commitment is a VERBAL (`committedTo` set, `signed` stays false);
@@ -3970,16 +3979,16 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
         // Probabilistic so a team spreads scouting across its targets without spending its whole budget on it
         // — the budget stays mostly on pitches, so a strong scouting program still out-recruits, while
         // contested recruits accumulate evaluation from their many suitors over the cycle.
-        // Phase 57b: how likely a program is to spend the week EVALUATING rather than pitching scales
-        // with the tier. Deciding where to pitch is an expected-value question (`aiPriority`), but
-        // deciding whom to evaluate is not the same question — a five-star is worth real scouting
-        // effort by everyone chasing him, a two-star is worth a look. Phase 33 built the resulting
-        // asymmetry deliberately (the field evaluates the top of the board, so the player gets free
-        // intel there and keeps his own edge in the foggy tail), and once `aiPriority` became a
-        // product that asymmetry rode entirely on AI_VALUE — which the distribution fit wants low.
-        // Separating the two restores the designed behaviour without touching where effort goes.
-        const scoutP=REC.AI_SCOUT_P*(1+REC.AI_SCOUT_STAR*(rec.stars-2));
-        if((rec.scout||0)<REC.AI_SCOUT_TGT&&r()<scoutP)rec.scout=clamp((rec.scout||0)+REC.AI_SCOUT_GAIN,0,100);
+        /* A star-weighted `scoutP` lived here briefly and was removed. Phase 33's information
+           asymmetry — the field evaluates the top of the board, so the player gets free intel there
+           and keeps his own edge in the foggy tail — had collapsed to 18-vs-14 once `aiPriority`
+           became a product, and a tier multiplier on the scouting roll restored it. But that was
+           treating the symptom: the real cause was that `aiPriority` spent its budget on recruits the
+           program had already won, so scouting followed the effort to the wrong places. With effort
+           now weighted by how PIVOTAL it is, the concentration falls out of where the budget actually
+           goes — 34-vs-5 with no tier term at all. Two mechanisms producing one behaviour is one too
+           many, and the one that survives is the one that explains it. */
+        if((rec.scout||0)<REC.AI_SCOUT_TGT&&r()<REC.AI_SCOUT_P)rec.scout=clamp((rec.scout||0)+REC.AI_SCOUT_GAIN,0,100);
         else rec.iv[tid]=clamp((rec.iv[tid]||0)+aiActionGain(t,rec,r)*recScoutMult(rec),0,100);
       }
     }

@@ -7,7 +7,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > phase-by-phase design records (the "why" behind each system) live in **`docs/phases/`**
 > and are read on demand, not auto-loaded:
 > - `docs/phases/gameday.md` — sim engine + play-calling + the watch screen (Phases 3, 3.5, 21–31, 46, 55, 55.1, 55.2)
-> - `docs/phases/recruiting.md` — recruiting, signing, portal, visits, and the measured talent economy (Phases 4, 14, 16, 17, 33–38, 56, 57a, 57b, 58)
+> - `docs/phases/recruiting.md` — recruiting, signing, portal, visits, and the measured talent economy (Phases 4, 14, 16, 17, 33–38, 56, 57a, 57b, 58, 59)
 > - `docs/phases/offseason.md` — rollover, program, postseason, draft, championships, camp, realignment (Phases 5, 6–9, 12, 13, 15, 18, 32, 39, 43, 44)
 > - `docs/phases/identity-media.md` — traits, morale, media, rivalries, records, contract, legends, identity (Phases 10, 11, 19, 20, 40, 41, 42, 45)
 > - `docs/phases/cloud.md` — cloud saves: AWS backend, career codes, sync/conflict model (Phase 47)
@@ -33,7 +33,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > band-pass and saturation defects Phase 56 measured. Reproduce with `tools/cfb-data/20–23`
 > (needs a free `CFBD_API_KEY`).
 >
-> **All roadmap phases 1–58 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–59 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -425,6 +425,31 @@ still serves it with zero config.
   with its own media beat, scaled by program (a #25 class is the job at prestige 95, a triumph at 35)
   and pegged at ~one game's worth of results. **No save bump, no `SIM_MODEL` bump.** `reclab` → 87,
   `rolllab` → 42, `medialab` → 55, `qa` → 338. *(→ `docs/phases/recruiting.md`.)*
+
+- **Phase 59 — the top band, and why effort did nothing.** Takes on the residual 57b recorded: the
+  top-10 band took **31.6%** of blue-chips against a real 40.3% while Gini was right to three decimals.
+  57b blamed *"something convex at the very top that team quality does not explain — national brand"*
+  and declined to model it. **`27-toplean.js` refutes that**: as a multiple of the bottom band, top-10
+  against 11–25 is real 1.154 / sim 1.191 — the sim is if anything *more* separated. What differed was
+  what the lead buys (blue-chips per team, real 1.71× / sim 1.08×), i.e. a **conversion** defect with
+  no missing mechanism. The fix was a **fitting** fix: adding `bcPerTeam` to `25-recfit.js`'s objective
+  unlocked it (with nothing valuing top-band concentration the fitter had sat at the *widest* pull in
+  its grid), giving `PULL_W` 26→21 plus a geography rebalance, cost 17.86→4.94.
+  **The real find came out of a broken gate.** 57b's "recruiting effort now changes the class it
+  lands" had been a one-seed blue-chip count; rewritten over four worlds on `classScore` and then
+  capacity-controlled over ten (57b exempts the player's team from `classTarget`, so the two runs were
+  different capacity regimes), it read **938 worked vs 939 ignored — the AI's concentrated-effort pass
+  moved a class by 0.1%.** Phase 33's brain and the Phase 44 autopilot that shares its priority had
+  been spending their whole budget to no effect; the pre-57b saturation hid it and 57b's assertion
+  passed on luck. Cause: `aiPriority`'s `+iv*0.12` traction term dominated the expected-value product,
+  so the brain ranked highest the recruits it had **already won**. Now multiplied by how *pivotal* the
+  push is (`exp(−(gap/AI_PIVOT)²)` on the margin to the best rival) — effort goes where the race is
+  close. Being recruited is worth **+22% class score, +6.4 blue-chips**. Also **deletes**
+  `AI_SCOUT_STAR`: scouting follows effort, so with effort aimed correctly the Phase 33 information
+  asymmetry falls out at 42-vs-7 with no tier term (two mechanisms for one behaviour is one too many).
+  Landed: top band 31.6→**36.3%**, BCR 56.0→**64.8**, per-team ratio 1.08×→**1.70×**; everything else
+  held and `26-dynasty` still reads STABLE. **No save bump.** `reclab` 87, `qa` 338.
+  *(→ `docs/phases/recruiting.md`.)*
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week

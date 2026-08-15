@@ -197,21 +197,24 @@ From `23-reccompare.js`, after Phases 57a (supply and geography) and 57b (the ta
 | BCR per class | 14.4% | 14.1% | ok |
 | BCR rolling 4-year | 14.1% | 14.1% | ok |
 | windows at BCR ≥ 50% | 11.8% | 11.7% | ok |
-| **Gini of blue-chips** | **0.772** | **0.774** | ok |
+| **Gini of blue-chips** | **0.772** | **0.782** | ok |
 | class-score persistence | 0.882 | 0.887 | ok |
-| in-state share | 36.8% | 34.6% | ok |
+| in-state share | 36.8% | 37.9% | ok |
 | TX / FL / CA / GA share | 12.5 / 11.1 / 10.9 / 7.9% | 12.0 / 11.1 / 11.8 / 7.7% | ok |
 | **programs signing < 10** | **6.3%** | **0.0%** | **MISS** |
 
-The band table, which is what the arc existed to fix:
+The band table, which is what the arc existed to fix (sim after Phase 59):
 
 | band | real size | sim size | real BC% | sim BC% | real BCR | sim BCR |
 |---|--:|--:|--:|--:|--:|--:|
-| 1–10 | 23.3 | 22.5 | **40.3** | **31.6** | **69.6** | **56.0** |
-| 11–25 | 21.0 | 21.1 | **35.4** | **43.9** | 44.5 | 55.4 |
-| 26–50 | 19.2 | 19.8 | 19.0 | 21.0 | 15.6 | 17.0 |
-| 51–90 | 18.5 | 18.6 | 5.1 | 3.2 | 2.6 | 1.7 |
-| 91–134 | 17.7 | 17.3 | 0.2 | 0.3 | 0.1 | 0.1 |
+| 1–10 | 23.3 | 22.2 | **40.3** | **36.3** | **69.6** | **64.8** |
+| 11–25 | 21.0 | 20.9 | 35.4 | 42.2 | 44.5 | 53.2 |
+| 26–50 | 19.2 | 19.8 | 19.0 | 18.7 | 15.6 | 15.0 |
+| 51–90 | 18.5 | 18.6 | 5.1 | 2.4 | 2.6 | 1.3 |
+| 91–134 | 17.7 | 17.3 | 0.2 | 0.4 | 0.1 | 0.2 |
+
+Blue-chips landed **per team**, top ten against ranks 11–25 — the local metric that sees this, where
+the league-wide summaries above cannot: **real 1.71×, sim 1.70×** after Phase 59 (it was 1.08×).
 
 For comparison, the same table before Phase 57 — a band-pass filter centred on the recruit's tier,
 under which the ten best programs in the country signed **4.2 players** and Georgia signed one:

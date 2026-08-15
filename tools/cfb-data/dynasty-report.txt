@@ -4,20 +4,20 @@ Dynasty check — does concentrated recruiting compound?
 
 season   talent sd   top10 mean   bot10 mean   gap   top10 BC/class
      0        8.57         85.4         54.5    30.9                —
-     1        8.16         87.4         58.0    29.4             12.7
-     2        7.22         88.8         62.5    26.2             11.5
-     3        6.31         90.2         67.1    23.1             11.2
-     4        5.51         91.1         71.0    20.1             12.3
-     5        5.49         90.9         70.8    20.2             10.4
-     6        5.57         90.9         70.4    20.5             10.7
-     7        5.54         90.6         70.3    20.3             13.4
-     8        5.48         90.7         70.4    20.3             11.9
-     9        5.49         91.2         71.0    20.1             11.7
-    10        5.66         91.3         70.5    20.8             11.8
+     1        8.01         87.3         58.2    29.1             16.0
+     2        6.95         88.7         63.2    25.5             14.9
+     3        6.04         90.4         68.0    22.4             15.0
+     4        5.36         91.6         72.0    19.6             15.9
+     5        5.34         91.1         71.7    19.4             13.6
+     6        5.42         91.1         71.1    20.0             14.8
+     7        5.30         91.1         71.6    19.5             17.0
+     8        5.38         91.0         71.3    19.7             14.5
+     9        5.39         91.2         71.7    19.5             16.0
+    10        5.47         91.5         71.3    20.2             14.9
 
-burn-in:                 season 0 gap 30.9 -> season 4 gap 20.1   (the starting world is not the one recruiting builds)
-steady state (s4-10):   first half 20.3   last half 20.4   drift +0.1
-league talent sd:        first half 5.53   last half 5.54
+burn-in:                 season 0 gap 30.9 -> season 4 gap 19.6   (the starting world is not the one recruiting builds)
+steady state (s4-10):   first half 19.6   last half 19.7   drift +0.1
+league talent sd:        first half 5.36   last half 5.39
 
 STABLE: the gap settles and holds. This is the pass condition.
 
