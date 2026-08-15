@@ -52,12 +52,20 @@ directly — no CI, no artifact, no AltStore/Sideloadly in the loop. Signing set
 **not** in `project.yml`, so the project behaves like any normal one: Signing & Capabilities →
 *Automatically manage signing* → pick your Personal Team.
 
-**Set a bundle ID that is yours.** `PRODUCT_BUNDLE_IDENTIFIER` ships as `com.sideline.game`, and
-Apple requires bundle IDs to be globally unique even under free provisioning — a generic one may
-already be registered to somebody else, which fails at signing with a misleading error. Change it in
-`project.yml` to something like `com.yourname.sideline` and regenerate. Do this **once, before the
-first install**: the bundle ID identifies the app's container, so changing it later strands the saves
-inside the old one.
+**Set a bundle ID that is yours** — if you forked this, it is the one line you must change.
+`PRODUCT_BUNDLE_IDENTIFIER` is `com.ajholloway.sideline` in `project.yml`; change it and regenerate.
+Apple requires bundle IDs to be globally unique even under free provisioning, so somebody else's ID
+fails at signing with a misleading error. Do this **once, before the first install**: the bundle ID
+identifies the app's container, so changing it later strands the saves inside the old one.
+
+**Debug or Release?** ⌘R installs a **Debug** build, which contains the `DevBridge` automation
+listener. It binds `127.0.0.1`, so nothing off the phone can reach it. For a build you keep on your
+phone, switch the scheme to Release — Product → Scheme → Edit Scheme → Run → Build Configuration →
+*Release* — which is what CI archives and carries no byte of the bridge.
+
+**A free Apple ID expires the signature after 7 days.** The app then refuses to launch until you ⌘R
+again. Your saves survive that, because they belong to the container and the container survives
+anything short of deleting the app.
 
 **Turn on Web Inspector** — the single biggest reason to use a Mac here. `Shell.swift` sets
 `isInspectable = true`, so:

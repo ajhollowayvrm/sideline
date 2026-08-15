@@ -45,11 +45,12 @@ targets:
 
     settings:
       base:
-        # CHANGE THIS to something of your own (com.yourname.sideline) before the first install.
-        # Apple requires globally unique bundle IDs even under free provisioning, so a generic one
-        # may already be registered to someone else and fails at signing with a misleading error.
-        # It also identifies the app's container: changing it later strands the saves in the old one.
-        PRODUCT_BUNDLE_IDENTIFIER: com.sideline.game
+        # Apple requires globally unique bundle IDs even under free provisioning, so the generic
+        # com.sideline.game this shipped with may already be registered to someone else, and fails at
+        # signing with a misleading error. It also identifies the app's CONTAINER: changing it after
+        # the first install strands every career in the old one. Set it once, before installing.
+        # Fork this repo and it is the one line you must change.
+        PRODUCT_BUNDLE_IDENTIFIER: com.ajholloway.sideline
         PRODUCT_NAME: Sideline
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
