@@ -69,9 +69,16 @@ function buildWorld(seed) {
 const TARGET = {
   bcTop10: 40.3, bcrTop10: 69.6, bcShare: 15.3, signRate: 67.4,
   smallClass: 6.3, sizeSpread: 5.5, gini: 0.772, over50: 11.8, inState: 36.8,
+  /* Added after Phase 58. Gini and the band shares can both look right while the thing that actually
+     distinguishes a blue-blood is wrong, because they are league-wide summaries. This is the local
+     quantity: blue-chips landed PER TEAM by the top ten against ranks 11-25. Real 1.71x, and
+     27-toplean.js shows the two prestige ladders agree on how far ahead the top ten ARE (1.154 real
+     vs 1.191 sim) — so any shortfall here is the conversion from a quality lead into a recruiting
+     lead, not the distribution of quality. */
+  bcPerTeam: 1.71,
 };
 /* what a "one unit of wrong" looks like for each metric — keeps the objective commensurate */
-const SCALE = { bcTop10: 8, bcrTop10: 10, bcShare: 3, signRate: 5, smallClass: 3, sizeSpread: 4, gini: 0.06, over50: 4, inState: 3 };
+const SCALE = { bcTop10: 8, bcrTop10: 10, bcShare: 3, signRate: 5, smallClass: 3, sizeSpread: 4, gini: 0.06, over50: 4, inState: 3, bcPerTeam: 0.22 };
 
 const WORLDS = +(process.env.WORLDS || 2);
 const CLASSES = 4;
@@ -133,17 +140,40 @@ function measure() {
     gini: sum(ginis) / ginis.length,
     over50: 100 * bcr4.filter(x => x >= 0.5).length / Math.max(1, bcr4.length),
     inState: 100 * sum(inStates) / Math.max(1, inStates.length),
+    bcPerTeam: (bandBC[0] / (BANDS[0][1] - BANDS[0][0])) / Math.max(0.001, bandBC[1] / (BANDS[1][1] - BANDS[1][0])),
   };
 }
 function cost(m) { return Object.keys(TARGET).reduce((s, k) => s + Math.pow((m[k] - TARGET[k]) / SCALE[k], 2), 0); }
 
-/* the knobs, and the values to try for each */
+/* WHAT IS AND IS NOT A KNOB — the rule, after getting it wrong from both directions in one arc.
+   Fit exactly the constants with NO direct measurement; pin exactly the ones that have one. Break it
+   either way and the fitter launders error somewhere you will not look:
+     - TGT_MEAN / TGT_PRES were free and should have been pinned. Class size by tier IS measured, and
+       left free the fitter used it as a lever on the top band's blue-chip ratio (a bigger class
+       dilutes it), driving the gradient to nearly twice the measured slope. The objective improved
+       while the model got worse.
+     - CEIL_BASE was free while COMMIT_THRESH was pinned, and NEITHER is measured. CEIL_BASE sets what
+       a prestige lead is worth; COMMIT_THRESH sets who signs at all. Fitting one against a pinned
+       partner made the fitter protect the sign rate by throwing away separation at the top — the
+       1.08x-against-1.71x defect that took a dedicated tool (27-toplean.js) to localise, because
+       every league-wide summary still read correct.
+   The knobs, and the values to try for each: */
 const KNOBS = [
   ['PULL_W', [8, 11, 14, 17, 21, 26]],
   ['SUIT_NOISE', [0.35, 0.55, 0.8, 1.1, 1.5]],
   ['OVER_FLOOR', [0.15, 0.3, 0.45, 0.6, 0.8]],
   ['OVER_W', [30, 45, 60, 85, 120]],
-  ['CEIL_BASE', [30, 38, 45, 52, 60]],
+  /* CEIL_BASE and COMMIT_THRESH have to be fitted TOGETHER, and not doing so is what left the top
+     band short. CEIL_BASE squashes every fit into a (100 - CEIL_BASE)-point band, so it sets how much
+     a prestige lead is WORTH; COMMIT_THRESH is the absolute bar, so it sets who signs at all. With
+     COMMIT_THRESH pinned at 68, lowering CEIL_BASE restored separation but tanked the sign rate, so
+     the fitter drove CEIL_BASE to the top of its grid — and at 60 a top-ten program's ceiling sat
+     only 5.1 above a rank-15 rival's, under a LEAD_GAP of 7. The blue-blood could not pull far
+     enough ahead to trigger a commit, which is exactly the 1.08x-against-1.71x shortfall.
+     Their DIFFERENCE governs signing; the RANGE governs separation. Both are knobs now. */
+  ['CEIL_BASE', [22, 30, 38, 45, 52, 60]],
+  ['COMMIT_THRESH', [46, 52, 58, 64, 68]],
+  ['LEAD_GAP', [4, 5, 7, 9]],
   ['PASSIVE_RATE', [0.10, 0.14, 0.18, 0.24, 0.32]],
   /* TGT_MEAN and TGT_PRES are deliberately NOT knobs. Class size by program tier is DIRECTLY
      MEASURED (§3: 23.5 / 21.5 / 19.8 / 19.5 / 19.9 by band), so both come straight off an OLS line

@@ -227,12 +227,29 @@ under which the ten best programs in the country signed **4.2 players** and Geor
 **The top band is under-concentrated while the league as a whole is not.** Gini is 0.774 against a
 measured 0.772 — total concentration is right to three decimals — but the sim spreads blue-chips
 across ranks 11–25 (43.9% against 35.4%) where reality concentrates them in the top 10 (31.6%
-against 40.3%). A single-width logistic in prestige cannot make the top ten sharply different from
-ranks 11–25 while keeping overall concentration correct. Reality has something convex at the very
-top that team quality alone does not explain — national brand, in the ordinary sense. Deliberately
-**not** modelled: there is one number's worth of evidence for it here, which is not enough to invent
-a mechanism from, and inventing one is how the Phase 25 penalty model and the Q4 frustration
-multiplier happened.
+against 40.3%).
+
+The obvious reading was that reality has something convex at the very top which team quality does not
+explain — national brand — and `27-toplean.js` was written to test that before inventing a mechanism
+for it. **It does not survive the measurement.** Expressed as a multiple of the bottom band, the two
+program-quality ladders agree on how far ahead the top ten sit:
+
+| band | real `/talent` | sim prestige | real ×floor | sim ×floor |
+|---|--:|--:|--:|--:|
+| 1–10 | 917 | 86.4 | 2.66 | 2.27 |
+| 11–25 | 795 | 72.5 | 2.30 | 1.90 |
+| 91–134 | 345 | 38.1 | 1.00 | 1.00 |
+
+Top-10 against 11–25: **real 1.154, sim 1.191** — the sim's top band is if anything *more* separated.
+What differs is what that lead buys. Blue-chips landed **per team**, top ten against ranks 11–25:
+**real 1.71×, sim 1.08×.** So a near-identical quality gap converts into a large recruiting advantage
+in reality and almost none in the sim. This is a **conversion** defect, not a distribution one, and
+not a missing mechanism — see `docs/phases/recruiting.md` (Phase 59) for the cause and the fix.
+
+The general lesson is worth keeping: league-wide summaries (Gini, band shares) can all read correct
+while the quantity that actually distinguishes a blue-blood is wrong, because those summaries are
+insensitive to *where* in the ladder the concentration sits. Per-team, band-against-band is the local
+metric that sees it.
 
 **No program signs a tiny class.** 6.3% of real programs sign fewer than 10 *ranked* players,
 leaning on unranked signees and preferred walk-ons to fill out. The sim has no such mechanism — every
