@@ -7,7 +7,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > phase-by-phase design records (the "why" behind each system) live in **`docs/phases/`**
 > and are read on demand, not auto-loaded:
 > - `docs/phases/gameday.md` — sim engine + play-calling + the watch screen (Phases 3, 3.5, 21–31, 46, 55, 55.1, 55.2)
-> - `docs/phases/recruiting.md` — recruiting, signing, portal, visits (Phases 4, 14, 16, 17, 33–38)
+> - `docs/phases/recruiting.md` — recruiting, signing, portal, visits, and the measured talent economy (Phases 4, 14, 16, 17, 33–38, 56, 57a, 57b, 58)
 > - `docs/phases/offseason.md` — rollover, program, postseason, draft, championships, camp, realignment (Phases 5, 6–9, 12, 13, 15, 18, 32, 39, 43, 44)
 > - `docs/phases/identity-media.md` — traits, morale, media, rivalries, records, contract, legends, identity (Phases 10, 11, 19, 20, 40, 41, 42, 45)
 > - `docs/phases/cloud.md` — cloud saves: AWS backend, career codes, sync/conflict model (Phase 47)
@@ -33,7 +33,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > band-pass and saturation defects Phase 56 measured. Reproduce with `tools/cfb-data/20–23`
 > (needs a free `CFBD_API_KEY`).
 >
-> **All roadmap phases 1–57b are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–58 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -399,6 +399,32 @@ still serves it with zero config.
   national-brand effect at the very top, deliberately not invented from one number), and no program
   signs a tiny class. **No save bump, no `SIM_MODEL` bump.** `reclab` → 75, `qa` → 330.
   *(→ `docs/phases/recruiting.md`, `docs/reference/cfb-recruiting.md`.)*
+
+- **Phase 58 — the read.** Closes the arc, and 57b is what unblocked it: while the interest race
+  settled itself by week seven, better information about *who* to chase could not change an outcome.
+  **One rule: the services rank a generic player; you rank him for YOUR system.** Mostly *connecting* —
+  Phase 52 generated 25 attributes, 71 archetypes and a purity for every prospect, `RECRUIT_PKEYS`
+  saved all three and `recruitToFreshman` carried them to campus, and **none of it reached a screen**
+  (`archList`/`archByName` were dead code; `p.arch` rendered nowhere, on recruits *or* your own
+  roster). Adds `recruitProject` (in-system vs generic vs best-fit, scheme list passed in so the fence
+  stays pure), `recAttrRead`/`recAttrSpread` (his attributes as a band that closes with `scout`), and
+  `recFogArch` (the name at one threshold, **purity** at a higher one). **The fog is the load-bearing
+  part** — `attrRowsHTML` had been printing all 25 attributes at full precision while only his ceiling
+  was fogged, so ability was free exact information and scouting bought a band nobody needed; fogging
+  it is what turns the archetype and the projection from a readout into a decision. Roster players stay
+  exact — you know your own team. UI: an "In your Pro Style — 88–98" card with a fit line, the
+  archetype on the row and the roster, and a **"Best in my system" sort** — the first view of the board
+  that isn't the one every rival has (it sorts on the same fogged read, so it sharpens as you
+  evaluate). **Scale, measured first:** comparing `ovrIn` to `ovrBase` reads a delta of 0.34 and looks
+  fatal to the premise, but that's the wrong comparison — `ovrBase` sits near the average across
+  systems, and the swing *between* systems for the same player is **2–4 points, reaching 10** at QB/WR/
+  OG, with high-purity specialists swinging ~50% more. Also gives recruiting a consequence you feel
+  **this year**: `classScore`/`myClassRank`/`classGrade` were display-only across six call sites, so a
+  great class only paid off three or four years later against a two-to-three-year hot seat — a large
+  part of why Phase 44's autopilot was acceptable. `classApprovalDelta` moves the seat at Signing Day
+  with its own media beat, scaled by program (a #25 class is the job at prestige 95, a triumph at 35)
+  and pegged at ~one game's worth of results. **No save bump, no `SIM_MODEL` bump.** `reclab` → 87,
+  `rolllab` → 42, `medialab` → 55, `qa` → 338. *(→ `docs/phases/recruiting.md`.)*
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week

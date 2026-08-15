@@ -3664,6 +3664,7 @@ const PITCH_ANGLES=[
 const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.15,GEO_FIT:0.04,
   TIER5:88,TIER4:70,TIER3:50,TIER2:32,PULL_W:26,OVER_W:60,OVER_FLOOR:0.45,SUIT_NOISE:1.1,
   PASSIVE_RATE:0.10,CEIL_BASE:60,TGT_MEAN:19.2,TGT_SD:4,TGT_PRES:1.15,TGT_MIN:12,AI_VALUE:0.06,
+  FOG_ATTR:10,FOG_ARCH:35,FOG_PUR:70,
   COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:16,DECOMMIT_GAP:18,
   AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.18,AI_SCOUT_STAR:1.2,NEGLECT_DECAY:3.5,
   AI_VISIT_P:0.25,FINALISTS:4,FINAL_READY:0.55,FINAL_BAR:58};
@@ -4059,6 +4060,73 @@ function recruitReaction(c){
   if(c.myDelta>=6)return {text:'Trending up — interest is growing',tone:'good'};
   return {text:'Quiet week — no contact made',tone:'neutral'};
 }
+
+/* ---------- Phase 58: the read ----------------------------------------------------------------
+   The services rank a generic player; you rank him for YOUR system, and the gap between those two
+   numbers is the only edge recruiting gives you that money and prestige cannot buy.
+   Everything below is a READ over data the recruit already carries — Phase 52 gave every prospect
+   25 position attributes, an archetype and a purity, `RECRUIT_PKEYS` already saves all three, and
+   `recruitToFreshman` already carries them to campus. None of it reached a screen. */
+
+// What he'd be in a given system, against what he is in the abstract, against the system that suits
+// him best. `ovrIn`/`ovrBase` are the Phase 51 pair and work on a recruit unchanged — he carries
+// `pos` and a full `at` row.
+// Scale, measured over a full board: `inScheme - base` is small (±5) because `ovrBase` sits near the
+// average across systems, but the swing BETWEEN systems for the same player is 2-4 points on average
+// and reaches 10 at QB, WR and OG — and high-purity specialists swing ~50% more than generalists,
+// which is exactly what Phase 52's purity was for. So the useful comparison is his value in YOUR
+// system against his best, not against the abstract, and a 3-star who fits can genuinely outrank a
+// 4-star who does not.
+// `schemeList` is passed IN rather than read from OFF_SCHEMES/DEF_SCHEMES, which are app-layer —
+// the fence stays pure and the lab can drive it.
+function recruitProject(rec,scheme,schemeList){
+  const base=ovrBase(rec), inScheme=scheme?ovrIn(rec,scheme):base;
+  let best=inScheme,bestScheme=scheme||null;
+  if(schemeList&&schemeList.length)for(const s of schemeList){const v=ovrIn(rec,s);if(v>best){best=v;bestScheme=s;}}
+  return {base,inScheme,delta:inScheme-base,best,bestScheme,fit:inScheme-best};
+}
+// A prospect's ability is FOGGED, and until Phase 58 it was not. `recScouted` banded his ceiling and
+// `traitRead` banded his temperament, but `attrRowsHTML` printed all 25 attributes at full precision
+// — so his current ability was free, exact information and scouting bought only a ceiling band. That
+// made the attribute rows the strongest thing on the sheet and the cheapest. The spread here is in
+// rating points and closes with `rec.scout`, so evaluation buys resolution on WHAT KIND OF PLAYER HE
+// IS, which is what makes the archetype and the in-system projection a real choice rather than a
+// readout. Deterministic per (recruit, attribute) so the fog does not shimmer between renders.
+function recAttrSpread(rec){return clamp(REC.FOG_ATTR-(rec&&rec.scout||0)*REC.FOG_ATTR/100,0,REC.FOG_ATTR);}
+function recAttrRead(rec,k){
+  const v=attrVal(rec,k), s=recAttrSpread(rec);
+  if(s<1)return {lo:v,hi:v,mid:v,exact:true};
+  const n=(hashStr((rec&&rec.id)+k)%(2*Math.round(s)+1))-Math.round(s);
+  // The floor is `min(40, v)`, not a flat 40. Ratings live in [40,99] — except `adp`, which is
+  // weighted 0 everywhere and describes portability rather than quality, so it is excluded from
+  // `shiftAttrs` and runs below 40. Clamping its band at 40 produced a band that did not contain the
+  // true value: "33" reading as "40-47". A fog that excludes the truth is not fog, it is a wrong
+  // number, and the lab asserts containment for exactly this reason. `adp` is never displayed
+  // (attrRowsHTML filters it), so this was latent — which is the argument for asserting it anyway.
+  const lo=Math.min(40,v);
+  const mid=clamp(v+n*0.35,lo,99);
+  return {lo:clamp(Math.round(mid-s),lo,99),hi:clamp(Math.round(mid+s),lo,99),mid:Math.round(mid),exact:false};
+}
+// The archetype, revealed in tiers. A name is worth more than a number here: "Bull Rusher" tells you
+// what he does, and Phase 52 made 71 of them genuinely different. PURITY comes later than the name,
+// because "he's a Deep Threat" is a scouting report and "he's a 1.4-purity Deep Threat, which is to
+// say that is ALL he is" is a much deeper one.
+function recFogArch(rec){
+  const sc=(rec&&rec.scout)||0, name=rec&&rec.arch;
+  if(!name||sc<REC.FOG_ARCH)return {revealed:false,pure:false,text:null};
+  const pur=(rec&&rec.pur)||1, deep=sc>=REC.FOG_PUR;
+  const lean=pur>=1.25?'Prototypical ':pur<=0.6?'Raw ':'';
+  return {revealed:true,pure:deep,name,pur,text:(deep?lean:'')+name};
+}
+/* A `sleeperGap(rec, scheme)` was drafted here and cut. The idea — how far his in-system value runs
+   ahead of what his published ranking implies — needs a baseline for "what a 4-star is worth", and
+   hand-setting one (SVC_BASE + tier*SVC_STEP) flagged 37.5% of the board as sleepers, which means it
+   was measuring the constants rather than the prospects. A self-normalising version (his in-system
+   value against the MEDIAN in-system value of his own displayed tier) needs the pool, so it belongs
+   in the app if it is wanted at all. Note also that `svc` never under-rates by construction — Phase
+   51 defines it as `stars` or `stars+1` — so a low-svc/high-ability prospect does not exist, and the
+   real information edge is the one that already exists: `ov` and `pot` vary WITHIN a tier and are
+   fogged until you scout. "Best in my system" as a sort is the honest version of this feature. */
 // === RECRUIT ENGINE (Phase 4) END ===
 
 // === VISIT ENGINE (Phase 38) START ===
@@ -5190,6 +5258,25 @@ function seasonApprovalDelta(ctx){
   if(ctx.confTitle)d+=6; if(ctx.natTitle)d+=12;
   return clamp(d,-25,25);
 }
+// Phase 58: what a signing class is worth to the fanbase, TODAY. Recruiting had no near-term
+// consequence at all — `classScore`/`myClassRank`/`classGrade` were display-only across six call
+// sites, so the entire payoff for a great class arrived three or four years later as better players.
+// In a career where the hot seat runs on a two-to-three-year clock (Phases 19b/42) that made
+// recruiting nearly all cost and no reward, which is a large part of why an autopilot (Phase 44) was
+// an acceptable answer to it. Deliberately SMALL against `seasonApprovalDelta`'s ±25: a great class
+// buys patience, it does not buy a losing season. Expectation scales with the program — a top-10
+// class is the job at a blue-blood and a triumph at a MAC school.
+function classApprovalDelta(rank,prestige){
+  if(!rank)return 0;
+  const expected=clamp(Math.round(134-(prestige||50)*1.15),8,120);   // ~#19 at prestige 100, ~#77 at 50
+  const beat=(expected-rank)/expected;                                 // +1 = #1 finish, negative = under
+  // Scale: a real season swings -18 to +20 (seasonApprovalDelta over 13 games), and a single game is
+  // worth ~2. A class is pegged at about ONE GAME's worth of results — enough that a great class is
+  // felt the year you sign it, nowhere near enough to survive on. The first cut of this used a
+  // multiplier of 7 and the medialab check caught it: it made a #1 class worth more than a losing
+  // season costs, which would have had coaches recruiting instead of coaching.
+  return clamp(Math.round(beat*4),-4,5);
+}
 // Apply a season-end delta with a gentle pull toward 50 so approval can't run away in either direction.
 function approvalUpdate(approval,delta){
   const reverted=approval+(50-approval)*0.08;
@@ -6028,6 +6115,19 @@ function nationalSigningDay(){
   applyPlayerIntents();                                          // Phase 33: spend the final-push intents first
   advanceRecruiting(R.pool,S.world.teams,99,99,recruitSeed(),true,30,undefined,S.teamId);   // mop-up: any real leader now signs
   R.stage='closed'; R.signed=true;
+  // Phase 58: the class lands NOW, and the fanbase reacts now. Signing Day is its own moment in the
+  // calendar, so the approval move belongs here rather than folded anonymously into the season
+  // settle — you should be able to see that the class you worked all year bought you something.
+  const t=controlled(), rank=myClassRank(), d=classApprovalDelta(rank,t.prestige);
+  if(d){
+    S.coach.approval=clamp((S.coach.approval==null?50:S.coach.approval)+d,3,99);
+    const n=myClass().length;
+    mediaEvent(0,'milestone',
+      d>0?'Signing Day win for '+t.abbr:'Signing Day disappointment for '+t.abbr,
+      'The class finished #'+rank+' nationally with '+n+' signee'+(n===1?'':'s')+'. '+
+      (d>0?'The fanbase is fired up.':'Boosters expected more.'),
+      {color:t.color,teams:[S.teamId],mine:true});
+  }
   openPortal();                                                   // the offseason transfer portal opens next (Phase 18)
 }
 // ---- TRANSFER PORTAL (Phase 18) — app layer over the pure PORTAL ENGINE ----
@@ -8917,10 +9017,12 @@ function recruitRow(rec){
   const qLabel=arr.length?(arr.length>1?arr.length+' actions':arr[0].label):'';
   const dw=(!committed&&rec.decideWeek!=null)?' · <span class="accent">🗓️ Wk '+rec.decideWeek+'</span>':'';   // Phase 35: decision window
   const fin=(!committed&&rec.finalists)?(rec.finalists.indexOf(S.teamId)>=0?' · <span class="good">🎯 Finalist</span>':' · <span class="bad">✂️ Cut</span>'):'';   // Phase 36
+  const fa=recFogArch(rec);   // Phase 58: the named shape, once you have scouted him enough to see it
+  const archTxt=fa.revealed?' · <span class="dim">'+(fa.pure&&fa.pur>=1.25?'Proto ':'')+fa.name+'</span>':'';
   row.innerHTML=`${recruitStarChip(rec)}
     <div style="flex:1;min-width:0">
       <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rec.fn} ${rec.ln} <span class="dim" style="font-weight:400">${rec.pos} · ${rec.st}</span></div>
-      <div class="meta">${sc.text}${committed?'':' · interest '+mi+'%'}${qLabel?' · <span class="accent">⏳ '+qLabel+'</span>':''}${dw}${fin}</div>
+      <div class="meta">${sc.text}${archTxt}${committed?'':' · interest '+mi+'%'}${qLabel?' · <span class="accent">⏳ '+qLabel+'</span>':''}${dw}${fin}</div>
       ${committed?'':'<div class="bar" style="margin-top:5px"><i style="width:'+mi+'%"></i></div>'}</div>
     <div style="text-align:right;flex:none;margin-left:8px">${status}</div>`;
   row.onclick=()=>recruitSheet(rec);
@@ -8996,7 +9098,12 @@ function recruitProspects(v){
   [['','All states'],...STATES.map(s=>[s,s])].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;stSel.append(o);});
   const availSel=el('select');availSel.dataset.tid='rec-avail';
   [['','Available + mine'],['open','Uncommitted only'],['verbal','Verbals (flippable)'],['mine','My commits'],['board','My board']].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;availSel.append(o);});
-  fbar.append(posSel,starSel,stSel,availSel);
+  // Phase 58: sort by what he'd be in YOUR system, not by what the services think of him generally.
+  // The board has always ranked by star, which is the one view every rival also has.
+  const sortSel=el('select');sortSel.dataset.tid='rec-sort';
+  [['stars','Services rank'],['system','Best in my system'],['interest','My interest']]
+    .forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;sortSel.append(o);});
+  fbar.append(posSel,starSel,stSel,availSel,sortSel);
   const list=el('div');list.dataset.tid='rec-list';
   const cnt=el('div','hint center');
   const PAGE=80; let shown=PAGE;
@@ -9018,14 +9125,24 @@ function recruitProspects(v){
     if(posSel.value)arr=arr.filter(r=>r.pos===posSel.value);
     if(starSel.value)arr=arr.filter(r=>r.stars>=+starSel.value);
     if(stSel.value)arr=arr.filter(r=>r.st===stSel.value);
-    arr.sort((a,b)=>b.stars-a.stars||myInterest(b)-myInterest(a)||a.ln.localeCompare(b.ln));
+    if(sortSel.value==='system'){
+      // His value in your scheme. Fogged prospects sort on the same fogged read the sheet shows, so
+      // the order cannot leak ability you have not scouted — an unscouted board sorts nearly by star,
+      // and sharpens into a genuinely different ranking as you evaluate.
+      const val=r=>{const s=mySchemeFor(r.pos);if(!s)return ovrBase(r);
+        const sp=recAttrSpread(r);const v=ovrIn(r,s);
+        return sp>=1?v+((hashStr(r.id+'sys')%(2*Math.round(sp)+1))-Math.round(sp))*0.35:v;};
+      arr.sort((a,b)=>val(b)-val(a)||b.stars-a.stars||a.ln.localeCompare(b.ln));
+    }else if(sortSel.value==='interest'){
+      arr.sort((a,b)=>myInterest(b)-myInterest(a)||b.stars-a.stars||a.ln.localeCompare(b.ln));
+    }else arr.sort((a,b)=>b.stars-a.stars||myInterest(b)-myInterest(a)||a.ln.localeCompare(b.ln));
     arr.slice(0,shown).forEach(r=>list.append(recruitRow(r)));
     if(!arr.length)list.append(el('div','empty','No prospects match.'));
     moreBtn.style.display=arr.length>shown?'':'none';
     cnt.textContent=Math.min(shown,arr.length)+' of '+arr.length+' prospects';
   }
   const reset=()=>{shown=PAGE;draw();};
-  search.oninput=reset;posSel.onchange=reset;starSel.onchange=reset;stSel.onchange=reset;availSel.onchange=reset;
+  search.oninput=reset;posSel.onchange=reset;starSel.onchange=reset;stSel.onchange=reset;availSel.onchange=reset;sortSel.onchange=reset;
   wrap.append(search,fbar,list,moreBtn,cnt);v.append(wrap);draw();
 }
 function recruitClass(v,rank,grade){
@@ -9062,8 +9179,9 @@ function recruitSheet(rec){
     <div class="card" style="margin-bottom:8px"><div class="cond accent" style="font-size:14px;font-weight:800">Projects as: ${proj}</div>${traitRevealed?'':'<div class="muted" style="font-size:11px;margin-top:2px">Scout him to project his temperament.</div>'}</div>
     <div class="kv"><span class="k">Ceiling</span><span>${sc.text}</span></div>
     <div class="kv"><span class="k">Scouting</span><span>${rec.scout}% · pitches +${Math.round((recScoutMult(rec)-1)*100)}%${sc.revealed?'':' · scout to sharpen'}</span></div>
-    <div class="kv" style="display:block"><span class="k" style="display:block;margin-bottom:4px">Attributes <span class="dim" style="font-weight:400">— weighted for your ${sideOfPos(rec.pos)==='off'?controlled().offScheme:sideOfPos(rec.pos)==='def'?controlled().defScheme:'special teams'}</span></span>
-      ${attrRowsHTML(rec,sideOfPos(rec.pos)==='off'?controlled().offScheme:sideOfPos(rec.pos)==='def'?controlled().defScheme:null)}</div>
+    ${recProjectionHTML(rec)}
+    <div class="kv" style="display:block"><span class="k" style="display:block;margin-bottom:4px">Attributes <span class="dim" style="font-weight:400">— weighted for your ${sideOfPos(rec.pos)==='off'?controlled().offScheme:sideOfPos(rec.pos)==='def'?controlled().defScheme:'special teams'}${recAttrSpread(rec)>=1?' · fogged, scout to sharpen':''}</span></span>
+      ${attrRowsHTML(rec,sideOfPos(rec.pos)==='off'?controlled().offScheme:sideOfPos(rec.pos)==='def'?controlled().defScheme:null,rec)}</div>
     <div class="kv"><span class="k">Work ethic</span><span>${traitRead('mot',rec.id,motVal(rec),rec.scout).text}</span></div>
     <div class="kv"><span class="k">Composure</span><span>${traitRead('comp',rec.id,compVal(rec),rec.scout).text}</span></div>
     <div class="kv"><span class="k">Ego (media)</span><span>${traitRead('ego',rec.id,egoVal(rec),rec.scout).text}</span></div>
@@ -9290,6 +9408,42 @@ function scoutedCeiling(p){
   const text=li===hi?CEILINGS[hi][1]+(spread?' ?':''):CEILINGS[li][1]+'–'+CEILINGS[hi][1]+' ?';
   return {text, best:hi, hot:hi<=2, uncertain:spread>0};   // hot = upside reaches Star or better
 }
+// ---- Phase 58: the archetype, and what he'd be in YOUR system ----------------------------------
+// The scheme a recruit's side runs, for him specifically (kickers/punters have none).
+function mySchemeFor(pos){const s=sideOfPos(pos);const t=controlled();
+  return s==='off'?t.offScheme:s==='def'?t.defScheme:null;}
+function schemeListFor(pos){const s=sideOfPos(pos);
+  return s==='off'?OFF_SCHEMES:s==='def'?DEF_SCHEMES:null;}
+// A named shape, once you have scouted enough to see it. Phase 52 generated 71 of these and shipped
+// them invisible — `archList`/`archByName` were dead code and `p.arch` rendered nowhere in the game,
+// on recruits OR on your own roster. A name carries more than a number: "Bull Rusher" says what he
+// does, and at high scouting purity says how completely that is all he is.
+function archChip(name,pur,pure){
+  if(!name)return '';
+  const lean=pure?(pur>=1.25?'Prototypical ':pur<=0.6?'Raw ':''):'';
+  return `<span class="tag" style="font-size:10px">${lean}${name}</span>`;
+}
+function recProjectionHTML(rec){
+  const scheme=mySchemeFor(rec.pos);
+  if(!scheme)return '';
+  const p=recruitProject(rec,scheme,schemeListFor(rec.pos));
+  const spread=recAttrSpread(rec), band=Math.round(spread*0.6);
+  const show=v=>band>=1?`${clamp(v-band,40,99)}–${clamp(v+band,40,99)}`:String(v);
+  const fa=recFogArch(rec);
+  // The fit line is the decision this phase exists for: a three-star who fits your system can be
+  // worth more to you than a four-star who does not, and nothing in the game said so before.
+  const fitNote=p.bestScheme&&p.bestScheme!==scheme&&p.best-p.inScheme>=3
+    ? `<div class="meta dim" style="margin-top:3px">Better fit for ${p.bestScheme} (${show(p.best)}) — he'd give up ${p.best-p.inScheme} in yours.</div>`
+    : (p.inScheme>=p.best?`<div class="meta good" style="margin-top:3px">Your ${scheme} is his best fit.</div>`:'');
+  return `<div class="card" style="margin-bottom:8px">
+    <div class="row spread"><span class="k">In your ${scheme}</span>
+      <span class="cond accent" style="font-size:17px;font-weight:800">${show(p.inScheme)}</span></div>
+    <div class="row spread" style="margin-top:2px"><span class="meta dim">Services rank him</span>
+      <span class="meta">${'★'.repeat(recStars(rec))} ${recStars(rec)}-star</span></div>
+    ${fa.revealed?`<div class="row spread" style="margin-top:5px"><span class="meta dim">Plays like</span>${archChip(fa.name,fa.pur,fa.pure)}</div>`
+      :`<div class="meta dim" style="margin-top:5px">Scout him to ${rec.scout>=REC.FOG_ARCH-15?'confirm':'find out'} what kind of ${rec.pos} he is.</div>`}
+    ${fitNote}</div>`;
+}
 // Growth chip: surfaces last offseason's OVR gain on returning players (Phase 7 development).
 function growthChip(p){return p.dev>0?` <span class="tag accent" style="font-size:10px">▲ +${p.dev}</span>`:'';}
 // Development stage from growth remaining (ov→pot gap). Qualitative; exact gap not shown.
@@ -9403,17 +9557,34 @@ function statBlock(p){
 // "Speed / Strength / Awareness" line that no formula ever read. Each is shown against the weighting
 // his position (and scheme) puts on it, because a 92 Speed means something very different at corner
 // than at guard, and that weighting is exactly what decides his OVERALL.
-function attrRowsHTML(p,scheme){
+// `rec` is a RECRUIT whose attributes are still fogged (Phase 58): pass him and the rows render as
+// bands that tighten with `rec.scout`, instead of exact numbers. Until Phase 58 the recruit sheet
+// printed all 25 at full precision while `recScouted` fogged only his ceiling — so his current
+// ability was free, exact information, the attribute block was the strongest and cheapest thing on
+// the sheet, and scouting bought a ceiling band nobody needed. Roster players (no `rec`) are exact:
+// you know your own team.
+function attrRowsHTML(p,scheme,rec){
   const w=scheme?schemeAttrW(p.pos,scheme):posAttrW(p.pos);
   const keys=posAttrs(p.pos).filter(k=>k!=='adp');   // adaptability is about playing ELSEWHERE (posFit)
   const top=Math.max(...keys.map(k=>w[k]));
+  const spread=rec?recAttrSpread(rec):0;
   return keys.sort((a,b)=>w[b]-w[a]).map(k=>{
-    const v=attrVal(p,k), key=w[k]>=top-0.001, pct=clamp(Math.round((v-40)/59*100),0,100);
+    const key=w[k]>=top-0.001;
+    const rd=spread>=1?recAttrRead(rec,k):null;
+    const v=rd?rd.mid:attrVal(p,k);
+    const pct=clamp(Math.round((v-40)/59*100),0,100);
+    // a fogged row draws the BAND, not a point — the filled part is where he certainly is, the
+    // paler part is the uncertainty you have not paid to remove yet
+    const loPct=rd?clamp(Math.round((rd.lo-40)/59*100),0,100):pct;
+    const hiPct=rd?clamp(Math.round((rd.hi-40)/59*100),0,100):pct;
+    const bar=rd
+      ? `<span style="display:block;width:${hiPct}%;height:100%;background:${key?'var(--accent)':'rgba(255,255,255,.34)'};opacity:.30"></span>
+         <span style="display:block;width:${loPct}%;height:100%;margin-top:-5px;background:${key?'var(--accent)':'rgba(255,255,255,.34)'}"></span>`
+      : `<span style="display:block;width:${pct}%;height:100%;background:${key?'var(--accent)':'rgba(255,255,255,.34)'}"></span>`;
     return `<div class="row spread" style="margin:3px 0;gap:8px;align-items:center">
       <span class="meta ${key?'accent':'dim'}" style="min-width:88px;font-weight:${key?700:400}">${ATTR_LABEL[k]}</span>
-      <span style="flex:1;height:5px;background:rgba(255,255,255,.10);border-radius:3px;overflow:hidden">
-        <span style="display:block;width:${pct}%;height:100%;background:${key?'var(--accent)':'rgba(255,255,255,.34)'}"></span></span>
-      <span class="cond" style="min-width:26px;text-align:right;font-weight:700">${v}</span>
+      <span style="flex:1;height:5px;background:rgba(255,255,255,.10);border-radius:3px;overflow:hidden">${bar}</span>
+      <span class="cond" style="min-width:${rd?46:26}px;text-align:right;font-weight:700">${rd?rd.lo+'–'+rd.hi:v}</span>
       <span class="meta dim" style="min-width:34px;text-align:right">${Math.round(w[k]*100)}%</span></div>`;
   }).join('');
 }
@@ -9482,6 +9653,9 @@ function playerSheet(p,t){
     <div class="kv"><span class="k">Ego (media)</span><span>${traitRead('ego',p.id,egoVal(p),rosterTraitConf(p)).text}</span></div>
     ${schemeKV(playerSchemeName(p),rosterTraitConf(p),sideOfPos(p.pos)==='off'?t.offScheme:t.defScheme)}
     ${p.morale!=null?`<div class="kv"><span class="k">Locker room</span><span>${moraleMood(p.morale)} ${p.morale>=60?'buzzing':p.morale>=46?'good':p.morale>=34?'low':'unhappy'} (${p.morale})</span></div>`:''}
+    ${p.arch?`<div class="kv"><span class="k">Plays like</span><span>${archChip(p.arch,p.pur,true)}${(()=>{const sl=schemeListFor(p.pos),sc=sideOfPos(p.pos)==='off'?t.offScheme:sideOfPos(p.pos)==='def'?t.defScheme:null;
+      if(!sl||!sc)return '';const pr=recruitProject(p,sc,sl);
+      return pr.bestScheme&&pr.bestScheme!==sc&&pr.best-pr.inScheme>=3?` <span class="meta dim">— ${pr.best-pr.inScheme} better in ${pr.bestScheme}</span>`:'';})()}</span></div>`:''}
     <div class="kv" style="display:block"><span class="k" style="display:block;margin-bottom:4px">Attributes <span class="dim" style="font-weight:400">— weighted for ${sideOfPos(p.pos)==='off'?t.offScheme:sideOfPos(p.pos)==='def'?t.defScheme:'special teams'}</span></span>
       ${attrRowsHTML(p,sideOfPos(p.pos)==='off'?t.offScheme:sideOfPos(p.pos)==='def'?t.defScheme:null)}</div>
     ${p.dev>0?`<div class="kv"><span class="k">Developed (last offseason)</span><span class="good">▲ +${p.dev} OVR</span></div>`:''}

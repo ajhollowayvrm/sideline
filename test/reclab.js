@@ -65,8 +65,11 @@ eval(html.slice(T0, T1));
 const A0 = html.indexOf('// === ATTRIBUTE ENGINE (Phase 52) START ==='), A1 = html.indexOf('// === ATTRIBUTE ENGINE (Phase 52) END ===');
 if (A0 < 0 || A1 < 0) { console.error('Could not find ATTRIBUTE ENGINE markers in index.html'); process.exit(2); }
 eval(html.slice(A0, A1));
-// eval into this scope so genRecruits/advanceRecruiting/coachMods/… leak out (sloppy eval)
-eval(html.slice(i0, i1));
+// eval into this scope so genRecruits/advanceRecruiting/coachMods/… leak out (sloppy eval).
+// A sloppy eval leaks function declarations but NOT block-scoped consts, so `REC` — the tuning
+// table — is invisible here unless it is returned as a trailing expression (15-penfit.js:26's
+// trick). The Phase 58 fog checks assert against REC.FOG_*, so they need it.
+const REC = eval(html.slice(i0, i1) + '\n;REC');
 
 /* ---------- the lab world ----------
    Teams stay BARE — `{id, prestige, needs:{}}`, with no fac / homeState / legends / rec — because
@@ -328,6 +331,68 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('The interest ceiling is fit, not 100: passive growth does not pin a relationship',
     pinned <= track.length * 0.10,
     `${pinned}/${track.length} pinned at 100 by Signing Day (was 52/60)`);
+})();
+
+/* 4c) THE READ — Phase 58. The recruit already carried 25 attributes, an archetype and a purity;
+   none of it reached a screen, and his ability was printed at full precision while only his ceiling
+   was fogged. These assert the reads, not the presentation.
+   NOTE: the fog widths (FOG_ATTR/FOG_ARCH/FOG_PUR) are DESIGNED, not measured — CFBD has no
+   scouting data and cfb-recruiting.md §"what this cannot say" is explicit about it. What is asserted
+   here is shape (monotonic, bounded, never leaking at zero), never a magnitude. */
+(function () {
+  const teams = genWorld(31);
+  const pool = genRecruits(31, teams);
+  const OFF = ['Air Raid', 'Spread', 'Spread-Option', 'Pro Style', 'Smashmouth', 'West Coast', 'Multiple'];
+
+  const qb = pool.find(r => r.pos === 'QB' && r.stars >= 4);
+  const p = recruitProject(qb, 'Air Raid', OFF);
+  check('Project: an in-system read never moves his scheme-agnostic OVR',
+    p.base === ovrBase(qb), `base ${p.base} vs ovrBase ${ovrBase(qb)}`);
+  check('Project: the in-system value is the scheme-weighted one',
+    p.inScheme === ovrIn(qb, 'Air Raid'), `${p.inScheme}`);
+  check('Project: best-fit is the max over the schemes offered, and named',
+    p.best === Math.max(...OFF.map(s => ovrIn(qb, s))) && OFF.includes(p.bestScheme), `${p.bestScheme} ${p.best}`);
+  check('Project: your system is never better than his best fit', p.fit <= 0, `fit ${p.fit}`);
+
+  // The phase's premise: a scheme genuinely re-rates a prospect, or none of this is a decision.
+  const sideOf = {}; POS.forEach(([c, s]) => sideOf[c] = s);   // `sideOfPos` is app-layer, not in the fence
+  const sample = pool.filter(r => sideOf[r.pos] === 'off' && r.stars >= 3).slice(0, 300);
+  const swings = sample.map(r => { const v = OFF.map(s => ovrIn(r, s)); return Math.max(...v) - Math.min(...v); });
+  const meanSwing = avg(swings);
+  check('Project: a scheme really re-rates a prospect (mean best-vs-worst swing ≥ 1.5)',
+    meanSwing >= 1.5, `mean ${meanSwing.toFixed(2)}, max ${Math.max(...swings)}`);
+  // Phase 52's purity was built for exactly this — a specialist should be MORE scheme-sensitive.
+  const wr = pool.filter(r => r.pos === 'WR').slice(0, 400).map(r => ({ pur: r.pur || 1,
+    sw: Math.max(...OFF.map(s => ovrIn(r, s))) - Math.min(...OFF.map(s => ovrIn(r, s))) }));
+  const loP = wr.filter(x => x.pur < 0.8), hiP = wr.filter(x => x.pur > 1.2);
+  check('Project: high-purity specialists swing more between schemes than generalists',
+    loP.length && hiP.length && avg(hiP.map(x => x.sw)) > avg(loP.map(x => x.sw)),
+    `purity<0.8 ${avg(loP.map(x => x.sw)).toFixed(2)} vs >1.2 ${avg(hiP.map(x => x.sw)).toFixed(2)}`);
+
+  // Fog: monotonic in scouting, closed at 100, never leaks at 0.
+  const f = pool.find(r => r.arch);
+  f.scout = 0;
+  check('Fog: an unscouted prospect gives up neither his archetype nor his exact attributes',
+    !recFogArch(f).revealed && recAttrSpread(f) === REC.FOG_ATTR && !recAttrRead(f, posAttrs(f.pos)[0]).exact);
+  const spreads = [0, 25, 50, 75, 100].map(s => { f.scout = s; return recAttrSpread(f); });
+  check('Fog: the attribute band closes monotonically with scouting',
+    spreads.every((x, i) => i === 0 || x <= spreads[i - 1]) && spreads[4] === 0, spreads.map(x => x.toFixed(1)).join(' → '));
+  f.scout = REC.FOG_ARCH; const mid = recFogArch(f);
+  f.scout = REC.FOG_PUR; const deep = recFogArch(f);
+  check('Fog: the archetype NAME comes before its purity', mid.revealed && !mid.pure && deep.revealed && deep.pure);
+  f.scout = 100;
+  check('Fog: a fully scouted prospect reads exactly', recAttrRead(f, posAttrs(f.pos)[0]).exact && recAttrSpread(f) === 0);
+  // A band must contain the truth, or it is lying rather than fogging.
+  f.scout = 30; let contained = 0, tried = 0;
+  for (const rr of pool.slice(0, 400)) { rr.scout = 30;
+    for (const k of posAttrs(rr.pos)) { const rd = recAttrRead(rr, k), v = attrVal(rr, k); tried++; if (v >= rd.lo && v <= rd.hi) contained++; } }
+  check('Fog: the band contains the true value (it fogs, it does not lie)',
+    contained === tried, `${contained}/${tried}`);
+  check('Fog: a read is stable for a given (recruit, attribute) — it must not shimmer per render',
+    JSON.stringify(recAttrRead(pool[0], posAttrs(pool[0].pos)[0])) === JSON.stringify(recAttrRead(pool[0], posAttrs(pool[0].pos)[0])));
+
+  /* "the archetype you scouted survives onto the roster" belongs in rolllab, not here —
+     `recruitToFreshman` is in the ROLLOVER fence, which this lab does not eval. It is asserted there. */
 })();
 
 /* 5) determinism: same seed → identical cycle outcome */

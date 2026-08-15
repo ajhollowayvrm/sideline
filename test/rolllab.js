@@ -158,6 +158,19 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   for (let i = 0; i < 50; i++) { const f = recruitToFreshman(rec, r); if (f.ov < rec.ov) below++; if (f.pot >= f.ov && f.pot <= 99) ceil++; }
   check('Elite recruits enter raw (ov discounted below recruit ov)', below >= 45, below + '/50 below');
   check('Freshman ceiling is valid (ov ≤ pot ≤ 99)', ceil === 50);
+  /* Phase 58: the player who arrives has to be the one you scouted. The recruit sheet now sells a
+     NAMED SHAPE — "Prototypical Gunslinger" — so if the archetype or its purity were regenerated at
+     enrolment the whole read would be a lie told at signing time. `recruitToFreshman` already
+     carried both; nothing asserted it, and nothing displayed it either until this phase. */
+  const shaped = { fn: 'C', ln: 'D', pos: 'WR', st: 'FL', stars: 4, ov: 88, pot: 95,
+    arch: 'Deep Threat', pur: 1.31, promise: null };
+  const fr = recruitToFreshman(shaped, rng(11));
+  check('Phase 58: the archetype you scouted survives onto the roster',
+    fr.arch === shaped.arch && fr.pur === shaped.pur, `${shaped.arch} (${shaped.pur}) → ${fr.arch} (${fr.pur})`);
+  // and a recruit generated WITHOUT one still gets classified rather than arriving shapeless
+  const bare = { fn: 'E', ln: 'F', pos: 'CB', st: 'GA', stars: 3, ov: 78, pot: 88, promise: null };
+  check('Phase 58: a shapeless signee is classified on arrival, not left blank',
+    !!recruitToFreshman(bare, rng(12)).arch, recruitToFreshman(bare, rng(12)).arch);
 })();
 
 /* 6) determinism: same seed → identical rolled roster */

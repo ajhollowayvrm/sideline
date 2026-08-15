@@ -106,6 +106,28 @@ const rankOf = (poll, id) => { const e = poll.top.find(x => x.teamId === id); re
   check('Titles add to the season swing', seasonApprovalDelta({ w: 13, l: 1, prestige: 50, natTitle: true }) > seasonApprovalDelta({ w: 13, l: 1, prestige: 50 }));
   check('Season swing is bounded (±25)', Math.abs(seasonApprovalDelta({ w: 14, l: 0, prestige: 20, natTitle: true })) <= 25);
   check('approvalUpdate is bounded + mean-reverts toward 50', approvalUpdate(90, 0) < 90 && approvalUpdate(10, 0) > 10 && approvalUpdate(99, 25) <= 99 && approvalUpdate(3, -25) >= 3);
+
+  /* Phase 58: a signing class finally moves the seat. Recruiting was display-only — the whole payoff
+     for a great class arrived three or four years later as better players, against a hot seat that
+     runs on a two-to-three-year clock. */
+  check('A better class is always worth more approval than a worse one',
+    classApprovalDelta(1, 60) > classApprovalDelta(20, 60) && classApprovalDelta(20, 60) > classApprovalDelta(90, 60));
+  check('Expectation scales with the program: the same class is worth more to a small one',
+    classApprovalDelta(25, 35) > classApprovalDelta(25, 95),
+    `#25 class: prestige 35 → ${classApprovalDelta(25, 35)}, prestige 95 → ${classApprovalDelta(25, 95)}`);
+  check('A blue-blood is punished for a mediocre class', classApprovalDelta(55, 95) < 0, String(classApprovalDelta(55, 95)));
+  check('A small program is not punished for one', classApprovalDelta(55, 35) >= 0, String(classApprovalDelta(55, 35)));
+  /* It must buy patience, not a season. A real season swings -18 to +20 over 13 games, so one game
+     is worth about 2 — and a class is pegged at roughly that. The first cut used a multiplier of 7,
+     which made a #1 class worth more than a losing season costs; this check is the reason that was
+     caught rather than shipped, so it compares against a TYPICAL under-performance rather than the
+     mildest one available. */
+  const worst = classApprovalDelta(134, 99), best = classApprovalDelta(1, 20);
+  const badSeason = Math.abs(seasonApprovalDelta({ w: 6, l: 7, prestige: 80 }));
+  check('A class is a nudge, not a substitute for winning (well inside a season swing)',
+    best <= 5 && worst >= -4 && (best - worst) < badSeason,
+    `class ∈ [${worst}, ${best}] (span ${best - worst}) vs a 6-7 season at prestige 80 costing ${badSeason.toFixed(1)}`);
+  check('No class, no effect', classApprovalDelta(0, 60) === 0 && classApprovalDelta(null, 60) === 0);
 })();
 
 /* 8) the hot seat + firing (Phase 19b) */

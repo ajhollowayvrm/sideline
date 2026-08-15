@@ -957,6 +957,95 @@ The deep tail (band 51–90) landing the odd blue-chip is a **geography** effect
 
 ---
 
+## Phase 58 design — the read
+
+Decided 2026-08-14 with AJ, closing the arc. 56 measured, 57a fixed supply and geography, 57b fixed
+the talent economy — and 57b is what unblocked this one. While the interest race settled itself by
+week seven, better information about *who* to chase could not change an outcome, so a phase about
+information would have been decoration. Now it can.
+
+> **One rule: the services rank a generic player; you rank him for YOUR system.**
+
+This phase is mostly **connecting**, which is why it is last and why it is cheap. Phase 52 generated
+25 position attributes, 71 named archetypes and a per-player purity for every prospect; `genRecruits`
+calls `genProfile`, `RECRUIT_PKEYS` saves `at`/`arch`/`pur`, and `recruitToFreshman` carries them to
+campus. **None of it reached a screen.** `archList`/`archByName` were dead code and `p.arch` rendered
+nowhere in the game — not on a recruit, not on your own roster.
+
+### The engine (in the fence, so the lab drives it)
+- **`recruitProject(rec, scheme, schemeList)`** → `{base, inScheme, best, bestScheme, fit}`. The
+  scheme list is passed *in* rather than read from `OFF_SCHEMES`/`DEF_SCHEMES`, which are app-layer.
+- **`recAttrSpread` / `recAttrRead`** — his attributes as a **band that closes with `rec.scout`**.
+- **`recFogArch`** — the archetype name at one scouting threshold, its **purity** at a higher one.
+
+**Scale, measured before building the UI on top of it.** The first version compared `ovrIn` against
+`ovrBase` and read a mean delta of 0.34, which looked fatal to the whole premise. That was a bad
+comparison: `ovrBase` sits near the *average across systems*, so the interesting quantity is the
+swing **between** systems for the same player. Measured properly over a full board, that is **2–4
+points on average and reaches 10** at QB, WR and OG — and high-purity specialists swing ~50% more
+than generalists, which is exactly what Phase 52 built purity for. A three-star who fits can outrank
+a four-star who does not, and nothing in the game said so before.
+
+### The fog, and why it is the load-bearing part
+`recScouted` banded a prospect's ceiling and `traitRead` banded his temperament, but `attrRowsHTML`
+printed **all 25 attributes at full precision**. His current ability was free, exact information; the
+attribute block was the strongest thing on the sheet and the cheapest; and scouting bought a ceiling
+band nobody needed. Fogging ability is what turns the archetype and the in-system projection from a
+readout into a decision — you are paying to find out *what kind of player he is*.
+
+Roster players are unfogged: you know your own team.
+
+### App and UI
+The recruit sheet gains an **"In your Pro Style — 88–98"** card with his services ranking beside it,
+the archetype once scouted, and a fit line (*"Better fit for Spread (91) — he'd give up 4 in yours"*
+or *"Your Pro Style is his best fit"*). The board row carries the archetype chip. **The prospects tab
+can sort by "Best in my system"** — the first view of the board that is not the one every rival also
+has; it sorts on the same fogged read the sheet shows, so an unscouted board sorts nearly by star and
+sharpens into a genuinely different ranking as you evaluate. And **`p.arch` finally renders on the
+roster**, with a note when one of your own players would be better in a different system.
+
+### Recruiting gets a consequence you feel this year
+`classScore` / `myClassRank` / `classGrade` were **display-only across six call sites**. The entire
+payoff for a great class arrived three or four years later as better players — against a hot seat
+that runs on a two-to-three-year clock (Phases 19b/42). That is a large part of why an autopilot was
+an acceptable answer to recruiting in Phase 44. `classApprovalDelta(rank, prestige)` now moves the
+seat **at National Signing Day**, with its own media beat, and expectation scales with the program: a
+#25 class is the job at prestige 95 (0) and a triumph at 35 (+5).
+
+**It is pegged at about one game's worth of results.** The first cut used a multiplier of 7, and the
+medialab check caught that it made a #1 class worth more than a losing season costs — which would
+have had coaches recruiting instead of coaching. A real season swings −18 to +20 over 13 games; a
+class spans −4 to +4.
+
+### Save & validation
+**No save bump, no `migrateState` step, no `SIM_MODEL` bump.** `at`/`arch`/`pur` are already in
+`RECRUIT_PKEYS`, every fog is derived, and `classApprovalDelta` writes to an existing field.
+
+`reclab` → **87** (project shape, the scheme swing, purity's effect on it, fog monotonicity, and that
+**a band contains the true value** — which failed first time on `adp`, see below). `rolllab` → **42**
+(the archetype you scouted survives onto the roster; a shapeless signee is classified on arrival —
+neither was asserted anywhere). `medialab` → **55**. `qa` → **338**. All 23 gates green.
+
+### One bug the gate caught, exactly as intended
+The attribute band clamped to `[40, 99]`, copied from `shiftAttrs`. But **`adp` legitimately runs
+below 40** — it is weighted 0 everywhere and describes portability rather than quality, which is why
+`shiftAttrs` excludes it. So a true value of 33 was rendering as a band of "40–47": a fog that did
+not contain the truth, which is not fog, it is a wrong number. It was latent, because
+`attrRowsHTML` filters `adp` out of the display — which is precisely the argument for asserting
+containment rather than trusting it.
+
+### Deliberately out of scope
+A **`sleeperGap`** was drafted and cut. Hand-setting a baseline for "what a 4-star is worth" flagged
+37.5% of the board as sleepers, i.e. it measured the constants rather than the prospects; and `svc`
+never *under*-rates by construction (Phase 51 defines it as `stars` or `stars+1`), so a
+low-ranking/high-ability prospect does not exist to find. The real information edge is the one that
+already existed — `ov` and `pot` vary within a tier and are fogged until you scout — and "Best in my
+system" is the honest version of the feature. The fog widths are **designed, not measured**: CFBD has
+no scouting data, `cfb-recruiting.md` says so explicitly, and the lab asserts only shape (monotonic,
+bounded, never leaking at zero), never a magnitude.
+
+---
+
 ## Planned: non-conference series scheduling (Phase 8)
 
 Players (and AI schools) book the **non-conference** part of the schedule by agreeing to

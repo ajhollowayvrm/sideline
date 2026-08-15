@@ -796,7 +796,46 @@ function startServer() {
   check('Phase 45.1: recruit sheet shows a fog-safe projected identity',
     /Projects as:/.test(projTxt) && (projRevealed || /Scout him to project his temperament/.test(projTxt)),
     projRevealed ? 'temperament already revealed by the field' : 'still fogged, prompt shown');
+  /* ---- Phase 58: the read. The services rank a generic player; you rank him for YOUR system. ---- */
+  const p58 = await page.evaluate(id => {
+    const r = S.recruiting.pool.find(x => x.id === id);
+    const scheme = mySchemeFor(r.pos);
+    const proj = recruitProject(r, scheme, schemeListFor(r.pos));
+    // drive the fog end to end on a clone so the real board is untouched
+    const clone = Object.assign({}, r);
+    clone.scout = 0; const fog0 = { arch: recFogArch(clone).revealed, spread: recAttrSpread(clone) };
+    clone.scout = 100; const fog100 = { arch: recFogArch(clone).revealed, pure: recFogArch(clone).pure, spread: recAttrSpread(clone) };
+    return { scheme, inScheme: proj.inScheme, base: proj.base, best: proj.best, bestScheme: proj.bestScheme,
+      fog0, fog100, hasArch: !!r.arch, scout: r.scout };
+  }, tgt.id);
+  check('Phase 58: the sheet projects him into YOUR system', /In your /.test(projTxt), p58.scheme + ' ' + p58.inScheme);
+  check('Phase 58: every prospect carries a named shape (Phase 52 shipped it invisible)', p58.hasArch);
+  check('Phase 58: the archetype is hidden at zero scouting and fully revealed at 100',
+    !p58.fog0.arch && p58.fog100.arch && p58.fog100.pure, JSON.stringify([p58.fog0.arch, p58.fog100.arch]));
+  check('Phase 58: the attribute fog closes with scouting (13 → 0)',
+    p58.fog0.spread > 0 && p58.fog100.spread === 0, `${p58.fog0.spread} → ${p58.fog100.spread}`);
+  check('Phase 58: his in-system value is never above his best-fit system', p58.inScheme <= p58.best,
+    `${p58.inScheme} in ${p58.scheme} vs ${p58.best} in ${p58.bestScheme}`);
+  // the attribute rows are BANDS while he is fogged — his ability used to print at full precision
+  check('Phase 58: a fogged prospect shows banded attributes, not exact numbers',
+    p58.scout >= 100 || /\d+–\d+/.test(projTxt), 'scout ' + p58.scout);
   await shot(page, '24-recruiting-prospect.png');
+  // "Best in my system" re-orders the board away from the star ranking every rival also sees
+  await page.evaluate(() => closeSheet());     // the app's own closer — a stray sheet eats later clicks
+  await page.waitForTimeout(120);
+  const sortOrder = await page.evaluate(() => {
+    const sel = document.querySelector('[data-tid="rec-sort"]'); if (!sel) return null;
+    const first = () => [...document.querySelectorAll('[data-tid="rec-list"] .lrow')].slice(0, 12).map(e => e.dataset.id).join(',');
+    sel.value = 'stars'; sel.onchange(); const byStars = first();
+    sel.value = 'system'; sel.onchange(); const bySystem = first();
+    sel.value = 'stars'; sel.onchange();
+    return { byStars, bySystem, differs: byStars !== bySystem };
+  });
+  check('Phase 58: the prospects board can sort by value in your system', !!sortOrder);
+  check('Phase 58: that sort is a genuinely different ranking from the services\'', sortOrder && sortOrder.differs);
+  // back to the ORIGINAL target — the rest of this block offers and works him specifically
+  await page.locator(`[data-id="${tgt.id}"]`).first().click();
+  await page.waitForTimeout(150);
   await page.locator('[data-tid="rec-offer"]').click();
   await page.waitForTimeout(150);
   const afterOffer = await page.evaluate(id => { const r = S.recruiting.pool.find(x => x.id === id); return { board: S.recruiting.board.includes(id), iv: r.iv[S.teamId] || 0 }; }, tgt.id);
