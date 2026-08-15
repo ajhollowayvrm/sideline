@@ -16,6 +16,9 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > - `docs/phases/clutch.md` — big moments: pressure, clutch-as-variance, what the data forbids (Phase 50)
 > - `docs/phases/attributes.md` — the six-attribute ability model, OVR as a scheme-weighted readout (Phase 51)
 > - `docs/phases/attributes-2.md` — position-specific attributes, archetypes, purity (Phase 52)
+> - `docs/phases/contests.md` — play resolution as sequential contests (Phase 53)
+> - `docs/phases/calibration.md` — the scoring aggregate decomposed and fitted (Phase 54)
+> - `docs/phases/ios.md` — the native iOS shell, session resume, embedded fonts (Phase 61)
 >
 > **Measured reality:** `docs/reference/cfb-averages.md` holds real FBS averages computed from 3,944
 > games (2021–2025) — national, by rank matchup, and by mismatch size — plus where `simEngine` sits
@@ -46,6 +49,10 @@ Currently a single self-contained file: `index.html`. To work on it:
   (`python3 -m http.server`) and hit it from your phone on the same network.
 - **Deploy:** push to a repo, enable GitHub Pages (Settings → Pages → deploy from branch,
   root). The hosted URL is a stable origin, so `localStorage` saves persist across visits.
+- **iPhone (Phase 61):** `ios/` is a native WKWebView shell around this same file — XcodeGen
+  spec + one Swift file, no npm and no CocoaPods. The `.github/workflows/ios.yml` action builds
+  an **unsigned** `.ipa` on a free macOS runner; SideStore/AltStore signs it with your Apple ID
+  on the way in, so no Mac and no signing secrets are needed. See `ios/README.md`.
 
 **Save data note:** saves are keyed to the origin. The file opened locally, the Pages URL,
 and a different host are *separate* save stores. This is expected. **Cloud saves (Phase 47)**
@@ -478,6 +485,36 @@ still serves it with zero config.
   role tables now live-grab instead of drifting), `qa` 341 → **344**.
   *(→ `docs/phases/recruiting.md`.)*
 
+- **Phase 61 — the iPhone app.** The same `index.html` in a native WKWebView shell, sideloadable
+  without a Mac. The ask was *"iOS-first, but we don't need Swift"*, against a PWA that *"feels
+  cheap — zooming in randomly, not holding state for longer than like 10 minutes."* Scoping found
+  **three complaints with three different causes**, only one of which packaging fixes, and that
+  split is the phase. **Zoom** was already half-solved (inputs were 16px, the one mitigation Safari
+  respects) and half-unsolvable: iOS Safari has ignored `user-scalable=no` since iOS 10 as an
+  accessibility policy, so double-tap and pinch need a shell. **State** was a real bug, not storage
+  — boot was a bare `render()` with `UI.view='menu'` and no session resume, so a tab eviction (both
+  Safari and a WKWebView jettison a backgrounded tab holding a decoded multi-MB world) dropped the
+  player on the main menu beside an intact save; `sideline_active` records the live slot, set
+  wherever a career opens and cleared only on a deliberate exit. **"All responsive mobile view"** is
+  true and is design work the shell only unlocks. Chose **XcodeGen + one Swift file** over Capacitor
+  after counting what the shell must actually do — five capabilities, no push/iCloud/Game Center, so
+  no plugin ecosystem to buy and no `node_modules`/CocoaPods in a repo that has kept its runtime
+  dependencies at zero for sixty phases; the recorded line for revisiting is "when you write generic
+  plumbing instead of a specific feature." Shell decisions in priority order: a custom `sideline://`
+  scheme because **saves are keyed to origin** and `file://` is opaque (so `Shell.scheme` is
+  effectively a schema version); zoom shut four ways; `bounces=false` with insets left manual so the
+  page's own `env(safe-area-inset-*)` keeps working; two bridges — haptics, and a share sheet fixing
+  `a.download`, which is **inert** in a WKWebView and had the roster-template button silently doing
+  nothing. **Fonts had to be vendored first** — the Google Fonts `<link>` was the only external fetch
+  in the file, so five faces are now base64-embedded (117KB woff2 → 158KB), keeping index.html ONE
+  self-contained file that renders identically from `file://`, `https://` and `sideline://`. CI
+  builds an **unsigned** `.ipa` on a free macOS runner with **no certificates or secrets** —
+  compiling needs macOS, signing needs an Apple ID, and SideStore does the second half locally,
+  which is what makes the path work from Windows. Verified end to end: `ARCHIVE SUCCEEDED`, and the
+  bundled `index.html` is byte-identical to the repo's. **No save bump** (v49 unchanged), no
+  `SIM_MODEL` bump — the sim was not touched. `qa` 344 → **351**.
+  *(→ `docs/phases/ios.md`, `ios/README.md`.)*
+
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
 stays fast). This is a design choice, not a backlog. Per-doc "Deliberately out of scope"
@@ -795,6 +832,13 @@ that extracts the fenced block from `index.html`; `qa` is the in-browser end-to-
 odd one out — it runs the cloud backend (`infra/lambda/index.mjs`, the only code that doesn't run in the
 browser) against in-memory DynamoDB/S3 stubs. Add per-phase checks to the relevant lab + `qa` on any
 change; bump the save `version` + `migrateState` on any save-shape change.
+
+**Non-gate build scripts** (Phase 61): `npm run fonts` re-embeds `assets/fonts/*.woff2` into
+`index.html`, `npm run ios:icon` regenerates the app icon, `npm run ios:project` runs XcodeGen
+(needs macOS). The iOS build itself is CI-only — `.github/workflows/ios.yml`. Three `qa` checks
+police the properties the shell depends on: **nothing loads off-origin** across the whole run, the
+five font faces are embedded, and every native bridge is a **silent no-op in a browser** — the
+shell is a wrapper around the game, never a dependency of it.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Non-controlled games are resolved instantly by `simEngine`; only the controlled team's game
