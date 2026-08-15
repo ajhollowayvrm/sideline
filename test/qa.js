@@ -236,8 +236,31 @@ function startServer() {
   await page.getByLabel('Potential').fill('40');
   await page.getByRole('button', { name: 'Save player' }).click();
   await page.waitForTimeout(150);
-  const offAfter = await page.evaluate(() => controlled().ratings.off);
-  check('Edit player updates ratings live', offAfter < offBefore, `off ${offBefore} → ${offAfter}`);
+  /* Two separate claims, because one of them used to ride on a rounding boundary. The CONTRACT is
+     that the stored `t.ratings` is re-derived the moment the roster changes — that is the bug this
+     guards (an edit path that forgets to call teamRatings). Whether the integer moves depends on how
+     good the next man up is: a team deep at WR replaces a 96 with an 88 and the top-11 mean shifts
+     less than half a point, which is correct behaviour and not something to assert. Sensitivity is
+     asserted separately, by gutting the room outright and putting it back. */
+  const edit = await page.evaluate(() => {
+    const t = controlled(), wr = t.roster.filter(p => p.pos === 'WR').sort((a, b) => (a.so || 0) - (b.so || 0))[0];
+    const fresh = teamRatings(t.roster, t.staff);
+    /* Gut the men who are actually IN the unit, not a room that might not be. The rating is the top
+       11 by EFFECTIVE overall, and effective is per-position — so a program deep on the line and thin
+       at receiver fields no WR in its top 11 at all, and gutting that room is correctly a no-op. */
+    const b = staffBoosts(t.staff), eff = p => p.ov + (b[p.pos] || 0);
+    const unit = t.roster.filter(p => POS.find(x => x[0] === p.pos)[1] === 'off').sort((x, y) => eff(y) - eff(x)).slice(0, 11);
+    const was = unit.map(p => p.ov);
+    unit.forEach(p => p.ov = 40);
+    const gutted = teamRatings(t.roster, t.staff).off;
+    unit.forEach((p, i) => p.ov = was[i]);                      // put the unit back
+    return { stored: t.ratings.off, fresh: fresh.off, edited: wr.ov, gutted, restored: teamRatings(t.roster, t.staff).off };
+  });
+  const offAfter = edit.stored;
+  check('Edit player updates ratings live', offAfter <= offBefore && edit.stored === edit.fresh && edit.edited === 40,
+    `off ${offBefore} → ${offAfter}, stored == freshly derived`);
+  check('Team rating is sensitive to the roster it is built from', edit.gutted < edit.restored,
+    `gutting the starting offense: ${edit.restored} → ${edit.gutted}`);
 
   // ---------- TEAM: COACHES ----------
   await page.locator('[data-tid="tab-coaches"]').click();
@@ -245,8 +268,51 @@ function startServer() {
   const coachTxt = await page.evaluate(() => document.querySelector('.view').innerText);
   check('Coaches: Coordinators section present', /Coordinators/i.test(coachTxt));
   check('Coaches: Additional Coaches section present', /ADDITIONAL COACHES/i.test(coachTxt));
-  const boostBadges = await page.evaluate(() => [...document.querySelectorAll('.lrow .tag')].map(t => t.textContent.trim()).filter(t => /\+\d/.test(t)).length);
+  const boostBadges = await page.evaluate(() => [...document.querySelectorAll('.lrow .tag')].map(t => t.textContent.trim()).filter(t => /[+\u2212]\d/.test(t) || /league average/.test(t)).length);
   check('Coaches: boost badges render', boostBadges > 0, `${boostBadges} badges`);
+
+  /* The staff ladder, live in the app: one 10-point rating band is one step, a coordinator steps by
+     3 and a position coach by 1. econlab pins the formula offline; this pins that the app is running
+     the same one AND that a coordinator's step reaches the team rating it claims to. */
+  const ladder = await page.evaluate(() => {
+    const t = controlled();
+    const bump = n => {
+      const staff = t.staff.map(c => Object.assign({}, c, { boost: c.tier === 'coord' && c.scope === 'OFF' ? n : 0 }));
+      return teamRatings(t.roster, staff).off;
+    };
+    return {
+      coord: [45, 55, 65, 75, 85, 95].map(r => coachBoost('coord', r)),
+      pos: [45, 55, 65, 75, 85, 95].map(r => coachBoost('pos', r)),
+      reaches: bump(9) - bump(0),          // an OC on band 3 must be worth 9 points of offense
+    };
+  });
+  check('Staff ladder: the coordinator ladder steps by 3 per 10-point band, centred',
+    JSON.stringify(ladder.coord) === JSON.stringify([-6, -3, 0, 3, 6, 9]), JSON.stringify(ladder.coord));
+  check('Staff ladder: the position-coach ladder steps by 1 per 10-point band, centred',
+    JSON.stringify(ladder.pos) === JSON.stringify([-2, -1, 0, 1, 2, 3]), JSON.stringify(ladder.pos));
+  check('Staff ladder: a coordinator\'s step reaches the rating it claims', ladder.reaches === 9, '+9 boost → +' + ladder.reaches + ' off');
+
+  /* Special teams tells the truth about itself. `staffBoosts` maps the STC's boost onto K/P, but
+     teamRatings averages the top 11 on offence and the top 11 on defence — K and P are in neither,
+     so the number reaches NO rating. The screen must not promise one, at any point on the ladder. */
+  const stc = await page.evaluate(() => {
+    const t = controlled(), c = t.staff.find(x => x.tier === 'coord' && x.scope === 'ST');
+    if (!c) return { skip: true };
+    const hi = Object.assign({}, c, { rating: 95, boost: coachBoost('coord', 95) });
+    const withST = n => { const staff = t.staff.map(x => Object.assign({}, x, { boost: x === c ? n : 0 })); const R = teamRatings(t.roster, staff); return R.off + R.def + R.ovr; };
+    return {
+      skip: false, badge: boostBadge(hi), short: coachEffectShort(hi),
+      movesRating: withST(9) !== withST(0),
+      // The same curve devRateFor runs on his RAW rating: (r-60)/300, clamped -5%..+12%.
+      dev: [45, 60, 85, 95].map(r => coachDevPct({ rating: r })),
+    };
+  });
+  check('Staff ladder: the STC badge claims development, not an OVR boost',
+    stc.skip || (/K\/P dev/.test(stc.badge) && !/\+\d+\s+ST/.test(stc.badge)), JSON.stringify({ badge: stc.badge, short: stc.short }));
+  check('Staff ladder: and it is honest — the STC boost moves no team rating',
+    stc.skip || stc.movesRating === false, 'K/P sit outside both rating groups');
+  check('Staff ladder: the STC number tracks devRateFor (his real effect)',
+    stc.skip || JSON.stringify(stc.dev) === JSON.stringify([-5, 0, 8, 12]), 'ratings 45/60/85/95 → ' + JSON.stringify(stc.dev) + '% K/P development');
   await shot(page, '09-coaches.png');
   // edit the DC's salary (data-id by role) → payroll changes
   const payBefore = await page.evaluate(() => controlled().payroll);
@@ -1125,7 +1191,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 49 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 50 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- DELIBERATE EXIT (the other half of the resume contract) ----------
   // Resume must not be stickier than the player's intent: quitting to the menu has to survive a
@@ -1169,7 +1235,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).first().click();   // slot 2 is now the only save
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v49)', mig.v === 49, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v50)', mig.v === 50, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -1182,6 +1248,29 @@ function startServer() {
   check('Migration: awards/series backfilled + homeState (v9→v10)', Array.isArray(mig.awards) && Array.isArray(mig.series) && !!mig.homeState, JSON.stringify({ aw: mig.awards.length, sr: mig.series.length, st: mig.homeState }));
   check('Migration: seriesOffers backfilled (null until offseason, v10→v11)', mig.seriesOffers === null, JSON.stringify(mig.seriesOffers));
   check('Migration: Ring of Honor backfilled (empty array, v12→v13)', Array.isArray(mig.legends) && mig.legends.length === 0, JSON.stringify(mig.legends));
+
+  /* v49→v50: the staff ladder was re-cut, and `boost` is derived from rating but STORED. The v1
+     fixture above deletes `boost` entirely, so it exercises `normalizeStaff` — not this. The path
+     that matters is a save whose coaches already have a tier AND a stale boost, because
+     normalizeStaff returns early on those and would leave an old career on the old ladder for ever. */
+  const v50 = await page.evaluate(() => {
+    const w = genWorld(99), t = w.teams[0];
+    t.staff.forEach(c => { c.boost = 1; });                       // every coach frozen on the old ladder
+    const stale = t.staff.map(c => c.boost);
+    const before = teamRatings(t.roster, t.staff).off;
+    const out = migrateState({ version: 49, seed: 99, world: w, coachMarket: [{ role: 'OC', tier: 'coord', scope: 'OFF', rating: 88, boost: 2 }] });
+    const t2 = out.world.teams[0];
+    return {
+      v: out.version, stale, fresh: t2.staff.map(c => c.boost),
+      correct: t2.staff.every(c => c.boost === coachBoost(c.tier, c.rating)),
+      market: out.coachMarket[0].boost, ratingMoved: t2.ratings.off !== before,
+      ranked: t2.natRank > 0,
+    };
+  });
+  check('Migration: v49 save re-derives every stored coach boost onto the new ladder',
+    v50.v === 50 && v50.correct && JSON.stringify(v50.stale) !== JSON.stringify(v50.fresh), JSON.stringify({ v: v50.v, correct: v50.correct }));
+  check('Migration: the stored coach market re-derives too', v50.market === 6, 'an 88-rated OC → +' + v50.market);
+  check('Migration: team ratings and ranks follow the new boosts', v50.ratingMoved && v50.ranked);
 
   // ---------- DELETE with confirm ----------
   await page.evaluate(() => localStorage.removeItem('sideline_active'));   // leave the career so the reload lands on the Menu
@@ -1657,7 +1746,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 49', roPost.version === 49, 'v' + roPost.version);
+  check('Rollover: save version bumped to 50', roPost.version === 50, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);
@@ -1873,13 +1962,18 @@ function startServer() {
   // and put nothing in its place — every control looked right and none of them answered a finger.
   // Targets are hit-tested rather than measured off the box, since a pseudo-element may legitimately
   // extend the target past the paint.
-  const touchViews = ['home', 'team', 'season', 'recruit', 'media', 'browse', 'program'];
-  const touch = { small: [], pressGap: 0, controls: 0, screens: 0 };
+  // 'cloud' and 'load' are in the list because they are reached through headerBar(), which is the
+  // half of the app that had NO status-bar inset — every one of its ten screens drew its title under
+  // the clock on a notched phone, and none of them was being swept.
+  const touchViews = ['home', 'team', 'season', 'recruit', 'media', 'browse', 'program', 'cloud', 'load'];
+  const touch = { small: [], pressGap: 0, controls: 0, screens: 0, statusBar: [], envLeak: 0 };
   const uiBefore = await page.evaluate(() => ({ view: UI.view, tab: UI.tab }));
   for (const v of touchViews) {
     await page.evaluate(view => { closeSheet(); UI.view = view; if (view === 'team') UI.tab = 'roster'; render(); }, v);
     const a = await page.evaluate(`(async () => {${SCENARIOS.audit()}\n})()`);
     touch.small.push(...a.worst.map(w => v + ': ' + w));
+    touch.statusBar.push(...a.statusBarWorst.map(w => v + ': ' + w));
+    touch.envLeak += a.envLeak;
     touch.pressGap += a.pressTotal - a.pressable;
     touch.controls += a.checked;
     touch.screens++;
@@ -1897,6 +1991,12 @@ function startServer() {
   });
   check('Touch: the iOS tap highlight stays suppressed', tapCss.highlightOff);
   check('Touch: press feedback is transitioned, not a jump', tapCss.hasTransition);
+  // The audit simulates a notch by overriding --safe-t, so this holds in a browser with no inset of
+  // its own. That only works while every consumer reads the token, which is what envLeak polices.
+  check('Safe area: nothing paints under the status bar on a notched phone', touch.statusBar.length === 0,
+    touch.statusBar.length ? touch.statusBar.slice(0, 3).join(', ') : `${touch.screens} screens clear`);
+  check('Safe area: the insets are read through --safe-t/--safe-b, never raw env()', touch.envLeak === 0,
+    touch.envLeak ? touch.envLeak + ' rule(s) use env() outside :root' : 'token only');
 
   // ---------- PHASE 47: cloud saves (push → pull → conflict, against a mocked endpoint) ----------
   // Stands up an in-memory implementation of the real API inside the page (same routes, same

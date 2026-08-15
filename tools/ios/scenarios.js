@@ -24,6 +24,10 @@ const WEEKS = 6;         // far enough in for a record, a poll, injuries and a r
 const PRE_SCENES = [
   { name: 'menu',    view: 'menu' },
   { name: 'newgame', view: 'newgame' },
+  // Reached from the menu, and both use headerBar(). Neither was swept until a headerBar screen
+  // turned out to be drawing its title under the status bar on a real phone.
+  { name: 'load',    view: 'load' },
+  { name: 'cloud',   view: 'cloud' },
 ];
 
 const CAREER_SCENES = [
@@ -167,7 +171,45 @@ function audit() {
       }
       return false;
     }
-    return { overflow: document.documentElement.scrollWidth - window.innerWidth,
+    /* Does anything paint UNDER the status bar? This is the bug that reached a real phone: the
+       status-bar inset lived inline on one of the two things that build a top bar, so every screen
+       reached through the other one drew its title beneath the clock.
+
+       Checked by SIMULATING a notch — override the --safe-t token and re-measure — rather than by
+       reading the real inset, because no desktop engine has one and the check would be vacuous in
+       both the WebKit loop and the Chromium gate. That only works while every consumer goes through
+       the token, so envLeak guards the other half: a raw env(safe-area-inset-*) anywhere but the
+       :root definition is invisible to this probe and must not exist. */
+    const SIM_NOTCH = 59;
+    const root = document.documentElement;
+    const priorTop = root.style.getPropertyValue('--safe-t');
+    root.style.setProperty('--safe-t', SIM_NOTCH + 'px');
+    void root.offsetHeight;
+    const underStatusBar = [];
+    if (window.scrollY < 2) {
+      document.querySelectorAll('body *').forEach(el => {
+        const paints = el.matches('button, a, input, select, svg, img')
+          || [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
+        if (!paints) return;
+        const b = el.getBoundingClientRect();
+        if (b.width < 1 || b.height < 1) return;
+        if (getComputedStyle(el).visibility === 'hidden') return;
+        if (b.top < SIM_NOTCH - 1 && b.bottom > 0) underStatusBar.push(label(el));
+      });
+    }
+    if (priorTop) root.style.setProperty('--safe-t', priorTop); else root.style.removeProperty('--safe-t');
+
+    let envLeak = 0;
+    for (const sheet of document.styleSheets) {
+      let list; try { list = sheet.cssRules; } catch (e) { continue; }
+      for (const rule of list) {
+        if (!rule.style || !rule.cssText) continue;
+        if (/env\\(safe-area-inset/.test(rule.cssText) && rule.selectorText !== ':root') envLeak++;
+      }
+    }
+
+    return { statusBar: underStatusBar.length, statusBarWorst: underStatusBar.slice(0, 3), envLeak,
+             overflow: document.documentElement.scrollWidth - window.innerWidth,
              targets: small.length, checked, obscured, clipped, pressable, pressTotal, worst: small.slice(0, 3) };
   `;
 }

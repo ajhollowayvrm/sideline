@@ -622,11 +622,13 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   stored inside `state`. The pure decision (`cloudResolve`) is fenced as the CLOUD ENGINE and
   gated by `cloudlab`; the backend is `infra/` (SAM). See `docs/phases/cloud.md`.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **49**). Each step backfills the fields its phase added and re-derives
+  (currently **50**). Each step backfills the fields its phase added and re-derives
   ratings/ranks where needed; most recent steps are structural no-ops (sparse per-player
-  fields / derived data read as their defaults) — **v47/v48 are the exceptions**: they genuinely
+  fields / derived data read as their defaults) — **v47/v48/v50 are the exceptions**: v47/v48
   mutate every player, deriving an attribute profile re-centred onto the `ov` he already had (v48
-  also splits `S` into `FS`/`SS` and packs the row into `p.at`). The full v1→v49 migration ladder is
+  also splits `S` into `FS`/`SS` and packs the row into `p.at`), and **v50** re-derives the stored
+  `boost` on every coach (and in `coachMarket`) after the staff ladder was re-cut, then re-derives
+  ratings and ranks off it. The full v1→v50 migration ladder is
   documented inline in `migrateState` in `index.html`, and each phase's design doc in
   `docs/phases/` records its save-shape change. **Bump `version` + extend `migrateState`
   on any save-shape change.**
@@ -718,7 +720,16 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   //         | "rec" (Phase 60 off-field recruiting staff — no group, boost 0, so `staffBoosts`,
   //           `devRateFor` and `advanceCoachCarousel` all skip them; they cost payroll and buy
   //           weekly recruiting points / board slots / standing orders. Player teams only.)
-  //   groups: [posCode,...] the coach buffs;  boost: OVR pts added to each (coord 0-2, pos 0-3)
+  //   groups: [posCode,...] the coach buffs;  boost: OVR pts each gets, SIGNED — the ladder is one
+  //     10-point rating band per step (a coordinator steps by 3, a position coach by 1) and is
+  //     CENTRED on band 2, so a coordinator runs −6..+9, a position coach −2..+3, and the number is
+  //     what the man is worth over a replacement rather than a bonus for employing anybody. The
+  //     centring is load-bearing: raw unit ratings already reach 96 against a 99 ceiling, and an
+  //     uncentred ladder pinned nine teams a world at exactly 99. An EMPTY slot is charged one step
+  //     below the bottom rung by `staffBoosts`, so firing your worst coach is never an upgrade.
+  //     The Special Teams Coord. is the honest exception — `teamRatings` averages the top 11 on
+  //     offence and the top 11 on defence, so his K/P groups reach no rating at all; the UI prints
+  //     what he really moves (K/P development via `devRateFor`) instead of a boost that does nothing.
   //   scope: display label ("OFF"/"DEF"/"ST" for coords, role code for position coaches)
   natRank, confRank, divRank,
   rec: { w, l, cw, cl, pf, pa, streak },  // season record (overall + conference); set at kickoff

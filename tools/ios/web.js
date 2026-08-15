@@ -87,7 +87,10 @@ const audit = page => run(page, SC.audit());
     console.log(`  ${scene.name.padEnd(11)} overflow ${String(a.overflow).padStart(4)}px`
       + `   under-44pt ${String(a.targets).padStart(3)}/${String(a.checked).padEnd(3)}`
       + `   press ${String(a.pressable).padStart(3)}/${String(a.pressTotal).padEnd(3)}`
-      + (a.worst.length ? '   ' + a.worst.join(', ') : ''));
+      + (a.statusBar ? `   STATUS-BAR ${a.statusBar}` : '')
+      + (a.envLeak ? `   ENV-LEAK ${a.envLeak}` : '')
+      + (a.worst.length ? '   ' + a.worst.join(', ') : '')
+      + (a.statusBarWorst.length ? '   under bar: ' + a.statusBarWorst.join(', ') : ''));
   };
 
   const wanted = s => !only || s.name === only;

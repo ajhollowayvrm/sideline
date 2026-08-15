@@ -53,12 +53,38 @@ function grabConst(name) {
   }
   return eval('(' + html.slice(i + 1 + decl.length, j) + ')');
 }
+/* Same idea for a top-level `function name(...){...}`: take the declaration out of index.html by
+   matching its braces. `coachBoost` used to be hand-copied here, and that copy is exactly how the
+   staff ladder can be re-cut in the game while the lab keeps validating the old one. */
+function grabFn(name) {
+  const decl = 'function ' + name + '(';
+  const i = html.indexOf('\n' + decl);
+  if (i < 0) { console.error('Could not find `' + decl + '` in index.html'); process.exit(2); }
+  let j = html.indexOf('{', i + 1 + decl.length), depth = 0, str = null, line = false;
+  for (; j < html.length; j++) {
+    const c = html[j];
+    if (line) { if (c === '\n') line = false; continue; }
+    if (str) { if (c === '\\') j++; else if (c === str) str = null; continue; }
+    if (c === '/' && html[j + 1] === '/') { line = true; continue; }
+    if (c === '"' || c === "'" || c === '`') { str = c; continue; }
+    if (c === '{') depth++;
+    else if (c === '}') { depth--; if (!depth) { j++; break; } }
+  }
+  return eval('(' + html.slice(i + 1, j) + ')');
+}
 const COORD_ROLES = grabConst('COORD_ROLES');
 const POS_COACHES = grabConst('POS_COACHES');
 const REC_ROLES = grabConst('REC_ROLES');       // Phase 60: off-field recruiting staff
 const REC_STAFF_CAP = grabConst('REC_STAFF_CAP');
-// Must match index.html. Phase 60: a 'rec' hire coaches nobody, so his boost is 0 by definition.
-function coachBoost(tier, rating) { return tier === 'rec' ? 0 : tier === 'coord' ? clamp(Math.round((rating - 55) / 20), 0, 2) : clamp(Math.round((rating - 50) / 15), 0, 3); }
+// Pulled LIVE out of index.html, not copied — see grabFn. The ladder is one 10-point rating band per
+// step: a coordinator steps by 3 (0..15, side-wide), a position coach by 1 (0..5, his group only),
+// and a Phase 60 'rec' hire coaches nobody so his boost is 0 by definition.
+const coachBoost = grabFn('coachBoost');
+// Grabbed too, because the vacancy floor below is a property OF this function, not of the ladder.
+const staffBoosts = grabFn('staffBoosts');
+// And the rating draw, because its prestige slope is a FITTED quantity now (it pays for the ladder's
+// margin) — a copy of it here would be a second, silent opinion about how coaching talent is spread.
+const coachRating = grabFn('coachRating');
 
 const START = '// === ECONOMY ENGINE (Phase 6) START ===';
 const END = '// === ECONOMY ENGINE (Phase 6) END ===';
@@ -69,7 +95,7 @@ eval(html.slice(i0, i1));   // leaks resolveFinances/facilityUpgradeCost/genCoac
 /* ---------- a faithful-enough staff + team (mirrors index.html genStaff/genWorld) ---------- */
 function genStaff(r, prestige) {
   const mk = (code, title, tier, scope, groups, mult) => {
-    const rt = clamp(Math.round(prestige * 0.5 + ri(r, -8, 12) + 35), 45, 95);
+    const rt = coachRating(r, prestige);
     const sal = Math.round((prestige * 9000 + rt * 7000 + ri(r, -40, 40) * 1000) * mult);
     return { role: code, title, name: pick(r, FN) + ' ' + pick(r, LN), rating: rt, salary: Math.max(90000, sal), years: ri(r, 1, 4), tier, scope, groups, boost: coachBoost(tier, rt) };
   };
@@ -140,7 +166,113 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('Market varies by seed', JSON.stringify(m1) !== JSON.stringify(m3));
   const ratings = m1.map(c => c.rating).sort((a, b) => b - a);
   check('Market is top-heavy (median below the few elite)', ratings[Math.floor(ratings.length / 2)] < ratings[0] - 8, `top ${ratings[0]}, median ${ratings[Math.floor(ratings.length / 2)]}`);
-  check('Every candidate carries a valid role/boost', m1.every(c => c.role && ['coord', 'pos', 'rec'].includes(c.tier) && c.boost >= 0));
+  // The ladder is centred, so a boost is signed — a below-replacement coach is a real thing to be
+  // offered. What must hold is that every candidate carries a boost his OWN tier could produce.
+  check('Every candidate carries a valid role/boost', m1.every(c => c.role && ['coord', 'pos', 'rec'].includes(c.tier)
+    && c.boost === coachBoost(c.tier, c.rating)));
+
+  /* The staff ladder. One 10-point rating band is one step; a coordinator steps by 3 and a position
+     coach by 1; and the whole thing is CENTRED on band 2, so an average coach is worth nothing and
+     the number is what he is worth over a replacement. These pin the BANDS, the STEP and the ZERO
+     rather than the formula, so re-cutting the ladder has to be a deliberate act that updates the
+     lab, not a number that drifts unnoticed. The centring is the load-bearing part: the league's raw
+     unit ratings already reach 96 against a 99 ceiling, so an uncentred ladder pins the whole top of
+     the league at 99 and hands the sim a 0-point gap between the two best teams in the country. */
+  (function () {
+    const bands = [[45, 49, 0], [50, 59, 1], [60, 69, 2], [70, 79, 3], [80, 89, 4], [90, 97, 5]];
+    let coordOK = true, posOK = true, recOK = true;
+    bands.forEach(([lo, hi, band]) => {
+      for (let r = lo; r <= hi; r++) {
+        if (coachBoost('coord', r) !== (band - 2) * 3) coordOK = false;
+        if (coachBoost('pos', r) !== band - 2) posOK = false;
+        if (coachBoost('rec', r) !== 0) recOK = false;
+      }
+    });
+    check('Coordinator ladder steps by 3 per 10-point band (−6..+9)', coordOK,
+      '45→' + coachBoost('coord', 45) + ' 65→' + coachBoost('coord', 65) + ' 81→' + coachBoost('coord', 81) + ' 95→' + coachBoost('coord', 95));
+    check('Position-coach ladder steps by 1 per 10-point band (−2..+3)', posOK,
+      '45→' + coachBoost('pos', 45) + ' 65→' + coachBoost('pos', 65) + ' 81→' + coachBoost('pos', 81) + ' 95→' + coachBoost('pos', 95));
+    check('A recruiting hire is 0 at every rating', recOK);
+    // Better is never worse, and both ends of the ladder are clamped rather than open-ended.
+    let mono = true;
+    for (let r = 0; r <= 140; r++) { if (r && coachBoost('coord', r) < coachBoost('coord', r - 1)) mono = false; if (r && coachBoost('pos', r) < coachBoost('pos', r - 1)) mono = false; }
+    check('Boost is monotonic in rating and clamped at both ends', mono
+      && coachBoost('coord', 140) === 9 && coachBoost('coord', 0) === -6
+      && coachBoost('pos', 140) === 3 && coachBoost('pos', 0) === -2);
+    // A coordinator buffs a whole side, a position coach one group — the ladder says so at every rating.
+    let ratio = true;
+    for (let r = 45; r <= 97; r++) if (coachBoost('coord', r) !== coachBoost('pos', r) * 3) ratio = false;
+    check('A coordinator is worth 3× a position coach at the same rating', ratio);
+    /* Centring is only honest if band 2 is genuinely where the league sits. genStaff draws a coach at
+       mean ~63.7 / sd ~9.6, so the league's MEAN boost must come out near zero — otherwise "average"
+       is a fiction and the ladder is quietly inflating or deflating every team in the game. */
+    const drawn = [];
+    for (let s = 1; s <= 40; s++) { const r = rng(s); for (let i = 0; i < 134; i++) drawn.push(genStaff(r, clamp(Math.round(35 + ri(r, -9, 9) + (i < 20 ? 40 : i < 60 ? 20 : 0)), 20, 98))[0].rating); }
+    const meanBoost = avg(drawn.map(r => coachBoost('coord', r)));
+    check('The ladder is centred on the league it is measuring', Math.abs(meanBoost) < 1.5,
+      'mean generated coordinator is worth ' + meanBoost.toFixed(2) + ' (par = 0)');
+    const mid = drawn.filter(v => v >= 50 && v < 80).length / drawn.length;
+    check('The generated league sits in the middle of the ladder, not at its ends', mid > 0.7,
+      (100 * mid).toFixed(1) + '% of generated coordinators land on bands 1–3');
+  })();
+
+  /* A coordinator is something you FIND. The ladder made a coordinator worth 3× what he was, and
+     the rating draw carried a 0.5 prestige slope — so tripling the ladder tripled how much staff
+     quality was just a proxy for program quality, which lands on mismatch. The slope is 0.25 now and
+     that is a FITTED number (it pays back the margin the ladder borrowed), so these pin the
+     properties it was fitted for: prestige tilts the draw without deciding it, and the league keeps
+     its full range of coaches to find. */
+  (function () {
+    const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+    const sd = a => { const m = mean(a); return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length); };
+    // Measured over the LEAGUE's prestige shape, not a uniform draw — correlation depends on the
+    // spread of the thing you correlate against, so a flat 20..98 sweep reads a number the game
+    // never sees.
+    const rat = [], pres = [];
+    for (let s = 1; s <= 25; s++) genWorld(s).teams.forEach(t => t.staff.forEach(c => { rat.push(c.rating); pres.push(t.prestige); }));
+    const corr = (() => {
+      const ma = mean(rat), mp = mean(pres);
+      let n = 0, da = 0, dp = 0;
+      for (let i = 0; i < rat.length; i++) { n += (rat[i] - ma) * (pres[i] - mp); da += (rat[i] - ma) ** 2; dp += (pres[i] - mp) ** 2; }
+      return n / Math.sqrt(da * dp);
+    })();
+    check('Prestige tilts a coach draw without deciding it', corr > 0.15 && corr < 0.5,
+      'corr(rating, prestige) = ' + corr.toFixed(3) + ' across ' + rat.length + ' coaches (0.77 at the old 0.5 slope)');
+    check('The league keeps a full range of coaches to find', sd(rat) > 9,
+      'rating sd ' + sd(rat).toFixed(1) + ', mean ' + mean(rat).toFixed(1));
+
+    /* What "something you FIND" actually means, mechanically. Generation deals you a hand that
+       prestige only tilts — a bottom-tier program is NOT dealt an elite coordinator, and that is
+       correct. Where anyone can get one is the MARKET, which takes no prestige argument at all: the
+       free-agent pool is drawn flat and reaches 97, so an elite coordinator is available to any
+       program that will pay him. The carousel then supplies the pull back upward over seasons. */
+    const r2 = rng(77), low = [], high = [];
+    for (let i = 0; i < 4000; i++) { low.push(coachRating(r2, 30)); high.push(coachRating(r2, 92)); }
+    check('Prestige still points the right way on average', mean(high) > mean(low),
+      'prestige 92 is dealt ' + mean(high).toFixed(1) + ' vs prestige 30 ' + mean(low).toFixed(1));
+    check('A blue-blood can be stuck with a bad coordinator', high.filter(v => v < 60).length > 0,
+      high.filter(v => v < 60).length + '/4000 draws at prestige 92 fall under 60');
+    const w2 = genWorld(3);
+    const elite = [];
+    for (let y = 2027; y < 2037; y++) elite.push(...genCoachMarket(5, y, w2).filter(c => c.tier === 'coord' && c.rating >= 85));
+    check('An elite coordinator is on the MARKET, open to any program', elite.length > 0,
+      elite.length + ' coordinators rated 85+ over ten markets, drawn with no prestige term');
+  })();
+
+  /* A vacancy is the BOTTOM of a centred ladder, not the middle. Without this, a coach on band 0 or 1
+     scores below zero while an empty slot scores exactly zero — so firing your worst position coach
+     would make the team better, which is an exploit rather than a decision. */
+  (function () {
+    const staff = genStaff(rng(11), 60);
+    const oline = staff.find(c => c.role === 'OL');
+    oline.rating = 45; oline.boost = coachBoost('pos', 45);   // the worst coach you can employ
+    const withBad = staffBoosts(staff)['OT'];
+    const withNone = staffBoosts(staff.filter(c => c !== oline))['OT'];
+    check('A bad position coach still beats an empty slot', withBad > withNone,
+      'a 45-rated OL coach is ' + withBad + ', the vacancy is ' + withNone);
+    check('A vacancy is charged one step below the bottom rung', withBad - withNone === 1,
+      'the worst coach you can employ is worth ' + (withBad - withNone) + ' over nobody');
+  })();
 
   /* Phase 60 — off-field recruiting staff. They share the market (so they surface in the carousel
      the player already uses) but they must be inert everywhere a coach is not: no group, no boost,

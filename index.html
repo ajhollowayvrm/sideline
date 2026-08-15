@@ -29,6 +29,7 @@
   --accent:#c9a227; --accent-ink:#0d0f12;
   --good:#3ea66b; --warn:#d8a24a; --bad:#d35450;
   --r:12px;
+  --safe-t: env(safe-area-inset-top, 0px);
   --safe-b: env(safe-area-inset-bottom, 0px);
 }
 /* touch-action:manipulation is the ONE thing a web page can do about iOS double-tap zoom — Safari
@@ -85,8 +86,12 @@ label.fld>span{display:block;font-size:11px;text-transform:uppercase;letter-spac
 .noscroll{padding-bottom:0}
 
 /* header / scoreboard */
+/* The status-bar inset belongs HERE, on the class that means "pinned to the top of the screen", and
+   not on one of the two things that build a top bar. It used to sit inline in scoreboard() only, so
+   every screen reached through headerBar() — Cloud saves, Load, Program, Media, the whole back-button
+   family, ten call sites — drew its title underneath the clock and the Dynamic Island. */
 .topbar{position:sticky;top:0;z-index:20;background:linear-gradient(180deg,var(--bg) 70%,transparent);
-  padding:12px 16px 10px;display:flex;align-items:center;gap:12px}
+  padding:calc(12px + var(--safe-t)) 16px 10px;display:flex;align-items:center;gap:12px}
 .crest{width:42px;height:42px;border-radius:10px;display:grid;place-items:center;
   font-family:'Saira Condensed';font-weight:800;font-size:18px;color:#fff;
   background:var(--accent);box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}
@@ -1083,8 +1088,27 @@ function genRoster(r,prestige){
 // Per-position OVR boost the staff confers (coordinators buff a whole side; position
 // coaches buff their group). Returns { posCode: points }.
 function staffBoosts(staff){
-  const m={};
-  (staff||[]).forEach(c=>{if(!c.boost||!c.groups)return;c.groups.forEach(code=>{m[code]=(m[code]||0)+c.boost;});});
+  const m={}, filled={};
+  (staff||[]).forEach(c=>{
+    if(c.tier==='rec'||!c.groups)return;
+    filled[c.role]=true;                      // recorded even at boost 0 — an average coach is still A coach
+    if(c.boost)c.groups.forEach(code=>{m[code]=(m[code]||0)+c.boost;});
+  });
+  /* An empty slot is BELOW the bottom of the ladder, not the middle of it. The ladder is centred, so
+     a genuinely poor coach scores under zero while a vacancy would otherwise score exactly zero —
+     and firing your worst position coach would make the team better, which is an exploit rather than
+     a decision. A vacancy is charged one step below the bottom rung, so the worst coach you can
+     employ still beats employing nobody. Coordinators are here for completeness; the game makes you
+     fill those before kickoff. */
+  const vacant=t=>coachBoost(t,0)-(t==='coord'?3:1);
+  POS_COACHES.forEach(([code,,,groups])=>{
+    if(filled[code])return;
+    groups.forEach(g=>{m[g]=(m[g]||0)+vacant('pos');});
+  });
+  COORD_ROLES.forEach(([code,,side])=>{
+    if(filled[code])return;
+    POS.filter(p=>p[1]===side).forEach(p=>{m[p[0]]=(m[p[0]]||0)+vacant('coord');});
+  });
   return m;
 }
 /* ---- recruiting staff (Phase 60) ----
@@ -1102,9 +1126,14 @@ function recStaffCap(team,idx){   // idx: 3 = weekly points, 4 = board slots, 5 
 }
 function teamRatings(roster,staff){
   const boost=staffBoosts(staff);
-  const eff=p=>clamp(p.ov+(boost[p.pos]||0),40,99);
+  // The 99 ceiling belongs to the UNIT, not to each man inside it. Clamping per player made the
+  // staff ladder self-defeating at the top: a coordinator worth 15 points landed on starters who
+  // were already at 95, the ceiling ate most of it, and worse, a strong team's rating stopped
+  // answering roster changes at all — editing a starter down moved nothing, because the clamp was
+  // absorbing it. Selection order is unaffected (the same men are still the top 11).
+  const eff=p=>p.ov+(boost[p.pos]||0);
   const grp=s=>roster.filter(p=>POS.find(x=>x[0]===p.pos)[1]===s);
-  const avgTop=(arr,k)=>{const s=[...arr].sort((a,b)=>eff(b)-eff(a)).slice(0,k);return s.length?Math.round(s.reduce((t,p)=>t+eff(p),0)/s.length):60;};
+  const avgTop=(arr,k)=>{const s=[...arr].sort((a,b)=>eff(b)-eff(a)).slice(0,k);return s.length?clamp(Math.round(s.reduce((t,p)=>t+eff(p),0)/s.length),40,99):60;};
   const off=avgTop(grp('off'),11), def=avgTop(grp('def'),11);
   return {off,def,ovr:Math.round((off+def)/2)};
 }
@@ -1119,14 +1148,58 @@ function reRateRoster(t){
   t.ratings=teamRatings(t.roster,t.staff);
   return t;
 }
-// boost = small, derived from rating. Coordinators 0..2 (side-wide); position coaches 0..3.
-// Phase 60: a 'rec' hire is off-field — he buffs no position group, so his boost is 0 by definition.
-// (`staffBoosts` would skip him anyway on the missing `groups`; this makes it true at the source, so
-// nothing renders him as a +N coach.)
-function coachBoost(tier,rating){return tier==='rec'?0:tier==='coord'?clamp(Math.round((rating-55)/20),0,2):clamp(Math.round((rating-50)/15),0,3);}
+/* The staff ladder. One 10-point rating band is one step: a coordinator steps by 3 (side-wide), a
+   position coach by 1 (his group only). Six bands — under 50 · 50s · 60s · 70s · 80s · 90+.
+
+   The ladder is CENTRED on band 2, so an average staff is worth nothing and the number a coach
+   carries is what he is worth ABOVE OR BELOW a replacement: a coordinator runs −6..+9 and a position
+   coach −2..+3. That is the house rule this codebase has applied since Phase 10 — a modifier
+   redistributes, it never adds — and here it is also the only anchoring that fits. Measured: the
+   league's raw unit ratings already run 55..96 against a 99 ceiling, so there are about 5 points of
+   headroom at the top and an uncentred 0..20 ladder simply does not fit in them. Anchored at zero it
+   saturated 9 teams a world — Alabama, Georgia, LSU, Ohio State, Oregon and USC all reading exactly
+   99 on offence, which flattens the top of the polls and hands the sim a 0-point gap between the two
+   best teams in the country. Centred, the top of the league keeps its shape (unit sd 10.83 → 11.33,
+   i.e. centring preserves MORE of the intended spread than the ceiling did) and the mean stays put.
+
+   Band 2 is where the league actually sits, not a guess: `genStaff` draws a coach at mean 63.7 /
+   sd 9.6, so the band mix runs 0:6% · 1:30% · 2:39% · 3:20% · 4:5.5% · 5:0.7%. A +9 coordinator is a
+   free agent you go and find (the market reaches 97), not a coach you are dealt — and a −6 is a real
+   hole in your program. Cost to the scoring envelope over 3,210 simmed games: margin 19.30 → 19.69,
+   with points/team, favourite win rate and blowout share flat. It stays that small because a
+   program's OC and DC are drawn from the SAME prestige, so a strong staff lifts both sides of the
+   ball together and most of the difference cancels inside `adv`.
+
+   Phase 60: a 'rec' hire is off-field — he buffs no position group, so his boost is 0 by definition.
+   (`staffBoosts` would skip him anyway on the missing `groups`; this makes it true at the source, so
+   nothing renders him as a +N coach.) */
+function coachBoost(tier,rating){
+  if(tier==='rec')return 0;
+  const PAR=2;                                             // the band an average coach lands on
+  const band=clamp(Math.floor(((rating||0)-40)/10),0,5);   // bands: <50 · 50s · 60s · 70s · 80s · 90+
+  return (band-PAR)*(tier==='coord'?3:1);
+}
+/* What a program is dealt at generation. A coordinator should be something you FIND, not something
+   prestige hands you — so most of the variance is luck rather than the program's standing. Prestige
+   still tilts it (a blue-blood is favoured to have the better staff, and `advanceCoachCarousel` then
+   supplies the real pull over seasons, poaching good coordinators upward), but it no longer decides.
+
+   The slope is fitted, not felt. It was 0.5, and tripling what a coordinator is worth tripled how
+   much staff quality was simply a proxy for program quality — which lands straight on mismatch and
+   pushed average margin 19.34 → 20.20 against a measured real 16.2. Swept at fixed mean and fixed
+   spread: slope 0.50 → 0.35 → 0.25 → 0.15 → 0.00 moves the rating/prestige correlation 0.77 → 0.51
+   → 0.31 → 0.14 → −0.04 and margin 19.97 → 19.54 → 19.39 → 19.10 → 19.05, while the staff's
+   contribution to a unit rating holds at sd 3.6 THROUGHOUT. Decoupling from prestige costs none of
+   the spread the ladder exists to create, and 0.25 pays back the whole margin the ladder borrowed.
+
+   Mean and spread are both held on purpose. The intercept keeps the league mean at ~63 so band 2 is
+   still where an average coach lands, which is what makes the centred ladder in `coachBoost` honest;
+   the noise widens as the slope falls so the league keeps its full range of coaches to find. Exactly
+   one rng draw either way, so world generation is unchanged in shape. */
+function coachRating(r,prestige){return clamp(Math.round(prestige*0.25+ri(r,-15,19)+48),45,95);}
 function genStaff(r,prestige){
   const mk=(code,title,tier,scope,groups,mult)=>{
-    const rt=clamp(Math.round(prestige*0.5+ri(r,-8,12)+35),45,95);
+    const rt=coachRating(r,prestige);
     const sal=Math.round((prestige*9000 + rt*7000 + ri(r,-40,40)*1000) * mult);
     return {role:code,title,name:pick(r,FN)+' '+pick(r,LN),rating:rt,salary:Math.max(90000,sal),
       years:ri(r,1,4),tier,scope,groups,boost:coachBoost(tier,rt)};
@@ -2026,7 +2099,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:49,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:50,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      rivalries:null,rivalryHeat:null,records:null,lastRealign:null,
@@ -2412,6 +2485,21 @@ function migrateState(state){
     // `weeklyPoints` re-based off the scouting facility onto payroll — that is the phase, not a bug.
     if(state.recruiting){state.recruiting.orders=state.recruiting.orders||{};delete state.recruiting.autopilot;}
     state.version=49;
+  }
+  if((state.version||1)<50){
+    // The staff ladder was re-cut: one 10-point rating band is one step, a coordinator steps by 3
+    // (0..15) and a position coach by 1 (0..5). `boost` is DERIVED from a coach's rating but it is
+    // STORED on every coach, and `normalizeStaff` only fills one in for a coach that has no tier at
+    // all (a v1 save) — so without this an existing career keeps its old numbers for ever, and its
+    // ratings would silently disagree with a new game's. The market is stored too, so it re-derives
+    // with the rest; `t.ratings` follows because `teamRatings` reads the boost, and ranks follow that.
+    (((state.world||{}).teams)||[]).forEach(t=>{
+      (t.staff||[]).forEach(c=>{c.boost=coachBoost(c.tier,c.rating);});
+      t.ratings=teamRatings(t.roster,t.staff);
+    });
+    (state.coachMarket||[]).forEach(c=>{c.boost=coachBoost(c.tier,c.rating);});
+    recomputeRanks(state.world);
+    state.version=50;
   }
   return state;
 }
@@ -8176,8 +8264,7 @@ function renderHome(app){
   app.append(v);
 }
 function scoreboard(t){
-  const c=el('div','topbar');
-  c.style.cssText='position:sticky;top:0;z-index:20;padding-top:calc(14px + env(safe-area-inset-top,0px))';
+  const c=el('div','topbar');   // position, sticky top and the status-bar inset all come from .topbar
   const rec=(S.schedule&&t.rec)?' · '+t.rec.w+'–'+t.rec.l:'';
   c.innerHTML=`<div class="crest" style="background:${t.color};color:${textOn(t.color)}">${t.abbr}</div>
     <div style="flex:1"><h1>${t.name} ${t.nick}</h1>
@@ -10030,9 +10117,29 @@ function editPlayerSheet(p,t){
   openSheet('Edit '+p.ln,body);
 }
 
+/* What a coach actually does, derived in ONE place so his row, his sheet and his market listing
+   cannot drift into three different claims about the same man.
+
+   The Special Teams Coord. is the case that forced this. `staffBoosts` does map his boost onto K and
+   P, but `teamRatings` builds a team's rating from the top 11 on offence and the top 11 on defence —
+   K and P are in neither group, so the number reaches no rating anywhere in the game. Printing
+   "+15 ST" on him would be a straight lie, and a bigger one the higher the ladder goes. What he
+   genuinely moves is how fast his two specialists develop, through the coordinator term in
+   `devRateFor`, which reads his RAW rating on a continuous curve — so that is what we print. */
+function coachDevPct(c){return Math.round(clamp((((c&&c.rating)||60)-60)/300,-0.05,0.12)*100);}
+function coachIsST(c){return !!c&&c.tier==='coord'&&c.scope==='ST';}
+const signed=n=>(n>0?'+':n<0?'−':'')+Math.abs(n);      // a centred ladder runs both ways — show which
+// The short form, for a badge or a one-line listing. '' when the man is exactly league average.
+function coachEffectShort(c){
+  if(!c||c.tier==='rec')return '';
+  if(coachIsST(c)){const d=coachDevPct(c);return d?signed(d)+'% K/P dev':'K/P dev avg';}
+  return c.boost?signed(c.boost)+' '+c.scope:'';
+}
 function boostBadge(c){
-  if(!c.boost)return '<span class="tag" style="font-size:10px">no boost</span>';
-  return `<span class="tag accent" style="font-size:10px">+${c.boost} ${c.scope}</span>`;
+  const s=coachEffectShort(c);
+  if(!s)return '<span class="tag" style="font-size:10px">league average</span>';
+  const good=coachIsST(c)?coachDevPct(c)>0:c.boost>0;
+  return `<span class="tag ${good?'accent':'bad'}" style="font-size:10px">${s}</span>`;
 }
 function coachRow(c,t){
   const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=c.role;
@@ -10117,12 +10224,20 @@ function vacancyRow(t,code,title,tier,manage){
 }
 function coachSheet(c,t){
   const body=el('div');const f={};
-  const affects=c.boost?`+${c.boost} OVR to ${c.tier==='coord'?'the '+c.scope+' unit':(c.groups||[]).map(posName).join(', ')}`:'No rating boost yet';
+  // Special teams tells the truth about itself — see coachEffectShort. K and P sit outside the two
+  // groups teamRatings averages, so this man moves development, not a rating.
+  const dp=coachDevPct(c);
+  const who=c.tier==='coord'?'the '+c.scope+' unit':(c.groups||[]).map(posName).join(', ');
+  const affects=coachIsST(c)
+    ?`K/P develop ${dp>0?dp+'% faster':dp<0?(-dp)+'% slower':'at the normal rate'} · no OVR boost`
+    :c.boost>0?`${signed(c.boost)} OVR to ${who}`
+    :c.boost<0?`${signed(c.boost)} OVR to ${who} — below a replacement`
+    :`League average — ${who} plays to its rating`;
   // Phase 60: an off-field hire has no group — what he affects is the recruiting week, so say that.
   const rr=c.tier==='rec'?(REC_ROLES.find(x=>x[0]===c.role)||[0,0,0,0,0,0]):null, rm=rr?recStaffMult(c):1;
   body.innerHTML=`<div class="kv"><span class="k">Role</span><span>${c.title}</span></div>
     <div class="kv"><span class="k">Rating</span><span>${c.rating}</span></div>
-    <div class="kv"><span class="k">${rr?'Recruiting':'Group boost'}</span><span>${rr
+    <div class="kv"><span class="k">${rr?'Recruiting':coachIsST(c)?'Special teams':'Group boost'}</span><span>${rr
       ?`+${(rr[3]*rm).toFixed(1)} pts/wk · +${Math.round(rr[4]*rm)} board slots · +${Math.round(rr[5]*rm)} orders`:affects}</span></div>
     <div class="kv"><span class="k">Contract</span><span>${c.years} years</span></div>`;
   body.append(fld('Salary ($/yr)',inputEl(c.salary,x=>f.sal=x,'','number')));
@@ -10169,7 +10284,7 @@ function carouselSheet(t,slotRole){
         <div style="flex:1"><div class="nm">${c.name} ${alum?'<span class="cap">ALUM</span>':''}</div>
         <div class="meta">${c.title} · ${money(c.salary)}/yr · ${c.tier==='rec'
           ?'+'+((REC_ROLES.find(x=>x[0]===c.role)||[0,0,0,0])[3]*recStaffMult(c)).toFixed(1)+' pts/wk'
-          :'+'+c.boost+' boost'}</div></div>
+          :coachEffectShort(c)||'no boost'}</div></div>
         <div class="tag accent" style="flex:none">Hire ${money(fee)}</div>`;
       row.onclick=()=>{
         const role=c.tier==='coord'?(slotRole&&COORD_ROLES.find(x=>x[0]===slotRole)?slotRole:c.role):c.role;
