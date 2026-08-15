@@ -31,14 +31,35 @@ const POS = [["QB", "off", 4, 1.4], ["RB", "off", 5, 1], ["WR", "off", 11, 1.2],
 ["OT", "off", 7, 1], ["OG", "off", 6, .9], ["C", "off", 3, .8],
 ["DE", "def", 6, 1.1], ["DT", "def", 6, 1], ["LB", "def", 10, 1.1], ["CB", "def", 9, 1.1], ["S", "def", 8, 1],
 ["K", "st", 2, .4], ["P", "st", 2, .3]];
-const COORD_ROLES = [["OC", "Offensive Coordinator", "off"], ["DC", "Defensive Coordinator", "def"], ["STC", "Special Teams Coord.", "st"]];
-const POS_COACHES = [["QB", "QBs Coach", "QB", ["QB"]], ["RB", "RBs Coach", "RB", ["RB"]],
-["WR", "Pass-Catchers Coach", "WR/TE", ["WR", "TE"]], ["OL", "O-Line Coach", "OL", ["OT", "OG", "C"]],
-["DL", "D-Line Coach", "DL", ["DE", "DT"]], ["LB", "LBs Coach", "LB", ["LB"]], ["DB", "DBs Coach", "DB", ["CB", "S"]]];
-function coachBoost(tier, rating) { return tier === 'coord' ? clamp(Math.round((rating - 55) / 20), 0, 2) : clamp(Math.round((rating - 50) / 15), 0, 3); }
-
 /* ---------- extract the ECONOMY ENGINE block from index.html ---------- */
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+/* The three ROLE tables `genCoachMarket` reads are pulled LIVE out of index.html rather than copied
+   here (Phase 60). reclab and simlab were both converted for this reason and rolllab still has not
+   been: a hand-copied data array silently drifts, and the lab then validates a world the game does
+   not have. `POS`/`FN`/`LN` above are still copies — they feed only this file's synthetic staff, but
+   note that `POS` is stale (pre-Phase-52 `S` instead of `FS`/`SS`). */
+function grabConst(name) {
+  const decl = 'const ' + name + '=';
+  const i = html.indexOf('\n' + decl);
+  if (i < 0) { console.error('Could not find `' + decl + '` in index.html'); process.exit(2); }
+  let j = i + 1 + decl.length, depth = 0, str = null;
+  for (; j < html.length; j++) {
+    const c = html[j];
+    if (str) { if (c === '\\') j++; else if (c === str) str = null; continue; }
+    if (c === '"' || c === "'" || c === '`') { str = c; continue; }
+    if (c === '[' || c === '{' || c === '(') depth++;
+    else if (c === ']' || c === '}' || c === ')') depth--;
+    else if (c === ';' && depth === 0) break;
+  }
+  return eval('(' + html.slice(i + 1 + decl.length, j) + ')');
+}
+const COORD_ROLES = grabConst('COORD_ROLES');
+const POS_COACHES = grabConst('POS_COACHES');
+const REC_ROLES = grabConst('REC_ROLES');       // Phase 60: off-field recruiting staff
+const REC_STAFF_CAP = grabConst('REC_STAFF_CAP');
+// Must match index.html. Phase 60: a 'rec' hire coaches nobody, so his boost is 0 by definition.
+function coachBoost(tier, rating) { return tier === 'rec' ? 0 : tier === 'coord' ? clamp(Math.round((rating - 55) / 20), 0, 2) : clamp(Math.round((rating - 50) / 15), 0, 3); }
+
 const START = '// === ECONOMY ENGINE (Phase 6) START ===';
 const END = '// === ECONOMY ENGINE (Phase 6) END ===';
 const i0 = html.indexOf(START), i1 = html.indexOf(END);
@@ -119,7 +140,43 @@ const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
   check('Market varies by seed', JSON.stringify(m1) !== JSON.stringify(m3));
   const ratings = m1.map(c => c.rating).sort((a, b) => b - a);
   check('Market is top-heavy (median below the few elite)', ratings[Math.floor(ratings.length / 2)] < ratings[0] - 8, `top ${ratings[0]}, median ${ratings[Math.floor(ratings.length / 2)]}`);
-  check('Every candidate carries a valid role/boost', m1.every(c => c.role && (c.tier === 'coord' || c.tier === 'pos') && c.boost >= 0));
+  check('Every candidate carries a valid role/boost', m1.every(c => c.role && ['coord', 'pos', 'rec'].includes(c.tier) && c.boost >= 0));
+
+  /* Phase 60 — off-field recruiting staff. They share the market (so they surface in the carousel
+     the player already uses) but they must be inert everywhere a coach is not: no group, no boost,
+     and therefore no contribution to `staffBoosts`/`teamRatings`. What they DO cost is payroll. */
+  const recCands = [];
+  for (let s = 1; s <= 40; s++) genCoachMarket(s, 2027, w).forEach(c => { if (c.tier === 'rec') recCands.push(c); });
+  check('Phase 60: the market offers recruiting staff', recCands.length > 0, recCands.length + ' rec candidates over 40 markets');
+  check('Phase 60: a recruiting hire coaches nobody (no boost, no group)',
+    recCands.every(c => !c.boost && !c.groups), recCands.filter(c => c.boost || c.groups).length + ' violations');
+  check('Phase 60: recruiting staff are cheaper than coordinators (off-field, not a coordinator)',
+    (() => {
+      const rec = recCands.map(c => c.salary), co = [];
+      for (let s = 1; s <= 40; s++) genCoachMarket(s, 2027, w).forEach(c => { if (c.tier === 'coord') co.push(c.salary); });
+      const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
+      return avg(rec) < avg(co);
+    })(), 'a department is an expense, not a coordinator');
+  check('Phase 60: every recruiting role is a known REC_ROLES code',
+    recCands.every(c => REC_ROLES.some(r => r[0] === c.role)));
+  // The safety proof for folding them into `roles` rather than a side stream: the market SIZE and
+  // the rating draw are untouched, so the three checks above this block still hold. Asserted here so
+  // a future phase cannot quietly widen the market and blame it on recruiting.
+  check('Phase 60: adding recruiting roles did not resize the market',
+    [1, 5, 9, 17, 40].every(s => { const n = genCoachMarket(s, 2027, w).length; return n >= 24 && n <= 40; }));
+
+  /* payroll == Σ salaries once a rec hire is on the books (the whole point of requirement 2 — a
+     fleet of scouts is a budget line, and `resolveFinances` must actually charge for it). */
+  const t2 = { payroll: 0, staff: genStaff(rng(7), 70) };
+  t2.staff.push(Object.assign({}, recCands[0], { tier: 'rec', groups: null, boost: 0 }));
+  t2.payroll = t2.staff.reduce((s, x) => s + x.salary, 0);
+  check('Phase 60: payroll includes recruiting staff',
+    t2.payroll === t2.staff.reduce((s, x) => s + x.salary, 0) && t2.payroll > genStaff(rng(7), 70).reduce((s, x) => s + x.salary, 0),
+    'payroll ' + Math.round(t2.payroll / 1000) + 'k');
+  check('Phase 60: recruiting staff confer no rating (staffBoosts sees nothing)',
+    (() => { const m = {}; t2.staff.forEach(c => { if (!c.boost || !c.groups) return; c.groups.forEach(g => m[g] = (m[g] || 0) + c.boost); });
+      const m0 = {}; genStaff(rng(7), 70).forEach(c => { if (!c.boost || !c.groups) return; c.groups.forEach(g => m0[g] = (m0[g] || 0) + c.boost); });
+      return JSON.stringify(m) === JSON.stringify(m0); })());
 })();
 
 /* 4) buyout / hire costs are sane */

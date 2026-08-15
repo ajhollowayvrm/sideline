@@ -451,6 +451,33 @@ still serves it with zero config.
   held and `26-dynasty` still reads STABLE. **No save bump.** `reclab` 87, `qa` 338.
   *(→ `docs/phases/recruiting.md`.)*
 
+- **Phase 60 — attention is the resource.** Opens a three-phase arc on the recruiting *experience*
+  (60 attention/staff · 61 the prospect as a person · 62 who actually makes it), after 56–59 rebuilt
+  the engine without ever asking what the player does on a Tuesday. **Entirely app-layer and
+  player-only — the fenced RECRUIT ENGINE does not move**, which is the phase's safety proof:
+  `reclab` finished on **87 unchanged** and `23-reccompare` came back **byte-identical** to the
+  committed baseline. **It measured first, and the loop was broken at both ends**: a full season of
+  doing literally nothing signed a blue-blood **25 players and the #1 class in America** (effort
+  worth +5.4%) while the bottom of the league signed **zero** — the Phase 44 cliff, re-exposed. One
+  cause, not two: `decayNeglect` cooled the recruits on your BOARD, so the ~120 prospects seeded as
+  suitors that you never opened a slot for grew for free — **you were rewarded for not tracking a
+  recruit**, which reads as a giveaway where the passive ceiling clears `COMMIT_THRESH` and as a
+  cliff where it doesn't. Fixed by applying the same rule consistently (`REC_DRIFT_DECAY` on
+  untouched relationships — designed, not fitted, and swept to show 2.2 is the knee rather than a
+  cliff). **Requirement 2**: `REC_ROLES` join `COORD_ROLES`/`POS_COACHES` as `tier:'rec'` staff who
+  are inert everywhere a coach belongs (`staffBoosts` already skips a group-less entry) and real in
+  `team.payroll`; they carry weekly points, board slots and standing orders scaled by rating, ride
+  the **existing** market without resizing it, and **AI teams get none**, so no fitted quantity
+  moves. **Requirement 1**: the Phase 44 global autopilot is deleted for per-recruit **standing
+  orders** — a named staffer works a named recruit at his own rating and takes the off-priority
+  multiplier that already existed, because he does not know what the kid wants. The first cut
+  exempted delegated recruits from decay *and* pushed them, and the probe caught it in one run:
+  hands-off-but-staffed signed 25 for #1 while a coach who worked his board signed 14 for #16 — the
+  autopilot rebuilt under a new name. Landed: worked > delegated > ignored at every prestige band,
+  attention worth +18% / +128% / +295% top to bottom. Save **v49**. `econlab` 33 → **40** (and its
+  role tables now live-grab instead of drifting), `qa` 341 → **344**.
+  *(→ `docs/phases/recruiting.md`.)*
+
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
 stays fast). This is a design choice, not a backlog. Per-doc "Deliberately out of scope"
@@ -526,11 +553,11 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   stored inside `state`. The pure decision (`cloudResolve`) is fenced as the CLOUD ENGINE and
   gated by `cloudlab`; the backend is `infra/` (SAM). See `docs/phases/cloud.md`.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **47**). Each step backfills the fields its phase added and re-derives
+  (currently **49**). Each step backfills the fields its phase added and re-derives
   ratings/ranks where needed; most recent steps are structural no-ops (sparse per-player
-  fields / derived data read as their defaults) — **v47 is the exception**: it genuinely mutates
-  every player, deriving a six-attribute profile re-centred onto the `ov` he already had. The full
-  v1→v47 migration ladder is
+  fields / derived data read as their defaults) — **v47/v48 are the exceptions**: they genuinely
+  mutate every player, deriving an attribute profile re-centred onto the `ov` he already had (v48
+  also splits `S` into `FS`/`SS` and packs the row into `p.at`). The full v1→v49 migration ladder is
   documented inline in `migrateState` in `index.html`, and each phase's design doc in
   `docs/phases/` records its save-shape change. **Bump `version` + extend `migrateState`
   on any save-shape change.**
@@ -566,12 +593,16 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
   weeklyHonors: [ ... ],         // Player-of-the-Week log (Phase 3.5)
-  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage, intents, doubles, visitsLeft, visitPlan, report } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14); intents = {recruitId:[{action,...,cost,label,isDouble?,nilSpend?}]} = this week's QUEUED actions (≤2/recruit; a 'nil' action pays nilSpend $ from budget — Phase 37), resolved at the week change (Phase 33/35); doubles = weekly double-down tokens (Phase 35); visitsLeft = season official-visit budget (Phase 37); visitPlan = {week:[recruitId]} = recruits booked onto home-game weekends (Phase 38); report = {week, reactions:[…], note} = last week's board report, transient (Phase 34/35)
+  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage, intents, doubles, visitsLeft, visitPlan, report } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14); intents = {recruitId:[{action,...,cost,label,isDouble?,nilSpend?}]} = this week's QUEUED actions (≤2/recruit; a 'nil' action pays nilSpend $ from budget — Phase 37), resolved at the week change (Phase 33/35); doubles = weekly double-down tokens (Phase 35); visitsLeft = season official-visit budget (Phase 37); visitPlan = {week:[recruitId]} = recruits booked onto home-game weekends (Phase 38); report = {week, reactions:[…], note} = last week's board report, transient (Phase 34/35); orders = {recruitId: staffId} = Phase 60 standing orders, capped by the `tier:'rec'` staff you employ and resolved each week by `applyStandingOrders` (replaced the Phase 44 `autopilot` flag)
   offseasonReport: { year, graduated, tracked, freshmen, departed } | undefined,  // last rollover recap (Phase 5)
   world: { teams: [ Team, ... ] }
 }
 
-// Recruit: { id, fn, ln, pos, st, stars, svc, ov, pot, spd,agi,str,awr,bal,dur, mot,comp, rebel, scout, prefs:[primary,secondary],
+// Recruit: { id, fn, ln, pos, st, stars, svc, ov, pot, at (the packed position-attribute row), arch, pur,
+//   mot,comp,ego, rebel, scout, prefs:[primary,secondary],
+//   `at`/`arch`/`pur` are the Phase 52 profile — the six flat `spd/agi/str/awr/bal/dur` columns this
+//   line used to list were retired by Phase 51/52 and survive only in `RECRUIT_PKEYS_V1` for decoding
+//   pre-v48 saves. See `RECRUIT_PKEYS` for the live persisted set.
 //   svc = the recruiting SERVICES' star ranking (Phase 51) — over-rates a big ceiling by a tier and is
 //   what the board displays via `recStars()`; `stars` stays the true tier that drives mechanics.
 //   iv:{ [teamId]: interest }, committedTo: teamId|null, signed, offered, visited, promise, alumni?, decideWeek?, hits?, finalists?, _flipped? }
@@ -615,6 +646,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   staff: [ { role, title, name, rating, salary, years,
              tier, scope, groups, boost } ],
   //   tier: "coord" (OC/DC/STC, side-wide) | "pos" (position coach, group)
+  //         | "rec" (Phase 60 off-field recruiting staff — no group, boost 0, so `staffBoosts`,
+  //           `devRateFor` and `advanceCoachCarousel` all skip them; they cost payroll and buy
+  //           weekly recruiting points / board slots / standing orders. Player teams only.)
   //   groups: [posCode,...] the coach buffs;  boost: OVR pts added to each (coord 0-2, pos 0-3)
   //   scope: display label ("OFF"/"DEF"/"ST" for coords, role code for position coaches)
   natRank, confRank, divRank,

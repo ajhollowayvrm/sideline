@@ -258,6 +258,19 @@ const POS_COACHES=[["QB","QBs Coach","QB",["QB"]],["RB","RBs Coach","RB",["RB"]]
 ["WR","Pass-Catchers Coach","WR/TE",["WR","TE"]],["OL","O-Line Coach","OL",["OT","OG","C"]],
 ["DL","D-Line Coach","DL",["DE","DT"]],["LB","LBs Coach","LB",["LB"]],
 ["DB","DBs Coach","DB",["CB","FS","SS"]]];
+// Recruiting staff (Phase 60). Off-field hires: they coach nobody, so they carry NO position group
+// and NO boost — `staffBoosts` skips any entry without both, `devRateFor` filters on
+// tier 'coord'/'pos', and `advanceCoachCarousel` only churns coordinators, so a 'rec' hire is inert
+// in ratings, development and the carousel by construction. What it DOES do is cost real money
+// (team.payroll → resolveFinances) and buy recruiting CAPACITY: weekly points, board slots, and the
+// standing orders you can hand out. [code, title, scope, points, slots, orders, salary multiplier]
+// Deliberately PLAYER-ONLY — genStaff never generates one, so no AI team's aiBudget (a fitted
+// quantity) moves and the measured recruiting economy is untouched.
+const REC_ROLES=[
+["RC","Recruiting Coordinator","REC",2.2,3,3,0.80],
+["AS","Area Scout","REC",1.4,2,2,0.50],
+["DPP","Dir. of Player Personnel","REC",3.0,4,4,1.05]];
+const REC_STAFF_CAP=4;          // how many off-field recruiting hires a program can carry at once
 
 const ARCHETYPES=[
 ["Recruiter","Closes on talent. Recruiting boards open wider and visits convert harder."],
@@ -1013,6 +1026,19 @@ function staffBoosts(staff){
   (staff||[]).forEach(c=>{if(!c.boost||!c.groups)return;c.groups.forEach(code=>{m[code]=(m[code]||0)+c.boost;});});
   return m;
 }
+/* ---- recruiting staff (Phase 60) ----
+   The off-field hires that decide how much recruiting a program can actually DO in a week. They
+   confer no rating, so everything above is untouched; what they confer is CAPACITY, and each of the
+   three readouts below scales with the man's rating — a $1.1M Director of Player Personnel is worth
+   more than two cheap area scouts, which is the whole shape of the decision. */
+function recStaff(team){return ((team&&team.staff)||[]).filter(c=>c.tier==='rec');}
+// How much one hire is worth, scaled by rating around the market's midpoint (45..97 → ~0.75..1.35).
+function recStaffMult(c){return clamp(0.75+((c.rating||60)-45)/87,0.75,1.35);}
+function recStaffCap(team,idx){   // idx: 3 = weekly points, 4 = board slots, 5 = standing orders
+  let t=0;
+  recStaff(team).forEach(c=>{const rr=REC_ROLES.find(x=>x[0]===c.role);if(rr)t+=rr[idx]*recStaffMult(c);});
+  return t;
+}
 function teamRatings(roster,staff){
   const boost=staffBoosts(staff);
   const eff=p=>clamp(p.ov+(boost[p.pos]||0),40,99);
@@ -1033,7 +1059,10 @@ function reRateRoster(t){
   return t;
 }
 // boost = small, derived from rating. Coordinators 0..2 (side-wide); position coaches 0..3.
-function coachBoost(tier,rating){return tier==='coord'?clamp(Math.round((rating-55)/20),0,2):clamp(Math.round((rating-50)/15),0,3);}
+// Phase 60: a 'rec' hire is off-field — he buffs no position group, so his boost is 0 by definition.
+// (`staffBoosts` would skip him anyway on the missing `groups`; this makes it true at the source, so
+// nothing renders him as a +N coach.)
+function coachBoost(tier,rating){return tier==='rec'?0:tier==='coord'?clamp(Math.round((rating-55)/20),0,2):clamp(Math.round((rating-50)/15),0,3);}
 function genStaff(r,prestige){
   const mk=(code,title,tier,scope,groups,mult)=>{
     const rt=clamp(Math.round(prestige*0.5+ri(r,-8,12)+35),45,95);
@@ -1867,7 +1896,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:48,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:49,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      rivalries:null,rivalryHeat:null,records:null,lastRealign:null,
@@ -2245,6 +2274,16 @@ function migrateState(state){
     recomputeRanks(state.world);
     state.version=48;                  // SIM_MODEL is 7, so pre-Phase-52 games decline replay rather
   }                                    // than re-simming: every channel now reads a different stat.
+  if((state.version||1)<49){
+    // Phase 60 — attention is the resource. The Phase 44 global autopilot is gone, replaced by
+    // per-recruit standing orders you can only hand out to recruiting staff you actually employ.
+    // Structural: an old save simply arrives with no orders and no recruiting staff, which is the
+    // honest starting state (`recStaffCap` reads 0 and the board is worked by hand until you hire).
+    // The one thing worth noting is that a mid-season load will see its weekly budget drop, because
+    // `weeklyPoints` re-based off the scouting facility onto payroll — that is the phase, not a bug.
+    if(state.recruiting){state.recruiting.orders=state.recruiting.orders||{};delete state.recruiting.autopilot;}
+    state.version=49;
+  }
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -3665,7 +3704,7 @@ const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.22,GEO_FIT:0.02,
   TIER5:88,TIER4:70,TIER3:50,TIER2:32,PULL_W:21,OVER_W:60,OVER_FLOOR:0.3,SUIT_NOISE:1.1,
   PASSIVE_RATE:0.10,CEIL_BASE:60,TGT_MEAN:19.2,TGT_SD:5.5,TGT_PRES:1.15,TGT_MIN:12,AI_VALUE:0.06,AI_PIVOT:14,
   FOG_ATTR:10,FOG_ARCH:35,FOG_PUR:70,
-  COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:16,DECOMMIT_GAP:18,
+  COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:8,DECOMMIT_GAP:18,
   AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.3,NEGLECT_DECAY:3.5,
   AI_VISIT_P:0.25,FINALISTS:4,FINAL_READY:0.55,FINAL_BAR:58};
 
@@ -4639,14 +4678,20 @@ function facilityUpgradeCost(key,level){
 function genCoachMarket(seed,year,world){
   const r=rng((seed^hashStr('market'+year))>>>0);
   const roles=[...COORD_ROLES.map(c=>({code:c[0],title:c[1],tier:'coord',side:c[2]})),
-               ...POS_COACHES.map(c=>({code:c[0],title:c[1],tier:'pos',scope:c[2],groups:c[3]}))];
+               ...POS_COACHES.map(c=>({code:c[0],title:c[1],tier:'pos',scope:c[2],groups:c[3]})),
+               // Phase 60: off-field recruiting staff share the market, so they surface in the same
+               // carousel sheet the player already uses. Folded into `roles` rather than generated on
+               // a side stream deliberately: the market SIZE is still `ri(r,24,40)` and the rating
+               // draw is unchanged, so econlab's size/top-heavy/determinism checks all still hold —
+               // only the mix of what is on offer moves.
+               ...REC_ROLES.map(c=>({code:c[0],title:c[1],tier:'rec',scope:c[2],rec:c}))];
   const n=ri(r,24,40), out=[];
   for(let i=0;i<n;i++){
     const role=pick(r,roles);
     const rating=clamp(Math.round(48+Math.pow(r(),1.8)*48+ri(r,-3,3)),45,97);  // top-heavy: few elite
     const groups=role.tier==='coord'?POS.filter(p=>p[1]===role.side).map(p=>p[0]):role.groups;
     const scope=role.tier==='coord'?{off:'OFF',def:'DEF',st:'ST'}[role.side]:role.scope;
-    const mult=role.tier==='coord'?(role.code==='STC'?1.3:2.4):1;
+    const mult=role.tier==='coord'?(role.code==='STC'?1.3:2.4):role.tier==='rec'?role.rec[6]:1;
     const salary=Math.max(90000,Math.round((rating*8500+120000)*mult));
     out.push({id:'fa'+year.toString(36)+i.toString(36),role:role.code,title:role.title,
       name:pick(r,FN)+' '+pick(r,LN),rating,salary,years:ri(r,2,4),
@@ -6500,6 +6545,13 @@ function hireCoach(team,cand,slotRole){
     const groups=POS.filter(p=>p[1]===slot[2]).map(p=>p[0]);
     const scope={off:'OFF',def:'DEF',st:'ST'}[slot[2]];
     hired=fitCoachToSlot(cand,slot[0],slot[1],scope,groups,'coord',r);
+  }else if(cand.tier==='rec'){
+    // Phase 60: recruiting staff are not a SLOT — you carry as many as you can afford, up to
+    // REC_STAFF_CAP, and duplicates of the same role are fine (two area scouts is a real thing).
+    const rr=REC_ROLES.find(x=>x[0]===cand.role);
+    if(!rr){toast('Unknown role');return false;}
+    if(recStaff(team).length>=REC_STAFF_CAP){toast('Recruiting staff is full — let someone go first');return false;}
+    hired=fitCoachToSlot(cand,rr[0],rr[1],rr[2],null,'rec',r);
   }else{
     const pc=POS_COACHES.find(x=>x[0]===cand.role);
     if(!pc){toast('Unknown role');return false;}
@@ -6613,10 +6665,20 @@ function nilFacMult(team){return 0.7+((team&&team.fac&&team.fac.nil||5)/10)*0.6;
 function myMods(){return coachMods(S.coach);}
 // Phase 33: the weekly budget is driven by the SCOUTING facility (with a small base + coach-archetype
 // term, so Recruiter still matters) — not prestige. Better scouting → more weekly actions.
+// Phase 60: the budget is now mostly PAYROLL. The scouting facility keeps a term (it is the
+// building, and the Phase 33 scout-then-pitch payoff runs off it) at half its old weight, so the
+// gap between an unstaffed program and a fully staffed one is the staff. An unstaffed program lands
+// ~10 points a week against the old flat 14 — enough to work a handful of recruits properly, which
+// is the point: you cannot recruit everyone, and buying the ability to costs real money every year.
 function weeklyPoints(){const t=controlled(),m=myMods();
   const sc=(t.fac&&t.fac.scouting)||5;
-  return Math.max(4,Math.round(REC.BASE_POINTS+sc*1.6+m.points));}
-function boardSlots(){return Math.max(6,REC.SLOTS+myMods().slots);}
+  return Math.max(4,Math.round(REC.BASE_POINTS+sc*0.8+recStaffCap(t,3)+m.points));}
+// Likewise the board: how many prospects you can even TRACK is how many people you employ to track
+// them. `REC.SLOTS` dropped 16→8 for this (it is read only here, never inside the fence), so a
+// staffed program lands back around the old 16 and a big department runs past it.
+function boardSlots(){return Math.max(6,REC.SLOTS+Math.round(recStaffCap(controlled(),4))+myMods().slots);}
+// Phase 60: how many recruits your staff can hold standing orders on at once (0 with no staff).
+function orderCap(){return Math.round(recStaffCap(controlled(),5));}
 // The seed for THIS recruiting cycle. Phase 57b — a real shipped bug, found while checking that the
 // new per-team `classTarget` draw varied year to year. It did not, and neither did anything else:
 // `initRecruiting` seeded the whole national class off `S.seed`, which never changes for the life of
@@ -6630,7 +6692,9 @@ function initRecruiting(){
   // doubles = this week's double-down tokens (Phase 35) that let one recruit hold a 2nd action.
   // visitsLeft = the season-long official-visit budget; visitPlan = recruits booked per home-game
   //   weekend (Phase 38 scheduler — official visits are now a calendar, reserved at booking).
-  S.recruiting={cycle:(S.year||1),points:weeklyPoints(),pool:genRecruits(recruitSeed(),S.world.teams),board:[],signed:false,stage:'open',intents:{},doubles:doublesPerWeek(),visitsLeft:SEASON_VISITS,visitPlan:{},report:null,autopilot:true};   // Phase 44: staff works the board by default
+  // orders = the Phase 60 standing orders, {recruitId: staffId} — capped by the recruiting staff you
+  //   employ, and resolved each week by applyStandingOrders. Replaces the Phase 44 `autopilot` flag.
+  S.recruiting={cycle:(S.year||1),points:weeklyPoints(),pool:genRecruits(recruitSeed(),S.world.teams),board:[],signed:false,stage:'open',intents:{},doubles:doublesPerWeek(),visitsLeft:SEASON_VISITS,visitPlan:{},report:null,orders:{}};
 }
 // Official visits remaining this season — reserved at booking onto a weekend (Phase 38).
 function visitsLeft(){const R=S.recruiting;return (R&&R.visitsLeft==null?SEASON_VISITS:R.visitsLeft);}
@@ -6738,28 +6802,58 @@ function buildRecruitReport(snaps,week,note){
   rows.sort((a,b)=>a.pri-b.pri||b.stars-a.stars||Math.abs(b.myDelta)-Math.abs(a.myDelta));
   S.recruiting.report={week,reactions:rows.slice(0,10),note:note||null};
 }
-// Phase 44: recruiting autopilot — your staff works the board when you don't. Each week it maintains a
-// slate of good-fit pursuits (auto-offering to fill it) and pushes them like a rival program, so a
-// hands-off program still lands a real, below-average class instead of an empty one. Deliberately MODEST
-// (staff-level budget, no coach mods) — an engaged coach who targets manually still out-recruits it. It
-// works directly on `iv` (behind the scenes, no board clutter) and mirrors the AI brain it competes with.
-function autoRecruitWeek(week){
-  const R=S.recruiting; if(!R||R.autopilot===false||R.signed)return;
-  const me=controlled(), meId=S.teamId, pool=R.pool;
-  const isFin=rec=>!rec.finalists||rec.finalists.indexOf(meId)>=0;
-  const mine=pool.filter(rec=>!rec.signed&&rec.iv[meId]!=null&&(!rec.committedTo||rec.committedTo===meId)&&isFin(rec));
-  const TARGET=22;   // keep roughly a class-worth of active pursuits alive
-  if(mine.length<TARGET){
-    const cand=pool.filter(rec=>!rec.signed&&!rec.committedTo&&rec.iv[meId]==null&&(!rec.finalists||rec.finalists.indexOf(meId)>=0))
-      .map(rec=>({rec,fit:recruitFit(me,rec)})).sort((a,b)=>b.fit-a.fit);
-    for(const {rec,fit} of cand){ if(mine.length>=TARGET)break;
-      rec.iv[meId]=Math.max(rec.iv[meId]||0,clamp(Math.round(14+fit*22),8,60)); mine.push(rec); }
+/* ---- standing orders (Phase 60) — what replaced the Phase 44 autopilot -------------------------
+   The autopilot was a single global switch, ON by default, that spent 85% of a focused rival's
+   weekly budget for zero points, zero money and zero board slots, and quietly auto-offered its way
+   to a 22-recruit slate you never saw. It made ignoring recruiting a viable strategy, which is the
+   thing this phase exists to end.
+
+   What replaces it is the same idea with a price and a ceiling: you DELEGATE a named recruit to a
+   named staffer. Three rules make delegation a real decision rather than a free win —
+     1. You can only delegate as many recruits as you employ people to handle (`orderCap`), and
+        those people are on payroll every year.
+     2. A staffer works at HIS rating, not yours.
+     3. A staffer does not know what the kid wants. He gets the off-priority multiplier that already
+        exists in `buildIntent` for pitching the wrong angle — one number, already in the code,
+        already tuned. That is what makes attention strictly better than delegation.
+   A delegated recruit still takes the Phase 35 neglect decay, because you personally did nothing;
+   the staffer's push is what cancels it. So the net is a good staffer holding serve and a weak one
+   losing ground slowly, which is what makes his RATING the thing you are buying. Delegation buys
+   breadth; only attention buys depth. */
+const ORDER_MISMATCH=0.7;      // a staffer pitches blind — the same penalty as pitching the wrong angle
+function recOrders(){const R=S.recruiting;return R?(R.orders||(R.orders={})):{};}
+function orderCount(){return Object.keys(recOrders()).length;}
+function orderStaff(rec){const id=recOrders()[rec.id];if(!id)return null;
+  return recStaff(controlled()).find(c=>c.id===id)||null;}
+// Assign / clear a standing order. Returns true if the board changed.
+function setRecOrder(rec,staffId){
+  const R=S.recruiting, O=recOrders();
+  if(!R||R.signed)return false;
+  if(!staffId){delete O[rec.id];return true;}
+  if(rec.signed){toast('Already signed');return false;}
+  if(!onBoard(rec)){toast('Offer him first — orders are for recruits on your board');return false;}
+  if(!O[rec.id]&&orderCount()>=orderCap()){
+    toast(orderCap()?'Your staff is at capacity — hire more, or free up an order':'Hire recruiting staff to delegate');return false;}
+  O[rec.id]=staffId;return true;
+}
+// Resolve every standing order for the week. Mirrors the AI brain's action (aiActionGain +
+// recScoutMult) so a delegated push is the same KIND of thing a rival program does — then takes the
+// blind-pitch penalty and the staffer's own quality on top.
+function applyStandingOrders(week){
+  const R=S.recruiting; if(!R||R.signed)return [];
+  const me=controlled(), meId=S.teamId, O=recOrders(), worked=[];
+  const staff=recStaff(me);
+  const rr=rng((S.seed^hashStr('orders'+week+meId))>>>0);
+  for(const rid in O){
+    const rec=recById(rid), c=staff.find(x=>x.id===O[rid]);
+    // A dropped recruit, a signed one, or a fired staffer clears the order rather than lingering.
+    if(!rec||rec.signed||!c||!onBoard(rec)){delete O[rid];continue;}
+    if(rec.finalists&&rec.finalists.indexOf(meId)<0)continue;      // cut suitors can't be worked
+    if(rec.committedTo&&rec.committedTo!==meId)continue;
+    rec.iv[meId]=clamp((rec.iv[meId]||0)+aiActionGain(me,rec,rr)*recScoutMult(rec)*ORDER_MISMATCH*recStaffMult(c),0,100);
+    worked.push(rid);
   }
-  let budget=aiBudget(me)*0.85;   // slightly under a focused rival — hands-off is viable, not optimal
-  const targets=mine.filter(rec=>rec.committedTo!==meId).map(rec=>({rec,pr:aiPriority(me,rec)})).sort((a,b)=>b.pr-a.pr);
-  const rr=rng((S.seed^hashStr('auto'+week+meId))>>>0);
-  for(const {rec} of targets){ if(budget<REC.AI_COST)break; budget-=REC.AI_COST;
-    rec.iv[meId]=clamp((rec.iv[meId]||0)+aiActionGain(me,rec,rr)*recScoutMult(rec),0,100); }
+  return worked;
 }
 function resolveRecruitingWeek(week){
   if(!S.recruiting||S.recruiting.signed)return [];
@@ -6768,7 +6862,15 @@ function resolveRecruitingWeek(week){
   (visitPlan()[week]||[]).forEach(id=>actedOn.add(id));   // Phase 38: a recruit you hosted for a visit isn't "neglected"
   const visitNote=applyWeekendVisits(week);   // Phase 38: resolve official visits booked for this home weekend
   applyPlayerIntents();   // Phase 33: your queued actions land first, then the AI brain's, then commitments
-  autoRecruitWeek(week);  // Phase 44: your staff fills out the class on the recruits you didn't personally work
+  // Phase 60: your staff works the recruits you delegated. Note the ORDER and what is NOT done here:
+  // the push lands BEFORE decayNeglect and a delegated recruit is deliberately NOT added to
+  // `actedOn`, so he still takes the neglect hit. Delegation is a push against a decay, netting near
+  // zero — he holds serve. The first cut of this exempted delegated recruits from decay AND pushed
+  // them, and the probe caught it immediately: a fully delegated hands-off program signed 25 for the
+  // #1 class while a coach who actually worked his board signed 14 for #16, because there are always
+  // more board slots than weekly points and delegation was buying two benefits for one price. That
+  // is the Phase 44 autopilot rebuilt under a new name.
+  applyStandingOrders(week);
   decayNeglect(actedOn);            // Phase 35: board recruits you ignored cool on you (upkeep matters)
   const rippleNote=applyLeagueRipple(week); // Phase 35/37: every team's Saturday result moves its board (note=yours)
   applyAINil(week);                 // Phase 37: AI programs place NIL bids on the recruits they're chasing
@@ -6882,12 +6984,39 @@ function applyPlayerIntents(){
 // Phase 35 — decay-on-neglect: a board recruit you DIDN'T work this week cools on you a little (you have to
 // maintain relationships). Player-only (your interest), so the engine envelope is untouched. Skips recruits
 // committed elsewhere (not your relationship to keep) — but your own verbals DO decay (neglect risks a flip).
+/* Phase 60 measured what the Phase 35 rule was actually doing, and found it backwards at the top of
+   the league. `decayNeglect` cooled the recruits ON YOUR BOARD that you didn't work — but a program
+   is seeded as a suitor on ~120 prospects at generation, and the ones you never opened a board slot
+   for were exempt. Passive growth then carried them to a commitment for free. So you were REWARDED
+   for not tracking a recruit: board him and he decays, ignore him entirely and he climbs.
+
+   Measured over three seeds and three prestige bands, a full season of doing literally nothing:
+     blue-blood  25 signees, 19 blue-chips, the #1 class in the country — effort worth +5.4%
+     mid-major   22 signees, #41 — effort worth +16.7%
+     bottom       0 signees, #134 — effort worth everything
+   A coach at the top had no reason to open the recruiting screen at all, which is the thing this
+   phase exists to end.
+
+   The fix is the same rule applied consistently rather than a new mechanism: a relationship you have
+   never touched cools too. It is DELIBERATELY GENTLER than the board rate — a board recruit you
+   skipped is a target you're actively losing, an unopened relationship is just drifting — and it is
+   sized to cancel part, not all, of passive growth, so a blue-blood still signs a genuinely good
+   class on pedigree alone. It just no longer signs the best one in America by accident.
+   App-layer and player-only, like the rest of decay: the engine, reclab, and every measured target
+   in cfb-recruiting.md are untouched. */
+const REC_DRIFT_DECAY=2.2;   // per week, on a suitor relationship you have never opened a board slot for
 function decayNeglect(actedOn){
   const me=S.teamId, R=S.recruiting;
   R.board.forEach(id=>{ if(actedOn.has(id))return; const rec=recById(id);
     if(!rec||rec.signed||rec.iv[me]==null)return;
     if(rec.committedTo&&rec.committedTo!==me)return;
     rec.iv[me]=clamp(rec.iv[me]-REC.NEGLECT_DECAY,0,100);
+  });
+  // …and every prospect who rates you but whom you have never put on the board.
+  R.pool.forEach(rec=>{
+    if(rec.signed||rec.iv[me]==null||R.board.includes(rec.id))return;
+    if(rec.committedTo)return;                       // his own verbal (to anyone) is a different story
+    rec.iv[me]=clamp(rec.iv[me]-REC_DRIFT_DECAY,0,100);
   });
 }
 // Phase 35/37 — season ripple, now LEAGUE-WIDE: every team's Saturday result energizes (or cools) the recruits
@@ -8956,25 +9085,27 @@ function renderRecruiting(app){
 }
 // Phase 33: the week's queued recruiting plan — every set intent, the points it reserves, and a
 // reminder that they resolve at the next advance (alongside every rival's actions).
-// Phase 44: the staff-autopilot toggle — your assistants recruit the board when ON (default), so a
-// hands-off week still builds a class; turn OFF for full manual control.
-function autopilotToggle(c){
-  const R=S.recruiting, on=R.autopilot!==false;
-  const t=el('button','btn sm '+(on?'':'line'),(on?'🤖 Staff autopilot: ON':'✋ Full control (autopilot OFF)'));
-  t.style.cssText='margin-top:8px;width:100%';t.dataset.tid='rec-autopilot';
-  t.onclick=()=>{R.autopilot=!on;render();toast(R.autopilot?'Staff will help work the board':'You’re on your own — full control');};
+// Phase 60: the standing-orders line — how much of the board your staff is holding for you, and the
+// nudge to hire when the answer is "none". Replaces the Phase 44 autopilot toggle.
+function ordersLine(c){
+  const cap=orderCap(), n=orderCount();
+  const t=el('div','meta dim');t.style.cssText='margin-top:8px;font-size:11px';t.dataset.tid='rec-orders';
+  t.innerHTML=cap
+    ?`🤖 Staff orders <span class="accent">${n}/${cap}</span> — delegated recruits hold serve; only you move them.`
+    :'✋ No recruiting staff — every recruit on your board is yours to work, every week.';
   c.append(t);
-  if(on){const h=el('div','meta dim','Your assistants fill out the class on recruits you don’t personally work.');h.style.cssText='margin-top:5px;font-size:11px';c.append(h);}
+  if(!cap){const b=el('button','btn sm line','Hire recruiting staff →');b.style.cssText='margin-top:6px;width:100%';
+    b.onclick=()=>{UI.view='team';UI.tab='coaches';render();};c.append(b);}
 }
 function planCard(v){
   const R=S.recruiting, ids=Object.keys(R.intents||{});
   const c=el('div','card');c.dataset.tid='rec-plan';c.style.marginTop='10px';
   const total=intentCount();
   // Phase 35: weekly scarcity — points, double-down tokens, and official-visit cap on one line.
-  const caps=`<span class="meta dim">${R.points||0} pts · ⚡${R.doubles||0} double${(R.doubles||0)===1?'':'s'} · 🏟️ ${totalBooked()} booked · ${visitsLeft()} left</span>`;
+  const caps=`<span class="meta dim">${R.points||0} pts · 📋 ${R.board.length}/${boardSlots()} · ⚡${R.doubles||0} double${(R.doubles||0)===1?'':'s'} · 🏟️ ${totalBooked()} booked · ${visitsLeft()} left</span>`;
   if(!total){c.innerHTML=`<div class="row spread"><span class="meta dim">This week’s plan</span>${caps}</div>
     <div class="meta" style="margin-top:4px">No actions queued — open a target and set one. They resolve when you advance.</div>`;
-    autopilotToggle(c);v.append(c);return;}
+    ordersLine(c);v.append(c);return;}
   const reserved=Object.values(R.intents).reduce((s,a)=>s+a.reduce((x,it)=>x+(it.cost||0),0),0);
   c.innerHTML=`<div class="row spread"><span class="meta dim">This week’s plan · ${total} action${total===1?'':'s'} · ${reserved} pts</span></div><div class="row spread" style="margin-top:2px">${caps}</div>`;
   ids.map(recById).filter(Boolean).forEach(rec=>{
@@ -8988,7 +9119,7 @@ function planCard(v){
     row.querySelector('button').onclick=()=>recruitSheet(rec);
     row.append(x);c.append(row);
   });
-  autopilotToggle(c);
+  ordersLine(c);
   v.append(c);
 }
 // Phase 34 (legibility): last week's board report — a readable line per recruit (what moved + why), so you
@@ -9028,10 +9159,13 @@ function recruitRow(rec){
   const fin=(!committed&&rec.finalists)?(rec.finalists.indexOf(S.teamId)>=0?' · <span class="good">🎯 Finalist</span>':' · <span class="bad">✂️ Cut</span>'):'';   // Phase 36
   const fa=recFogArch(rec);   // Phase 58: the named shape, once you have scouted him enough to see it
   const archTxt=fa.revealed?' · <span class="dim">'+(fa.pure&&fa.pur>=1.25?'Proto ':'')+fa.name+'</span>':'';
+  // Phase 60: a staffer is holding him. Just the glyph — the meta line already carries the ceiling
+  // read, the interest and any queued action, and adding a surname wrapped it onto a second row.
+  const ordTxt=orderStaff(rec)?' · <span class="dim">🤖</span>':'';
   row.innerHTML=`${recruitStarChip(rec)}
     <div style="flex:1;min-width:0">
       <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rec.fn} ${rec.ln} <span class="dim" style="font-weight:400">${rec.pos} · ${rec.st}</span></div>
-      <div class="meta">${sc.text}${archTxt}${committed?'':' · interest '+mi+'%'}${qLabel?' · <span class="accent">⏳ '+qLabel+'</span>':''}${dw}${fin}</div>
+      <div class="meta">${sc.text}${archTxt}${committed?'':' · interest '+mi+'%'}${qLabel?' · <span class="accent">⏳ '+qLabel+'</span>':''}${ordTxt}${dw}${fin}</div>
       ${committed?'':'<div class="bar" style="margin-top:5px"><i style="width:'+mi+'%"></i></div>'}</div>
     <div style="text-align:right;flex:none;margin-left:8px">${status}</div>`;
   row.onclick=()=>recruitSheet(rec);
@@ -9276,6 +9410,15 @@ function recruitSheet(rec){
       if(arr.length>=2)sc2='Two actions set (double-down used).';
       else if(arr.length===1)sc2=(R.doubles>0?'Tap a 2nd action to stack it (uses a ⚡ double-down).':'A 2nd action will replace the first — no ⚡ left.');
       else sc2='One action/week; stack a 2nd with a ⚡ double-down.';
+      // Phase 60: hand him to a staffer. A standing order keeps him warm every week without spending
+      // your points — but the staffer pitches blind, so he holds serve rather than gaining ground.
+      const cur=orderStaff(rec), cap=orderCap();
+      const ob=el('button','btn sm '+(cur?'':'line'),
+        cur?('🤖 '+cur.title+' — '+cur.name):(cap?'Delegate to staff ('+orderCount()+'/'+cap+')':'No recruiting staff to delegate to'));
+      ob.style.marginTop='9px';ob.dataset.tid='rec-delegate';
+      if(!cap&&!cur)ob.disabled=true;
+      ob.onclick=()=>{if(cur){setRecOrder(rec,null);closeSheet();render();recruitSheet(rec);toast('Order cleared');}else orderSheet(rec);};
+      body.append(ob);
       const drop=el('button','btn sm line','Drop from board');drop.style.marginTop='9px';drop.dataset.tid='rec-drop';
       drop.onclick=()=>{dropRecruit(rec);closeSheet();render();toast('Dropped from board');};
       body.append(drop,el('div','hint center',sc2+'\n'+(R.points||0)+' pts · ⚡'+(R.doubles||0)+' · 🏟️ '+visitsLeft()+' visits left ('+totalBooked()+' booked)'));
@@ -9284,6 +9427,24 @@ function recruitSheet(rec){
     body.append(el('div','hint center','Signing Day has passed — this prospect went unsigned.'));
   }
   openSheet(rec.fn+' '+rec.ln,body);
+}
+// Phase 60: pick which staffer holds a standing order on this recruit. Each shows what he's already
+// carrying, because spreading four orders over one man is the same department either way — the
+// choice that matters is WHO, since a better staffer works the recruit harder (recStaffMult).
+function orderSheet(rec){
+  const body=el('div'), staff=recStaff(controlled());
+  body.append(el('div','hint','A staffer keeps him warm each week for free — but he pitches blind, so he holds ground rather than gaining it. Work the ones you actually want yourself.'));
+  const choice=el('div','choice');choice.style.marginTop='10px';
+  const load={};for(const id in recOrders())load[recOrders()[id]]=(load[recOrders()[id]]||0)+1;
+  staff.forEach(c=>{
+    const b=el('button','opt');b.dataset.tid='order-'+c.id;
+    b.innerHTML=`<div class="t">${c.name} <span class="cap">${c.rating}</span></div>
+      <div class="d">${c.title} · ${load[c.id]||0} recruit${(load[c.id]||0)===1?'':'s'} assigned · ${money(c.salary)}/yr</div>`;
+    b.onclick=()=>{if(setRecOrder(rec,c.id)){closeSheet();render();recruitSheet(rec);toast('Assigned to '+c.name);}};
+    choice.append(b);
+  });
+  body.append(choice);
+  openSheet('Delegate — '+rec.ln,body);
 }
 function pitchSheet(rec){
   const body=el('div'),sc=recScouted(rec);
@@ -9753,11 +9914,25 @@ function coachRow(c,t){
   row.onclick=()=>coachSheet(c,t);
   return row;
 }
+// Phase 60: a recruiting staffer's row. Keyed on `id` rather than `role`, because unlike the
+// one-per-slot position coaches you can carry two area scouts, and two rows cannot share a data-id.
+function recStaffRow(c,t){
+  const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=c.id;row.dataset.tid='rec-staff';
+  const rr=REC_ROLES.find(x=>x[0]===c.role)||[0,0,0,0,0,0], m=recStaffMult(c);
+  row.innerHTML=`<div class="ovr ${c.rating>=80?'elite':''}">${c.rating}</div>
+    <div style="flex:1"><div class="nm">${c.name}</div>
+    <div class="meta">${c.title} · ${c.years}yr deal</div></div>
+    <div style="text-align:right">
+      <div class="cond" style="font-size:15px;font-weight:700">${money(c.salary)}</div>
+      <div style="margin-top:3px"><span class="tag accent" style="font-size:10px">+${(rr[3]*m).toFixed(1)} pts · +${Math.round(rr[5]*m)} orders</span></div></div>`;
+  row.onclick=()=>coachSheet(c,t);
+  return row;
+}
 function renderCoaches(v,t){
   const manage=canManage();
   v.append(el('div','card',`<div class="kv"><span class="k">Total payroll</span><span class="cond" style="font-size:17px">${money(t.payroll)}</span></div>
     <div class="kv"><span class="k">Operating budget</span><span class="cond ${t.budget<0?'bad':''}" style="font-size:17px">${money(t.budget)}</span></div>`));
-  const extra=t.staff.filter(c=>c.tier!=='coord');
+  const extra=t.staff.filter(c=>c.tier==='pos');   // Phase 60: 'rec' hires get their own section below
   v.append(el('h2','sec','Coordinators'));
   // coordinators are fixed slots: show the coach, or a vacancy row that must be filled
   COORD_ROLES.forEach(([code,title,side])=>{
@@ -9774,6 +9949,20 @@ function renderCoaches(v,t){
     if(c)v.append(coachRow(c,t));
     else v.append(vacancyRow(t,code,title,'pos',manage));
   });
+  // Phase 60: recruiting staff — off-field hires who coach nobody and buy recruiting capacity.
+  // Unlike position coaches these are not slots: you carry as many as you can afford, up to the cap.
+  const rs=recStaff(t);
+  const rh=el('div','row spread');rh.style.margin='18px 2px 8px';
+  rh.innerHTML=`<span class="cond" style="font-size:15px;font-weight:700;letter-spacing:.06em">RECRUITING STAFF <span class="dim" style="font-size:12px">(${rs.length}/${REC_STAFF_CAP})</span></span>`;
+  v.append(rh);
+  if(t.id===S.teamId){
+    v.append(el('div','hint','They boost no one’s rating. They buy weekly recruiting points, board slots, and the standing orders you can hand out — for a salary, every year.'));
+    v.append(el('div','card',`<div class="kv"><span class="k">Weekly points</span><span class="cond" style="font-size:16px">${weeklyPoints()}</span></div>
+      <div class="kv"><span class="k">Board slots</span><span class="cond" style="font-size:16px">${boardSlots()}</span></div>
+      <div class="kv"><span class="k">Standing orders</span><span class="cond" style="font-size:16px">${orderCap()}</span></div>`));
+  }
+  if(rs.length)rs.forEach(c=>v.append(recStaffRow(c,t)));
+  else v.append(el('div','empty','No recruiting staff.\nEvery prospect on your board is yours to work, every week.'));
   // coaching carousel — the free-agent market
   if(manage){
     const open=el('button','btn line','Open the coaching carousel →');open.style.marginTop='14px';open.dataset.tid='open-carousel';
@@ -9798,9 +9987,12 @@ function vacancyRow(t,code,title,tier,manage){
 function coachSheet(c,t){
   const body=el('div');const f={};
   const affects=c.boost?`+${c.boost} OVR to ${c.tier==='coord'?'the '+c.scope+' unit':(c.groups||[]).map(posName).join(', ')}`:'No rating boost yet';
+  // Phase 60: an off-field hire has no group — what he affects is the recruiting week, so say that.
+  const rr=c.tier==='rec'?(REC_ROLES.find(x=>x[0]===c.role)||[0,0,0,0,0,0]):null, rm=rr?recStaffMult(c):1;
   body.innerHTML=`<div class="kv"><span class="k">Role</span><span>${c.title}</span></div>
     <div class="kv"><span class="k">Rating</span><span>${c.rating}</span></div>
-    <div class="kv"><span class="k">Group boost</span><span>${affects}</span></div>
+    <div class="kv"><span class="k">${rr?'Recruiting':'Group boost'}</span><span>${rr
+      ?`+${(rr[3]*rm).toFixed(1)} pts/wk · +${Math.round(rr[4]*rm)} board slots · +${Math.round(rr[5]*rm)} orders`:affects}</span></div>
     <div class="kv"><span class="k">Contract</span><span>${c.years} years</span></div>`;
   body.append(fld('Salary ($/yr)',inputEl(c.salary,x=>f.sal=x,'','number')));
   const save=el('button','btn','Update salary');
@@ -9811,7 +10003,7 @@ function coachSheet(c,t){
     const bo=buyoutCost(c);
     const fire=el('button','btn danger','Fire · buyout '+money(bo));fire.style.marginTop='9px';fire.dataset.tid='fire-coach';
     fire.onclick=()=>confirmSheet('Fire '+c.name+'?',
-      (c.tier==='coord'?'Opens a coordinator vacancy you must refill before kickoff. ':'You lose this group’s boost. ')+'Buyout: '+money(bo)+'.',
+      (c.tier==='coord'?'Opens a coordinator vacancy you must refill before kickoff. ':c.tier==='rec'?'You lose his recruiting points, board slots and standing orders — anything he was holding reverts to you. ':'You lose this group’s boost. ')+'Buyout: '+money(bo)+'.',
       ()=>{if(fireCoach(t,c)){render();toast(c.name+' let go');}else render();});
     body.append(fire);
   }else{
@@ -9835,7 +10027,7 @@ function carouselSheet(t,slotRole){
     if(slotRole){
       const isCoord=!!COORD_ROLES.find(c=>c[0]===slotRole);
       cands=cands.filter(c=>isCoord?(c.tier==='coord'):(c.role===slotRole));
-    }else if(filter!=='all')cands=cands.filter(c=>filter==='coord'?c.tier==='coord':c.tier==='pos');
+    }else if(filter!=='all')cands=cands.filter(c=>c.tier===filter);   // Phase 60: 'rec' joins coord/pos
     cands.sort((a,b)=>b.rating-a.rating);
     if(!cands.length){listWrap.append(el('div','empty','No matching free agents right now.'));return;}
     cands.slice(0,40).forEach(c=>{
@@ -9844,7 +10036,9 @@ function carouselSheet(t,slotRole){
       const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=c.id;
       row.innerHTML=`<div class="ovr ${c.rating>=80?'elite':''}">${c.rating}</div>
         <div style="flex:1"><div class="nm">${c.name} ${alum?'<span class="cap">ALUM</span>':''}</div>
-        <div class="meta">${c.title} · ${money(c.salary)}/yr · +${c.boost} boost</div></div>
+        <div class="meta">${c.title} · ${money(c.salary)}/yr · ${c.tier==='rec'
+          ?'+'+((REC_ROLES.find(x=>x[0]===c.role)||[0,0,0,0])[3]*recStaffMult(c)).toFixed(1)+' pts/wk'
+          :'+'+c.boost+' boost'}</div></div>
         <div class="tag accent" style="flex:none">Hire ${money(fee)}</div>`;
       row.onclick=()=>{
         const role=c.tier==='coord'?(slotRole&&COORD_ROLES.find(x=>x[0]===slotRole)?slotRole:c.role):c.role;
@@ -9855,7 +10049,7 @@ function carouselSheet(t,slotRole){
   }
   if(!slotRole){
     const tabs=el('div','tabs');tabs.style.marginBottom='10px';
-    [['all','All'],['coord','Coordinators'],['pos','Position']].forEach(([k,l])=>{
+    [['all','All'],['coord','Coordinators'],['pos','Position'],['rec','Recruiting']].forEach(([k,l])=>{
       const b=el('button',filter===k?'on':'',l);b.onclick=()=>{filter=k;[...tabs.children].forEach(x=>x.classList.remove('on'));b.classList.add('on');draw();};
       tabs.append(b);
     });

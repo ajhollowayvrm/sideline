@@ -1125,6 +1125,152 @@ end. Both are recorded rather than tuned away.
 
 ---
 
+## Phase 60 design — attention is the resource
+
+Decided 2026-08-14 with AJ, opening a three-phase arc on the recruiting **experience** (60 attention
+and staff, 61 the prospect as a person, 62 who actually makes it). Phases 56–59 rebuilt the engine
+and fitted it to 45,735 real prospects; none of that arc asked what the player *does* on a Tuesday.
+
+> **One rule: delegation is strictly worse than your own attention, and you only get so much of
+> either.**
+
+The phase is **entirely app-layer and player-only — the fenced RECRUIT ENGINE does not move.** That is
+not a convenience, it is the safety proof: `reclab` finished the phase on 87/87 unchanged, and
+`22-recprofile` → `23-reccompare` came back **byte-identical to the committed baseline**, so every
+number in `cfb-recruiting.md` is untouched by construction rather than by luck.
+
+### First: measure whether skipping a week is actually free
+
+The plan said not to build anything until a harness showed the loop had a problem. It did. The probe
+runs a full regular season through the real app — so `decayNeglect`, the league ripple, AI NIL and the
+AI brain are all live — and varies only what the coach does. Three seeds, three prestige bands:
+
+| band | doing literally nothing | effort was worth |
+|---|---|--:|
+| blue-blood (91–94) | **25 signees, 19 blue-chips, the #1 class in America** | +5.4% |
+| mid (61) | 22 signees, #41 | +16.7% |
+| bottom (37–44) | **0 signees, #134** | everything |
+
+Both ends were broken, in opposite directions. A coach at Alabama had no reason to open the recruiting
+screen: a full season of ignoring it produced the best class in the country. A coach at Akron signed
+nobody at all — the Phase 44 cliff, fully re-exposed the moment the autopilot came out.
+
+### The cause, and why it was one bug rather than two
+
+`decayNeglect` (Phase 35) cooled the recruits **on your board** that you didn't work. But a program is
+seeded as a suitor on ~120 prospects at generation, and every one you never opened a board slot for was
+exempt — passive growth carried them to a commitment for free. **You were rewarded for not tracking a
+recruit**: board him and he decays, ignore him entirely and he climbs. At a blue-blood, whose fit-set
+passive ceiling sits above `COMMIT_THRESH`, that alone signs the class. At the bottom, whose ceiling
+sits below it, nothing signs at all — which is why the same defect reads as a giveaway at one end and a
+cliff at the other.
+
+The fix is the same rule applied consistently rather than a new mechanism: **a relationship you have
+never touched cools too** (`REC_DRIFT_DECAY`, on suitor relationships not on your board). It is
+deliberately gentler than the board rate — a board recruit you skipped is a target you are actively
+losing, an unopened relationship is merely drifting.
+
+`REC_DRIFT_DECAY` is **designed, not fitted** — `cfb-recruiting.md` has nothing to say about coach
+attention, so like `weekendQuality` and the Phase 58 fog widths it is chosen and its shape recorded.
+Swept, so the choice is not sitting on a cliff (blue-blood, ignoring the board all season):
+
+| `REC_DRIFT_DECAY` | ignored → | attention worth, over a delegated department |
+|--:|---|--:|
+| 0 (pre-phase) | 25 signees, **#2** | 3% |
+| 1.2 | 20.7, #9 | 5% |
+| **2.2 (shipped)** | **8.0, #68** | **18%** |
+| 3.5 | 2.0, #113 | 21% |
+
+2.2 is the knee: ignoring a season genuinely costs a top-5 program its class, while past it the
+marginal value of attention barely improves and the punishment turns absurd.
+
+### Recruiting staff — requirement 2, on payroll
+
+`REC_ROLES` (Recruiting Coordinator / Area Scout / Director of Player Personnel) joins `COORD_ROLES`
+and `POS_COACHES` as `tier:'rec'` entries in `team.staff`. They were nearly free to add because the
+existing plumbing already excludes them everywhere a coach belongs: `staffBoosts` skips any entry
+without `boost`/`groups`, `devRateFor` filters `coord`/`pos`, and `advanceCoachCarousel` only churns
+coordinators. What they *do* reach is `team.payroll` → `resolveFinances`. Each carries three capacity
+numbers — weekly points, board slots, standing orders — scaled by his rating, so a $1.1M Director is
+worth more than two cheap scouts and the hire is a real choice rather than a headcount.
+
+They ride the **existing market**: folded into `genCoachMarket`'s `roles` list rather than a side
+stream, so they surface in the carousel the player already uses. The market's SIZE (`ri(r,24,40)`) and
+rating draw are unchanged, which is why econlab's size / top-heavy / determinism checks all still hold
+— asserted explicitly so a later phase can't widen the market and blame recruiting.
+
+`weeklyPoints` re-bases off the scouting facility onto payroll (`fac.scouting` keeps a term at half
+weight — it is the building, and the Phase 33 scout-then-pitch payoff runs off it), and `REC.SLOTS`
+drops 16 → 8 so the board is as big as the department. **AI teams get none**: `genStaff` is untouched
+and `aiBudget` still reads `fac.scouting`, so no fitted quantity moves.
+
+### Standing orders replace the Phase 44 autopilot
+
+Deleting a shipped career-balance decision needs its own argument, and there are three: Phase 58's
+`classApprovalDelta` killed the "recruiting is all cost, no reward" premise the autopilot rested on (its
+own comment says so); Phase 59 *measured* concentrated effort at +22% class score; and the probe above
+shows a hands-off program is no longer signing nothing.
+
+What replaces it is the same idea with a price and a ceiling. You delegate a **named recruit to a named
+staffer** (`S.recruiting.orders`), capped by `orderCap()`. The staffer works him at his own rating and
+**takes the off-priority multiplier that already existed** in `buildIntent` for pitching the wrong
+angle — because he does not know what the kid wants. One number, already in the code, already tuned.
+
+**The first cut of this was wrong and the probe caught it in one run.** Delegated recruits were added to
+`actedOn`, exempting them from decay *and* giving them a push — two benefits for one price. Since there
+are always more board slots than weekly points, that made "delegate everything, never open the screen"
+strictly optimal: a hands-off staffed program signed 25 for the **#1** class while a coach who actually
+worked his board signed 14 for **#16**. That is the autopilot rebuilt under a new name. A delegated
+recruit now still takes the neglect hit; the staffer's push is what cancels it, so a good staffer holds
+serve and a weak one loses ground slowly — which is what makes his rating the thing you are buying.
+
+**The harness had the same bug as the design.** It compared a *staffed hands-off* program against an
+*unstaffed working* one, so it was measuring the department, not the attention. Both arms now run a full
+department with the whole board delegated and differ only in whether the coach shows up each week.
+
+### What it landed
+
+Same three seeds and bands, the ladder the phase promises (class score, and national class rank):
+
+| band | ignored | delegated | worked | attention worth |
+|---|---|---|---|--:|
+| blue-blood | 8.0 signees, #68 | 15.0, #12 | 21.7, **#2** | +45% |
+| mid | 0.7, #131 | 6.7, #66 | 16.3, **#17** | +123% |
+| bottom | 0.0, #134 | 3.3, #126 | 17.3, #62 | +626% |
+
+Worked > delegated > ignored at every band, and attention is worth *more* the less pedigree you have —
+the right shape, since a blue-blood should coast further on his name than Akron does. In `qa`'s full
+season, Alabama working one target all year now signs **11 at #48**, where before the phase the same
+script signed 25 at #2.
+
+An emergent property worth recording, because it was not designed and is the loop working: **over-
+boarding is punished.** A boarded recruit you don't work decays at `REC.NEGLECT_DECAY` (3.5), which is
+*worse* than the 2.2 an unopened relationship drifts at — so claiming a slot you have neither the points
+nor the staff to service actively costs you the kid. The board is a commitment, not a watchlist.
+
+**No fence change, so no re-fit.** Save **v49** (`S.recruiting.orders`, `autopilot` dropped, `tier:'rec'`
+staff may appear on `team.staff`); the migration is structural — an old save arrives with no orders and
+no recruiting staff, which is the honest starting state. All 23 gates green: `reclab` **87 (unchanged —
+that is the proof)**, `econlab` 33 → **40**, `qa` 341 → **344**. `23-reccompare` byte-identical.
+
+### One instrument fixed
+`econlab` hand-copied `COORD_ROLES`/`POS_COACHES` instead of pulling them from `index.html`, which is
+the drift defect Phase 56 fixed in `reclab` and Phase 53 in `simlab`. The three role tables
+`genCoachMarket` reads are now live-grabbed. Its `POS`/`FN`/`LN` are still copies and its `POS` is still
+the pre-Phase-52 one — noted in the file, and it feeds only that lab's synthetic staff. **`rolllab` has
+the same defect and it is load-bearing there** (its `POS` carries `S` rather than `FS`/`SS`, so
+`posAttrW` falls back to the linebacker row for ~9.5% of every roster it validates) — Phase 62 fixes it
+before asserting anything distributional over a synthetic roster.
+
+### Deliberately out of scope
+The **portal autopilot** (`S.portal.autopilot`, Phase 44) survives untouched. It is the same species of
+free automation, but the portal has no staff model to hang a price on and a two-week offseason window is
+not the weekly loop this phase is about. Timed **expiring board events** were also considered and cut:
+the probe shows ignoring a week now costs a top program its class, so an event system on top would be a
+second mechanism for a behaviour that already has one — the thing Phase 59 deleted `AI_SCOUT_STAR` for.
+
+---
+
 ## Planned: non-conference series scheduling (Phase 8)
 
 Players (and AI schools) book the **non-conference** part of the schedule by agreeing to

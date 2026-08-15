@@ -858,17 +858,70 @@ function startServer() {
   // resolving the week applies BOTH queued actions (interest rises, scouting sharpens) and clears the queue
   const resolved = await page.evaluate(id => { const r0 = S.recruiting.pool.find(x => x.id === id); const iv0 = r0.iv[S.teamId] || 0, sc0 = r0.scout; applyPlayerIntents(); const r = S.recruiting.pool.find(x => x.id === id); return { iv0, iv1: r.iv[S.teamId] || 0, sc0, sc1: r.scout, cleared: Object.keys(S.recruiting.intents).length }; }, tgt.id);
   check('Recruiting: resolving applies the queued actions (interest + scouting rise, queue clears)', resolved.iv1 > resolved.iv0 && resolved.sc1 > resolved.sc0 && resolved.cleared === 0, JSON.stringify(resolved));
-  // Phase 44: recruiting autopilot — hands off, your staff still builds a real slate of pursuits (so a
-  // deferring program doesn't sign an empty class).
-  const autoPilot = await page.evaluate(() => {
-    const me = S.teamId; S.recruiting.intents = {};
-    S.recruiting.pool.forEach(r => { if (r.committedTo !== me) delete r.iv[me]; });   // wipe my hands-off presence
-    const before = S.recruiting.pool.filter(r => r.iv[me] != null).length;
-    for (let w = 1; w <= 4; w++) autoRecruitWeek(w);
-    const after = S.recruiting.pool.filter(r => r.iv[me] != null).length;
-    return { before, after, on: S.recruiting.autopilot !== false };
+  /* Phase 60 — attention is the resource. The Phase 44 global autopilot is gone; what replaces it is
+     per-recruit standing orders you can only hand out to recruiting staff you employ. The three
+     properties that make delegation a decision rather than a free win, asserted in order:
+       (a) with no staff you can delegate nothing;
+       (b) hiring buys weekly points, board slots and orders, and costs real payroll;
+       (c) a delegated recruit gains LESS than one you personally pitch. */
+  const noStaff = await page.evaluate(() => {
+    const t = controlled();
+    t.staff = t.staff.filter(c => c.tier !== 'rec');
+    const rec = S.recruiting.board.map(recById).filter(Boolean)[0];
+    const ok = rec ? setRecOrder(rec, 'nobody') : null;
+    return { cap: orderCap(), staff: recStaff(t).length, ok, n: orderCount() };
   });
-  check('Phase 44: recruiting autopilot builds a class hands-off (default on)', autoPilot.on && autoPilot.after >= 15, JSON.stringify(autoPilot));
+  check('Phase 60: with no recruiting staff there is nothing to delegate to',
+    noStaff.cap === 0 && noStaff.ok === false && noStaff.n === 0, JSON.stringify(noStaff));
+
+  const recHire = await page.evaluate(() => {
+    const t = controlled();
+    const p0 = weeklyPoints(), s0 = boardSlots(), pay0 = t.payroll, bud0 = t.budget;
+    ensureCoachMarket();
+    const cand = S.coachMarket.find(c => c.tier === 'rec');
+    const ok = cand ? hireCoach(t, cand, cand.role) : false;
+    return { ok, p0, p1: weeklyPoints(), s0, s1: boardSlots(), cap: orderCap(),
+      pay0, pay1: t.payroll, spent: bud0 - t.budget, staff: recStaff(t).length };
+  });
+  check('Phase 60: hiring a scout buys weekly points, board slots and standing orders',
+    recHire.ok && recHire.p1 > recHire.p0 && recHire.s1 > recHire.s0 && recHire.cap > 0, JSON.stringify(recHire));
+  check('Phase 60: a scout is a real budget line (signing fee + payroll)',
+    recHire.pay1 > recHire.pay0 && recHire.spent > 0, `payroll +${recHire.pay1 - recHire.pay0}, fee ${recHire.spent}`);
+
+  const deleg = await page.evaluate(() => {
+    const me = S.teamId, t = controlled(), R = S.recruiting;
+    R.intents = {}; R.orders = {};
+    // two comparable board recruits: one delegated, one personally pitched, same starting interest.
+    // Offer a couple in if the board is thin — this comparison is the phase's headline assertion and
+    // must never silently skip (it did, on a one-recruit board, and passed vacuously).
+    R.pool.filter(r => !r.signed && !r.committedTo && r.iv[me] != null).slice(0, 3)
+      .forEach(r => { if (!S.recruiting.board.includes(r.id)) offerRecruit(r); });
+    const pair = R.board.map(recById).filter(r => r && !r.signed && !r.committedTo).slice(0, 2);
+    if (pair.length < 2) return { skip: true };
+    pair.forEach(r => { r.iv[me] = 50; r.hits = {}; });
+    const staffId = recStaff(t)[0].id;
+    const set = setRecOrder(pair[0], staffId);
+    setRecIntent(pair[1], 'pitch', { angle: pair[1].prefs[0] });   // your own best-angle pitch
+    applyStandingOrders(1);
+    applyPlayerIntents();
+    return { set, delegated: pair[0].iv[me] - 50, manual: pair[1].iv[me] - 50,
+      held: recOrders()[pair[0].id] === staffId };
+  });
+  check('Phase 60: the delegation comparison actually ran (never skip the headline assertion)', !deleg.skip, JSON.stringify(deleg));
+  check('Phase 60: a standing order is held by the staffer you assigned', !!(deleg.set && deleg.held), JSON.stringify(deleg));
+  check('Phase 60: a delegated recruit gains ground, but LESS than one you work yourself',
+    !deleg.skip && deleg.delegated > 0 && deleg.delegated < deleg.manual,
+    deleg.skip ? 'SKIPPED' : `delegated +${deleg.delegated.toFixed(1)} vs manual +${deleg.manual.toFixed(1)}`);
+  const capHold = await page.evaluate(() => {
+    const R = S.recruiting, t = controlled(), staffId = recStaff(t)[0].id;
+    R.orders = {};
+    const cands = R.board.map(recById).filter(r => r && !r.signed);
+    let placed = 0;
+    cands.forEach(r => { if (setRecOrder(r, staffId)) placed++; });
+    return { placed, cap: orderCap(), n: orderCount(), board: cands.length };
+  });
+  check('Phase 60: the standing-order cap holds (you cannot delegate the whole board)',
+    capHold.n <= capHold.cap && capHold.cap > 0, JSON.stringify(capHold));
   // Phase 35: decay-on-neglect (the official-visit cap moved to the Phase 38 weekend calendar below)
   const p35 = await page.evaluate(() => {
     const me = S.teamId, R = S.recruiting; R.intents = {};
@@ -1042,7 +1095,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 48 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 49 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -1065,7 +1118,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).first().click();   // slot 2 is now the only save
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v48)', mig.v === 48, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v49)', mig.v === 49, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -1552,7 +1605,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 48', roPost.version === 48, 'v' + roPost.version);
+  check('Rollover: save version bumped to 49', roPost.version === 49, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);
