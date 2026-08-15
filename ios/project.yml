@@ -45,6 +45,10 @@ targets:
 
     settings:
       base:
+        # CHANGE THIS to something of your own (com.yourname.sideline) before the first install.
+        # Apple requires globally unique bundle IDs even under free provisioning, so a generic one
+        # may already be registered to someone else and fails at signing with a misleading error.
+        # It also identifies the app's container: changing it later strands the saves in the old one.
         PRODUCT_BUNDLE_IDENTIFIER: com.sideline.game
         PRODUCT_NAME: Sideline
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

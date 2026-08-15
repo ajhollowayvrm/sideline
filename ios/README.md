@@ -34,22 +34,7 @@ wrapping rather than shipping a PWA:
 
 ## Getting the app onto your phone (from Windows)
 
-Compiling needs macOS + Xcode. **Signing** needs your Apple ID. Only the first belongs in CI, and
-that split is what makes this work without a Mac.
-
-1. **Push, or run the workflow by hand** — Actions → *iOS ipa* → Run workflow. ~5 minutes.
-2. **Download the artifact** — the run page → Artifacts → `sideline-ipa` → unzip → `sideline-unsigned.ipa`.
-3. **Sign and install it** with [SideStore](https://sidestore.io) or AltStore. They re-sign with your
-   Apple ID on the way in; any signature CI applied would just be stripped and redone, which is why
-   there are no certificates or secrets in the workflow.
-
-On a **free** Apple ID the install expires after 7 days — but SideStore refreshes the signature
-on-device from the same `.ipa`, so you don't rebuild. A paid account ($99/yr) stretches that to a
-year. You only re-run the workflow when the game itself changes.
-
----
-
-## Building on a Mac, if you ever have one
+## On a Mac (the fast path)
 
 ```sh
 brew install xcodegen
@@ -57,8 +42,50 @@ cd ios && xcodegen generate     # or: npm run ios:project
 open Sideline.xcodeproj
 ```
 
-Signing settings are deliberately **not** in `project.yml`, so opening it in Xcode behaves like any
-normal project — pick your team and hit run.
+Plug the iPhone in, pick it as the run destination, ⌘R. Xcode signs with your Apple ID and installs
+directly — no CI, no artifact, no AltStore/Sideloadly in the loop. Signing settings are deliberately
+**not** in `project.yml`, so the project behaves like any normal one: Signing & Capabilities →
+*Automatically manage signing* → pick your Personal Team.
+
+**Set a bundle ID that is yours.** `PRODUCT_BUNDLE_IDENTIFIER` ships as `com.sideline.game`, and
+Apple requires bundle IDs to be globally unique even under free provisioning — a generic one may
+already be registered to somebody else, which fails at signing with a misleading error. Change it in
+`project.yml` to something like `com.yourname.sideline` and regenerate. Do this **once, before the
+first install**: the bundle ID identifies the app's container, so changing it later strands the saves
+inside the old one.
+
+**Turn on Web Inspector** — the single biggest reason to use a Mac here. `Shell.swift` sets
+`isInspectable = true`, so:
+
+1. iPhone → Settings → Safari → Advanced → **Web Inspector** on
+2. Mac Safari → Settings → Advanced → **Show features for web developers**
+3. With the app running: Safari → Develop → *[your iPhone]* → **Sideline**
+
+That is a full JS console, debugger and element inspector against the live app on the phone. Without
+it you are debugging the WKWebView blind.
+
+The **iOS Simulator** works too (⌘R with a simulated device) — good enough for layout and the bounce
+behaviour. Pinch is Option-drag there, and haptics don't fire, so the zoom lock and the taptics still
+want a real device.
+
+---
+
+## From Windows (no Mac)
+
+Compiling needs macOS + Xcode. **Signing** needs your Apple ID. Only the first belongs in CI, and
+that split is what makes this work without a Mac.
+
+1. **Push, or run the workflow by hand** — Actions → *iOS ipa* → Run workflow. ~5 minutes.
+2. **Download the artifact** — the run page → Artifacts → `sideline-ipa` → unzip → `sideline-unsigned.ipa`.
+   Artifacts expire after 90 days; re-run the workflow for a fresh one.
+3. **Sign and install it** with [Sideloadly](https://sideloadly.io) (simplest — one app, but needs
+   iTunes from apple.com, *not* the Microsoft Store build), or [SideStore](https://sidestore.io) /
+   AltStore. They re-sign with your Apple ID on the way in; any signature CI applied would just be
+   stripped and redone, which is why there are no certificates or secrets in the workflow.
+
+On a **free** Apple ID the install expires after 7 days and you may hold 3 sideloaded apps at once.
+SideStore refreshes the signature on-device from the same `.ipa`; from a Mac it's just ⌘R again. A
+paid account ($99/yr) removes both limits.
 
 ---
 
