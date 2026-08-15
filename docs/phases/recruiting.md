@@ -868,13 +868,30 @@ exactly) while making each class new. `S.recruiting.cycle` now tracks the year i
 permanently 1.
 
 ### Fitting
-`25-recfit.js` fits nine constants by alternating coordinate passes (the `15-penfit.js` shape),
+`25-recfit.js` fits the constants by alternating coordinate passes (the `15-penfit.js` shape),
 because they interact: a steeper `PULL_W` concentrates blue-chips, which starves the mid-tier, which
-changes how many programs fill a class, which changes the sign rate. The objective is eight measured
+changes how many programs fill a class, which changes the sign rate. The objective is nine measured
 targets from §2–3, each scaled by what a meaningful error looks like for that metric so none
-dominates by unit accident. `24-geofit.js` had to be re-run too — changing the *scale* of the suitor
-score left `GEO_SUIT` fitted against the old one, which blew in-state share out to 61.6%. That is the
-same compensating-error pattern 57a hit, and the second time it appeared in this arc.
+dominates by unit accident.
+
+**Geography had to be folded into that same fit**, and 57a's separate `24-geofit.js` pass turned out
+to be the wrong shape. `GEO_SUIT` competes with `SUIT_NOISE` for influence over board membership, and
+home-state pull trades *directly* against prestige concentration — a recruit who signs with his
+in-state school is one the blue-bloods did not get. So every time a distribution constant moved, the
+separately-fitted geo constants went stale: in-state share swung **36% → 61% → 26%** across three
+passes, each time for a reason that had nothing to do with geography. That is the same
+compensating-error pattern 57a hit with the state table, seen three more times before the shape of
+the mistake was obvious. `24-geofit.js` survives as the single-metric explainer — it prints the whole
+grid, which is the readable way to see the trade — but `25-recfit.js` is the fit.
+
+**What is *not* fitted matters as much as what is.** `TGT_MEAN` and `TGT_PRES` are pinned to an OLS
+line through §3's five measured band sizes (20.3 at prestige 55, 0.79 per 10 prestige points) rather
+than left as knobs. Left free, the fitter used them as a lever on the top band's blue-chip *ratio* —
+a bigger class dilutes it — and drove the gradient to 1.4, nearly twice the measured slope, buying
+`bcrTop10` by having the bottom of the league sign classes of 16.7 against a real 19.9. That is a
+**measured quantity being spent to buy an unmeasured one**, which is precisely the failure this
+methodology exists to prevent, and it is easy to miss because the objective function gets *better*
+while the model gets worse. Only constants with no direct measurement are fitted.
 
 ### Save & validation
 **No save bump, no `migrateState` step, no `SIM_MODEL` bump** — no field is added or changed, and

@@ -7,6 +7,16 @@
    against a measured 36.8%. Two errors that had been cancelling; fixing the mechanism exposed the
    parameter, which is the usual order.
 
+   NOTE (Phase 57b): this is no longer the authority on GEO_SUIT/GEO_FIT. Fitting geography on its
+   own is the wrong shape — `GEO_SUIT` competes with `SUIT_NOISE` for influence over board
+   membership, and home-state pull trades directly against prestige concentration, so a geo fit goes
+   stale the moment any distribution constant moves. In-state share swung 36% -> 61% -> 26% across
+   three separate passes before that was obvious. Both constants are now fitted jointly with the rest
+   in `25-recfit.js`, which carries in-state share in its objective.
+   This tool survives because it prints the WHOLE GRID, which is the readable way to see the trade
+   between the two channels — geography in the board draw versus geography in the race. Use it to
+   understand the surface; use 25-recfit.js to set the values.
+
    Sweeps the pair over a grid, running full cycles on the real-geography world, and prints the
    combination closest to target. Costs a few minutes.
 

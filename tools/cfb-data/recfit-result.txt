@@ -1,22 +1,23 @@
 Phase 57b fitted constants
   PULL_W = 26
-  SUIT_NOISE = 0.55
-  OVER_FLOOR = 0.15
+  SUIT_NOISE = 1.5
+  OVER_FLOOR = 0.45
   OVER_W = 60
   CEIL_BASE = 60
   PASSIVE_RATE = 0.1
-  TGT_MEAN = 18.5
-  TGT_SD = 5.5
-  AI_VALUE = 0.1
+  TGT_MEAN = 19
+  TGT_SD = 2.5
+  TGT_PRES = 1.4
+  AI_VALUE = 0.06
 
   metric            target     fitted
-  bcTop10             40.3       35.2
-  bcrTop10            69.6       72.0
-  bcShare             15.3       15.1
-  signRate            67.4       66.9
+  bcTop10             40.3       35.7
+  bcrTop10            69.6       62.3
+  bcShare             15.3       16.2
+  signRate            67.4       67.9
   smallClass           3.3        0.0
-  sizeSpread           3.6        0.4
-  gini               0.772      0.748
-  over50              11.8       11.2
+  sizeSpread           3.6        6.6
+  gini               0.772      0.786
+  over50              11.8       13.1
 
-  cost 2.54
+  cost 2.90

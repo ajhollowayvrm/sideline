@@ -68,10 +68,10 @@ function buildWorld(seed) {
 
 const TARGET = {
   bcTop10: 40.3, bcrTop10: 69.6, bcShare: 15.3, signRate: 67.4,
-  smallClass: 3.3, sizeSpread: 3.6, gini: 0.772, over50: 11.8,
+  smallClass: 3.3, sizeSpread: 3.6, gini: 0.772, over50: 11.8, inState: 36.8,
 };
 /* what a "one unit of wrong" looks like for each metric — keeps the objective commensurate */
-const SCALE = { bcTop10: 8, bcrTop10: 10, bcShare: 3, signRate: 5, smallClass: 3, sizeSpread: 4, gini: 0.06, over50: 4 };
+const SCALE = { bcTop10: 8, bcrTop10: 10, bcShare: 3, signRate: 5, smallClass: 3, sizeSpread: 4, gini: 0.06, over50: 4, inState: 3 };
 
 const WORLDS = +(process.env.WORLDS || 2);
 const CLASSES = 4;
@@ -87,6 +87,7 @@ function gini(v) {
 
 function measure() {
   let pool_ = 0, signed_ = 0, bcSigned = 0, allSigned = 0, small = 0, teamClasses = 0;
+  const inStates = [];
   const bandBC = BANDS.map(() => 0), bandN = BANDS.map(() => 0), bandT = BANDS.map(() => 0);
   const ginis = [], bcr4 = [];
   for (let w = 0; w < WORLDS; w++) {
@@ -109,6 +110,7 @@ function measure() {
       world.forEach(t => {
         const n = (cls[t.id] || []).length;
         teamClasses++; if (n < MIN_CLASS) small++;
+        if (n >= MIN_CLASS) inStates.push((cls[t.id] || []).filter(p => p.st === t.homeState).length / n);
         allSigned += n; bcSigned += bcOf(t);
         (hist[t.id] = hist[t.id] || []).push({ bc: bcOf(t), n });
       });
@@ -130,6 +132,7 @@ function measure() {
     sizeSpread: Math.max(...sizes) - Math.min(...sizes),
     gini: sum(ginis) / ginis.length,
     over50: 100 * bcr4.filter(x => x >= 0.5).length / Math.max(1, bcr4.length),
+    inState: 100 * sum(inStates) / Math.max(1, inStates.length),
   };
 }
 function cost(m) { return Object.keys(TARGET).reduce((s, k) => s + Math.pow((m[k] - TARGET[k]) / SCALE[k], 2), 0); }
@@ -142,10 +145,26 @@ const KNOBS = [
   ['OVER_W', [30, 45, 60, 85, 120]],
   ['CEIL_BASE', [30, 38, 45, 52, 60]],
   ['PASSIVE_RATE', [0.10, 0.14, 0.18, 0.24, 0.32]],
-  ['TGT_MEAN', [19.0, 20.5, 22.0, 23.5]],
+  /* TGT_MEAN and TGT_PRES are deliberately NOT knobs. Class size by program tier is DIRECTLY
+     MEASURED (§3: 23.5 / 21.5 / 19.8 / 19.5 / 19.9 by band), so both come straight off an OLS line
+     through those five points — TGT_MEAN 20.3 at prestige 55, TGT_PRES 0.79 per 10 prestige points.
+     Left free, the fitter used them as a lever on the top band's blue-chip RATIO (a bigger class
+     dilutes it) and drove the gradient to 1.4, nearly twice the measured slope, which bought
+     bcrTop10 by making the bottom of the league sign classes of 16.7 against a real 19.9. That is a
+     measured quantity being spent to buy an unmeasured one, which is the exact failure this whole
+     methodology exists to prevent. Only constants with no direct measurement are fitted. */
   ['TGT_SD', [2.5, 4.0, 5.5]],
-  ['TGT_PRES', [0, 0.4, 0.7, 1.0, 1.4]],
+
   ['AI_VALUE', [0.06, 0.10, 0.15, 0.22, 0.32]],
+  /* Geography joins the JOINT fit as of Phase 57b, and fitting it separately in 24-geofit.js turned
+     out to be the wrong shape. `GEO_SUIT` competes with `SUIT_NOISE` for influence over board
+     membership, and home-state pull trades directly against prestige concentration — a recruit who
+     goes to his in-state school is one the blue-bloods did not get. So every time a distribution
+     constant moved, the separately-fitted geo constants went stale, and in-state share swung 36 ->
+     61 -> 26 across three passes before this. 24-geofit.js survives as the single-metric explainer
+     (it prints the whole grid, which is the readable way to see the trade), but this is the fit. */
+  ['GEO_SUIT', [0.08, 0.15, 0.22, 0.30, 0.40]],
+  ['GEO_FIT', [0.02, 0.04, 0.06, 0.09]],
 ];
 const PASSES = +(process.env.PASSES || 2);
 
