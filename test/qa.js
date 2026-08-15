@@ -1077,25 +1077,41 @@ function startServer() {
     check('Phase 48: refusing replay leaves the recorded score untouched', guard.scoreIntact);
   }
 
-  // ---------- SAVE → RELOAD → LOAD ----------
+  // ---------- SAVE → RELOAD → RESUME ----------
+  // iOS Safari and a WKWebView both jettison a backgrounded tab holding a multi-MB world, often
+  // within minutes. Boot has to walk back INTO the live career rather than dropping the player on
+  // the main menu beside a save he has every reason to think was wiped.
   await page.locator('[data-tid="nav-menu"]').click();
   await page.waitForTimeout(120);
   await page.getByRole('button', { name: 'Save game' }).click();
   await page.waitForTimeout(150);
   await page.goto(BASE, { waitUntil: 'networkidle' }); // clean reload (no ?reset)
-  check('After reload, back at Menu', await page.getByRole('button', { name: 'New Game' }).isVisible());
+  check('Session resume: a reload walks straight back into the live career', (await screen(page)) === 'home');
+  const seasonPersist = await page.evaluate(() => ({ sched: !!S.schedule, week: S.week, phase: S.phase, played: S.schedule ? S.schedule.games.filter(g => g.played).length : 0, version: S.version, statPlayers: S.world.teams.reduce((n, t) => n + t.roster.filter(p => p.gs).length, 0), honorWeeks: (S.weeklyHonors || []).length, recruitPool: S.recruiting ? S.recruiting.pool.length : 0, recruitBoard: S.recruiting ? S.recruiting.board.length : 0 }));
+  check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
+  check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
+  check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 49 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+
+  // ---------- DELIBERATE EXIT (the other half of the resume contract) ----------
+  // Resume must not be stickier than the player's intent: quitting to the menu has to survive a
+  // reload too, or "Quit" would be a button that undoes itself the next time the app opens.
+  await page.locator('[data-tid="nav-menu"]').click();
+  await page.waitForTimeout(120);
+  await page.getByRole('button', { name: 'Quit to main menu' }).click();
+  await page.waitForTimeout(120);
+  await page.getByRole('button', { name: /Yes, continue/ }).click();
+  await page.waitForTimeout(150);
+  check('Quit to main menu leaves the career', (await screen(page)) === 'menu');
+  await page.goto(BASE, { waitUntil: 'networkidle' }); // clean reload (no ?reset)
+  check('Session resume: a deliberate quit is honoured — reload stays at the Menu', (await screen(page)) === 'menu');
   await page.getByRole('button', { name: 'Load Game' }).click();
   await page.waitForTimeout(150);
   check('Load screen shows saved Alabama career', /Alabama/.test(await page.evaluate(() => document.querySelector('.view').innerText)));
   await shot(page, '11-load.png');
   await page.getByRole('button', { name: 'Load', exact: true }).first().click();
   await page.waitForTimeout(150);
-  check('Persistence: save survives reload + loads to Home', (await screen(page)) === 'home');
-  const seasonPersist = await page.evaluate(() => ({ sched: !!S.schedule, week: S.week, phase: S.phase, played: S.schedule ? S.schedule.games.filter(g => g.played).length : 0, version: S.version, statPlayers: S.world.teams.reduce((n, t) => n + t.roster.filter(p => p.gs).length, 0), honorWeeks: (S.weeklyHonors || []).length, recruitPool: S.recruiting ? S.recruiting.pool.length : 0, recruitBoard: S.recruiting ? S.recruiting.board.length : 0 }));
-  check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
-  check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
-  check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 49 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Loading a slot from the Menu opens the career', (await screen(page)) === 'home');
 
   // ---------- MIGRATION (inject a v1 save) ----------
   await page.evaluate(() => {
@@ -1111,6 +1127,7 @@ function startServer() {
     localStorage.removeItem('sideline_slot_1');
     localStorage.removeItem('sideline_slot_3');
     localStorage.setItem('sideline_slot_2', JSON.stringify({ meta, state }));
+    localStorage.removeItem('sideline_active');   // this fixture wants the Menu, not a resumed session
   });
   await page.goto(BASE, { waitUntil: 'networkidle' }); // clean reload (no ?reset)
   await page.getByRole('button', { name: 'Load Game' }).click();
@@ -1133,6 +1150,7 @@ function startServer() {
   check('Migration: Ring of Honor backfilled (empty array, v12→v13)', Array.isArray(mig.legends) && mig.legends.length === 0, JSON.stringify(mig.legends));
 
   // ---------- DELETE with confirm ----------
+  await page.evaluate(() => localStorage.removeItem('sideline_active'));   // leave the career so the reload lands on the Menu
   await page.goto(BASE, { waitUntil: 'networkidle' }); // clean reload (no ?reset)
   await page.getByRole('button', { name: 'Load Game' }).click();
   await page.waitForTimeout(150);

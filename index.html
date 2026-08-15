@@ -1225,10 +1225,29 @@ function writeSlot(n,state){
     careerId:cloudCareerId(state)};   // Phase 47: the cloud's identity for this career
   try{localStorage.setItem(slotKey(n),JSON.stringify({meta,state:encodeState(state)}));}
   catch(e){toast('Save failed — storage full');return false;}
-  if(state===S)cloudQueue();          // Phase 47: local write first, cloud push debounced behind it
+  if(state===S){setActiveSlot(n);cloudQueue();}   // Phase 47: local write first, cloud push debounced behind it
   return true;
 }
-function deleteSlot(n){localStorage.removeItem(slotKey(n));}
+function deleteSlot(n){localStorage.removeItem(slotKey(n));if(activeSlot()===n)setActiveSlot(null);}
+
+/* ---------- the live session (which slot the player is actually sitting in) ----------
+   Boot used to be a bare render() onto the main menu, so any tab eviction — iOS Safari and a
+   WKWebView both jettison a backgrounded tab holding a multi-MB world, often within minutes —
+   read as a wiped career even though the save underneath was untouched. Recording the live slot
+   lets boot walk straight back into it. Deliberately NOT part of `state`: which slot this device
+   has open is a property of the session, not of the career, the same call Phase 47 makes for the
+   cloud config. Cleared only on a deliberate exit (Quit to menu, delete, leaving a retired career). */
+const ACTIVE_KEY='sideline_active';
+function activeSlot(){try{const n=parseInt(localStorage.getItem(ACTIVE_KEY),10);return SLOTS.indexOf(n)>=0?n:null;}catch(e){return null;}}
+function setActiveSlot(n){try{if(n)localStorage.setItem(ACTIVE_KEY,String(n));else localStorage.removeItem(ACTIVE_KEY);}catch(e){}}
+// The save is the source of truth; this only decides which screen we open on. A slot that fails to
+// decode (e.g. written by a newer build) drops back to the menu rather than trapping the player.
+function resumeSession(){
+  const n=activeSlot();if(!n)return false;
+  const slot=readSlot(n);if(!slot||!slot.state)return false;
+  try{S=migrateState(decodeState(slot.state));UI.view='home';return true;}
+  catch(e){S=null;setActiveSlot(null);return false;}
+}
 
 /* ============================================================
    CLOUD SAVES (Phase 47) — continue a career on any device
@@ -1455,7 +1474,7 @@ function cloudConflictSheet(head){
       const id=cloudCareerId(S),{head:h,state}=await cloudPullCareer(id);
       const n=findSlotFor(S)||cloudFirstFreeSlot()||1;
       writeSlot(n,state);cloudSetMark(id,{rev:h.rev,savedAt:state.lastSaved});
-      S=state;cloudSetStatus('ok','using the cloud save');UI.view='home';render();toast('Loaded the cloud save');
+      S=state;setActiveSlot(n);cloudSetStatus('ok','using the cloud save');UI.view='home';render();toast('Loaded the cloud save');
     }catch(e){cloudSetStatus('error',e.message);toast('Download failed — '+e.message);}
   };
   const keepMine=el('button','btn line','Keep this device’s save');keepMine.style.marginTop='9px';
@@ -1499,13 +1518,13 @@ async function cloudDownload(careerId,slotNo,thenLoad){
     cloudSetMark(careerId,{rev:head.rev,savedAt:state.lastSaved});   // …so mark it clean after
     cloudSetStatus('ok','downloaded');
     UI.cloudCareers=null;
-    if(thenLoad){S=state;UI.view='home';render();toast('Career loaded');}
+    if(thenLoad){S=state;setActiveSlot(slotNo);UI.view='home';render();toast('Career loaded');}
     else{render();toast('Saved to slot '+slotNo);}
   }catch(e){cloudSetStatus('error',e.message);toast('Download failed — '+e.message);}
 }
 // Loading a slot the cloud has moved past: offer the newer copy instead of silently rewinding.
 function cloudLoadSlot(n,slot){
-  const open=()=>{S=migrateState(decodeState(slot.state));UI.view='home';render();};
+  const open=()=>{S=migrateState(decodeState(slot.state));setActiveSlot(n);UI.view='home';render();};
   const st=cloudSlotStatus(slot);
   if(!st||st.action!=='pull'||!st.cloud){open();return;}
   const body=el('div');
@@ -8522,7 +8541,7 @@ function renderRetired(app){
     `<div style="flex:1"><div class="nm">${s.team}</div><div class="meta dim">${s.seasons} season${s.seasons===1?'':'s'}</div></div>
      <div class="meta">${s.titles?'🏆×'+s.titles+' ':''}${s.confTitles?'conf×'+s.confTitles:''}</div>`)));
   const menu=el('button','btn','Back to main menu');menu.dataset.tid='to-menu';menu.style.marginTop='16px';
-  menu.onclick=()=>{UI.view='menu';render();};
+  menu.onclick=()=>{setActiveSlot(null);UI.view='menu';render();};   // leaving a finished career is a deliberate exit — don't resume back into it
   v.append(menu);
   app.append(v);
 }
@@ -10170,7 +10189,7 @@ function menuSheet(){
   cloud.style.marginTop='9px';cloud.dataset.tid='menu-cloud';
   cloud.onclick=()=>{closeSheet();UI.cloudBack='home';UI.view='cloud';render();};
   const quit=el('button','btn line','Quit to main menu');quit.style.marginTop='9px';
-  quit.onclick=()=>{closeSheet();cloudFlush();confirmSheet('Quit to menu?','Unsaved progress is lost.',()=>{S=null;UI.view='menu';render();});};
+  quit.onclick=()=>{closeSheet();cloudFlush();confirmSheet('Quit to menu?','Unsaved progress is lost.',()=>{S=null;setActiveSlot(null);UI.view='menu';render();});};
   body.append(save,saveAs,cloud,quit);
   openSheet('Menu',body);
 }
@@ -10218,6 +10237,7 @@ function confirmSheet(title,sub,onYes){
 }
 
 /* ---------- boot ---------- */
+resumeSession();   // walk straight back into the live career if this device has one open
 render();
 /* Phase 47: cloud sync is opt-in and never blocks boot. Flush a queued push when the tab
    goes away (the 5s debounce is the only exposure), retry when the network comes back, and
