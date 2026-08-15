@@ -33,7 +33,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > band-pass and saturation defects Phase 56 measured. Reproduce with `tools/cfb-data/20–23`
 > (needs a free `CFBD_API_KEY`).
 >
-> **All roadmap phases 1–57a are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–57b are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -375,6 +375,30 @@ still serves it with zero config.
   than a ceiling. **No save bump** (no field changes; the pool is rebuilt at kickoff), no `SIM_MODEL`
   bump. `qa` → 330, which needed the *third* site of the pool-consumption identity re-pointed.
   *(→ `docs/phases/recruiting.md`.)*
+
+- **Phase 57b — the talent economy.** The half needing fitting judgment, and what the arc exists for.
+  Phase 56's two defects are the *same* defect twice — **`recruitFit` alone decided both who was on a
+  prospect's board and who won him** — so they had to be fixed together. **One rule: pull is monotonic
+  in program quality, and it sets the odds rather than the outcome.** `pedigreeFit` becomes a logistic
+  in `prestige − recruitTier(stars)` (strictly below 1, so two blue-bloods never tie and `LEAD_GAP`
+  still resolves); `boardAppeal` carries the only surviving above-tier taper and only for board
+  *membership*; growth approaches a **ceiling set by fit** instead of climbing without bound; and
+  `classTarget` makes `CLASS_CAP` a ceiling, with a small prestige gradient pinned to the measured
+  band sizes. **Every comparison row now reads `ok` but one** — Gini 0.774 vs 0.772, BCR 4-year 14.1
+  vs 14.1, windows ≥50% 11.7 vs 11.8, class size 18.9 vs 19.0, persistence 0.887 vs 0.882 — and the
+  top band signs **22.5** against a real 23.3, where before Phase 57 it signed 4.2.
+  **Three things surfaced only by building it.** `aiPriority` had to become a **product** (expected
+  value): monotonic pull makes a blue-blood's fit on a two-star ~0.99 against ~0.86 on a five-star, so
+  any additive form fills the best classes with the tail. Ceiling-seeking growth had to become
+  **one-way** — an attractor pulls *down* too, eroding exactly the effort this phase exists to reward.
+  And **a shipped bug**: `initRecruiting` seeded the class off `S.seed`, which never changes, so every
+  season generated the byte-identical 3,692 prospects — same #1 recruit, every year; `recruitSeed()`
+  folds the year in. `26-dynasty.js` (new, a tool not an npm gate) shows concentration **does not
+  compound**: drift +0.1 across a ten-season steady state. Two residuals recorded rather than tuned
+  away — the top band is under-concentrated while total Gini is exact (reality has a convex
+  national-brand effect at the very top, deliberately not invented from one number), and no program
+  signs a tiny class. **No save bump, no `SIM_MODEL` bump.** `reclab` → 75, `qa` → 330.
+  *(→ `docs/phases/recruiting.md`, `docs/reference/cfb-recruiting.md`.)*
 
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week

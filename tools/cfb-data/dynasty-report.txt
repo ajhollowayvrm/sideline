@@ -1,19 +1,24 @@
 Dynasty check — does concentrated recruiting compound?
 ======================================================================
-3 seasons over a real-geography 134-team league, seed 20260814
+10 seasons over a real-geography 134-team league, seed 20260814
 
 season   talent sd   top10 mean   bot10 mean   gap   top10 BC/class
      0        8.57         85.4         54.5    30.9                —
-     1        8.25         86.9         56.7    30.3             11.5
-     2        7.58         87.7         58.7    28.9             10.0
-     3        6.99         88.3         60.4    28.0              9.3
+     1        8.16         87.4         58.0    29.4             12.7
+     2        7.22         88.8         62.5    26.2             11.5
+     3        6.31         90.2         67.1    23.1             11.2
+     4        5.51         91.1         71.0    20.1             12.3
+     5        5.49         90.9         70.8    20.2             10.4
+     6        5.57         90.9         70.4    20.5             10.7
+     7        5.54         90.6         70.3    20.3             13.4
+     8        5.48         90.7         70.4    20.3             11.9
+     9        5.49         91.2         71.0    20.1             11.7
+    10        5.66         91.3         70.5    20.8             11.8
 
-top10-bot10 talent gap:  seasons 1-3 mean 29.1   last 3 mean 29.1   drift 0.0
-league talent sd:        seasons 1-3 mean 7.61   last 3 mean 7.61
+burn-in:                 season 0 gap 30.9 -> season 4 gap 20.1   (the starting world is not the one recruiting builds)
+steady state (s4-10):   first half 20.3   last half 20.4   drift +0.1
+league talent sd:        first half 5.53   last half 5.54
 
-STABLE: the gap settles rather than compounding. This is the pass condition.
+STABLE: the gap settles and holds. This is the pass condition.
 
 real /talent composite, top-10 mean / bottom-10 mean:  4.05x
-sim team-OVR (top 22), same ratio:                     1.50x
-  (indicative only — a recruit-rating SUM and a mean OVR are different scales, so read the
-   drift line above as the gate and this as context.)

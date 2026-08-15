@@ -5,20 +5,20 @@ Phase 57b fitted constants
   OVER_W = 60
   CEIL_BASE = 60
   PASSIVE_RATE = 0.1
-  TGT_SD = 2.5
+  TGT_SD = 4
   AI_VALUE = 0.06
   GEO_SUIT = 0.15
-  GEO_FIT = 0.06
+  GEO_FIT = 0.04
 
   metric            target     fitted
-  bcTop10             40.3       30.6
-  bcrTop10            69.6       53.9
-  bcShare             15.3       14.9
-  signRate            67.4       73.0
-  smallClass           3.3        0.0
-  sizeSpread           3.6        3.8
-  gini               0.772      0.767
-  over50              11.8       12.7
-  inState             36.8       37.1
+  bcTop10             40.3       31.0
+  bcrTop10            69.6       54.8
+  bcShare             15.3       15.7
+  signRate            67.4       68.7
+  smallClass           6.3        0.0
+  sizeSpread           5.5        5.3
+  gini               0.772      0.774
+  over50              11.8       11.9
+  inState             36.8       34.4
 
-  cost 6.52
+  cost 8.70

@@ -132,16 +132,28 @@ for (let s = 0; s <= SEASONS; s++) {
   say(`${String(s).padStart(6)}   ${sd(vals).toFixed(2).padStart(9)}   ${top.toFixed(1).padStart(10)}   ${bot.toFixed(1).padStart(10)}   ${(top - bot).toFixed(1).padStart(5)}   ${s > 0 ? bc.toFixed(1).padStart(14) : '—'.padStart(14)}`);
 }
 say('');
-const early = rows.slice(1, 4), late = rows.slice(-3);
-const drift = mean(late.map(r => r.gap)) - mean(early.map(r => r.gap));
-say(`top10-bot10 talent gap:  seasons 1-3 mean ${mean(early.map(r => r.gap)).toFixed(1)}   ` +
-  `last 3 mean ${mean(late.map(r => r.gap)).toFixed(1)}   drift ${(drift > 0 ? '+' : '') + drift.toFixed(1)}`);
-say(`league talent sd:        seasons 1-3 mean ${mean(early.map(r => r.sd)).toFixed(2)}   ` +
-  `last 3 mean ${mean(late.map(r => r.sd)).toFixed(2)}`);
+/* BURN-IN. Season 0's rosters are generated straight from prestige and carry a wider spread than
+   recruiting actually sustains, so the league takes ~4 seasons to reach the equilibrium its own
+   recruiting produces. Measuring drift from season 1 measures that transient, not the thing this
+   tool exists to catch — the first version of this check read the burn-in and cried COLLAPSING at a
+   league that had been rock steady for six straight seasons. Drift is measured across the
+   STEADY-STATE window only; the burn-in is reported separately because its size is itself
+   interesting (it says how far the starting world sits from what recruiting would build). */
+const BURN = Math.min(4, Math.floor(SEASONS / 2));
+const steady = rows.filter(r => r.s >= BURN);
+const firstHalf = steady.slice(0, Math.ceil(steady.length / 2));
+const lastHalf = steady.slice(-Math.ceil(steady.length / 2));
+const drift = mean(lastHalf.map(r => r.gap)) - mean(firstHalf.map(r => r.gap));
+say(`burn-in:                 season 0 gap ${rows[0].gap.toFixed(1)} -> season ${BURN} gap ${rows[BURN].gap.toFixed(1)}` +
+  `   (the starting world is not the one recruiting builds)`);
+say(`steady state (s${BURN}-${SEASONS}):   first half ${mean(firstHalf.map(r => r.gap)).toFixed(1)}   ` +
+  `last half ${mean(lastHalf.map(r => r.gap)).toFixed(1)}   drift ${(drift > 0 ? '+' : '') + drift.toFixed(1)}`);
+say(`league talent sd:        first half ${mean(firstHalf.map(r => r.sd)).toFixed(2)}   ` +
+  `last half ${mean(lastHalf.map(r => r.sd)).toFixed(2)}`);
 say('');
-say(drift > 3 ? 'RUNAWAY: the gap is still widening late — recruiting is compounding without pushback.'
-  : drift < -3 ? 'COLLAPSING: the gap is closing late — talent is regressing to the mean too hard.'
-    : 'STABLE: the gap settles rather than compounding. This is the pass condition.');
+say(drift > 2 ? 'RUNAWAY: the gap is still widening in steady state — recruiting compounds without pushback.'
+  : drift < -2 ? 'COLLAPSING: the gap is still closing in steady state — talent regresses to the mean too hard.'
+    : 'STABLE: the gap settles and holds. This is the pass condition.');
 
 /* the real-world reference, from the harvest, as a scale-free ratio */
 try {

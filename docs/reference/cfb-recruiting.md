@@ -58,11 +58,12 @@ Banding by class rank would make "good programs sign good classes" true by const
 | 3★ | 2,174 | 58.9% |
 | 2★ | 1,109 | 30.0% |
 | **Blue-chip (4–5★)** | **409** | **11.1%** |
-| **Ranked board** | **4,158** | |
+| **Ranked board** | **3,692** | |
+| Unranked also on the board | 466 | — |
 
-The blue-chip *fraction* is the one thing SIDELINE already has right (11.2% against 11.1%). What it
-has wrong is the shape of the tail: the sim splits 3★/2★ at 44.7/44.1, reality at **58.9/30.0**. The
-real board is a broad three-star middle, not a barbell.
+The real board is a **broad three-star middle over a smaller two-star tail**, not a barbell — 58.9
+against 30.0. That shape matters more than the blue-chip count, because it is what every program
+outside the top 25 actually signs.
 
 ## 2. Convergence — where the board actually goes
 
@@ -108,12 +109,17 @@ shipped generator **every prospect gets suitors**, so the two denominators are t
 | 51–90 | 40 | 19.5 | 5.1% | 2.6% |
 | 91–134 | 44 | 19.9 | 0.2% | 0.1% |
 
+Class sizes in that table are **all signees**; the ranked-only equivalents a model should be held to
+are 23.3 / 21.0 / 19.2 / 18.5 / 17.7 (see the ranked-versus-all table above).
+
 Two facts to carry into any model:
 
-1. **Class size is flat across program quality** — 23.5 at the top, 19.9 at the bottom, a 3.6-player
-   spread over the whole league. Scholarships are a constant. *What varies by two orders of
-   magnitude is what those signatures are worth*: BCR runs 69.6% → 0.1%, and the top ten programs
-   take **40.3%** of every blue-chip in the country.
+1. **Class size is nearly flat across program quality** — 23.5 at the top against 19.9 at the bottom,
+   a 3.6-player spread over the whole league (5.5 counting ranked signees only). Scholarships are a
+   constant. *What varies by two orders of magnitude is what those signatures are worth*: BCR runs
+   69.6% → 0.1%, and the top ten programs take **40.3%** of every blue-chip in the country. The
+   residual gradient is small but load-bearing — it is what sets the top band's blue-chip ratio,
+   because the same sixteen blue-chips read 100% in a class of 18 and 70% in a class of 23.5.
 2. **The decline is smooth, not a cliff.** 69.6 → 44.5 → 15.6 → 2.6 → 0.1. Rank 60 signs the
    occasional blue-chip; it is rare, not impossible.
 
@@ -156,8 +162,10 @@ does not recruit its way out of its tier in one cycle, and a model that lets it 
 | Within 250 mi | 47.6% |
 | Within 500 mi | 68.0% |
 
-Talent production is **enormously** concentrated, and this is where SIDELINE is furthest from
-reality — `genRecruits` draws a prospect's home state with `pick(r, STATES)`, uniform across all 50:
+Talent production is **enormously** concentrated. Until Phase 57a `genRecruits` drew a prospect's
+home state with `pick(r, STATES)` — uniform across all 50 — which handed the four states that really
+produce 42% of the country's talent 8% between them, while thirteen Texas programs fought over ~68
+in-state prospects a year. `REC_GEO` is this column:
 
 | state | share of board | vs SIDELINE's uniform 2.0% |
 |---|--:|--:|
@@ -175,88 +183,67 @@ Texas, Florida, California and Georgia produce **42.4%** of the national board b
 
 ## Where the recruiting model currently sits
 
-From `23-reccompare.js`. `ok` < 6% off, `~` < 15%, `MISS` beyond.
+From `23-reccompare.js`, after Phases 57a (supply and geography) and 57b (the talent economy).
+`ok` < 6% off, `~` < 15%, `MISS` beyond.
 
 | metric | real | sim | |
 |---|--:|--:|---|
-| blue-chip share of board | 11.1% | 11.2% | ok |
-| 5★ / 4★ share | 0.9 / 10.2% | 0.9 / 10.3% | ok |
-| **3★ / 2★ share** | **58.9 / 30.0%** | **44.7 / 44.1%** | **MISS** |
-| **ranked board size** | **4,158** | **3,400** | **MISS** −18% |
-| **signs FBS** | **63.7%** | **81.7%** | **MISS** +28% |
-| class size, mean | 20.2 | 20.7 | ok |
-| **programs signing < 10** | **3.3%** | **15.1%** | **MISS** |
-| blue-chip share of signees | 15.3% | 13.7% | ~ |
-| BCR rolling 4yr | 14.1% | 13.0% | ~ |
-| Gini of blue-chips | 0.772 | 0.835 | ~ |
-| class-score persistence | 0.882 | 0.927 | ok |
-| in-state share | 36.8% | 31.5% | ~ |
-| **TX / FL / CA share of board** | **12.5 / 11.1 / 10.9%** | **2.0 / 2.1 / 2.0%** | **MISS** |
+| ranked board size | 3,692 | 3,692 | ok |
+| 5★ / 4★ / 3★ / 2★ share | 0.9 / 10.2 / 58.9 / 30.0% | 0.9 / 10.2 / 58.9 / 30.0% | ok |
+| blue-chip share of board | 11.1% | 11.1% | ok |
+| signs FBS | 67.4% | 68.8% | ok |
+| class size, mean | 19.0 | 18.9 | ok |
+| blue-chip share of signees | 15.3% | 15.7% | ok |
+| BCR per class | 14.4% | 14.1% | ok |
+| BCR rolling 4-year | 14.1% | 14.1% | ok |
+| windows at BCR ≥ 50% | 11.8% | 11.7% | ok |
+| **Gini of blue-chips** | **0.772** | **0.774** | ok |
+| class-score persistence | 0.882 | 0.887 | ok |
+| in-state share | 36.8% | 34.6% | ok |
+| TX / FL / CA / GA share | 12.5 / 11.1 / 10.9 / 7.9% | 12.0 / 11.1 / 11.8 / 7.7% | ok |
+| **programs signing < 10** | **6.3%** | **0.0%** | **MISS** |
 
-**The aggregates hide the defect, exactly as they did for nine phases of the sim.** Blue-chip share,
-class size, Gini and persistence all look fine. The band table does not:
+The band table, which is what the arc existed to fix:
 
 | band | real size | sim size | real BC% | sim BC% | real BCR | sim BCR |
 |---|--:|--:|--:|--:|--:|--:|
-| 1–10 | 23.5 | **4.2** | 40.3 | **10.9** | 69.6 | 100.0 |
-| 11–25 | 21.5 | 18.0 | 35.4 | **67.0** | 44.5 | 94.5 |
-| 26–50 | 19.8 | 14.7 | 19.0 | 21.8 | 15.6 | 22.5 |
-| 51–90 | 19.5 | **25.0** | 5.1 | 0.2 | 2.6 | 0.1 |
-| 91–134 | 19.9 | **25.0** | 0.2 | 0.0 | 0.1 | 0.0 |
+| 1–10 | 23.3 | 22.5 | **40.3** | **31.6** | **69.6** | **56.0** |
+| 11–25 | 21.0 | 21.1 | **35.4** | **43.9** | 44.5 | 55.4 |
+| 26–50 | 19.2 | 19.8 | 19.0 | 21.0 | 15.6 | 17.0 |
+| 51–90 | 18.5 | 18.6 | 5.1 | 3.2 | 2.6 | 1.7 |
+| 91–134 | 17.7 | 17.3 | 0.2 | 0.3 | 0.1 | 0.1 |
 
-In a representative SIDELINE class: **Georgia signs one player. Alabama signs three, Ohio State
-five, Texas and LSU two.** USC and Clemson at prestige ~72 sign a full 25 that is essentially all
-blue-chip, and everything below prestige ~55 signs 25 with zero.
+For comparison, the same table before Phase 57 — a band-pass filter centred on the recruit's tier,
+under which the ten best programs in the country signed **4.2 players** and Georgia signed one:
 
-**The cause is one mechanism.** `recruitFit` scores a program against a *target prestige per star
-tier* — 88 / 70 / 50 / 32 — and the suitor draw in `genRecruits` scores on
-`1 − |prestige − target| / 50` **with no over-tier floor** (the floor exists only in `recruitFit`,
-which governs interest growth, not whether you make the board at all). Recruiting pull is therefore
-a **band-pass filter**: a program *above* a tier is penalised exactly as hard as one below it.
-Prestige ~72 is the optimal place in the game to recruit from, and being the best program in the
-country is actively worse. Real pull is **monotonic in program quality** — a better program never
-recruits a given player worse than a worse program does.
+| band | sim size (pre-57) | sim BC% | sim BCR |
+|---|--:|--:|--:|
+| 1–10 | **4.2** | 10.9 | 100.0 |
+| 11–25 | 18.0 | 67.0 | 94.5 |
+| 51–90 | 25.0 | 0.2 | 0.1 |
 
-Every `reclab` invariant is green while this happens. `≥100 of 134 fill ≥18` passes because the mid
-and low tiers all fill 25; `5★ mean landing prestige ≥ 80` passes at 86.5; and the ~20 programs
-signing under 10 are precisely the blue-bloods nobody thought to check.
+### The two residuals, named
 
-### The race is over before anyone plays it
+**The top band is under-concentrated while the league as a whole is not.** Gini is 0.774 against a
+measured 0.772 — total concentration is right to three decimals — but the sim spreads blue-chips
+across ranks 11–25 (43.9% against 35.4%) where reality concentrates them in the top 10 (31.6%
+against 40.3%). A single-width logistic in prestige cannot make the top ten sharply different from
+ranks 11–25 while keeping overall concentration correct. Reality has something convex at the very
+top that team quality alone does not explain — national brand, in the ordinary sense. Deliberately
+**not** modelled: there is one number's worth of evidence for it here, which is not enough to invent
+a mechanism from, and inventing one is how the Phase 25 penalty model and the Q4 frustration
+multiplier happened.
 
-The band table says `recruitFit` decides who is *on* a prospect's board. This says it also decides
-who *wins* him. `advanceRecruiting`'s passive growth is `iv += (1.0 + fit*3.2) * (0.6 + r()*0.9)`
-every week — for a good-fit program, ~4.4/week from a seeded base near 46, against a
-`COMMIT_THRESH` of 68. Tracking a prestige-71 program's seeded 4★ relationships through one cycle
-with **nobody acting at all**:
+**No program signs a tiny class.** 6.3% of real programs sign fewer than 10 *ranked* players,
+leaning on unranked signees and preferred walk-ons to fill out. The sim has no such mechanism — every
+program fills its target — so it reads 0.0%. This is the same gap as the unmodelled ~466 unranked
+prospects, seen from the other end.
 
-| | |
-|---|--:|
-| Past the commit bar by **week 7**, on passive growth alone | **86.7%** |
-| Pinned at the 100 ceiling by Signing Day | **90.0%** |
+### Does concentration compound?
 
-**Everything Phases 33–38 layered on is moving a number that is already at its maximum** — the AI
-concentrated-effort brain, NIL bidding, the league ripple, official-visit weekends, pitch angles,
-double-down tokens, diminishing returns. A prestige-71 program seeded as a suitor on 119 of 3,400
-signs **the same 25 players, 25 of them blue-chips**, whether the AI brain works its board or
-nobody does.
-
-This is the mechanical reason for three things already in the record: why Phase 37 had to weaken its
-"aggressive push lands the target" qa check to merely *leading* him into Signing Day; why an
-engaged coach is hard to distinguish from a hands-off one; and why the weekly loop reads as upkeep.
-Where fit is good the actions are noise on a saturated number, and where fit is bad they cannot
-overcome it.
-
-It also relocates the **Phase 44 recruiting cliff**. That was fixed with an autopilot on the
-assumption the engine starves a passive player — it does not. `advanceRecruiting` resolves a full
-25-man class for a passive player team. The cliff is created in the **app layer** (the board model
-plus `decayNeglect` eating the player's seeded interest), which is why `reclab` structurally could
-not see it and still cannot while `advanceRecruiting` is all it drives.
-
-**Two further instrument findings, recorded here because they change how the gates should be read.**
-Convergence measures **81.7%** on a world built from the game's real `TEAMS`/`TEAM_STATE` arrays
-against `reclab`'s **90%** on its own synthetic one — and 81.7% is exactly the "~80%" the Phase 37
-design record admits to. And `reclab`, `rolllab` and `legacylab` still generate players at position
-**`S`**, which Phase 52 replaced with FS/SS: `posAttrW('S')` silently falls back to the *linebacker*
-row and `pickArch(r,'S')` returns `null`, so ~9.5% of every pool they validate is built through a
-degraded path. That is the same defect Phase 53 fixed in `simlab`, never swept to the other labs.
-`22-recprofile.js` therefore extracts the game's data arrays instead of copying them.
+`26-dynasty.js`, ten seasons of `genRecruits → advanceRecruiting → rolloverRoster` over a
+real-geography league. **It does not.** The top-10/bottom-10 talent gap settles by season four and
+holds: drift **+0.1** across the steady-state window, league talent sd 5.53 → 5.54. Worth noting for
+the sim's margin calibration that recruiting produces a *narrower* spread than the initial
+prestige-scaled roster generation does (gap 30.9 → 20.3 over the burn-in), so multi-season play
+should ease `calibration.md` §7's margin overshoot rather than worsen it.

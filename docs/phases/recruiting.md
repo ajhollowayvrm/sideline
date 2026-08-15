@@ -916,12 +916,44 @@ into a bigger recruiting edge with nothing pushing back. Like `4-simprofile.js` 
 than an npm gate** — too slow for `reclab` — and any later phase that moves the talent distribution
 owes it a run.
 
+### What it landed
+Every comparison row reads `ok` but one. Gini **0.774** against a measured 0.772, BCR rolling 4-year
+**14.1** against 14.1, windows at BCR ≥ 50% **11.7** against 11.8, class size **18.9** against 19.0,
+persistence **0.887** against 0.882, sign rate 68.8 against 67.4, in-state 34.6 against 36.8.
+
+The band table, which is what the arc existed to fix:
+
+| band | real size | sim size | real BC% | sim BC% | real BCR | sim BCR | *(pre-57 sim size)* |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| 1–10 | 23.3 | 22.5 | 40.3 | 31.6 | 69.6 | 56.0 | **4.2** |
+| 11–25 | 21.0 | 21.1 | 35.4 | 43.9 | 44.5 | 55.4 | 18.0 |
+| 26–50 | 19.2 | 19.8 | 19.0 | 21.0 | 15.6 | 17.0 | 14.7 |
+| 51–90 | 18.5 | 18.6 | 5.1 | 3.2 | 2.6 | 1.7 | 25.0 |
+| 91–134 | 17.7 | 17.3 | 0.2 | 0.3 | 0.1 | 0.1 | 25.0 |
+
+**And it does not compound.** `26-dynasty.js` over ten seasons: the top-10/bottom-10 talent gap
+settles by season four and holds, drift **+0.1** across the steady-state window, league talent sd
+5.53 → 5.54. Worth recording for `calibration.md` §7's margin overshoot that recruiting produces a
+*narrower* spread than the prestige-scaled initial roster generation does (gap 30.9 → 20.3 over the
+burn-in), so multi-season play should ease that overshoot rather than worsen it.
+
 ### Known misses, recorded rather than tuned away
-Programs signing under 10 reads ~0% against a real 3.3%, because `TGT_MIN` floors a target at 12 —
-real attrition and transfer churn occasionally produce a genuinely tiny class and the model has no
-mechanism for one. The deep tail (band 51–90) landing the odd blue-chip is a **geography** effect and
-so is measured in `22-recprofile.js` rather than asserted in `reclab`, whose teams are bare by design
-and have no `homeState` for it to fire through.
+**The top band is under-concentrated while the league as a whole is not.** Gini is right to three
+decimals, but the sim spreads blue-chips across ranks 11–25 (43.9% against 35.4%) where reality
+concentrates them in the top 10 (31.6% against 40.3%). A single-width logistic in prestige cannot
+make the top ten sharply different from ranks 11–25 while keeping total concentration correct;
+reality has something convex at the very top that team quality alone does not explain — national
+brand, in the ordinary sense. Deliberately **not** modelled, because there is one number's worth of
+evidence for it and inventing a mechanism from that is how the Phase 25 penalty model and the Q4
+frustration multiplier happened.
+
+**No program signs a tiny class** — 0% against a real 6.3% signing under 10 ranked players. Real weak
+programs lean on unranked signees and preferred walk-ons; the sim models no unranked prospects, so
+this is the same gap as the absent ~466, seen from the other end.
+
+The deep tail (band 51–90) landing the odd blue-chip is a **geography** effect, so it is measured in
+`22-recprofile.js` rather than asserted in `reclab`, whose teams are bare by design and have no
+`homeState` for it to fire through.
 
 ---
 
