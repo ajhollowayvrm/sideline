@@ -161,3 +161,85 @@ what stops this regressing the next time someone reaches for a CDN.
 - **Making it genuinely feel iOS-first.** The shell is the prerequisite, not the finish: a 560px
   centred column in a WKWebView is still a 560px centred column. Push/pop navigation, iOS sheet
   physics, large-title headers and touch-target sizing are open, and want a device in hand to judge.
+
+---
+
+## Phase 62 — what the first real playthrough found
+
+Phase 61.1 closed on the lesson that *a wrapper is not verified by compiling it*. Phase 61.2 built
+the feel loop and took the app to zero under-44pt targets and zero status-bar overlap across nine
+screens. This is what happened the first time somebody actually **played a career** in the shell —
+three seasons, two offseasons, every step driving the control a finger would hit.
+
+The loops were right about the nine screens they measured. The problem was the screens they could
+not reach.
+
+### The score was under the clock
+
+`.gamev` set `height:100dvh` and `padding-bottom: calc(10px + var(--safe-b))`, and never applied
+`--safe-t`. Every other screen inherits the top inset from `.topbar`, which is the first child of the
+view and carries `calc(12px + var(--safe-t))`. **The game screen builds neither a `.topbar` nor a
+`headerBar`**, so it fell through to `.view`'s flat 18px.
+
+Measured on an iPhone 17 Pro: `--safe-t` is **62px** and content started at **18px**, so **18
+elements painted under the status bar and the Dynamic Island — including `div.cond "0 – 7"`, which is
+the score**. Watch mode and coach mode both. Every other screen in the app reported 0.
+
+This is the same defect class Phase 61.1 fixed for `headerBar`, and it survived that fix for the same
+reason it was possible in the first place: the game view is not a nav view, so it is in **neither**
+`PRE_SCENES` nor `CAREER_SCENES`, and the existing audit catches it instantly the moment it is
+pointed at it. `qa` now sweeps the game screen separately, in both modes. Reverting the one CSS line
+makes that check fail naming the score, so it is not a vacuous guard.
+
+### The audit had never measured a sheet
+
+Phase 61.2 gave `.sheet` a 260 ms `sheet-rise` transform. `goto()` in `tools/ios/scenarios.js` waits
+**two animation frames** before measuring. Two frames into a 260 ms rise the player sheet sits at
+`[522, 1291]` instead of its settled `[105, 874]`, so every control in it reads as off-screen and the
+audit returns **`0 targets / 0 checked`** — which looks exactly like a clean screen.
+
+No sheet has ever been measured. Nothing was hiding behind it this time (all seven sheets measured
+clean once the animations were settled with `await document.getAnimations()`), but the instrument
+reports success for work it did not do, which is the property that matters.
+
+**Still open.** The fix is one `await` in `scenarios.js` and it is not in this phase.
+
+### `ios:sim` can verify the wrong build
+
+A rebuild-and-reinstall left the WKWebView serving a **stale cached page** for the custom scheme. The
+installed bundle was correct — `grep` found the new CSS in `Sideline.app/index.html` — and the
+running page was the previous build. `location.reload()` did not clear it; terminating and
+relaunching the app did.
+
+This silently verified a colour fix against code that was not running, and it was only caught because
+the measurement came back suspiciously unchanged. It is the same failure mode as the two above: the
+loop answered confidently about something it had not looked at.
+
+**Still open.** `tools/ios/shell.js` should terminate before install and relaunch after, or the
+scheme handler should return a no-store response.
+
+### The save-size figure in this file was stale
+
+The "deliberately out of scope" note below records `3 slots × ~1.4 MB ≈ 4.2 MB`. That number
+predated the Phase 17 national board and the Phase 57a pool. Measured this session: **a slot holds
+~2.5 MB**, and **two saved careers reached 5.06 MB and started failing writes** with the
+`'Save failed — storage full'` toast, exactly as predicted — on the second career rather than the
+third. The conclusion is unchanged and the arithmetic is worse than written.
+
+### Twenty-six findings, and what they were about
+
+The pass found nine bugs, seven layout defects, three dev-loop defects and seven balance
+observations. Only the first of those is an iOS story; the rest are the game. Two are worth naming
+here because they are the shell's design system rather than its packaging:
+
+- **`.good`, `.bad` and `.accent` had no CSS rule at all.** Only the chip forms (`.tag.good` and
+  friends) were ever defined, so `class="cond good"` on a win computed to the same white as a loss,
+  right across the app.
+- **`--accent` is the raw team colour and was used as TEXT in nine places.** 116 of the 134 team
+  colours sit under 4.5:1 against the panel; Penn State navy reads **1.01:1**. `--accent-tx` lifts a
+  colour toward white until it clears, hue intact. It is the app-wide sibling of `chartInk()`, which
+  solved this exact problem for the Phase 55 drive chart — *"navy and black programmes exist"* — and
+  was never generalised past the chart.
+
+`qa` 359 → **377**: the game screen in both modes, the tab strip, the nav, and the two colour
+properties, none of which had any guard before.

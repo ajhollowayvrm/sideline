@@ -156,6 +156,29 @@ with iphonesimulator SDK version`, then Xcode updated ahead of its simulator run
 xcodebuild -downloadPlatform iOS
 ```
 
+### Three things the loops get wrong today
+
+Found by playing a full career in the shell (Phase 62). All three make a loop answer confidently
+about something it did not look at, so read a clean line with them in mind.
+
+- **A sheet is measured mid-animation, so no sheet has ever been audited.** `goto()` in
+  `tools/ios/scenarios.js` waits two animation frames; Phase 61.2's `sheet-rise` is a 260 ms
+  transform. Two frames in, the player sheet sits at `[522, 1291]` rather than its settled
+  `[105, 874]`, every control reads off-screen, and the audit reports **`0/0`** — which looks like a
+  pass. Fix: `await document.getAnimations()` before measuring.
+- **The game screen is in neither scene list.** `PRE_SCENES` and `CAREER_SCENES` are nav views, and
+  the watch/coach screen is not one, so neither loop can reach the screen the player stares at most.
+  That is why it spent a release drawing its scoreboard — the score included — under the status bar.
+  The `qa` gate sweeps it now; the two loops still do not.
+- **`ios:sim` can drive a stale page.** After a rebuild and reinstall, WKWebView may keep serving the
+  previous page for the custom scheme. The installed bundle is correct and the running page is not,
+  and `location.reload()` does not clear it — `xcrun simctl terminate` then `launch` does. Until
+  `shell.js` does that itself, confirm a change is really live before trusting a measurement.
+
+**Two booted simulators fight over the bridge.** `DevBridge` binds `127.0.0.1:8787` and a simulator
+shares the host loopback, so a stale app on a second booted device holds the port and the loop drives
+the wrong app — or hangs. Shut the spare down, or `lsof -nP -iTCP:8787` to find the holder.
+
 ---
 
 ## Changing things

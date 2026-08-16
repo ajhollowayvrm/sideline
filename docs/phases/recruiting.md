@@ -1263,11 +1263,154 @@ the same defect and it is load-bearing there** (its `POS` carries `S` rather tha
 before asserting anything distributional over a synthetic roster.
 
 ### Deliberately out of scope
-The **portal autopilot** (`S.portal.autopilot`, Phase 44) survives untouched. It is the same species of
+The **portal autopilot** (`S.portal.autopilot`, Phase 44) survives untouched. *(Phase 62 revisited
+this and gated it on the very staff model this phase introduced — see below.)* It is the same species of
 free automation, but the portal has no staff model to hang a price on and a two-week offseason window is
 not the weekly loop this phase is about. Timed **expiring board events** were also considered and cut:
 the probe shows ignoring a week now costs a top program its class, so an event system on top would be a
 second mechanism for a behaviour that already has one — the thing Phase 59 deleted `AI_SCOUT_STAR` for.
+
+---
+
+## Phase 62 design — the Signing Day bar, and what a season of recruiting is worth
+
+Phases 56–60 rebuilt the recruiting engine against measured football and each one closed with a
+number showing effort mattered. Phase 59 rewrote the gate that proved it and found the old one had
+passed on luck. Phase 60 measured worked-against-delegated-against-ignored and reported
++18% / +128% / +295% by band. None of that was wrong. All of it measured the **ratio**, and nobody
+had measured the **floor** — what a coach who never opens the recruiting screen still signs.
+
+The first full playthrough measured it by accident. A prestige-49 program signed **zero** verbals
+across a whole season, sat at class rank **#134 of 134, grade D** the moment before National Signing
+Day, tapped one button, and got **25 signees, rank #20, grade A−**.
+
+### The instrument had to be the real page
+
+`reclab` cannot see this and says so in its own comment: *"the Phase 44 cliff is NOT an engine
+property — it is created in the app layer, and reclab structurally cannot see it while
+`advanceRecruiting` is all it drives."* Its worked-against-unworked scenario toggles the **AI brain**
+over a team. It does not drive the player's board, points, intents, decay, visits or Signing Day,
+which is where the player's season actually lives.
+
+So `tools/cfb-data/28-receffort.js` drives the real page in headless Chromium. Two arms over the same
+seed and the same team, five seeds across three prestige bands:
+
+- **ignored** — never open the screen.
+- **worked** — a competent coach. Keep the board full, drop only the finished, target the races that
+  are CLOSE rather than the ones already won (Phase 59's own finding, applied to the player), book
+  every official visit, spend every point.
+
+Measured, before any change:
+
+| band | ignored | worked | Δ class score |
+|---|---|---|---|
+| top | 25 signed, #3.0 | 25 signed, #2.4 | **−2%** |
+| mid | 25 signed, #31.8 | 25 signed, #31.8 | **−1%** |
+| bottom | 24.8 signed, #110.2 | 25 signed, #106.6 | **+8%** |
+
+A full season of recruiting was worth nothing. Not less than it should be — nothing.
+
+### One constant, and it is not the autopilot
+
+During the season a recruit commits at `COMMIT_THRESH` **68** with `LEAD_GAP` **7**. That is the game
+the player plays for fifteen weeks. `nationalSigningDay` then calls the engine once with
+`signBar=30, gapBar=undefined→0`, and every uncommitted prospect signs with whoever leads.
+
+Thirty is barely over a seeded suitor's opening interest. A program is seeded as a suitor on ~120
+prospects at generation, and Phase 57b's passive growth climbs toward a fit-set ceiling
+(`CEIL_BASE` 60), so an untouched relationship clears 30 comfortably. `full()` then exempts the
+player from `classTarget`, giving him the full `CLASS_CAP` of 25 while every AI program stops at its
+own target (mean 19.2). The player has the largest bucket in the league and the lowest bar to fill it.
+
+Two measured numbers pin it exactly:
+
+- A mid-tier coach who ignored recruiting signed 25 with a **median relationship of 40**, and
+  **23.6 of those 25 sat below 68** — below the bar the whole season is played to.
+- Even the **worked** arm only *touched* **14 of the 25** players it signed. The other eleven arrived
+  from relationships it never opened.
+
+Working the board moved median interest **40 → 68** and moved the class by **−1%**, because the
+bucket filled either way. That is the phase in one line: **effort moved the relationships and could
+not move the outcome, because class size was set by capacity rather than by anything the coach did.**
+
+### Why 50, and why it is flat
+
+Signee interest is **bimodal**. Relationships that were only ever seeded cluster around 35–45;
+relationships that were worked cluster around 65–85. So the survival curve — how much of each arm's
+class a higher bar would still admit — has a wide flat window between the two humps:
+
+```
+band    arm         >=30  >=40  >=45  >=50  >=55  >=60  >=68
+mid     ignored    24.6  14.0  10.4   9.6   9.0   6.6   1.6
+mid     worked     25.0  18.8  17.8  17.6  17.0  15.4  12.0
+```
+
+Anything in 45–55 separates the two humps and the answer barely moves inside that window. That
+flatness is the reason to trust the number: it is not a knife edge that a later tuning pass will
+knock over. `REC.SIGN_BAR_PLAYER` is **50**.
+
+### Player-only, and the proof
+
+The bar is scoped to the player, using the same reasoning Phase 60 used for recruiting staff: *"AI
+teams get none, so no fitted quantity moves."* The 133 AI programs keep `bar=30`, so sign rate, class
+size, the band table, Gini, BCR, persistence and geography are all untouched.
+
+That is asserted rather than assumed. **`23-reccompare` comes back byte-identical to its committed
+baseline**, and `reclab` still reports 67% of the board signed by Signing Day.
+
+`advanceRecruiting` gains a `playerBar` parameter that **defaults to `bar`**, so every caller that
+does not pass one is unchanged — which is what keeps `reclab`'s own league runs identical.
+
+One detail that is load-bearing: when the player misses his bar the engine **walks down to the next
+suitor who clears theirs** rather than dropping the prospect. Without that, raising the player's bar
+would quietly push ~15 prospects a year into the unsigned pile, and the unsigned rate is a league
+aggregate this phase must not move.
+
+### What it landed
+
+| band | ignored | worked | Δ class score |
+|---|---|---|---|
+| top | 24.2 signed, #4.4 | 25.0 signed, #2.4 | **+4%** |
+| mid | 17.2 signed, #78.8 | 24.6 signed, #40.6 | **+48%** |
+| bottom | 11.2 signed, #133.8 | 22.0 signed, #117.2 | **+92%** |
+
+The **prestige gradient fell out of it** rather than being designed, and it is the best thing about
+the result. A blue-blood who ignores recruiting still signs 24 and lands the #4 class, because his
+pull genuinely clears 50 on its own — that is what a blue-blood job IS, and it is Phase 57b's rule
+(*pull sets the odds, actions decide the race*) finally applying to the pass that had ignored it. A
+prestige-35 program signs 11 and has to work for 22.
+
+And there is **no cliff**. The Phase 44 hazard was the bottom of the league signing zero. The ignored
+floor is 11–17 signees, which is a bad class rather than no class.
+
+### The portal, the same story one layer down
+
+`S.portal.autopilot` was set `true` at every portal open and **nothing ever cleared it**. Phase 60
+deleted the equivalent switch on the recruiting side and replaced it with staff you hire and direct;
+the portal kept the Phase 44 version. Measured across three offseasons of a coach doing nothing, it
+delivered **12, 18 and 15** transfers rated 63–66 — more roster improvement than a signing class, for
+no decision at all.
+
+`autoPortalPursue` is gated on `recStaff()` now and scaled by the department's rating. That also
+gives the Phase 60 hire something **concrete** to buy: until now it bought weekly points, board slots
+and standing orders, which are all abstractions. `tools/cfb-data/29-portalstaff.js` measures it —
+**2.8 arrivals against 8 losses** with no staff, **5.0** with a two-person department, and a coach who
+works the portal himself adds more on top.
+
+This deliberately reverses Phase 60's own "deliberately out of scope" note, which recorded that the
+portal had *"no staff model to hang a price on."* Phase 60 built exactly that staff model. The note
+was true when it was written and stopped being true in the same phase.
+
+### Deliberately out of scope
+
+- **Making the consequence legible.** Once the class can be bad, the cost lands as a thin roster two
+  or three years later — longer than the two-to-three-year hot seat, so it will not be felt. The
+  offseason recap should name it ("signed 11 of 25 — thin at OL in 2029"). Recorded, not built.
+- **Refitting the league.** The bar is player-only precisely so that no fitted quantity moves. A
+  league-wide realism pass on `signBar` is a separate change with `25-recfit.js` in the loop, and it
+  would have to re-derive sign rate, class size and the band table together.
+- **`classTarget` for the player.** Phase 57b exempts him on purpose, and that reasoning still holds:
+  a target he can neither see nor set would block a recruit he spent a season pushing.
 
 ---
 

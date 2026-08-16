@@ -7,7 +7,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > phase-by-phase design records (the "why" behind each system) live in **`docs/phases/`**
 > and are read on demand, not auto-loaded:
 > - `docs/phases/gameday.md` — sim engine + play-calling + the watch screen (Phases 3, 3.5, 21–31, 46, 55, 55.1, 55.2)
-> - `docs/phases/recruiting.md` — recruiting, signing, portal, visits, and the measured talent economy (Phases 4, 14, 16, 17, 33–38, 56, 57a, 57b, 58, 59)
+> - `docs/phases/recruiting.md` — recruiting, signing, portal, visits, and the measured talent economy (Phases 4, 14, 16, 17, 33–38, 56, 57a, 57b, 58, 59, 60, 62)
 > - `docs/phases/offseason.md` — rollover, program, postseason, draft, championships, camp, realignment (Phases 5, 6–9, 12, 13, 15, 18, 32, 39, 43, 44)
 > - `docs/phases/identity-media.md` — traits, morale, media, rivalries, records, contract, legends, identity (Phases 10, 11, 19, 20, 40, 41, 42, 45)
 > - `docs/phases/cloud.md` — cloud saves: AWS backend, career codes, sync/conflict model (Phase 47)
@@ -18,7 +18,8 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > - `docs/phases/attributes-2.md` — position-specific attributes, archetypes, purity (Phase 52)
 > - `docs/phases/contests.md` — play resolution as sequential contests (Phase 53)
 > - `docs/phases/calibration.md` — the scoring aggregate decomposed and fitted (Phase 54)
-> - `docs/phases/ios.md` — the native iOS shell, session resume, embedded fonts (Phase 61)
+> - `docs/phases/ios.md` — the native iOS shell, session resume, embedded fonts, and what the first
+>   real playthrough found (Phases 61, 61.1, 61.2, 62)
 >
 > **Measured reality:** `docs/reference/cfb-averages.md` holds real FBS averages computed from 3,944
 > games (2021–2025) — national, by rank matchup, and by mismatch size — plus where `simEngine` sits
@@ -36,7 +37,7 @@ via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
 > band-pass and saturation defects Phase 56 measured. Reproduce with `tools/cfb-data/20–23`
 > (needs a free `CFBD_API_KEY`).
 >
-> **All roadmap phases 1–59 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–62 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -111,7 +112,7 @@ still serves it with zero config.
 - **Phase 41 — All-time record book.** Persistent league-wide record ledger (`S.records`) captured as games/seasons resolve. Pure RECORD engine. Save v37. `recordlab`.
 - **Phase 42 — AD expectations & contract.** Preseason mandate + a contract (years/salary/buyout); mandate flows through the existing approval/hot-seat; HC salary is a real cost. Save v38. `contractlab`.
 - **Phase 43 — Conference realignment.** Seeded realignment waves poach risers up into the power tier; mutates `team.conf`, everything downstream reads it live. Save v39. `realignlab`.
-- **Phase 44 — Career-balance & economy pass.** Softened mandate/hot-seat curve, recruiting/portal autopilot floor, economy sink + prestige drift, carousel upward mobility, DC rng substream. Save v40.
+- **Phase 44 — Career-balance & economy pass.** Softened mandate/hot-seat curve, recruiting/portal autopilot floor, economy sink + prestige drift, carousel upward mobility, DC rng substream. Save v40. *(Both autopilots are gone: Phase 60 replaced the recruiting one with standing orders, Phase 62 gated the portal one on recruiting staff.)*
 - **Phase 45 — Player identity.** Derived jersey #/nickname/known-for/backstory/fan-favorite + captured signature moments (`p.moments`); identity everywhere (45.1). Save v41. `identitylab`.
 - **Phase 46 — In-game screen.** Deeper opt-in play-calling over Phases 22–31: named play concepts + SVG play-art (`PLAYBOOK`), live off/def tendency reads (Play Action punishes a run-committed front), 15-min quarters, halftime, both-way field, play past 0:00, FG any down. AI/defer byte-identical. Save v42. *(→ `docs/phases/gameday.md`.)*
 - **Phase 47 — Cloud saves.** Opt-in cross-device continuation: a career mirrors to your own AWS stack (Lambda Function URL → DynamoDB slot index + private S3 blob), identified by a 60-bit **career code** (no accounts). `localStorage` stays the fast path; pushes are debounced behind `writeSlot`, and a genuine two-device divergence shows both saves and asks. Setup is a **real login form** — endpoint and code in one `<form>` as `autocomplete="username"` / `"current-password"`, connected by a real submit event — so iOS/Safari offers Save Password and autofills both halves on the next device; the career code is the one secret in the game that cannot be recovered, so the keychain has to be able to hold it. Save v43 (structural no-op). `cloudlab`. *(→ `docs/phases/cloud.md`, `infra/README.md`.)*
@@ -547,6 +548,49 @@ still serves it with zero config.
   `tools/ios/scenarios.js` so the gate and the two loops cannot drift into separate opinions about
   what a 44pt target is. *(→ `ios/README.md`.)*
 
+- **Phase 62 — the playthrough pass.** The first time anybody *played a career* in the shell rather
+  than screenshotting it: three seasons, two offseasons, every step driving the control a finger
+  would hit. **26 findings.** The loops were right about the nine screens they measured and blind to
+  the ones they could not reach — the game view is not a nav view, so it is in neither scene list,
+  and it was the one screen building neither a `.topbar` nor a `headerBar`: `--safe-t` is 62px,
+  content started at 18px, and **18 elements painted under the clock, the score among them**. The
+  other two instrument defects are recorded and NOT fixed (`docs/phases/ios.md`): a sheet is audited
+  two frames into a 260ms rise so it reports `0/0` and **no sheet has ever been measured**, and
+  `ios:sim` can serve a **stale cached page** after a reinstall, which silently verified a fix
+  against code that was not running. Bugs: `offerRecruit` toasted success on every failure path; a
+  recruit who cut you took your points once he committed elsewhere (the guard read `!rec.committedTo`,
+  which switched it off at exactly the wrong moment); a signed-elsewhere recruit held a board slot
+  with no way off it; `pursueTransfer` charged at 100% interest; Home's "Last Result" could not see a
+  bowl, playoff or title game (`teamGames` reads only `S.schedule.games` — `lastResultFor` spans all
+  three); "freshmanmen". **The design system had two holes bigger than any of them**: `.good`, `.bad`
+  and `.accent` had **no CSS rule at all** — only the chip forms were ever defined, so `class="cond
+  good"` on a win computed to the same white as a loss, app-wide — and `--accent` is the raw team
+  colour used as TEXT in nine places, where **116 of 134 team colours sit under 4.5:1** on the panel
+  (Penn State navy reads 1.01:1). `--accent-tx` lifts it until it clears, hue intact; the app-wide
+  sibling of `chartInk()`, which solved this for the drive chart in Phase 55 and was never
+  generalised. Layout: `.tabs` **wraps** rather than scrolling (the Season strip carries eight tabs
+  against room for five, and a scroll strip with no fade or peek reads as a closed set — Awards, the
+  playoff Bracket and the Draft board did not exist to the player); names get their own line in the
+  portal and the honors rows, because the ellipsis was landing on the TEAM; `min-height:44px` on
+  `input,select`; the recruiting tab strip moved above the report and plan cards, which moved into
+  the Board tab they describe. **Balance — recruiting effort was worth nothing, and one constant is
+  why.** `28-receffort.js` drives the real page (reclab records that this path is app-layer and it
+  *"structurally cannot see it"*): over 5 seeds × 3 bands, a full season of board work, pivotal
+  targeting, visits and every point spent moved class score **−2% / −1% / +8%**. In-season a recruit
+  commits at `COMMIT_THRESH` 68 / `LEAD_GAP` 7; Signing Day ran at **30/0**, so a mid-tier coach who
+  never opened the screen signed 25 with a **median relationship of 40** and 23.6 of 25 below 68.
+  `REC.SIGN_BAR_PLAYER` **50**, off a measured survival curve (signee interest is bimodal — seeded
+  relationships cluster 35–45, worked ones 65–85, so 45–55 separates them and the answer is flat
+  across the window). **Player-only**, so no fitted quantity moves: `23-reccompare` is
+  **byte-identical** to its committed baseline and `reclab`'s sign rate holds at 67%. Effort now
+  reads **+4% / +48% / +92%**, and the prestige gradient falls out rather than being designed — a
+  blue-blood who ignores recruiting still signs 24 for the #4 class, a prestige-35 program signs 11
+  and must work for 22. No cliff. The **portal autopilot** gets the Phase 60 treatment
+  (`S.portal.autopilot` was set true at every open and nothing ever cleared it): gated on
+  `recStaff()` now, which finally gives that hire something concrete to buy — measured 2.8 arrivals
+  against 8 losses with no staff, 5.0 with a department (`29-portalstaff.js`). **No save bump**, no
+  `SIM_MODEL` bump. `qa` 359 → **377**. *(→ `docs/phases/recruiting.md`, `docs/phases/ios.md`.)*
+
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
 stays fast). This is a design choice, not a backlog. Per-doc "Deliberately out of scope"
@@ -905,6 +949,21 @@ between their shots is a difference in the *engine*. Neither is a gate — they 
 `test/shots/iphone/` is gitignored. The loop paid for itself on its first run: it found the plain-text
 render below, and the storage bug in "Conventions & gotchas" that had been silently freezing every
 career at its preseason state. `qa` 351 → **355**. *(→ `ios/README.md`.)*
+
+**Three known loop defects (Phase 62, recorded and NOT fixed)** — each makes a loop answer
+confidently about something it never looked at, so read a clean line with them in mind:
+`goto()` waits two frames and `sheet-rise` is 260ms, so **every sheet audits as `0/0`** and none has
+ever been measured (fix: `await document.getAnimations()`); the **game screen is in neither scene
+list**, which is why it shipped drawing the score under the status bar; and `ios:sim` can drive a
+**stale cached page** after a reinstall (`simctl terminate` + `launch` clears it). Details in
+`ios/README.md` and `docs/phases/ios.md`.
+
+**Non-gate balance probes** (Phase 62): `tools/cfb-data/28-receffort.js` measures what a season of
+recruiting is worth to the PLAYER — two arms (ignored vs worked) over seeds × prestige bands — and
+`29-portalstaff.js` does the same for the portal with and without recruiting staff. Both drive the
+real page in Chromium rather than extracting an engine block, because `reclab` records that the
+player's recruiting path is app-layer and it *"structurally cannot see it"*. Report →
+`tools/cfb-data/receffort-report.txt`.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Non-controlled games are resolved instantly by `simEngine`; only the controlled team's game
