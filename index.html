@@ -26,7 +26,12 @@
 :root{
   --bg:#0d0f12; --panel:#15181d; --panel2:#1c2026; --line:#2a2f37;
   --ink:#e9ecf1; --ink2:#aab3c0; --ink3:#6b7480;
-  --accent:#c9a227; --accent-ink:#0d0f12;
+  /* Three accent tokens, because the team colour has three different jobs. --accent is the raw colour
+     and is what you PAINT WITH; --accent-ink is the readable ink to put ON it; --accent-tx is the
+     colour to WRITE IN on the dark page. The third one was missing, and 116 of the 134 team colours
+     sit under 4.5:1 against the panel — Penn State navy reads 1.01:1 — so every accent-coloured word
+     in the app was invisible for most of the league. See accentInk(). */
+  --accent:#c9a227; --accent-ink:#0d0f12; --accent-tx:#c9a227;
   --good:#3ea66b; --warn:#d8a24a; --bad:#d35450;
   --r:12px;
   --safe-t: env(safe-area-inset-top, 0px);
@@ -73,9 +78,11 @@ button:active,a:active,[role=button]:active{filter:brightness(1.4);transform:sca
   left:0;right:0;top:50%;height:44px;transform:translateY(-50%)}
 .cond{font-family:'Saira Condensed','Inter',sans-serif;letter-spacing:.01em}
 button{font-family:inherit;color:inherit;cursor:pointer;border:none;background:none}
+/* min-height, not padding: a screen that tightens the padding on its own select (the Honors conference
+   picker did, at 8px, for 38pt) still can't fall under Apple's minimum. Only ever grows a control. */
 input,select{font-family:inherit;font-size:16px;color:var(--ink);background:var(--panel2);
-  border:1px solid var(--line);border-radius:10px;padding:11px 12px;width:100%}
-input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
+  border:1px solid var(--line);border-radius:10px;padding:11px 12px;width:100%;min-height:44px}
+input:focus,select:focus{outline:2px solid var(--accent-tx);outline-offset:1px}
 select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--ink2) 50%),linear-gradient(135deg,var(--ink2) 50%,transparent 50%);
   background-position:calc(100% - 18px) 19px,calc(100% - 13px) 19px;background-size:5px 5px;background-repeat:no-repeat;padding-right:34px}
 label.fld{display:block;margin-bottom:14px}
@@ -142,18 +149,35 @@ h2.sec:first-child{margin-top:6px}
 .lrow+.lrow{margin-top:7px}
 .ovr{font-family:'Saira Condensed';font-weight:800;font-size:19px;width:34px;text-align:center;
   border-radius:8px;padding:3px 0;background:var(--panel2)}
-.ovr.elite{color:var(--accent)}
+.ovr.elite{color:var(--accent-tx)}
 .pos{font-family:'Saira Condensed';font-weight:700;font-size:12px;color:var(--ink3);width:30px}
 .nm{font-weight:600;font-size:14.5px}
 .meta{font-size:11.5px;color:var(--ink3)}
-.cap{color:var(--accent);font-weight:700;font-size:11px}
+.cap{color:var(--accent-tx);font-weight:700;font-size:11px}
+/* The semantic vocabulary. `.good`, `.bad` and `.accent` are used as utility classes right across the
+   app — a win and a loss, money in and money out, a met mandate and a missed one, every jersey
+   nickname — and NONE of them had a rule. Only the chip forms (`.tag.good` / `.tag.bad` /
+   `.tag.accent`) were ever defined, so every bare use inherited plain body text and the whole
+   vocabulary was dead: `class="cond good"` on "W 31–13" computed to the same white as a loss.
+   They sit LAST among the single-class colour rules on purpose. `.muted`, `.dim` and `.meta` all set
+   a colour at the same specificity, and the app combines them freely (`class="meta bad"`,
+   `class="muted good"`) — so whichever rule comes last wins, and the semantic one has to.
+   The chip rules keep their own look regardless: .tag.good outranks .good on specificity. */
+.good{color:var(--good)}
+.bad{color:var(--bad)}
+.accent{color:var(--accent-tx)}
 
 /* watch viewer (Phase 55) — a fixed-height column so the log/chart split is exact on any phone,
    rather than two guessed vh numbers that leave a gap on a tablet and overlap on an iPhone SE.
    The field is aspect-locked to a REGULATION NCAA field (120 × 53⅓ yards), so it takes exactly the
    height its own proportions ask for and the log takes everything left over. */
 #app[data-screen="game"]{padding-bottom:0}     /* no bottom nav on the game screen */
-.gamev{display:flex;flex-direction:column;height:100dvh;padding-bottom:calc(10px + var(--safe-b))}
+/* The status-bar inset has to be set HERE. Every other screen inherits it from `.topbar`, which is
+   the first child of the view and carries `calc(12px + var(--safe-t))`. The game screen builds
+   neither a `.topbar` nor a `headerBar`, so without this line it starts at `.view`'s flat 18px and
+   the scoreboard — the score itself — paints under the clock and the notch. */
+.gamev{display:flex;flex-direction:column;height:100dvh;
+  padding-top:calc(18px + var(--safe-t));padding-bottom:calc(10px + var(--safe-b))}
 .gtabs{flex:none;margin:9px 0 8px}
 .gpane{flex:1 1 0;min-height:80px;overflow-y:auto}
 
@@ -199,7 +223,11 @@ h2.sec:first-child{margin-top:6px}
 .gs-lead .s{flex:none;color:var(--ink2);font-family:'Saira Condensed';font-weight:600;font-size:13px}
 
 /* tabs */
-.tabs{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:14px;overflow-x:auto;scrollbar-width:none}
+/* WRAPS, it does not scroll. The Season strip carries up to eight tabs (Awards, and Bracket and Draft
+   once they exist) against room for five on a phone — and a scrolling strip with no fade, no arrow and
+   no partial peek reads as a closed set, so Awards, the playoff Bracket and the Draft board were
+   simply invisible. Two short rows show everything; nothing here needs to be discovered by swiping. */
+.tabs{display:flex;flex-wrap:wrap;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:14px}
 .tabs::-webkit-scrollbar{display:none}
 .tabs button{flex:1 0 auto;white-space:nowrap;padding:9px;border-radius:9px;font-family:'Saira Condensed';font-weight:700;
   font-size:14px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink3)}
@@ -213,12 +241,12 @@ h2.sec:first-child{margin-top:6px}
    nav's own padding sits outside the button, so the tappable area was smaller than it looked. */
 .nav button{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
   min-height:44px;gap:3px;color:var(--ink3);font-size:10px;font-weight:600;letter-spacing:.04em}
-.nav button.on{color:var(--accent)}
+.nav button.on{color:var(--accent-tx)}
 .nav svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.9}
 
 /* menu hero */
 .hero{min-height:100svh;display:flex;flex-direction:column;justify-content:center;padding:24px 22px calc(40px + var(--safe-b))}
-.hero .kick{font-family:'Saira Condensed';font-weight:600;font-size:13px;letter-spacing:.32em;text-transform:uppercase;color:var(--accent)}
+.hero .kick{font-family:'Saira Condensed';font-weight:600;font-size:13px;letter-spacing:.32em;text-transform:uppercase;color:var(--accent-tx)}
 .hero h1{font-family:'Saira Condensed';font-weight:800;font-size:62px;line-height:.92;margin:8px 0 4px;letter-spacing:.005em}
 .hero .by{color:var(--ink3);font-size:13px;margin-bottom:38px}
 .hero .btn{margin-top:11px}
@@ -229,12 +257,12 @@ h2.sec:first-child{margin-top:6px}
 
 .choice{display:flex;flex-direction:column;gap:8px}
 .opt{text-align:left;padding:13px 14px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
-.opt.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.opt.on{border-color:var(--accent-tx);box-shadow:inset 0 0 0 1px var(--accent-tx)}
 .opt .t{font-family:'Saira Condensed';font-weight:700;font-size:16px}
 .opt .d{font-size:12.5px;color:var(--ink2);margin-top:3px}
 
 .team-pick{display:flex;align-items:center;gap:11px;padding:11px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
-.team-pick.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.team-pick.on{border-color:var(--accent-tx);box-shadow:inset 0 0 0 1px var(--accent-tx)}
 .dot{width:14px;height:14px;border-radius:4px;flex:none}
 
 .search{margin-bottom:11px}
@@ -1737,11 +1765,29 @@ let S=null;            // current state
 let UI={view:'menu',tab:'roster',newgame:null};
 
 function controlled(){return S.world.teams.find(t=>t.id===S.teamId);}
+/* The team colour, lifted until it can be READ on the dark ground. Blends toward white and stops at
+   the first step that clears 4.5:1 against --panel2 (the lightest surface accent text sits on), so a
+   bright colour comes back untouched and a navy keeps its hue — the team's identity survives.
+   This is the app-wide sibling of chartInk(), which solved exactly this for the drive chart in Phase
+   55 ("navy and black programmes exist") and was never generalised to the rest of the UI. */
+function accentInk(hex){
+  const rel=c=>{const s=c.map(v=>{v/=255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4);});
+    return 0.2126*s[0]+0.7152*s[1]+0.0722*s[2];};
+  const gl=rel([28,32,38]);                                  // --panel2
+  const base=hexRGB(hex);
+  for(let t=0;t<=0.85;t+=0.05){
+    const c=base.map(v=>Math.round(v+(255-v)*t)), l=rel(c);
+    if((Math.max(l,gl)+0.05)/(Math.min(l,gl)+0.05)>=4.5)return `rgb(${c.join(',')})`;
+  }
+  return '#ffffff';
+}
 function applyAccent(team){
   const root=document.documentElement.style;
-  if(team){root.setProperty('--accent',team.color);root.setProperty('--accent-ink',textOn(team.color));
-    document.querySelector('meta[name=theme-color]').setAttribute('content','#0d0f12');}
-  else{root.setProperty('--accent','#c9a227');root.setProperty('--accent-ink','#0d0f12');}
+  const col=team?team.color:'#c9a227';
+  root.setProperty('--accent',col);
+  root.setProperty('--accent-ink',team?textOn(col):'#0d0f12');
+  root.setProperty('--accent-tx',accentInk(col));
+  if(team)document.querySelector('meta[name=theme-color]').setAttribute('content','#0d0f12');
 }
 
 /* ============================================================
@@ -1801,7 +1847,7 @@ function cloudBadge(st){
   const txt={insync:'☁ In sync',push:'☁ Not uploaded',pull:'☁ Newer in cloud',conflict:'☁ Two versions',none:''}[st.action]||'';
   if(!txt)return null;
   const b=el('span','meta');b.dataset.tid='cloud-badge';b.dataset.action=st.action;
-  b.style.cssText='font-weight:700;'+(st.action==='insync'?'opacity:.65':'color:var(--accent)');
+  b.style.cssText='font-weight:700;'+(st.action==='insync'?'opacity:.65':'color:var(--accent-tx)');
   b.textContent=txt;return b;
 }
 function renderLoad(app){
@@ -2115,9 +2161,12 @@ function finishNewGame(ng){
   initRivalries();   // Phase 40: seed the world's famous rivalries (persist across seasons)
   S.records=emptyRecords();   // Phase 41: an empty all-time record book (fills from played games)
   // choose a save slot
-  chooseSlotSheet();
+  chooseSlotSheet(true);
 }
-function chooseSlotSheet(){
+/* Serves two callers: the wizard picking a home for a brand-new career, and the Menu's
+   "Save to a slot…". It used to announce 'Career started' either way, so saving a three-year-old
+   career reported a new one — and it dropped the coach back on Home from whatever screen he was on. */
+function chooseSlotSheet(isNew){
   const body=el('div');
   body.append(el('div','hint','Choose a slot to save this career to. Saving over a slot replaces what\u2019s there.'));
   SLOTS.forEach(n=>{
@@ -2125,12 +2174,14 @@ function chooseSlotSheet(){
     const b=el('button','btn '+(ex?'line':'ghost'),'Slot '+n+(ex?' — replace '+ex.meta.team:' — empty'));
     b.style.marginTop='9px';
     b.onclick=()=>{
-      const go=()=>{writeSlot(n,S);closeSheet();UI.view='home';UI.newgame=null;render();toast('Career started');};
+      const go=()=>{writeSlot(n,S);closeSheet();
+        if(isNew){UI.view='home';UI.newgame=null;}
+        render();toast(isNew?'Career started':'Saved to slot '+n);};
       if(ex)confirmSheet('Overwrite Slot '+n+'?',ex.meta.team+' — '+ex.meta.coach,go);else go();
     };
     body.append(b);
   });
-  openSheet('Save your career',body);
+  openSheet(isNew?'Save your career':'Save to a slot',body);
 }
 
 /* ---------- roster import / template ---------- */
@@ -2591,6 +2642,28 @@ function teamById(id){return S.world.teams.find(t=>t.id===id);}
 function teamGame(teamId,week){return S.schedule?S.schedule.games.find(g=>g.week===week&&(g.home===teamId||g.away===teamId)):null;}
 function teamGames(teamId){return S.schedule?S.schedule.games.filter(g=>g.home===teamId||g.away===teamId).sort((a,b)=>a.week-b.week):[];}
 function lastGameFor(teamId){const gs=teamGames(teamId).filter(g=>g.played);return gs.length?gs[gs.length-1]:null;}
+/* The most recent game a team actually PLAYED, wherever it lives. `teamGames` reads only
+   `S.schedule.games`, so a conference title game (`S.champWeek`) and a bowl or playoff game
+   (`S.postseason`) were invisible to it — right after a bowl, Home still showed a Week 12 result.
+   Ordered regular season → championship week → postseason round, which is the order they are played.
+   Deliberately separate from `lastGameFor`: the press bank and the media recap key off the regular
+   season, and a bowl is not the game a Week 9 press conference is about. */
+function lastResultFor(teamId){
+  const all=teamGames(teamId).filter(g=>g.played).map(g=>({g,ord:g.week||0}));
+  if(S.champWeek)S.champWeek.games.forEach(g=>{
+    if(g.played&&(g.home===teamId||g.away===teamId))all.push({g,ord:900});});
+  if(S.postseason){
+    const ps=S.postseason;
+    (ps.bowls||[]).concat(...(ps.playoff&&ps.playoff.rounds||[])).forEach(g=>{
+      if(g.played&&(g.home===teamId||g.away===teamId))all.push({g,ord:1000+(g.round||0)});});
+  }
+  if(!all.length)return null;
+  all.sort((a,b)=>a.ord-b.ord);
+  return all[all.length-1].g;
+}
+// What to label that game with: a bowl, playoff or title game carries its own name; the regular season
+// carries a week number.
+function resultLabel(g){return g.name||(g.week!=null?'Week '+g.week:'Postseason');}
 
 function startSeason(){
   S.schedule=genSchedule(S.world,S.seed,seriesLegsForYear(S.year||2026).concat(rivalLegsForYear(S.year||2026)));
@@ -3922,6 +3995,14 @@ const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.22,GEO_FIT:0.02,
   PASSIVE_RATE:0.10,CEIL_BASE:60,TGT_MEAN:19.2,TGT_SD:5.5,TGT_PRES:1.15,TGT_MIN:12,AI_VALUE:0.06,AI_PIVOT:14,
   FOG_ATTR:10,FOG_ARCH:35,FOG_PUR:70,
   COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:8,DECOMMIT_GAP:18,
+  /* SIGN_BAR_PLAYER — what the player's signature has to clear on Signing Day, against the league's
+     30. Chosen off a measured survival curve (tools/cfb-data/28-receffort.js): a signee's interest is
+     bimodal, clustering ~35-45 where the relationship was only ever seeded and ~65-85 where it was
+     worked, so anything in 45-55 separates the two and the result is flat across that window. At 50 a
+     mid-tier coach who ignores recruiting signs 9.6 and one who works it signs 17.6; at the top the
+     two are 22.0 and 24.6, because a blue-blood's pull genuinely does clear the bar on its own. That
+     gradient is the point — prestige recruits for you at the top, you recruit at the bottom. */
+  SIGN_BAR_PLAYER:50,
   AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.3,NEGLECT_DECAY:3.5,
   AI_VISIT_P:0.25,FINALISTS:4,FINAL_READY:0.55,FINAL_BAR:58};
 
@@ -4151,11 +4232,12 @@ function aiPriority(team,rec){const need=(team.needs&&team.needs[rec.pos])?6:0;
 // own team (`playerTeamId`, Phase 33) is SKIPPED by the AI brain — his actions are applied by the app
 // before this runs. Mutates `pool`; returns the week's new commits (incl. flips, each tagged with a
 // transient `rec._flipped={from,to}` so the app can toast).
-function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,playerTeamId){
+function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,playerTeamId,playerBar){
   const byId={};teams.forEach(t=>byId[t.id]=t);
   const r=rng((seed^hashStr('rec'+week))>>>0);
   const bar=signBar==null?35:signBar;   // interest a leader needs to lock a signature on a finalize pass
   const gap=gapBar==null?0:gapBar;      // lead margin over #2 required to sign (Early Period wants a firm lead)
+  const pb=playerBar==null?bar:playerBar;   // the PLAYER's signing bar (see barFor below); defaults to the league's
   const counts={};pool.forEach(p=>{if(p.committedTo)counts[p.committedTo]=(counts[p.committedTo]||0)+1;
     if(p._flipped)delete p._flipped;});
   // Phase 57b: a program stops at its own class TARGET, not at the league-wide cap. `CLASS_CAP` is a
@@ -4277,13 +4359,31 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
     if(rec.committedTo)return;
     let entries=Object.entries(rec.iv).filter(([tid])=>byId[tid]&&!full(tid)&&(last||isFinalist(rec,tid))).sort((a,b)=>b[1]-a[1]);
     if(!entries.length)return;
-    const [leadId,lead]=entries[0], second=entries[1]?entries[1][1]:0;
+    let [leadId,lead]=entries[0]; const second=entries[1]?entries[1][1]:0;
     const commit=()=>{rec.committedTo=leadId;if(last)rec.signed=true;counts[leadId]=(counts[leadId]||0)+1;if(rec.decideWeek!=null)delete rec.decideWeek;out.push(rec);};
+    /* The bar the PLAYER's signature has to clear on the finalize pass. The league signs at `bar`
+       (30), which is barely over a seeded suitor's opening interest — measured, the player's whole
+       class arrived under it: a mid-tier coach who never opened the recruiting screen still signed 25
+       with a MEDIAN relationship of 40, against a COMMIT_THRESH of 68 that the entire in-season game
+       is played to. So a season of work moved interest 40 → 68 and moved the class by −1%, because
+       the bucket filled either way. This is the one number that makes effort matter.
+       It is PLAYER-ONLY on purpose: the 133 AI programs keep the fitted behaviour, so sign rate,
+       class size, the band table, Gini and BCR are all untouched — the same scoping Phase 60 used
+       for recruiting staff. Defaults to `bar`, so every caller that does not pass it is unchanged. */
+    const barFor=tid=>(playerTeamId&&tid===playerTeamId)?pb:bar;
+    // Walk down the suitors rather than dropping him: if the player can't sign him, the next program
+    // that clears its own bar does. Otherwise raising the player's bar would quietly push prospects
+    // into the unsigned pile, which is a league aggregate this must not move.
+    if(last){
+      const hit=entries.find(([tid,v],i)=>v>=barFor(tid)&&(i>0||(v-second)>=gap));
+      if(!hit)return;
+      leadId=hit[0];lead=hit[1];
+    }
     // Phase 35 — commitment windows: a blue-chip who's READY first ANNOUNCES a decision a week out
     // (rec.decideWeek). When the window elapses he commits to whoever LEADS then — so a rival (or you) can
     // still make a final push during the window. The finalize pass commits any pending window immediately.
     if(rec.decideWeek!=null){if(last||week>=rec.decideWeek)commit();return;}
-    if(last){if(lead>=bar&&(lead-second)>=gap)commit();return;}   // toss-ups (small gap) wait for the next pass
+    if(last){commit();return;}   // the qualifying suitor was resolved above
     const patience=rec.stars===5?0.55:rec.stars===4?0.35:0.18;
     if(readiness<patience)return;
     if(lead>=REC.COMMIT_THRESH&&(lead-second)>=REC.LEAD_GAP){
@@ -6384,7 +6484,7 @@ function earlySigningPeriod(){
 function nationalSigningDay(){
   const R=S.recruiting; if(!R||R.stage==='closed')return;
   applyPlayerIntents();                                          // Phase 33: spend the final-push intents first
-  advanceRecruiting(R.pool,S.world.teams,99,99,recruitSeed(),true,30,undefined,S.teamId);   // mop-up: any real leader now signs
+  advanceRecruiting(R.pool,S.world.teams,99,99,recruitSeed(),true,30,undefined,S.teamId,REC.SIGN_BAR_PLAYER);   // mop-up: the league at 30, you at your own bar
   R.stage='closed'; R.signed=true;
   // Phase 58: the class lands NOW, and the fanbase reacts now. Signing Day is its own moment in the
   // calendar, so the approval move belongs here rather than folded anonymously into the season
@@ -6443,6 +6543,9 @@ function openPortal(){
 function pursueTransfer(tr){
   const P=S.portal; if(!P||P.stage!=='open')return false;
   if(tr.committedTo){toast('Already committed elsewhere');return false;}
+  // Interest is clamped at 100, and recruiting has diminishing returns while the portal has none — so
+  // without this a target already at the cap took 10 points a tap and answered "Pursued" every time.
+  if((tr.iv[S.teamId]||0)>=100){toast('He’s already all-in — spend your points elsewhere');return false;}
   const cost=10; if(P.points<cost){toast('Not enough portal points');return false;}
   P.points-=cost;
   const meView={id:S.teamId,prestige:controlled().prestige,needs:computePortalNeeds(controlled())};
@@ -6453,12 +6556,24 @@ function pursueTransfer(tr){
 // Phase 44: portal autopilot — your staff pursues incoming transfers to fill the holes you didn't work,
 // so a hands-off program isn't a one-way exit. Modest: targets your biggest needs / best fits, roughly
 // replacing what you lost. Runs before the finalize round so pursued fits can sign.
+/* Phase 60 deleted the RECRUITING autopilot and replaced it with staff you hire and direct, because a
+   global switch that is on by default is not a decision. The portal kept the Phase 44 version: the flag
+   is set true at every portal open and nothing ever clears it, so a coach who never opened the screen
+   was handed a dozen-plus transfers a year. Measured over three offseasons of doing nothing: 12, 18 and
+   15 arrivals rated 63-66 — more roster improvement than a signing class.
+   So it is the same resource now. No recruiting staff, no one working the portal for you; hire them and
+   they fill your holes at their own rating. That also gives the Phase 60 hire something concrete to buy:
+   until now it bought weekly points, board slots and standing orders, which are all abstractions. */
 function autoPortalPursue(){
   const P=S.portal; if(!P||P.autopilot===false)return;
   const me=controlled(), meId=S.teamId, needs=computePortalNeeds(me);
+  const staff=recStaff(me);
+  if(!staff.length)return;                     // nobody on staff to work it — the portal is yours to work
+  const reach=staff.reduce((n,c)=>n+recStaffMult(c),0)/staff.length;   // how good they are at it
   const meView={id:meId,prestige:me.prestige,needs};
   const avail=P.pool.filter(tr=>!tr.committedTo).map(tr=>({tr,fit:portalFit(meView,tr)})).sort((a,b)=>b.fit-a.fit);
-  const want=Math.min((P.departures?P.departures.length:0)+2,10);   // roughly replace what you lost
+  // Scaled by the department you actually employ, not by what you lost alone.
+  const want=Math.min(Math.round(((P.departures?P.departures.length:0)+2)*reach*Math.min(staff.length,3)/3),10);
   let added=0;
   for(const {tr} of avail){ if(added>=want)break;
     if(tr.iv[meId]==null)tr.iv[meId]=clamp(Math.round(20+portalFit(meView,tr)*24),8,62);
@@ -6644,7 +6759,7 @@ function rolloverSeason(){
   recomputeRanks(S.world);
   const nf=summary?summary.freshmen.length:0;
   S.task={type:'Media Day',label:S.year+' Media Day',
-    note:'New year on campus. The returning core developed and '+nf+' freshman'+(nf===1?'':'men')+
+    note:'New year on campus. The returning core developed and '+nf+' freshm'+(nf===1?'an':'en')+
       ' arrived. Kick off the season when you’re ready.'};
   const poachedMine=(carousel.poached||[]).filter(p=>p.fromId===me)
     .map(p=>({name:p.coach.name,role:p.coach.scope||p.coach.role}));
@@ -7160,7 +7275,11 @@ function setRecIntent(rec,action,opt){
   opt=opt||{};const R=S.recruiting;
   if(R.signed||rec.signed){toast('Already signed — can’t recruit him');return false;}
   if(rec.committedTo===S.teamId){toast('Already committed to you');return false;}
-  if(rec.finalists&&!rec.committedTo&&rec.finalists.indexOf(S.teamId)<0){toast('✂️ You’ve been cut from his finalists');return false;}   // Phase 36 (open race only)
+  /* Phase 36: a shortlist you are not on freezes you out for good. The `!rec.committedTo` clause that
+     used to sit in this test switched the guard OFF at exactly the moment he committed — and the
+     engine's flip pass skips a non-finalist either way, so the points bought a rising interest number
+     that could never win him. Being cut is permanent; the guard has to be too. */
+  if(rec.finalists&&rec.committedTo!==S.teamId&&rec.finalists.indexOf(S.teamId)<0){toast('✂️ You’ve been cut from his finalists');return false;}
   if(!onBoard(rec)){toast('Offer a scholarship first');return false;}
   const arr=intentsFor(rec), exIdx=arr.findIndex(x=>x.action===action);
   if(exIdx>=0){removeIntentAt(rec,exIdx);return true;}                 // toggle OFF a queued action
@@ -7285,12 +7404,14 @@ function applyAINil(week){
   });
 }
 /* ---- actions ---- */
+// Returns TRUE only when the recruit actually reached the board. Every early return already toasts its
+// own reason, and the caller used to toast 'Offer extended' unconditionally on top of it — so a refused
+// offer reported success and the board silently didn't change.
 function offerRecruit(rec){
-  if(onBoard(rec))return;
-  if(rec.signed){toast('Already signed — can’t recruit him');return;}   // signed = locked (Phase 16)
-  if(rec.finalists&&!rec.committedTo&&rec.finalists.indexOf(S.teamId)<0){toast('✂️ He’s set his finalists — you’re not on the list');return;}   // Phase 36 (open race only)
-  if(rec.committedTo&&rec.committedTo!==S.teamId)toast('Committed elsewhere — recruit him to flip it');   // verbal: you can still chase
-  if(S.recruiting.board.length>=boardSlots()){toast('Board full — drop a target first');return;}
+  if(onBoard(rec))return false;
+  if(rec.signed){toast('Already signed — can’t recruit him');return false;}   // signed = locked (Phase 16)
+  if(rec.finalists&&!rec.committedTo&&rec.finalists.indexOf(S.teamId)<0){toast('✂️ He’s set his finalists — you’re not on the list');return false;}   // Phase 36 (open race only)
+  if(S.recruiting.board.length>=boardSlots()){toast('Board full — drop a target first');return false;}
   const m=myMods(),me=controlled();
   const eff={prestige:clamp(me.prestige+m.prestige,20,99),needs:me.needs,fac:me.fac,homeState:me.homeState};
   let fit=recruitFit(eff,rec);
@@ -7298,7 +7419,7 @@ function offerRecruit(rec){
   const start=clamp(Math.round(16+fit*24),8,72);
   rec.iv[S.teamId]=Math.max(rec.iv[S.teamId]||0,start);
   rec.offered=true;S.recruiting.board.push(rec.id);
-  autosave();
+  autosave();return true;
 }
 function dropRecruit(rec){
   clearRecIntent(rec);   // refund any queued action on him first
@@ -7329,10 +7450,13 @@ function recStr(t){return t.rec?t.rec.w+'–'+t.rec.l:'';}
 // One Player-of-the-Week row (handles a null honoree gracefully).
 function honorRowHTML(label,h){
   if(!h)return `<div class="row spread" style="margin:6px 0"><span class="meta dim">${label}</span><span class="meta dim">—</span></div>`;
+  /* Position and team drop to the meta line. With everything on one line the ellipsis landed on the
+     TEAM — the one field that says who this is — so a long name plus a nickname produced
+     "Camden Rivers “Relentless” RB · …" and the row identified nobody. */
   return `<div class="row spread" style="margin:6px 0;gap:8px">
     <div class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${h.color};flex:none"></span>
-      <div style="min-width:0"><div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${h.name}${h.nick?' <span class="accent" style="font-weight:700">“'+h.nick+'”</span>':''} <span class="dim" style="font-weight:400">${h.pos} · ${h.abbr}</span></div>
-      <div class="meta dim">${h.line}</div></div></div>
+      <div style="min-width:0"><div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${h.name}${h.nick?' <span class="accent" style="font-weight:700">“'+h.nick+'”</span>':''}</div>
+      <div class="meta dim"><span style="font-weight:600">${h.pos} · ${h.abbr}</span> · ${h.line}</div></div></div>
     <span class="tag accent" style="font-size:10px;flex:none">${label}</span></div>`;
 }
 
@@ -8093,7 +8217,7 @@ function renderHome(app){
   const v=el('div','view');
   v.append(scoreboard(t));
   // last result (once a game has been played)
-  const last=lastGameFor(t.id);
+  const last=lastResultFor(t.id);
   if(last){
     const gv=gameView(last,t.id);
     v.append(el('h2','sec','Last Result'));
@@ -8101,7 +8225,7 @@ function renderHome(app){
     lc.innerHTML=`<div class="row spread">
       <div class="row"><span class="dot" style="background:${gv.opp.color}"></span>
         <div><div class="nm">${gv.home?'vs ':'@ '}${gv.opp.name}</div>
-        <div class="meta">Week ${gv.week} \u00b7 ${gv.opp.conf}</div></div></div>
+        <div class="meta">${resultLabel(last)} \u00b7 ${gv.opp.conf}</div></div></div>
       <div class="cond ${gv.cls}" style="font-size:22px;font-weight:800">${gv.res}</div></div>`;
     v.append(lc);
   }
@@ -8549,7 +8673,7 @@ function renderRecords(app){
       return `<div class="row spread" style="margin:7px 0;border-top:1px solid var(--line);padding-top:7px">
         <div style="flex:1"><div class="nm" style="font-size:14px">${d.label}</div>
         <div class="meta">${r.name}${r.pos?' <span class="dim">('+r.pos+')</span>':''} · ${r.abbr}${mine?' ⭐':''} · ${r.year}${r.detail?' · '+r.detail:''}</div></div>
-        <div class="cond" style="font-size:19px;font-weight:800${mine?';color:var(--accent)':''}">${r.value}<span class="dim" style="font-size:11px;font-weight:600"> ${d.unit}</span></div></div>`;
+        <div class="cond" style="font-size:19px;font-weight:800${mine?';color:var(--accent-tx)':''}">${r.value}<span class="dim" style="font-size:11px;font-weight:600"> ${d.unit}</span></div></div>`;
     }).join('');
     v.append(c);
   };
@@ -8773,7 +8897,10 @@ function renderPortal(app){
   const P=S.portal;
   const v=el('div','view');
   v.append(headerBar('Transfer Portal',(P?P.year:S.year)+' offseason',()=>{UI.view='home';render();}));
-  if(!P){v.append(el('div','empty','The transfer portal isn’t open.\nIt opens each offseason after National Signing Day.'));app.append(v);return;}
+  if(!P){v.append(el('div','empty','The transfer portal isn’t open.\nIt opens each offseason after National Signing Day.'));
+    const gh=el('button','btn','Go to Home →');gh.dataset.tid='empty-home';
+    gh.onclick=()=>{UI.view='home';render();};v.append(gh);
+    app.append(v);return;}
   v.append(el('div','card',`<div class="row spread"><span>Portal points</span><span class="cond accent" style="font-weight:800">${P.points}</span></div>
     <div class="row spread" style="margin-top:4px"><span>Players you lost</span><span class="cond bad" style="font-weight:800">${P.departures.length}</span></div>
     <div class="row spread" style="margin-top:4px"><span>Incoming commits</span><span class="cond good" style="font-weight:800">${P.pool.filter(tr=>tr.committedTo===S.teamId).length}</span></div>`));
@@ -8787,6 +8914,9 @@ function renderPortal(app){
   const posSel=el('select');posSel.dataset.tid='portal-pos';
   [['','All pos'],...POS.map(([c])=>[c,c])].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;posSel.append(o);});
   const mineSel=el('select');[['','All transfers'],['mine','Committed to me'],['need','Fills a need']].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;mineSel.append(o);});
+  // Side by side. Two full-width selects stacked took ~250px of height above rows that were being
+  // squeezed to 123px of name — the space was allocated backwards.
+  [posSel,mineSel].forEach(s=>{s.style.flex='1 1 0';s.style.minWidth='130px';});
   fbar.append(posSel,mineSel);v.append(fbar);
   const list=el('div');list.dataset.tid='portal-list';
   const myNeeds=computePortalNeeds(controlled());
@@ -8849,10 +8979,14 @@ function portalRow(tr){
   const status=committed
     ? `<span class="tag ${mine?'good':'bad'}" style="font-size:10px">${mine?'TO YOU ✓':'→ '+(teamById(committed)||{abbr:'?'}).abbr}</span>`
     : `<span class="meta dim">lead ${leadT?leadT.abbr:'—'}</span>`;
+  /* The name gets the width. Four columns used to share 402px and the name column got 123 of them, so
+     "Keyshawn James OG · RS-SO" rendered as "Keyshawn Jam…" with the position gone — the row could not
+     tell you who the player was. The lead/commit status moves onto the meta line, which wraps. */
   row.innerHTML=`<div class="ovr ${tr.ov>=85?'elite':''}">${tr.ov}</div>
-    <div style="flex:1;min-width:0"><div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${tr.fn} ${tr.ln} <span class="dim" style="font-weight:400">${tr.pos} · ${tr.yr}</span></div>
-      <div class="meta dim">from ${fromT?fromT.abbr:'?'} · your interest ${myIv}%</div></div>
-    <div style="text-align:right;flex:none;margin-left:8px">${status}</div>`;
+    <div style="flex:1;min-width:0">
+      <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${tr.fn} ${tr.ln}</div>
+      <div class="meta dim" style="display:flex;flex-wrap:wrap;gap:0 6px;align-items:baseline">
+        <span><span style="font-weight:600">${tr.pos} · ${tr.yr}</span> · from ${fromT?fromT.abbr:'?'} · interest ${myIv}%</span>${status}</div></div>`;
   if(!committed&&S.portal.stage==='open'){
     const b=el('button','btn sm ghost','Pursue · 10');b.style.marginLeft='8px';b.dataset.tid='tr-pursue';
     b.onclick=(e)=>{e.stopPropagation();if(pursueTransfer(tr)){render();toast('Pursued '+tr.ln);}};
@@ -8877,7 +9011,10 @@ function renderMedia(app){
   const M=S.media, t=controlled();
   const v=el('div','view');
   v.append(headerBar('Media Center',(S.year||2026)+' season',()=>{UI.view='home';render();}));
-  if(!M){v.append(el('div','empty','No media yet.\nKick off the season to start the news cycle.'));app.append(v);return;}
+  if(!M){v.append(el('div','empty','No media yet.\nKick off the season to start the news cycle.'));
+    const gh=el('button','btn','Go to Home →');gh.dataset.tid='empty-home';
+    gh.onclick=()=>{UI.view='home';render();};v.append(gh);
+    app.append(v);return;}
   const tab=UI.mediaTab||'feed';
   const tabs=el('div','tabs');tabs.style.marginBottom='10px';
   [['feed','News'],['poll','AP Poll'],['coverage','Your Coverage']].forEach(([k,l])=>{
@@ -9262,7 +9399,18 @@ function renderRecruiting(app){
   const v=el('div','view');
   v.append(scoreboard(t));
   if(!S.recruiting){
+    /* This screen is one tap from anywhere on the bottom nav, and before kickoff it was a wall of black
+       with no control on it at all — it told you to go to Home and gave you no way there. It is also the
+       one moment recruiting STAFF can be hired, which the screen never mentioned. */
     v.append(el('div','empty','Recruiting opens at kickoff.\nKick off the season from Home to open the prospect board.'));
+    if(canManage()){
+      const hs=el('button','btn line','Hire recruiting staff →');hs.dataset.tid='rec-hire-staff';
+      hs.onclick=()=>{UI.view='team';UI.tab='coaches';render();};
+      v.append(hs,el('div','hint center','Staff carry weekly points, board slots and standing orders. This window closes at kickoff.'));
+    }
+    const gh=el('button','btn'+(canManage()?' ghost':''),'Go to Home →');gh.style.marginTop='9px';gh.dataset.tid='empty-home';
+    gh.onclick=()=>{UI.view='home';render();};
+    v.append(gh);
     app.append(v);return;
   }
   const R=S.recruiting, cls=myClass(), rank=myClassRank(), grade=classGrade(rank);
@@ -9283,17 +9431,21 @@ function renderRecruiting(app){
       <span class="meta">${stage==='open'?'Verbals':'Signed'} ${stage==='open'?cls.length:signedN}${stage!=='open'&&cls.length>signedN?'/'+cls.length:''}</span>
       <span class="meta dim">${stageLabel}</span></div>`;
   v.append(sum);
-  // Phase 34 (legibility): last week's board report — what moved + why — read it before setting this week's plan.
-  if(stage!=='closed')reportCard(v);
-  // Phase 33: this week's queued plan — the actions that resolve at the next advance, alongside the AI's.
-  if(stage!=='closed')planCard(v);
-  if(stage==='national')v.append(el('div','hint center','Early Signing Period done — '+signedN+' signed. Push the holdouts, then hold National Signing Day from Home.'));
+  /* The tabs come straight after the summary, and the week's report and plan moved DOWN into the Board
+     tab they describe. They used to sit above the strip and grow with every queued action, which pushed
+     the screen's primary navigation to y≈1515 of an 874pt viewport with only four actions set — queue
+     more and the tabs left the screen entirely. They are also board context, so this is where they go. */
   const st=UI.recruitTab||'board';
   const tabs=el('div','tabs');tabs.style.marginTop='12px';
   [['board','Board'],['prospects','Prospects'],['visits','Visits'],['class','Class']].forEach(([k,l])=>{
     const b=el('button',st===k?'on':'',l);b.dataset.tid='rtab-'+k;
     b.onclick=()=>{UI.recruitTab=k;render();};tabs.append(b);});
   v.append(tabs);
+  if(stage==='national')v.append(el('div','hint center','Early Signing Period done — '+signedN+' signed. Push the holdouts, then hold National Signing Day from Home.'));
+  if(st==='board'&&stage!=='closed'){
+    reportCard(v);   // Phase 34: what moved last week, and why
+    planCard(v);     // Phase 33: the actions that resolve at the next advance
+  }
   if(st==='board')recruitBoard(v);
   else if(st==='prospects')recruitProspects(v);
   else if(st==='visits')recruitVisits(v);
@@ -9312,8 +9464,20 @@ function ordersLine(c){
     ?`🤖 Staff orders <span class="accent">${n}/${cap}</span> — delegated recruits hold serve; only you move them.`
     :'✋ No recruiting staff — every recruit on your board is yours to work, every week.';
   c.append(t);
-  if(!cap){const b=el('button','btn sm line','Hire recruiting staff →');b.style.cssText='margin-top:6px;width:100%';
-    b.onclick=()=>{UI.view='team';UI.tab='coaches';render();};c.append(b);}
+  /* The market only opens in the preseason and the offseason (`canManage`). This button had no such
+     gate, and the Recruit screen is the "opens at kickoff" empty state before kickoff — so it could
+     only ever appear during the regular season, which is the one phase where hiring is shut. It sent
+     you to Team → Coaches, where the carousel isn't rendered and the reason sits far below the fold. */
+  if(!cap){
+    if(canManage()){
+      const b=el('button','btn sm line','Hire recruiting staff →');b.style.cssText='margin-top:6px;width:100%';
+      b.dataset.tid='rec-hire-staff';
+      b.onclick=()=>{UI.view='team';UI.tab='coaches';render();};c.append(b);
+    }else{
+      const n=el('div','meta dim');n.style.cssText='margin-top:6px;font-size:11px';
+      n.textContent='Recruiting staff are hired in the preseason and the offseason.';c.append(n);
+    }
+  }
 }
 function planCard(v){
   const R=S.recruiting, ids=Object.keys(R.intents||{});
@@ -9364,7 +9528,7 @@ function reportCard(v){
 // Phase 51: the board shows the SERVICES' ranking (`svc`), which over-rates a big ceiling by a tier.
 // `recStars` is the single place that choice lives, so the true `stars` never leaks into a display.
 function recStars(rec){return (rec&&rec.svc!=null)?rec.svc:((rec&&rec.stars)||0);}
-function recruitStarChip(rec){return `<div class="pos" style="width:auto;color:var(--accent);font-size:12.5px;letter-spacing:-1px">${'★'.repeat(recStars(rec))}</div>`;}
+function recruitStarChip(rec){return `<div class="pos" style="width:auto;color:var(--accent-tx);font-size:12.5px;letter-spacing:-1px">${'★'.repeat(recStars(rec))}</div>`;}
 function recruitRow(rec){
   const row=el('button','lrow');row.style.width='100%';row.style.textAlign='left';row.dataset.id=rec.id;
   const sc=recScouted(rec), mi=myInterest(rec), rank=myRank(rec), nS=suitorList(rec).length, committed=rec.committedTo, mine=committed===S.teamId;
@@ -9526,7 +9690,11 @@ function recruitClass(v,rank,grade){
 function recruitSheet(rec){
   const body=el('div'), R=S.recruiting, sc=recScouted(rec), mi=myInterest(rec), rank=myRank(rec), suit=suitorList(rec);
   // Phase 16: a VERBAL commit elsewhere is now flippable — you can recruit him until he signs.
-  const onB=onBoard(rec), committed=rec.committedTo, canFlip=committed&&committed!==S.teamId&&!rec.signed;
+  const onB=onBoard(rec), committed=rec.committedTo;
+  // Cut from his shortlist = out of the race for good (the engine's flip pass skips a non-finalist).
+  // Don't sell the flip to a coach who can't make it, and don't leave the spend buttons live.
+  const cutOut=!!(rec.finalists&&committed!==S.teamId&&rec.finalists.indexOf(S.teamId)<0);
+  const canFlip=committed&&committed!==S.teamId&&!rec.signed&&!cutOut;
   const canAct=!R.signed&&!rec.signed&&committed!==S.teamId;
   // Phase 45.1: a FOG-SAFE projected identity — stars/position/home state always; a temperament tag only
   // once you've scouted him enough to read the trait (so it never leaks the fog you'd otherwise pay to clear).
@@ -9582,7 +9750,11 @@ function recruitSheet(rec){
     body.append(el('hr','div'));
     if(!onB){
       const off=el('button','btn','Offer scholarship');off.dataset.tid='rec-offer';
-      off.onclick=()=>{offerRecruit(rec);closeSheet();render();recruitSheet(rec);toast('Offer extended');};
+      // Only report success when the offer landed; offerRecruit has already said why if it didn't.
+      off.onclick=()=>{if(!offerRecruit(rec))return;
+        const ct2=rec.committedTo&&rec.committedTo!==S.teamId?teamById(rec.committedTo):null;
+        closeSheet();render();recruitSheet(rec);
+        toast(ct2?'Offer extended — out-recruit '+ct2.abbr+' to flip him':'Offer extended');};
       body.append(off);
       body.append(el('div','hint center','Offering opens this recruit on your board (uses 1 of '+boardSlots()+' slots).'));
     }else{
@@ -9604,8 +9776,8 @@ function recruitSheet(rec){
         b.dataset.tid=tid;b.disabled=!!disabled;b.onclick=onclick;return b;};
       const g1=el('div','btn-row');
       g1.append(
-        mk('scout','Scout · '+RECRUIT_COSTS.scout,'rec-scout',false,()=>setI('scout',null,sel('scout')?'Scout removed':'Queued: Scout')),
-        mk('pitch','Pitch · '+RECRUIT_COSTS.pitch,'rec-pitch',false,()=>sel('pitch')?setI('pitch',null,'Pitch removed'):pitchSheet(rec)));
+        mk('scout','Scout · '+RECRUIT_COSTS.scout,'rec-scout',cutOut,()=>setI('scout',null,sel('scout')?'Scout removed':'Queued: Scout')),
+        mk('pitch','Pitch · '+RECRUIT_COSTS.pitch,'rec-pitch',cutOut,()=>sel('pitch')?setI('pitch',null,'Pitch removed'):pitchSheet(rec)));
       // Phase 38: official visits are a HOME-weekend calendar (not a weekly intent) — schedule/unbook below.
       const vWk=visitWeekFor(rec);
       const visitBtn=el('button','btn sm'+(vWk!=null?'':' ghost'),rec.visited?'Visited ✓':vWk!=null?'✓ Visit Wk '+vWk:'🏟️ Schedule visit');
@@ -9613,15 +9785,15 @@ function recruitSheet(rec){
       visitBtn.onclick=()=>{if(vWk!=null){unbookVisit(rec);refresh('Visit unbooked');}else visitSheet(rec);};
       const g2=el('div','btn-row');
       g2.append(visitBtn,
-        mk('promise',rec.promise?'Promised ✓':'Promise · '+RECRUIT_COSTS.promise,'rec-promise',!!rec.promise,()=>setI('promise',{type:'playingTime'},sel('promise')?'Promise removed':'Queued: Promise')));
+        mk('promise',rec.promise?'Promised ✓':'Promise · '+RECRUIT_COSTS.promise,'rec-promise',!!rec.promise||cutOut,()=>setI('promise',{type:'playingTime'},sel('promise')?'Promise removed':'Queued: Promise')));
       body.append(g1,g2);
       // Phase 11: alumni visit — deploy a program legend (limited appearances) to recruit this prospect.
       const avail=availableLegends(rec);
       const g3=el('div','btn-row');g3.style.marginTop='9px';
       if(rec.alumni||avail.length)
-        g3.append(mk('alumni',rec.alumni?'Alum hosted ✓':'Alumni · '+RECRUIT_COSTS.alumni,'rec-alumni',!!rec.alumni||(!avail.length&&!sel('alumni')),()=>sel('alumni')?setI('alumni',null,'Alumni removed'):alumniSheet(rec)));
+        g3.append(mk('alumni',rec.alumni?'Alum hosted ✓':'Alumni · '+RECRUIT_COSTS.alumni,'rec-alumni',!!rec.alumni||cutOut||(!avail.length&&!sel('alumni')),()=>sel('alumni')?setI('alumni',null,'Alumni removed'):alumniSheet(rec)));
       // Phase 37: NIL bid — spend program money (not points), best on a recruit who values NIL.
-      g3.append(mk('nil',sel('nil')?'NIL bid':'💰 NIL offer','rec-nil',false,()=>sel('nil')?setI('nil',null,'NIL bid removed'):nilSheet(rec)));
+      g3.append(mk('nil',sel('nil')?'NIL bid':'💰 NIL offer','rec-nil',cutOut,()=>sel('nil')?setI('nil',null,'NIL bid removed'):nilSheet(rec)));
       body.append(g3);
       // Phase 35/37: scarcity readout — double-downs stack a 2nd action; visits are weekly-capped + season-budgeted.
       let sc2;
@@ -9643,6 +9815,15 @@ function recruitSheet(rec){
     }
   }else if(R.signed&&!committed){
     body.append(el('div','hint center','Signing Day has passed — this prospect went unsigned.'));
+  }
+  /* A prospect who signed somewhere else still holds one of your board slots, and `canAct` is false for
+     him, so before this he rendered no buttons at all — not even a way off the board. That matters at
+     the National Signing Day stage: the game invites a final push for the holdouts, `offerRecruit`
+     refuses on a full board, and every slot can be occupied by a player who is already gone. */
+  if(onB&&!canAct&&committed!==S.teamId){
+    const gone=el('button','btn sm line','Drop from board');gone.style.marginTop='12px';gone.dataset.tid='rec-drop';
+    gone.onclick=()=>{dropRecruit(rec);closeSheet();render();toast('Dropped from board');};
+    body.append(gone,el('div','hint center','Frees a board slot ('+S.recruiting.board.length+'/'+boardSlots()+' used).'));
   }
   openSheet(rec.fn+' '+rec.ln,body);
 }
@@ -10393,10 +10574,17 @@ function renderNav(app){
     ['team','Team','M16 7a4 4 0 11-8 0 4 4 0 018 0zM4 21v-1a6 6 0 0112 0v1'],
     ['recruit','Recruit','M13 7a3 3 0 11-6 0 3 3 0 016 0zM4 20v-1a6 6 0 0112 0v1M18 9v6M15 12h6'],
     ['season','Season','M4 6h16v14H4zM4 10h16M8 3v4M16 3v4'],
-    ['browse','League','M4 6h16M4 12h16M4 18h16'],
+    // A shield, not a second hamburger: League and Menu sat next to each other drawing the identical
+    // path, so the two tabs were indistinguishable at a glance.
+    ['browse','League','M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z'],
     ['menu','Menu','M4 6h16M4 12h16M4 18h16']];
+  /* A pushed screen keeps its parent tab lit, the way the platform does it. Program, Media, Portal and
+     Records all render this nav and match none of its six entries, so the bar described nothing about
+     where you were — four of the nine nav-reachable views were simply unplaceable. */
+  const PARENT={program:'home',media:'home',portal:'home',records:'season'};
+  const lit=PARENT[UI.view]||UI.view;
   items.forEach(([v,l,d])=>{
-    const b=el('button',(UI.view===v||(v==='menu'&&false))?'on':'');b.dataset.tid='nav-'+v;
+    const b=el('button',lit===v?'on':'');b.dataset.tid='nav-'+v;
     b.innerHTML=`<svg viewBox="0 0 24 24"><path d="${d}" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${l}</span>`;
     b.onclick=()=>{
       haptic('select');                      // the one place a tick belongs on every tap: changing tab
@@ -10413,7 +10601,11 @@ function renderNav(app){
 function menuSheet(){
   const body=el('div');
   const save=el('button','btn','Save game');
-  save.onclick=()=>{const slot=findSlotFor(S);if(slot){writeSlot(slot,S);toast('Saved to slot '+slot);}else chooseSlotSheet();closeSheet();};
+  // The trailing closeSheet() used to sit outside the else, so a career with no slot yet opened the
+  // slot picker and had it wiped in the same tick — "Save game" did nothing you could see.
+  save.onclick=()=>{const slot=findSlotFor(S);
+    if(slot){writeSlot(slot,S);closeSheet();toast('Saved to slot '+slot);}
+    else{closeSheet();chooseSlotSheet();}};
   const saveAs=el('button','btn ghost','Save to a slot…');saveAs.style.marginTop='9px';
   saveAs.onclick=()=>{closeSheet();chooseSlotSheet();};
   const cloud=el('button','btn ghost','Cloud saves'+cloudStatusSuffix());

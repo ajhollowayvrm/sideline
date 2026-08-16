@@ -1978,6 +1978,106 @@ function startServer() {
     touch.controls += a.checked;
     touch.screens++;
   }
+  // The game screen is swept SEPARATELY because it is not a nav view — it needs a live UI.game, and
+  // it is the one screen that builds neither a .topbar nor a headerBar. That is exactly why it spent
+  // a release drawing its scoreboard, the score included, under the clock while every other screen
+  // was clean: the loop above could not reach it, so nothing measured it.
+  const gameSweep = await page.evaluate(`(async () => {
+    const g = S.schedule && teamGame(controlled().id, S.week);
+    if (!g) return { skipped: 'no game this week' };
+    const back = { view: UI.view, game: UI.game };
+    openGameViewer(g);
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const out = {};
+    for (const mode of ['watch', 'coach']) {
+      gameSetMode(mode);
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      out[mode] = await (async () => {${SCENARIOS.audit()}\n})();
+    }
+    if (gameTimer) { clearTimeout(gameTimer); gameTimer = null; }
+    clearBeatTimers(); UI.game = back.game; UI.view = back.view; render();
+    return out;
+  })()`);
+  if (gameSweep.skipped) {
+    check('Safe area: the game screen clears the status bar', false, gameSweep.skipped);
+  } else {
+    const gBad = ['watch', 'coach'].flatMap(m => (gameSweep[m].statusBarWorst || []).map(w => m + ': ' + w));
+    check('Safe area: the game screen clears the status bar', gBad.length === 0,
+      gBad.length ? gBad.slice(0, 3).join(', ') : 'watch + coach clear');
+    check('Touch: the game screen fits and its controls clear 44pt',
+      gameSweep.watch.overflow <= 0 && gameSweep.watch.targets === 0 && gameSweep.coach.targets === 0,
+      `overflow ${gameSweep.watch.overflow}px, ${gameSweep.watch.checked + gameSweep.coach.checked} controls`);
+  }
+  /* Two properties a screenshot and the 44pt sweep both miss.
+     TABS: `.tabs` used to scroll horizontally with no fade, arrow or partial peek, so the Season strip
+     showed five of its eight tabs and read as a closed set — Awards, the playoff Bracket and the Draft
+     board did not exist as far as the player was concerned. It wraps now; assert nothing is hidden.
+     NAV: Program, Media, Portal and Records render the bottom nav and match none of its six entries,
+     so four of the nine nav-reachable views lit nothing and the bar described nowhere. */
+  const chrome = await page.evaluate(`(async () => {
+    const views = ['home','team','season','recruit','media','browse','program','records','portal'];
+    const hiddenTabs = [], unlit = [];
+    const back = { view: UI.view, tab: UI.tab, seasonTab: UI.seasonTab };
+    // widen the Season strip to its worst case so the check is not vacuous in a career with no bracket
+    const sp = S.postseason, sd = S.draft;
+    S.postseason = S.postseason || { year: S.year, round: 0, playoff: { seeds: [], rounds: [[]] }, bowls: [], meDone: false };
+    S.draft = S.draft || { year: S.year - 1, picks: [] };
+    for (const v of views) {
+      closeSheet(); UI.view = v; if (v === 'team') UI.tab = 'roster'; render();
+      await new Promise(r => requestAnimationFrame(r));
+      document.querySelectorAll('#app .tabs').forEach(strip => {
+        [...strip.children].forEach(b => {
+          const r = b.getBoundingClientRect();
+          if (r.width > 0 && (r.right > innerWidth + 1 || r.left < -1)) hiddenTabs.push(v + ': ' + b.textContent.trim());
+        });
+      });
+      const nav = document.querySelector('.nav');
+      if (nav && [...nav.querySelectorAll('button')].filter(b => b.classList.contains('on')).length !== 1) unlit.push(v);
+    }
+    S.postseason = sp; S.draft = sd;
+    UI.view = back.view; UI.tab = back.tab; UI.seasonTab = back.seasonTab; render();
+    return { hiddenTabs, unlit, views: views.length };
+  })()`);
+  /* COLOUR. Two failures that a screenshot of one team never shows.
+     The semantic classes had no rule at all — only the chip forms were defined — so `class="cond good"`
+     on a win computed to the same white as a loss, right across the app.
+     And --accent is the raw team colour: 116 of the 134 sit under 4.5:1 on the panel (Penn State navy
+     reads 1.01:1), so anything written IN the accent was invisible for most of the league. */
+  const colour = await page.evaluate(() => {
+    const host = document.querySelector('#app .view') || document.querySelector('#app');
+    const probe = cls => { const e = document.createElement('span'); e.className = cls; e.textContent = 'x';
+      host.appendChild(e); const c = getComputedStyle(e).color; e.remove(); return c; };
+    const plain = probe('');
+    const dead = ['good', 'bad', 'accent', 'cond good', 'meta bad', 'muted good']
+      .filter(c => probe(c) === plain);
+    // every team's accent must be READABLE where it is used as text
+    const rel = c => { const s = c.map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+      return 0.2126 * s[0] + 0.7152 * s[1] + 0.0722 * s[2]; };
+    const rgb = s => { s = (s || '').trim();
+      if (s.charAt(0) === '#') { const h = s.slice(1); return [0, 2, 4].map(i => parseInt(h.substr(i, 2), 16)); }
+      const m = s.match(/[0-9.]+/g); return m ? m.slice(0, 3).map(Number) : [0, 0, 0]; };
+    const ratio = (a, b) => { const A = rel(rgb(a)), B = rel(rgb(b)); return (Math.max(A, B) + 0.05) / (Math.min(A, B) + 0.05); };
+    const root = document.documentElement, before = root.style.getPropertyValue('--accent-tx');
+    const bad = [];
+    for (const t of S.world.teams) {
+      applyAccent(t);
+      const r = ratio(getComputedStyle(root).getPropertyValue('--accent-tx'), 'rgb(28,32,38)');
+      if (r < 4.5) bad.push(t.abbr + ' ' + r.toFixed(2));
+    }
+    applyAccent(controlled());
+    if (before) root.style.setProperty('--accent-tx', before);
+    return { dead, unreadable: bad, teams: S.world.teams.length };
+  });
+  check('Colour: the semantic classes actually colour something', colour.dead.length === 0,
+    colour.dead.length ? 'renders as plain body text: ' + colour.dead.join(', ') : 'good / bad / accent all live');
+  check('Colour: every team accent is readable where it is used as text', colour.unreadable.length === 0,
+    colour.unreadable.length ? colour.unreadable.slice(0, 4).join(', ') : `${colour.teams} teams clear 4.5:1`);
+
+  check('Tabs: no tab strip hides a tab off the side of the phone', chrome.hiddenTabs.length === 0,
+    chrome.hiddenTabs.length ? chrome.hiddenTabs.slice(0, 4).join(', ') : `${chrome.views} screens clear`);
+  check('Nav: every nav-reachable view lights exactly one tab', chrome.unlit.length === 0,
+    chrome.unlit.length ? 'nothing lit on: ' + chrome.unlit.join(', ') : `${chrome.views} views placed`);
+
   await page.evaluate(ui => { UI.view = ui.view; UI.tab = ui.tab; render(); }, uiBefore);
   check('Touch: every control clears Apple\'s 44pt minimum', touch.small.length === 0,
     `${touch.controls} controls over ${touch.screens} screens` + (touch.small.length ? ' — ' + touch.small.slice(0, 3).join(', ') : ''));

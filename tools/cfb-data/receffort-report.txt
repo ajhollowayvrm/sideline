@@ -1,0 +1,57 @@
+
+=== WHAT A SEASON OF RECRUITING IS WORTH (5 seeds/band) ===
+
+band    arm      signed   rank   blue   score   avgOv   ivMed   <68   touched
+top     ignored   24.2    4.4     17  1028.2    83.1    76.4     3         0
+top     worked      25    2.4   18.4  1069.6    83.2    83.6     1        14
+        Δ          0.8   -2.0    1.4    41.4   (score 4%)
+
+mid     ignored   17.2   78.8    0.6     383    75.2      63    13         0
+mid     worked    24.6   40.6    0.8   566.2    75.6    68.4  12.2      13.6
+        Δ          7.4  -38.2    0.2   183.2   (score 48%)
+
+bottom  ignored   11.2  133.8      0   117.2    68.9      61  11.2         0
+bottom  worked      22  117.2    0.2   225.2    68.8      68  12.2        14
+        Δ         10.8  -16.6    0.2   108.0   (score 92%)
+
+SURVIVAL — class size if the Signing Day bar were raised (measured interest, per arm)
+band    arm         >=30  >=40  >=45  >=50  >=55  >=60  >=68
+top     ignored    24.2  24.2  24.2  24.2  24.2  24.2  21.6
+top     worked     25.0  25.0  25.0  25.0  25.0  25.0  24.6
+mid     ignored    17.2  17.2  17.2  17.2  16.6  13.6   5.0
+mid     worked     24.6  24.6  24.6  24.6  24.0  21.4  12.6
+bottom  ignored    11.2  11.2  11.2  11.2  10.8   7.6   0.0
+bottom  worked     22.0  22.0  22.0  21.8  21.8  19.0  10.6
+
+THE FLOOR is the `ignored` row: what a coach who never opened the screen still signs.
+THE LEVER is the gap. If the floor is already a good class, the gap cannot matter much.
+{"band":"top","seed":4242,"arm":"ignored","secs":"1","team":"OSU","prestige":90,"signed":25,"ivMed":73,"ivP10":67,"ivP90":89,"belowThresh":4,"touched":0,"rank":2,"grade":"A+","blue":21,"score":1181,"topOv":95,"avgOv":84.9,"wins":"12-0","errs":[]}
+{"band":"top","seed":4242,"arm":"worked","secs":"1","team":"OSU","prestige":90,"signed":25,"ivMed":82,"ivP10":73,"ivP90":87,"belowThresh":1,"touched":14,"rank":2,"grade":"A+","blue":22,"score":1157,"topOv":95,"avgOv":84.5,"wins":"12-0","errs":[]}
+{"band":"top","seed":8123,"arm":"ignored","secs":"1","team":"OSU","prestige":83,"signed":25,"ivMed":71,"ivP10":65,"ivP90":86,"belowThresh":3,"touched":0,"rank":1,"grade":"A+","blue":20,"score":1134,"topOv":97,"avgOv":83.9,"wins":"11-1","errs":[]}
+{"band":"top","seed":8123,"arm":"worked","secs":"1","team":"OSU","prestige":83,"signed":25,"ivMed":86,"ivP10":72,"ivP90":91,"belowThresh":0,"touched":14,"rank":1,"grade":"A+","blue":17,"score":1049,"topOv":97,"avgOv":82.9,"wins":"11-1","errs":[]}
+{"band":"top","seed":20260814,"arm":"ignored","secs":"1","team":"OSU","prestige":84,"signed":25,"ivMed":82,"ivP10":70,"ivP90":91,"belowThresh":2,"touched":0,"rank":4,"grade":"A+","blue":12,"score":980,"topOv":95,"avgOv":82.7,"wins":"12-0","errs":[]}
+{"band":"top","seed":20260814,"arm":"worked","secs":"1","team":"OSU","prestige":84,"signed":25,"ivMed":86,"ivP10":81,"ivP90":93,"belowThresh":0,"touched":14,"rank":4,"grade":"A+","blue":13,"score":966,"topOv":89,"avgOv":82.3,"wins":"12-0","errs":[]}
+{"band":"top","seed":77003,"arm":"ignored","secs":"1","team":"OU","prestige":86,"signed":21,"ivMed":70,"ivP10":64,"ivP90":72,"belowThresh":6,"touched":0,"rank":6,"grade":"A","blue":19,"score":968,"topOv":95,"avgOv":83.8,"wins":"9-3","errs":[]}
+{"band":"top","seed":77003,"arm":"worked","secs":"1","team":"OU","prestige":86,"signed":25,"ivMed":77,"ivP10":68,"ivP90":85,"belowThresh":4,"touched":14,"rank":2,"grade":"A+","blue":23,"score":1153,"topOv":90,"avgOv":84.2,"wins":"9-3","errs":[]}
+{"band":"top","seed":4411,"arm":"ignored","secs":"1","team":"OSU","prestige":86,"signed":25,"ivMed":86,"ivP10":75,"ivP90":96,"belowThresh":0,"touched":0,"rank":9,"grade":"A","blue":13,"score":878,"topOv":90,"avgOv":80.3,"wins":"11-1","errs":[]}
+{"band":"top","seed":4411,"arm":"worked","secs":"1","team":"OSU","prestige":86,"signed":25,"ivMed":87,"ivP10":80,"ivP90":97,"belowThresh":0,"touched":14,"rank":3,"grade":"A+","blue":17,"score":1023,"topOv":92,"avgOv":82.2,"wins":"11-1","errs":[]}
+{"band":"mid","seed":4242,"arm":"ignored","secs":"1","team":"MD","prestige":60,"signed":11,"ivMed":63,"ivP10":55,"ivP90":69,"belowThresh":9,"touched":0,"rank":94,"grade":"C","blue":3,"score":335,"topOv":86,"avgOv":79,"wins":"7-5","errs":[]}
+{"band":"mid","seed":4242,"arm":"worked","secs":"1","team":"MD","prestige":60,"signed":25,"ivMed":68,"ivP10":56,"ivP90":84,"belowThresh":13,"touched":14,"rank":17,"grade":"A-","blue":3,"score":678,"topOv":86,"avgOv":77.6,"wins":"7-5","errs":[]}
+{"band":"mid","seed":8123,"arm":"ignored","secs":"1","team":"OKST","prestige":59,"signed":23,"ivMed":68,"ivP10":66,"ivP90":79,"belowThresh":8,"touched":0,"rank":43,"grade":"B","blue":0,"score":510,"topOv":82,"avgOv":75,"wins":"10-2","errs":[]}
+{"band":"mid","seed":8123,"arm":"worked","secs":"1","team":"OKST","prestige":59,"signed":25,"ivMed":76,"ivP10":67,"ivP90":85,"belowThresh":6,"touched":14,"rank":25,"grade":"A-","blue":0,"score":606,"topOv":82,"avgOv":76.2,"wins":"10-2","errs":[]}
+{"band":"mid","seed":20260814,"arm":"ignored","secs":"1","team":"LOU","prestige":48,"signed":13,"ivMed":59,"ivP10":54,"ivP90":62,"belowThresh":13,"touched":0,"rank":119,"grade":"D","blue":0,"score":209,"topOv":78,"avgOv":72.3,"wins":"3-9","errs":[]}
+{"band":"mid","seed":20260814,"arm":"worked","secs":"1","team":"LOU","prestige":48,"signed":23,"ivMed":65,"ivP10":57,"ivP90":82,"belowThresh":13,"touched":13,"rank":109,"grade":"C","blue":0,"score":285,"topOv":81,"avgOv":70.5,"wins":"3-9","errs":[]}
+{"band":"mid","seed":77003,"arm":"ignored","secs":"1","team":"MISS","prestige":56,"signed":21,"ivMed":60,"ivP10":58,"ivP90":64,"belowThresh":20,"touched":0,"rank":62,"grade":"C+","blue":0,"score":457,"topOv":81,"avgOv":74.6,"wins":"2-10","errs":[]}
+{"band":"mid","seed":77003,"arm":"worked","secs":"1","team":"MISS","prestige":56,"signed":25,"ivMed":63,"ivP10":56,"ivP90":85,"belowThresh":17,"touched":13,"rank":25,"grade":"A-","blue":1,"score":634,"topOv":82,"avgOv":76.9,"wins":"2-10","errs":[]}
+{"band":"mid","seed":4411,"arm":"ignored","secs":"1","team":"LOU","prestige":59,"signed":18,"ivMed":65,"ivP10":61,"ivP90":75,"belowThresh":15,"touched":0,"rank":76,"grade":"C+","blue":0,"score":404,"topOv":82,"avgOv":74.9,"wins":"7-5","errs":[]}
+{"band":"mid","seed":4411,"arm":"worked","secs":"1","team":"LOU","prestige":59,"signed":25,"ivMed":70,"ivP10":62,"ivP90":79,"belowThresh":12,"touched":14,"rank":27,"grade":"B+","blue":0,"score":628,"topOv":82,"avgOv":76.9,"wins":"7-5","errs":[]}
+{"band":"bottom","seed":4242,"arm":"ignored","secs":"1","team":"OHIO","prestige":41,"signed":12,"ivMed":63,"ivP10":61,"ivP90":65,"belowThresh":12,"touched":0,"rank":134,"grade":"D","blue":0,"score":127,"topOv":74,"avgOv":68.9,"wins":"7-5","errs":[]}
+{"band":"bottom","seed":4242,"arm":"worked","secs":"1","team":"OHIO","prestige":41,"signed":22,"ivMed":67,"ivP10":61,"ivP90":78,"belowThresh":13,"touched":14,"rank":120,"grade":"D","blue":0,"score":213,"topOv":75,"avgOv":68.1,"wins":"7-5","errs":[]}
+{"band":"bottom","seed":8123,"arm":"ignored","secs":"1","team":"MTSU","prestige":34,"signed":11,"ivMed":59,"ivP10":56,"ivP90":61,"belowThresh":11,"touched":0,"rank":134,"grade":"D","blue":0,"score":114,"topOv":80,"avgOv":69.2,"wins":"6-6","errs":[]}
+{"band":"bottom","seed":8123,"arm":"worked","secs":"1","team":"MTSU","prestige":34,"signed":24,"ivMed":63,"ivP10":57,"ivP90":83,"belowThresh":17,"touched":14,"rank":106,"grade":"C","blue":1,"score":288,"topOv":89,"avgOv":70.2,"wins":"6-6","errs":[]}
+{"band":"bottom","seed":20260814,"arm":"ignored","secs":"1","team":"NMSU","prestige":35,"signed":9,"ivMed":59,"ivP10":55,"ivP90":61,"belowThresh":9,"touched":0,"rank":134,"grade":"D","blue":0,"score":80,"topOv":73,"avgOv":66.9,"wins":"7-5","errs":[]}
+{"band":"bottom","seed":20260814,"arm":"worked","secs":"1","team":"NMSU","prestige":35,"signed":18,"ivMed":72,"ivP10":58,"ivP90":79,"belowThresh":8,"touched":14,"rank":132,"grade":"D","blue":0,"score":154,"topOv":73,"avgOv":66.8,"wins":"7-5","errs":[]}
+{"band":"bottom","seed":77003,"arm":"ignored","secs":"1","team":"ODU","prestige":38,"signed":14,"ivMed":62,"ivP10":59,"ivP90":64,"belowThresh":14,"touched":0,"rank":134,"grade":"D","blue":0,"score":141,"topOv":77,"avgOv":69.1,"wins":"8-4","errs":[]}
+{"band":"bottom","seed":77003,"arm":"worked","secs":"1","team":"ODU","prestige":38,"signed":24,"ivMed":70,"ivP10":60,"ivP90":79,"belowThresh":11,"touched":14,"rank":114,"grade":"D","blue":0,"score":248,"topOv":80,"avgOv":69.7,"wins":"8-4","errs":[]}
+{"band":"bottom","seed":4411,"arm":"ignored","secs":"1","team":"NIU","prestige":41,"signed":10,"ivMed":62,"ivP10":55,"ivP90":65,"belowThresh":10,"touched":0,"rank":133,"grade":"D","blue":0,"score":124,"topOv":79,"avgOv":70.2,"wins":"7-5","errs":[]}
+{"band":"bottom","seed":4411,"arm":"worked","secs":"1","team":"NIU","prestige":41,"signed":22,"ivMed":68,"ivP10":60,"ivP90":87,"belowThresh":12,"touched":14,"rank":114,"grade":"D","blue":0,"score":223,"topOv":77,"avgOv":69.1,"wins":"7-5","errs":[]}
