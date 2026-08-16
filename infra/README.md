@@ -27,7 +27,7 @@ At the `--guided` prompts:
 |---|---|
 | Stack Name | `sideline-cloud` |
 | AWS Region | whichever is closest to you |
-| Parameter AllowOrigin | `*` to start; later `https://<you>.github.io` |
+| Parameter AllowOrigin | `*` — the app calls from the `sideline://` scheme, which sends `Origin: null` |
 | Confirm changes before deploy | `N` |
 | Allow SAM CLI IAM role creation | `Y` |
 | Disable rollback | `N` |

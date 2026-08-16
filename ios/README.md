@@ -1,6 +1,10 @@
 # SIDELINE on iPhone
 
-A native iOS app around the same `index.html`. No Swift to write, no npm, no CocoaPods, no Mac.
+A native iOS app around the same `index.html`. No Swift to write, no npm, no CocoaPods.
+
+**This is the only way the game ships.** There is no web build to visit, no PWA to add to a home
+screen and no CI: you build on this Mac and install straight onto the paired iPhone. See
+[Getting it onto the phone](#getting-it-onto-the-phone).
 
 Three files are the whole shell:
 
@@ -17,13 +21,14 @@ copy step — edit the game, rebuild, done.
 
 ## Why a shell at all
 
-Three of these are impossible from inside a web page on iOS, which is the entire argument for
-wrapping rather than shipping a PWA:
+Three of these are impossible from inside a web page on iOS. That was the argument for wrapping
+rather than shipping a progressive web app, and the shell won it — the web build is now a
+development target only, never something a player installs:
 
 - **Zoom.** iOS Safari has ignored `user-scalable=no` since iOS 10 as an accessibility policy, so a
   page cannot stop pinch and double-tap zoom however it writes its viewport meta. In a WKWebView the
   scroll view belongs to us and is pinned shut.
-- **Origin.** A career is ~1.4 MB of `localStorage`, and storage is keyed to origin. The page is
+- **Origin.** A career is ~2.5 MB of `localStorage`, and storage is keyed to origin. The page is
   served over a custom `sideline://` scheme rather than `file://`, which gives it a real, stable,
   secure origin — so saves survive app updates and `navigator.clipboard` works.
 - **Bounce.** Phase 61 switched rubber-band off outright, calling it the strongest "this is a web
@@ -37,20 +42,35 @@ wrapping rather than shipping a PWA:
 
 ---
 
-## Getting the app onto your phone (from Windows)
+## Getting it onto the phone
 
-## On a Mac (the fast path)
+One command. It builds a signed **Release**, installs it on the paired iPhone and launches it —
+no Xcode window, no artifact, no store.
 
 ```sh
-brew install xcodegen
-cd ios && xcodegen generate     # or: npm run ios:project
-open Sideline.xcodeproj
+npm run ios:deploy
 ```
 
-Plug the iPhone in, pick it as the run destination, ⌘R. Xcode signs with your Apple ID and installs
-directly — no CI, no artifact, no AltStore/Sideloadly in the loop. Signing settings are deliberately
-**not** in `project.yml`, so the project behaves like any normal one: Signing & Capabilities →
-*Automatically manage signing* → pick your Personal Team.
+Under it:
+
+```sh
+cd ios && xcodegen generate && cd ..
+xcodebuild -project ios/Sideline.xcodeproj -scheme Sideline -configuration Release \
+  -destination "generic/platform=iOS" -derivedDataPath ios/build/dev \
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=$TEAM CODE_SIGN_STYLE=Automatic build
+xcrun devicectl device install app --device $UDID \
+  ios/build/dev/Build/Products/Release-iphoneos/Sideline.app
+xcrun devicectl device process launch --device $UDID com.ajholloway.sideline
+```
+
+`TEAM` is the Apple Developer team ID and `UDID` comes from `xcrun devicectl list devices`. Both
+live in `ios/device.env`, which is gitignored — copy `ios/device.env.example` and fill it in once.
+
+**Unlock the phone before the launch step.** Installing works while it is locked; launching does
+not, and fails with `FBSOpenApplicationErrorDomain error 7` / `BSErrorCodeDescription = Locked`.
+
+Signing settings are deliberately **not** in `project.yml`, so the project behaves like any normal
+one and the team ID is passed on the command line instead of being committed.
 
 **Set a bundle ID that is yours** — if you forked this, it is the one line you must change.
 `PRODUCT_BUNDLE_IDENTIFIER` is `com.ajholloway.sideline` in `project.yml`; change it and regenerate.
@@ -58,14 +78,19 @@ Apple requires bundle IDs to be globally unique even under free provisioning, so
 fails at signing with a misleading error. Do this **once, before the first install**: the bundle ID
 identifies the app's container, so changing it later strands the saves inside the old one.
 
-**Debug or Release?** ⌘R installs a **Debug** build, which contains the `DevBridge` automation
-listener. It binds `127.0.0.1`, so nothing off the phone can reach it. For a build you keep on your
-phone, switch the scheme to Release — Product → Scheme → Edit Scheme → Run → Build Configuration →
-*Release* — which is what CI archives and carries no byte of the bridge.
+**Debug or Release?** `npm run ios:deploy` builds **Release**, and that is deliberate: Release carries
+no byte of the `DevBridge` automation listener, which is fenced `#if DEBUG`. The consequence is worth
+knowing — **nothing can drive the build on your phone**. `npm run ios:sim` and anything posting to
+`127.0.0.1:8787` only reach the *simulator*, which is a Debug build. On the device you look with your
+own eyes, or with Web Inspector below.
 
-**A free Apple ID expires the signature after 7 days.** The app then refuses to launch until you ⌘R
-again. Your saves survive that, because they belong to the container and the container survives
-anything short of deleting the app.
+Xcode's ⌘R installs Debug instead. Use it when you want the bridge on a real device; switch back with
+Product → Scheme → Edit Scheme → Run → Build Configuration → *Release*.
+
+**A free Apple ID expires the signature after 7 days.** The app then refuses to launch until you
+deploy again — which is one `npm run ios:deploy`. A paid account ($99/yr) removes the limit. Your
+saves survive either way: they belong to the container, and the container survives anything short of
+deleting the app.
 
 **Turn on Web Inspector** — the single biggest reason to use a Mac here. `Shell.swift` sets
 `isInspectable = true`, so:
@@ -80,25 +105,6 @@ it you are debugging the WKWebView blind.
 The **iOS Simulator** works too (⌘R with a simulated device) — good enough for layout and the bounce
 behaviour. Pinch is Option-drag there, and haptics don't fire, so the zoom lock and the taptics still
 want a real device.
-
----
-
-## From Windows (no Mac)
-
-Compiling needs macOS + Xcode. **Signing** needs your Apple ID. Only the first belongs in CI, and
-that split is what makes this work without a Mac.
-
-1. **Push, or run the workflow by hand** — Actions → *iOS ipa* → Run workflow. ~5 minutes.
-2. **Download the artifact** — the run page → Artifacts → `sideline-ipa` → unzip → `sideline-unsigned.ipa`.
-   Artifacts expire after 90 days; re-run the workflow for a fresh one.
-3. **Sign and install it** with [Sideloadly](https://sideloadly.io) (simplest — one app, but needs
-   iTunes from apple.com, *not* the Microsoft Store build), or [SideStore](https://sidestore.io) /
-   AltStore. They re-sign with your Apple ID on the way in; any signature CI applied would just be
-   stripped and redone, which is why there are no certificates or secrets in the workflow.
-
-On a **free** Apple ID the install expires after 7 days and you may hold 3 sideloaded apps at once.
-SideStore refreshes the signature on-device from the same `.ipa`; from a Mac it's just ⌘R again. A
-paid account ($99/yr) removes both limits.
 
 ---
 
@@ -139,7 +145,7 @@ roster   overflow    0px   under-44pt   0/13    press  13/13
 **How `ios:sim` drives the app.** `simctl` can screenshot a simulator but it cannot tap one. So
 `Shell.swift` carries a `DevBridge` — a loopback HTTP listener that runs JavaScript inside the live
 web view. A simulator process shares the host loopback, so a POST from the command line reaches the
-app. Three things keep it out of the product: `#if DEBUG` (CI archives Release), it binds `127.0.0.1`
+app. Three things keep it out of the product: `#if DEBUG` (`ios:deploy` builds Release), it binds `127.0.0.1`
 by name, and it adds **no** JavaScript API, so no game code can come to depend on it.
 
 ```sh
@@ -199,5 +205,6 @@ the wrong app — or hangs. Shut the spare down, or `lsof -nP -iTCP:8787` to fin
 
 `Shell.swift` injects `window.__SIDELINE_NATIVE__ = true` at document start. `index.html` uses it to
 pick native paths over web fallbacks that don't work here — `nativeHaptic()` and the file-save
-bridge. Everything is guarded, so the same file still runs from `file://` and from GitHub Pages with
+bridge. Everything is guarded, so the same file still runs from `file://` and from a plain static
+server with
 no shell at all.

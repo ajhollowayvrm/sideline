@@ -8,3 +8,6 @@ infra/samconfig.toml
 ios/Sideline.xcodeproj/
 ios/Sideline-Info.plist
 ios/build/
+
+# the team ID + device UDID for `npm run ios:deploy` — yours, not the repo's
+ios/device.env

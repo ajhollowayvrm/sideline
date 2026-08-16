@@ -113,7 +113,11 @@ right, from `--safe-b` in the design system, and the shell's job is not to break
 bug fix, not a nicety: `URL.createObjectURL` + `a.download` is inert in a WKWebView, so the
 blank-roster-template button would have silently done nothing.
 
-### Building it without a Mac
+### Building it without a Mac — *superseded, see Phase 62.1*
+
+> This whole route is gone. There is a Mac now, the workflow is deleted, and distribution is
+> `npm run ios:deploy`. Kept because the reasoning below is why the `.xcodeproj` is generated rather
+> than committed, which is still true.
 
 Compiling needs macOS + Xcode. **Signing** needs an Apple ID. Only the first belongs in CI, and
 separating them is what makes this work from Windows:
@@ -243,3 +247,60 @@ here because they are the shell's design system rather than its packaging:
 
 `qa` 359 → **377**: the game screen in both modes, the tab strip, the nav, and the two colour
 properties, none of which had any guard before.
+
+---
+
+## Phase 62.1 — one channel
+
+Three assumptions collapsed the distribution story to a single command:
+
+1. **No PWA.** There was never any PWA machinery in the file — no manifest, no service worker, no
+   `apple-mobile-web-app-capable`. What existed was the *positioning*: a web app you visited and
+   added to a home screen, which is what Phase 61 was commissioned to replace because it *"feels
+   cheap."* The shell won that argument, so the framing goes with it.
+2. **No CI.** `.github/` is deleted. Phase 61 built an unsigned-`.ipa` workflow so the path would
+   work from Windows, and re-signing happened locally in SideStore or AltStore. That existed to
+   solve "no Mac", and there is a Mac.
+3. **Always straight to the device.** `npm run ios:deploy` — `tools/ios/deploy.js` — regenerates the
+   project, builds a signed **Release**, installs it on the paired iPhone with `devicectl` and
+   launches it.
+
+`TEAM` and `UDID` live in `ios/device.env`, which is **gitignored**; `ios/device.env.example` is the
+template. Signing stays off `project.yml` for the same reason it always was: the values are passed on
+the command line, so nothing personal is committed and the project still opens like a normal one.
+
+### What the trade actually costs
+
+Release carries **no `DevBridge`** — it is fenced `#if DEBUG`. So the build on the phone **cannot be
+driven**. Everything the Phase 61.1/61.2/62 loops do — screen sweeps, the 44pt audit, the safe-area
+probe — reaches a *simulator* running Debug, and never the device. Device checking is by eye, or
+through Safari's Web Inspector, which `isInspectable = true` already enables.
+
+That is the right way round. A loopback listener has no business on a phone you carry, and the
+simulator is where the measurement belongs anyway.
+
+### One failure that is not a failure
+
+`devicectl ... process launch` fails on a locked phone:
+
+```
+FBSOpenApplicationErrorDomain error 7 / BSErrorCodeDescription = Locked
+```
+
+**Install works while locked; launch does not.** `deploy.js` treats that case as success and says so,
+because the build did land — the phone just needs unlocking. Any other launch failure is a real error
+and exits non-zero.
+
+### The browser build is not dead
+
+Worth stating plainly, because "no PWA, no Pages" reads like it. `index.html` must keep running with
+no shell at all:
+
+- `qa` — the primary gate, 377 checks — drives it in **headless Chromium**.
+- Every offline lab extracts a fenced engine block from the same file.
+- Three `qa` checks exist specifically to keep the shell from becoming a dependency of the page:
+  nothing loads off-origin, the fonts are embedded, and every native bridge is a silent no-op in a
+  browser.
+
+So: the browser is a **development and test target**, permanently. It is simply not a *shipping*
+target any more, and nobody plays the game there.

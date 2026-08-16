@@ -20,7 +20,8 @@
 //     the blank-roster-template button silently did nothing.
 //
 //  Everything else — layout, state, the entire game — stays in index.html, unchanged and still
-//  runnable from file:// and from GitHub Pages.
+//  runnable from file:// and from any static server. The shell is how the game SHIPS, never a
+//  dependency of it: the test gate drives the same file in headless Chromium with no shell at all.
 
 import UIKit
 import WebKit
@@ -278,8 +279,8 @@ extension ShellViewController: WKScriptMessageHandler {
 /// already have, but against the real WKWebView.
 ///
 /// Three properties keep it out of the product:
-///  1. `#if DEBUG` fences the whole file section. CI archives Release, so no byte of this reaches
-///     an `.ipa`. Deleting the fence is the only way to ship it.
+///  1. `#if DEBUG` fences the whole file section. `npm run ios:deploy` builds Release, so no byte of
+///     this reaches the phone. Deleting the fence is the only way to ship it.
 ///  2. It binds 127.0.0.1 by name. It is unreachable from another machine, and macOS raises no
 ///     "accept incoming connections" prompt.
 ///  3. It adds no JavaScript API and no user script. The page cannot detect it, so no game code can

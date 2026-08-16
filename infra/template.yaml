@@ -9,7 +9,8 @@ Parameters:
     Type: String
     Default: '*'
     Description: >
-      Browser origin allowed to call the API, e.g. https://yourname.github.io. Leave as *
+      Browser origin allowed to call the API. The iOS shell serves the page from a custom
+      sideline:// scheme, which sends Origin: null, so leave this as *
       while testing from file:// or localhost; tighten it once the game is on Pages.
   MaxConcurrency:
     Type: Number

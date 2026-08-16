@@ -1,7 +1,9 @@
 # SIDELINE — College Football Coach Sim
 
-A mobile-first, single-page head-coach career sim. Pure static HTML/CSS/JS, deployed
-via GitHub Pages, all state saved to `localStorage`. No backend, no accounts.
+A mobile-first, single-page head-coach career sim. Pure static HTML/CSS/JS, all state saved to
+`localStorage`. No backend, no accounts. It **ships as a native iOS app** — a WKWebView shell around
+the same `index.html`, installed straight onto a paired iPhone with `npm run ios:deploy`. There is no
+web deploy, no PWA and no CI; the browser is a development and test target only.
 
 > This file is the **working brief** — what you need loaded every session. The full
 > phase-by-phase design records (the "why" behind each system) live in **`docs/phases/`**
@@ -48,15 +50,19 @@ Currently a single self-contained file: `index.html`. To work on it:
 
 - **Local:** open `index.html` in a browser, or run any static server in the repo
   (`python3 -m http.server`) and hit it from your phone on the same network.
-- **Deploy:** push to a repo, enable GitHub Pages (Settings → Pages → deploy from branch,
-  root). The hosted URL is a stable origin, so `localStorage` saves persist across visits.
-- **iPhone (Phase 61):** `ios/` is a native WKWebView shell around this same file — XcodeGen
-  spec + one Swift file, no npm and no CocoaPods. The `.github/workflows/ios.yml` action builds
-  an **unsigned** `.ipa` on a free macOS runner; SideStore/AltStore signs it with your Apple ID
-  on the way in, so no Mac and no signing secrets are needed. See `ios/README.md`.
+- **Ship (the only channel):** `npm run ios:deploy` — builds a signed **Release**, installs it on
+  the paired iPhone, launches it. `ios/` is a native WKWebView shell around this same file (XcodeGen
+  spec + one Swift file, no npm, no CocoaPods). Team ID + device UDID live in `ios/device.env`,
+  which is gitignored; copy `ios/device.env.example`. **Unlock the phone before the launch step** —
+  installing works while locked, launching does not. See `ios/README.md`.
+  - Release carries **no `DevBridge`** (it is fenced `#if DEBUG`), so nothing can drive the build on
+    the phone. Scripted driving is simulator-only. That is the trade and it is deliberate.
+  - There is **no GitHub Pages deploy, no PWA and no CI.** The browser still has to work — `qa`
+    drives `index.html` in headless Chromium and three of its checks exist to keep the shell from
+    ever becoming a dependency of the page — but nobody plays it there.
 
-**Save data note:** saves are keyed to the origin. The file opened locally, the Pages URL,
-and a different host are *separate* save stores. This is expected. **Cloud saves (Phase 47)**
+**Save data note:** saves are keyed to the origin. The file opened locally, a static server, and the
+app's `sideline://` scheme are *separate* save stores. This is expected. **Cloud saves (Phase 47)**
 are the way across that line *and* across devices — optional, off until you deploy `infra/`
 (one `sam deploy`) and paste the endpoint + a career code into Menu → Cloud saves. With no
 endpoint the game is exactly what it was: static, offline, `localStorage` only.
@@ -511,8 +517,10 @@ still serves it with zero config.
   self-contained file that renders identically from `file://`, `https://` and `sideline://`. CI
   builds an **unsigned** `.ipa` on a free macOS runner with **no certificates or secrets** —
   compiling needs macOS, signing needs an Apple ID, and SideStore does the second half locally,
-  which is what makes the path work from Windows. **No save bump** (v49 unchanged), no `SIM_MODEL`
-  bump — the sim was not touched. `qa` 344 → **351**.
+  which is what makes the path work from Windows. *(**Superseded**: the Windows/CI/sideload route is
+  gone. The workflow is deleted and distribution is `npm run ios:deploy` — a signed Release straight
+  onto the paired phone. Everything above about the SHELL still holds; only the delivery changed.)*
+  **No save bump** (v49 unchanged), no `SIM_MODEL` bump — the sim was not touched. `qa` 344 → **351**.
   *(→ `docs/phases/ios.md`, `ios/README.md`.)*
 
   **"Verified end to end" meant the BUILD, not the APP — and the app was broken.** The phase closed
@@ -934,10 +942,13 @@ change; bump the save `version` + `migrateState` on any save-shape change.
 
 **Non-gate build scripts** (Phase 61): `npm run fonts` re-embeds `assets/fonts/*.woff2` into
 `index.html`, `npm run ios:icon` regenerates the app icon, `npm run ios:project` runs XcodeGen
-(needs macOS). CI builds the shippable **unsigned** `.ipa` — `.github/workflows/ios.yml`. Three `qa`
-checks police the properties the shell depends on: **nothing loads off-origin** across the whole
-run, the five font faces are embedded, and every native bridge is a **silent no-op in a browser** —
-the shell is a wrapper around the game, never a dependency of it.
+(needs macOS), and `npm run ios:deploy` is the **only** way the game ships — a signed Release
+installed straight onto the paired iPhone (`tools/ios/deploy.js`; team ID + UDID in the gitignored
+`ios/device.env`). There is no CI: the repo has no `.github/` at all. Three `qa` checks police the
+properties the shell depends on: **nothing loads off-origin** across the whole run, the five font
+faces are embedded, and every native bridge is a **silent no-op in a browser** — the shell is a
+wrapper around the game, never a dependency of it. That last one is why the browser build must keep
+working even though nobody plays it there: `qa` itself runs in headless Chromium.
 
 **Non-gate feel loops** (Phase 61.1): `npm run ios:web` renders every screen in real WebKit at
 iPhone metrics and reports overflow + under-44pt tap targets (~30 s, no Xcode); `npm run ios:sim`

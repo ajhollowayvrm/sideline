@@ -2,7 +2,7 @@
   "name": "sideline",
   "version": "1.0.0",
   "private": true,
-  "description": "Mobile-first college football head-coach career sim (static HTML, GitHub Pages)",
+  "description": "Mobile-first college football head-coach career sim — a native iOS app around one static HTML file",
   "scripts": {
     "qa": "node test/qa.js",
     "simlab": "node test/simlab.js",
@@ -28,6 +28,7 @@
     "cloudlab": "node test/cloudlab.js",
     "lambdalab": "node test/lambdalab.js",
     "ios:project": "cd ios && xcodegen generate",
+    "ios:deploy": "node tools/ios/deploy.js",
     "ios:icon": "node tools/ios/make-icon.js",
     "ios:web": "node tools/ios/web.js",
     "ios:sim": "node tools/ios/shell.js",

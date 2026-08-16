@@ -6,7 +6,7 @@
 
 Decided 2026-08-12 with AJ. The ask: *"continue progress everywhere."* Play a season on the
 desktop, pick the same career up on the phone. Everything else about the app stays true —
-static HTML on GitHub Pages, `localStorage` as the fast path, no accounts.
+static HTML in a native iOS shell, `localStorage` as the fast path, no accounts.
 
 Three decisions were taken up front, because each one changes what gets built:
 

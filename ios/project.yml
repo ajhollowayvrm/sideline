@@ -8,7 +8,9 @@
 # the repo root — no copy step, no www/ staging directory, no duplicate of the game.
 #
 #   npm run ios:project   → regenerate ios/Sideline.xcodeproj
-#   .github/workflows/ios.yml → does the same, then archives an unsigned .ipa
+#   npm run ios:deploy    → does the same, then builds a signed Release and installs it on the
+#                           paired iPhone. That is the only way the game ships: no CI, no PWA,
+#                           no web deploy, no store.
 
 name: Sideline
 
@@ -25,9 +27,10 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     # iPhone only. The game is a 560px mobile-first column; add "2" here for iPad if you want it.
     TARGETED_DEVICE_FAMILY: "1"
-    # Deliberately NOT setting code-signing here. CI archives with signing switched off on the
-    # command line (SideStore re-signs the .ipa with your Apple ID anyway), and leaving these alone
-    # means opening the project on a Mac still behaves like a normal Xcode project.
+    # Deliberately NOT setting code-signing here. `npm run ios:deploy` passes DEVELOPMENT_TEAM and
+    # CODE_SIGN_STYLE on the command line, out of the gitignored ios/device.env, so no team ID is
+    # committed — and leaving these alone means opening the project in Xcode still behaves like a
+    # normal project.
 
 targets:
   Sideline:

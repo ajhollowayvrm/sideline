@@ -313,7 +313,7 @@ hr.div{border:none;border-top:1px solid var(--line);margin:14px 0}
 "use strict";
 /* ============================================================
    SIDELINE — College Football Coach Sim  (Phase 1 skeleton)
-   Self-contained. Saves to localStorage. Built for GitHub Pages.
+   Self-contained. Saves to localStorage. Ships as a native iOS app (see ios/).
    ============================================================ */
 
 /* ---------- tiny helpers ---------- */
@@ -1731,8 +1731,9 @@ if(_QS.get('reset')==='1'){SLOTS.forEach(n=>deleteSlot(n));cloudDisconnect();}  
 /* ---------- native shell bridge (iOS) ----------
    ios/Sources/Shell.swift injects window.__SIDELINE_NATIVE__ at document start when the game is
    running inside the WKWebView shell. Every call below is guarded and falls back to the web path,
-   so this same file still runs from file:// and from GitHub Pages with no shell at all. Keep it
-   that way: the shell is a wrapper around the game, never a dependency of it. */
+   so this same file still runs from file:// and from any static server with no shell at all. Keep
+   it that way: the shell is a wrapper around the game, never a dependency of it — and the qa gate
+   drives this file in headless Chromium, where none of the native side exists. */
 const NATIVE=typeof window!=='undefined'&&window.__SIDELINE_NATIVE__===true;
 function reducedMotion(){try{return window.matchMedia('(prefers-reduced-motion: reduce)').matches;}catch(e){return false;}}
 /* iOS applies :active only while SOME touch listener exists up the tree from the element. Without
