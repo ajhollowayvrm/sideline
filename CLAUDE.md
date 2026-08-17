@@ -674,13 +674,14 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   stored inside `state`. The pure decision (`cloudResolve`) is fenced as the CLOUD ENGINE and
   gated by `cloudlab`; the backend is `infra/` (SAM). See `docs/phases/cloud.md`.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **50**). Each step backfills the fields its phase added and re-derives
+  (currently **51**). Each step backfills the fields its phase added and re-derives
   ratings/ranks where needed; most recent steps are structural no-ops (sparse per-player
   fields / derived data read as their defaults) — **v47/v48/v50 are the exceptions**: v47/v48
   mutate every player, deriving an attribute profile re-centred onto the `ov` he already had (v48
   also splits `S` into `FS`/`SS` and packs the row into `p.at`), and **v50** re-derives the stored
   `boost` on every coach (and in `coachMarket`) after the staff ladder was re-cut, then re-derives
-  ratings and ranks off it. The full v1→v50 migration ladder is
+  ratings and ranks off it. **v51** splits the scholarship offer away from the recruiting board (`recruiting.offers`),
+  backfilling it from `board` so an in-flight class survives. The full v1→v51 migration ladder is
   documented inline in `migrateState` in `index.html`, and each phase's design doc in
   `docs/phases/` records its save-shape change. **Bump `version` + extend `migrateState`
   on any save-shape change.**
@@ -716,7 +717,7 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   task: { type, label, note },   // weekly opponent card during the season
   schedule: { weeks, games: [ Game, ... ] } | null,   // null until kickoff
   weeklyHonors: [ ... ],         // Player-of-the-Week log (Phase 3.5)
-  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], signed, stage, intents, doubles, visitsLeft, visitPlan, report } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14); intents = {recruitId:[{action,...,cost,label,isDouble?,nilSpend?}]} = this week's QUEUED actions (≤2/recruit; a 'nil' action pays nilSpend $ from budget — Phase 37), resolved at the week change (Phase 33/35); doubles = weekly double-down tokens (Phase 35); visitsLeft = season official-visit budget (Phase 37); visitPlan = {week:[recruitId]} = recruits booked onto home-game weekends (Phase 38); report = {week, reactions:[…], note} = last week's board report, transient (Phase 34/35); orders = {recruitId: staffId} = Phase 60 standing orders, capped by the `tier:'rec'` staff you employ and resolved each week by `applyStandingOrders` (replaced the Phase 44 `autopilot` flag)
+  recruiting: { cycle, points, pool:[ Recruit ], board:[ recruitId ], offers:[ recruitId ], signed, stage, intents, doubles, visitsLeft, visitPlan, report } | null,  // null until kickoff (Phase 4); stage: open→national→closed (Phase 14); intents = {recruitId:[{action,...,cost,label,isDouble?,nilSpend?}]} = this week's QUEUED actions (≤2/recruit; a 'nil' action pays nilSpend $ from budget — Phase 37), resolved at the week change (Phase 33/35); doubles = weekly double-down tokens (Phase 35); visitsLeft = season official-visit budget (Phase 37); visitPlan = {week:[recruitId]} = recruits booked onto home-game weekends (Phase 38); report = {week, reactions:[…], note} = last week's board report, transient (Phase 34/35); offers = ids you have extended a SCHOLARSHIP to (Phase 62.3) — free-to-join `board` is who you are chasing, `offers` costs points and is the only route to a commitment; orders = {recruitId: staffId} = Phase 60 standing orders, capped by the `tier:'rec'` staff you employ and resolved each week by `applyStandingOrders` (replaced the Phase 44 `autopilot` flag)
   offseasonReport: { year, graduated, tracked, freshmen, departed } | undefined,  // last rollover recap (Phase 5)
   world: { teams: [ Team, ... ] }
 }

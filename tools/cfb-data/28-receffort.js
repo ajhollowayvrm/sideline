@@ -84,6 +84,13 @@ async (cfg) => {
       const open = r.pool.filter(x => !dead(x) && !onBoard(x) && mine(x) > 0)
         .sort((a, b) => (pivotal(b) - pivotal(a)) || (b.stars - a.stars));
       for (const x of open) { if (r.board.length >= boardSlots()) break; offerRecruit(x); }
+      /* Extend scholarships to the board, best relationship first. Since Phase 62.3 this is a real
+         spend and the ONLY route to a commitment, so a coach who never does it signs nobody. */
+      if (typeof extendOffer === 'function') {
+        r.board.map(recById).filter(Boolean).filter(x => !dead(x) && !hasOffer(x))
+          .sort((a, b) => mine(b) - mine(a))
+          .forEach(x => { if (r.points > RECRUIT_COSTS.offer + 3) extendOffer(x); });
+      }
       // 3) official visits — the strongest single action, and season-budgeted
       const wks = (typeof homeWeekends === 'function' ? homeWeekends() : []).filter(w => w.week > S.week);
       for (const id of r.board) {

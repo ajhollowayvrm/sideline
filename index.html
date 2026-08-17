@@ -2146,7 +2146,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:50,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:51,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      rivalries:null,rivalryHeat:null,records:null,lastRealign:null,
@@ -2552,6 +2552,14 @@ function migrateState(state){
     (state.coachMarket||[]).forEach(c=>{c.boost=coachBoost(c.tier,c.rating);});
     recomputeRanks(state.world);
     state.version=50;
+  }
+  if((state.version||1)<51){
+    /* The scholarship offer split away from the recruiting board. `recruiting.offers` is new, and an
+       in-flight career has to keep the class it was going to sign — so every prospect already on the
+       board counts as offered. That is the honest reading of the old model, where boarding a recruit
+       WAS the offer, and it means a save mid-cycle loses nobody. */
+    if(state.recruiting)state.recruiting.offers=(state.recruiting.board||[]).slice();
+    state.version=51;
   }
   return state;
 }
@@ -3996,7 +4004,12 @@ const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.22,GEO_FIT:0.02,
   PASSIVE_RATE:0.10,CEIL_BASE:60,TGT_MEAN:19.2,TGT_SD:5.5,TGT_PRES:1.15,TGT_MIN:12,AI_VALUE:0.06,AI_PIVOT:14,
   FOG_ATTR:10,FOG_ARCH:35,FOG_PUR:70,
   COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,DECOMMIT_GAP:18,
-  /* SLOTS — scholarship offers you can have open at once. Eight was tight against a 25-man class,
+  /* SLOTS — how many prospects you can ACTIVELY RECRUIT at once. Not scholarships: a program carries
+     85 of those, signs about 25 a class (`CLASS_CAP`), and extends offers into the hundreds. What is
+     scarce here is ATTENTION, and the ceiling is the weekly point budget rather than any NCAA rule.
+     Re-swept after actions stopped needing an offer, a wider board only dilutes the same points and
+     recruiting gets WORSE: mid band 54% at 12, 48% at 20, 40% at 30, 39% at 45, top going negative
+     by 30. Eight was tight against a 25-man class,
      and it is not free to raise: `decayNeglect` bleeds an unworked BOARD recruit at NEGLECT_DECAY
      3.5/wk against REC_DRIFT_DECAY 2.2/wk for one you never boarded, so a slot you cannot service is
      worse than no slot. Swept on tools/cfb-data/28-receffort.js (3 seeds x 3 bands), effort's value
@@ -4019,6 +4032,10 @@ const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.22,GEO_FIT:0.02,
      two are 22.0 and 24.6, because a blue-blood's pull genuinely does clear the bar on its own. That
      gradient is the point — prestige recruits for you at the top, you recruit at the bottom. */
   SIGN_BAR_PLAYER:50,
+  /* What extending a scholarship is worth in interest. Sized against a pitch (~8 before modifiers)
+     so the offer is clearly the biggest single thing you can do for one recruit, without being so
+     large that it wins him on its own — he still has to clear SIGN_BAR_PLAYER 50. */
+  OFFER_BUMP:18,
   AI_BASE:6,AI_PER:1.4,AI_COST:4,AI_SCOUT_TGT:50,AI_SCOUT_GAIN:22,AI_SCOUT_P:0.3,NEGLECT_DECAY:3.5,
   AI_VISIT_P:0.25,FINALISTS:4,FINAL_READY:0.55,FINAL_BAR:58};
 
@@ -4248,12 +4265,19 @@ function aiPriority(team,rec){const need=(team.needs&&team.needs[rec.pos])?6:0;
 // own team (`playerTeamId`, Phase 33) is SKIPPED by the AI brain — his actions are applied by the app
 // before this runs. Mutates `pool`; returns the week's new commits (incl. flips, each tagged with a
 // transient `rec._flipped={from,to}` so the app can toast).
-function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,playerTeamId,playerBar){
+function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,playerTeamId,playerBar,playerOffers){
   const byId={};teams.forEach(t=>byId[t.id]=t);
   const r=rng((seed^hashStr('rec'+week))>>>0);
   const bar=signBar==null?35:signBar;   // interest a leader needs to lock a signature on a finalize pass
   const gap=gapBar==null?0:gapBar;      // lead margin over #2 required to sign (Early Period wants a firm lead)
   const pb=playerBar==null?bar:playerBar;   // the PLAYER's signing bar (see barFor below); defaults to the league's
+  /* A prospect cannot commit to a program that never offered him a scholarship. `playerOffers` is
+     the player's offer list — NOT his board. The board is who he is chasing and is free; the offer
+     costs points and is the thing that says "we want you", so this is where it earns its keep.
+     Omitted, this is a no-op, so reclab and every other caller stay byte-identical. The 133 AI
+     programs are deliberately not modelled at this grain — they have no board and no offer list, and
+     giving them one would move fitted quantities this must not touch. */
+  const offered=(rec,tid)=>!(playerOffers&&tid===playerTeamId&&!playerOffers.has(rec.id));
   const counts={};pool.forEach(p=>{if(p.committedTo)counts[p.committedTo]=(counts[p.committedTo]||0)+1;
     if(p._flipped)delete p._flipped;});
   // Phase 57b: a program stops at its own class TARGET, not at the league-wide cap. `CLASS_CAP` is a
@@ -4355,7 +4379,7 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
       if(!rec.committedTo||rec.signed)return;
       const cur=rec.iv[rec.committedTo]||0;
       let best=null,bestV=-1;
-      for(const tid in rec.iv){if(tid===rec.committedTo||!isFinalist(rec,tid))continue;const t=byId[tid];if(!t||full(tid))continue;
+      for(const tid in rec.iv){if(tid===rec.committedTo||!isFinalist(rec,tid)||!offered(rec,tid))continue;const t=byId[tid];if(!t||full(tid))continue;
         if(rec.iv[tid]>bestV){bestV=rec.iv[tid];best=tid;}}
       if(best&&(bestV-cur)>=REC.DECOMMIT_GAP){
         const prob=clamp((bestV-cur-REC.DECOMMIT_GAP)/40,0.04,0.5);   // the further ahead, the likelier the flip
@@ -4373,7 +4397,7 @@ function advanceRecruiting(pool,teams,week,weeks,seed,finalize,signBar,gapBar,pl
   const last=!!finalize;
   pool.forEach(rec=>{
     if(rec.committedTo)return;
-    let entries=Object.entries(rec.iv).filter(([tid])=>byId[tid]&&!full(tid)&&(last||isFinalist(rec,tid))).sort((a,b)=>b[1]-a[1]);
+    let entries=Object.entries(rec.iv).filter(([tid])=>byId[tid]&&!full(tid)&&offered(rec,tid)&&(last||isFinalist(rec,tid))).sort((a,b)=>b[1]-a[1]);
     if(!entries.length)return;
     let [leadId,lead]=entries[0]; const second=entries[1]?entries[1][1]:0;
     const commit=()=>{rec.committedTo=leadId;if(last)rec.signed=true;counts[leadId]=(counts[leadId]||0)+1;if(rec.decideWeek!=null)delete rec.decideWeek;out.push(rec);};
@@ -6500,7 +6524,7 @@ function earlySigningPeriod(){
 function nationalSigningDay(){
   const R=S.recruiting; if(!R||R.stage==='closed')return;
   applyPlayerIntents();                                          // Phase 33: spend the final-push intents first
-  advanceRecruiting(R.pool,S.world.teams,99,99,recruitSeed(),true,30,undefined,S.teamId,REC.SIGN_BAR_PLAYER);   // mop-up: the league at 30, you at your own bar
+  advanceRecruiting(R.pool,S.world.teams,99,99,recruitSeed(),true,30,undefined,S.teamId,REC.SIGN_BAR_PLAYER,new Set(recOffers()));   // mop-up: the league at 30, you at your own bar
   R.stage='closed'; R.signed=true;
   // Phase 58: the class lands NOW, and the fanbase reacts now. Signing Day is its own moment in the
   // calendar, so the approval move belongs here rather than folded anonymously into the season
@@ -7003,7 +7027,11 @@ function declineSeriesOffer(offerId){S.seriesOffers=(S.seriesOffers||[]).filter(
    The pure engine (genRecruits/advanceRecruiting/coachMods/…) lives in the RECRUIT ENGINE
    block above; this layer owns S.recruiting, the points economy, and the five player actions.
    ============================================================ */
-const RECRUIT_COSTS={scout:2,pitch:3,promise:4,alumni:4,nil:0};   // offer free (board slot); NIL pays $ (Phase 37); visits are a weekend calendar, not a weekly intent (Phase 38)
+/* `offer` is a scholarship offer and it costs like one. Boarding a prospect is free — that is just
+   who you are chasing — but the offer is the moment you tell a kid you want him, it is the only way
+   he can ever commit to you, and it moves his interest more than anything else here. NIL pays $
+   (Phase 37); visits are a weekend calendar, not a weekly intent (Phase 38). */
+const RECRUIT_COSTS={scout:2,pitch:3,promise:4,alumni:4,nil:0,offer:5};
 // Phase 37 — NIL bid tiers (money → interest). [key, label, $amount]. A bid pays from team.budget, not points.
 const NIL_TIERS=[['modest','Modest',0.6e6],['strong','Strong',1.8e6],['blockbuster','Blockbuster',4.5e6]];
 const SEASON_VISITS=12;   // Phase 37: official-visit calendar — a season-long budget on top of the weekly cap
@@ -7042,7 +7070,7 @@ function initRecruiting(){
   //   weekend (Phase 38 scheduler — official visits are now a calendar, reserved at booking).
   // orders = the Phase 60 standing orders, {recruitId: staffId} — capped by the recruiting staff you
   //   employ, and resolved each week by applyStandingOrders. Replaces the Phase 44 `autopilot` flag.
-  S.recruiting={cycle:(S.year||1),points:weeklyPoints(),pool:genRecruits(recruitSeed(),S.world.teams),board:[],signed:false,stage:'open',intents:{},doubles:doublesPerWeek(),visitsLeft:SEASON_VISITS,visitPlan:{},report:null,orders:{}};
+  S.recruiting={cycle:(S.year||1),points:weeklyPoints(),pool:genRecruits(recruitSeed(),S.world.teams),board:[],offers:[],signed:false,stage:'open',intents:{},doubles:doublesPerWeek(),visitsLeft:SEASON_VISITS,visitPlan:{},report:null,orders:{}};
 }
 // Official visits remaining this season — reserved at booking onto a weekend (Phase 38).
 function visitsLeft(){const R=S.recruiting;return (R&&R.visitsLeft==null?SEASON_VISITS:R.visitsLeft);}
@@ -7222,7 +7250,7 @@ function resolveRecruitingWeek(week){
   const rippleNote=applyLeagueRipple(week); // Phase 35/37: every team's Saturday result moves its board (note=yours)
   applyAINil(week);                 // Phase 37: AI programs place NIL bids on the recruits they're chasing
   // in-season: verbal commitments only (finalize=false) — binding signatures wait for the offseason
-  const out=advanceRecruiting(S.recruiting.pool,S.world.teams,week,S.schedule.weeks,recruitSeed(),false,undefined,undefined,S.teamId);
+  const out=advanceRecruiting(S.recruiting.pool,S.world.teams,week,S.schedule.weeks,recruitSeed(),false,undefined,undefined,S.teamId,undefined,new Set(recOffers()));
   const note=[visitNote,rippleNote].filter(Boolean).join(' · ')||null;   // Phase 38 visit + Phase 35/37 ripple
   buildRecruitReport(snaps,week,note);   // Phase 34/35: diff into a readable board report
 
@@ -7240,6 +7268,13 @@ function resolveRecruitingWeek(week){
 /* ---- lookups ---- */
 function recById(id){return S.recruiting?S.recruiting.pool.find(r=>r.id===id):null;}
 function onBoard(rec){return S.recruiting&&S.recruiting.board.includes(rec.id);}
+/* Two different lists, deliberately. `board` is who you are GOING AFTER — free to add, capped by
+   attention (REC.SLOTS + staff), and what decay and standing orders key off. `offers` is who you
+   have actually extended a scholarship to: it costs points, it is a real interest event, and it is
+   the ONLY way a prospect can commit to you. A prospect can be on the board and unoffered (most of
+   them, most of the time), or offered and later dropped from the board. */
+function recOffers(){const R=S.recruiting;return R?(R.offers||(R.offers=[])):[];}
+function hasOffer(rec){return recOffers().includes(rec.id);}
 function myInterest(rec){return Math.round(rec.iv[S.teamId]||0);}
 function suitorList(rec){return Object.entries(rec.iv).map(([id,v])=>({id,v,team:teamById(id)}))
   .filter(s=>s.team).sort((a,b)=>b.v-a.v);}
@@ -7436,7 +7471,7 @@ function offerRecruit(rec){
   if(onBoard(rec))return false;
   if(rec.signed){toast('Already signed — can’t recruit him');return false;}   // signed = locked (Phase 16)
   if(rec.finalists&&!rec.committedTo&&rec.finalists.indexOf(S.teamId)<0){toast('✂️ He’s set his finalists — you’re not on the list');return false;}   // Phase 36 (open race only)
-  if(S.recruiting.board.length>=boardSlots()){toast('Board full — drop a target first');return false;}
+  if(S.recruiting.board.length>=boardSlots()){toast('Recruiting board is full — drop a target first');return false;}
   const m=myMods(),me=controlled();
   const eff={prestige:clamp(me.prestige+m.prestige,20,99),needs:me.needs,fac:me.fac,homeState:me.homeState};
   let fit=recruitFit(eff,rec);
@@ -7446,9 +7481,31 @@ function offerRecruit(rec){
   rec.offered=true;S.recruiting.board.push(rec.id);
   autosave();return true;
 }
+/* Extend the scholarship. This is the commitment gate: `advanceRecruiting` will not let a prospect
+   pick you unless you have done this. It costs points and it lands a real bump, because in the
+   fiction it is the loudest thing a programme can say to a seventeen-year-old. */
+function extendOffer(rec){
+  const R=S.recruiting; if(!R)return false;
+  if(hasOffer(rec)){toast('Already offered');return false;}
+  if(R.signed||rec.signed){toast('Signing is closed');return false;}
+  if(rec.committedTo===S.teamId){toast('He is already yours');return false;}
+  if(!onBoard(rec)){toast('Add him to your board first');return false;}
+  if(rec.finalists&&rec.committedTo!==S.teamId&&rec.finalists.indexOf(S.teamId)<0){
+    toast('✂️ You’ve been cut from his finalists');return false;}
+  const cost=RECRUIT_COSTS.offer;
+  if((R.points||0)<cost){toast('Not enough recruiting points for an offer');return false;}
+  R.points-=cost;
+  recOffers().push(rec.id);
+  bumpInterest(rec,REC.OFFER_BUMP*myMods().pitch);
+  autosave();return true;
+}
 function dropRecruit(rec){
   clearRecIntent(rec);   // refund any queued action on him first
   S.recruiting.board=S.recruiting.board.filter(id=>id!==rec.id);
+  // Walking away pulls the scholarship with it. The points are spent either way — an offer you
+  // withdraw is not one you get back — but he can no longer commit to a programme that has stopped
+  // recruiting him, which is the same rule as everywhere else here.
+  S.recruiting.offers=recOffers().filter(id=>id!==rec.id);
   delete rec.iv[S.teamId];autosave();
 }
 function bumpInterest(rec,gain){rec.iv[S.teamId]=clamp((rec.iv[S.teamId]||0)+gain,0,100);}
@@ -9221,7 +9278,7 @@ function seasonStandings(v,t){
     v.append(el('h2','sec',divs.length>1?(dv||conf)+' Division':conf));
     const arr=teams.filter(x=>(x.div||'')===dv).sort(sortFn);
     const head=el('div','row spread');head.style.cssText='margin:2px 12px 6px;font-size:10px;letter-spacing:.06em;color:var(--ink3);text-transform:uppercase';
-    head.innerHTML=`<span>Team</span><span style="display:flex;gap:14px"><span style="width:34px;text-align:right">Conf</span><span style="width:38px;text-align:right">Overall</span></span>`;
+    head.innerHTML=`<span>Team</span><span style="display:flex;gap:14px"><span style="width:34px;text-align:right">Conf</span><span style="width:38px;text-align:right">OVR</span></span>`;
     v.append(head);
     arr.forEach((x,i)=>{
       const me=x.id===t.id,row=el('div','lrow');row.dataset.id=x.id;
@@ -9452,7 +9509,7 @@ function renderRecruiting(app){
       <div style="text-align:right"><div class="meta dim">Class rank</div>
         <div class="cond" style="font-size:28px;font-weight:800">#${rank} <span class="tag accent" style="font-size:13px;vertical-align:3px">${grade}</span></div></div></div>
     <div class="row spread" style="margin-top:8px">
-      <span class="meta">Board ${R.board.length}/${boardSlots()}</span>
+      <span class="meta">Recruiting ${R.board.length}/${boardSlots()}</span>
       <span class="meta">${stage==='open'?'Verbals':'Signed'} ${stage==='open'?cls.length:signedN}${stage!=='open'&&cls.length>signedN?'/'+cls.length:''}</span>
       <span class="meta dim">${stageLabel}</span></div>`;
   v.append(sum);
@@ -9564,6 +9621,10 @@ function recruitRow(rec){
   const qLabel=arr.length?(arr.length>1?arr.length+' actions':arr[0].label):'';
   const dw=(!committed&&rec.decideWeek!=null)?' · <span class="accent">🗓️ Wk '+rec.decideWeek+'</span>':'';   // Phase 35: decision window
   const fin=(!committed&&rec.finalists)?(rec.finalists.indexOf(S.teamId)>=0?' · <span class="good">🎯 Finalist</span>':' · <span class="bad">✂️ Cut</span>'):'';   // Phase 36
+  // Phase 62.3: whether your scholarship is on the table. He cannot pick you until it is, so this is
+  // the one thing about your own pursuit that has to be readable without opening him.
+  const offTag=(!rec.signed&&committed!==S.teamId&&onBoard(rec))
+    ?(hasOffer(rec)?' · <span class="good">🎓 Offered</span>':' · <span class="accent">no offer</span>'):'';
   const fa=recFogArch(rec);   // Phase 58: the named shape, once you have scouted him enough to see it
   const archTxt=fa.revealed?' · <span class="dim">'+(fa.pure&&fa.pur>=1.25?'Proto ':'')+fa.name+'</span>':'';
   // Phase 60: a staffer is holding him. Just the glyph — the meta line already carries the ceiling
@@ -9572,7 +9633,7 @@ function recruitRow(rec){
   row.innerHTML=`${recruitStarChip(rec)}
     <div style="flex:1;min-width:0">
       <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rec.fn} ${rec.ln} <span class="dim" style="font-weight:400">${rec.pos} · ${rec.st}</span></div>
-      <div class="meta">${sc.text}${archTxt}${committed?'':' · interest '+mi+'%'}${qLabel?' · <span class="accent">⏳ '+qLabel+'</span>':''}${ordTxt}${dw}${fin}</div>
+      <div class="meta">${sc.text}${archTxt}${committed?'':' · interest '+mi+'%'}${qLabel?' · <span class="accent">⏳ '+qLabel+'</span>':''}${ordTxt}${dw}${fin}${offTag}</div>
       ${committed?'':'<div class="bar" style="margin-top:5px"><i style="width:'+mi+'%"></i></div>'}</div>
     <div style="text-align:right;flex:none;margin-left:8px">${status}</div>`;
   row.onclick=()=>recruitSheet(rec);
@@ -9669,8 +9730,8 @@ function recruitProspects(v){
 
   const bar=el('div','row');bar.style.cssText='gap:8px;margin-bottom:10px';
   const toggle=el('button','btn sm ghost');toggle.dataset.tid='rec-filters';
-  toggle.style.cssText='flex:1 1 0;min-width:0;justify-content:space-between;text-align:left';
-  sortSel.style.cssText='flex:1 1 0;min-width:130px';
+  toggle.style.cssText='flex:1.35 1 0;min-width:0;justify-content:space-between;text-align:left';
+  sortSel.style.cssText='flex:1 1 0;min-width:124px';
   bar.append(toggle,sortSel);
 
   const activeBits=()=>{const b=[];
@@ -9679,8 +9740,12 @@ function recruitProspects(v){
     return b.filter(Boolean);};
   function paintToggle(){
     const bits=activeBits();
-    toggle.innerHTML=`<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">`
-      +(bits.length?'Filters · <span class="accent">'+bits.join(' · ')+'</span>':'Filters')
+    /* The COUNT comes first and the detail after it, because the detail is what gets truncated: three
+       active filters already need more room than the control has, and a summary that can silently
+       lose the fact that anything is filtered at all is worse than no summary. The count survives any
+       width; the names are a bonus when they fit. */
+    toggle.innerHTML=`<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">`
+      +(bits.length?'Filters <span class="accent">('+bits.length+')</span> · <span class="accent">'+bits.join(' · ')+'</span>':'Filters')
       +`</span><span class="dim" style="flex:none;margin-left:6px">${F.open?'▴':'▾'}</span>`;
     panel.style.display=F.open?'':'none';
   }
@@ -9846,16 +9911,33 @@ function recruitSheet(rec){
     /* The offer is an ACTION here, not a gate. It is what you do once recruiting him has convinced
        you he is worth a scholarship — so it sits with the rest of the work rather than in front of
        it, and everything below is available whether you have offered or not. */
+    /* Two separate acts. Adding him to the BOARD is free — it just says you are going after him, and
+       it is what standing orders and the neglect model key off. Extending the SCHOLARSHIP costs
+       points, moves his interest more than anything else here, and is the only way he can ever
+       commit to you. Most of your board is unoffered most of the time; that is the point. */
     if(!onB){
-      const off=el('button','btn','Offer scholarship');off.dataset.tid='rec-offer';
-      // Only report success when the offer landed; offerRecruit has already said why if it didn't.
-      off.onclick=()=>{if(!offerRecruit(rec))return;
-        const ct2=rec.committedTo&&rec.committedTo!==S.teamId?teamById(rec.committedTo):null;
+      const add=el('button','btn line','+ Add to my board');add.dataset.tid='rec-offer';
+      add.onclick=()=>{if(!offerRecruit(rec))return;
+        closeSheet();render();recruitSheet(rec);toast('Added to your board');};
+      body.append(add);
+      body.append(el('div','hint center','Free — the board is who you are going after ('
+        +S.recruiting.board.length+'/'+boardSlots()+'). You can work him either way.'));
+    }
+    if(!hasOffer(rec)){
+      const sch=el('button','btn','🎓 Offer scholarship · '+RECRUIT_COSTS.offer+' pts');
+      sch.dataset.tid='rec-scholarship';
+      const ct2=rec.committedTo&&rec.committedTo!==S.teamId?teamById(rec.committedTo):null;
+      sch.onclick=()=>{if(!extendOffer(rec))return;
         closeSheet();render();recruitSheet(rec);
-        toast(ct2?'Offer extended — out-recruit '+ct2.abbr+' to flip him':'Offer extended');};
-      body.append(off);
-      body.append(el('div','hint center','Not offered yet — you can still work him below. Offering sets a floor '
-        +'under his interest, lets your staff hold a standing order, and uses 1 of '+boardSlots()+' board slots.'));
+        toast(ct2?'Scholarship offered — now out-recruit '+ct2.abbr:'Scholarship offered');};
+      sch.style.marginTop='9px';
+      body.append(sch);
+      body.append(el('div','hint center','He cannot commit to you until you offer. It is the loudest thing you can say — worth about '+REC.OFFER_BUMP+' interest.'));
+    }else{
+      const done=el('div','card');done.style.cssText='margin-top:9px;text-align:center';done.dataset.tid='rec-offered';
+      done.innerHTML='<div class="cond good" style="font-weight:800;font-size:15px">🎓 Scholarship offered</div>'
+        +'<div class="meta dim" style="margin-top:3px">He can commit to you.</div>';
+      body.append(done);
     }
     {
       // Phase 33/35: set queued action(s) — one per recruit, or two via a weekly DOUBLE-DOWN (⚡). They
@@ -9927,7 +10009,7 @@ function recruitSheet(rec){
   if(onB&&!canAct&&committed!==S.teamId){
     const gone=el('button','btn sm line','Drop from board');gone.style.marginTop='12px';gone.dataset.tid='rec-drop';
     gone.onclick=()=>{dropRecruit(rec);closeSheet();render();toast('Dropped from board');};
-    body.append(gone,el('div','hint center','Frees a board slot ('+S.recruiting.board.length+'/'+boardSlots()+' used).'));
+    body.append(gone,el('div','hint center','Frees a spot on the board ('+S.recruiting.board.length+'/'+boardSlots()+' actively recruited).'));
   }
   openSheet(rec.fn+' '+rec.ln,body);
 }
@@ -10481,7 +10563,7 @@ function renderCoaches(v,t){
   if(t.id===S.teamId){
     v.append(el('div','hint','They boost no one’s rating. They buy weekly recruiting points, board slots, and the standing orders you can hand out — for a salary, every year.'));
     v.append(el('div','card',`<div class="kv"><span class="k">Weekly points</span><span class="cond" style="font-size:16px">${weeklyPoints()}</span></div>
-      <div class="kv"><span class="k">Board slots</span><span class="cond" style="font-size:16px">${boardSlots()}</span></div>
+      <div class="kv"><span class="k">Board size</span><span class="cond" style="font-size:16px">${boardSlots()}</span></div>
       <div class="kv"><span class="k">Standing orders</span><span class="cond" style="font-size:16px">${orderCap()}</span></div>`));
   }
   if(rs.length)rs.forEach(c=>v.append(recStaffRow(c,t)));

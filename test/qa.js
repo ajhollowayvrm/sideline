@@ -1191,7 +1191,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 50 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 51 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- DELIBERATE EXIT (the other half of the resume contract) ----------
   // Resume must not be stickier than the player's intent: quitting to the menu has to survive a
@@ -1235,7 +1235,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).first().click();   // slot 2 is now the only save
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v50)', mig.v === 50, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v51)', mig.v === 51, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -1268,7 +1268,7 @@ function startServer() {
     };
   });
   check('Migration: v49 save re-derives every stored coach boost onto the new ladder',
-    v50.v === 50 && v50.correct && JSON.stringify(v50.stale) !== JSON.stringify(v50.fresh), JSON.stringify({ v: v50.v, correct: v50.correct }));
+    v50.v === 51 && v50.correct && JSON.stringify(v50.stale) !== JSON.stringify(v50.fresh), JSON.stringify({ v: v50.v, correct: v50.correct }));
   check('Migration: the stored coach market re-derives too', v50.market === 6, 'an 88-rated OC → +' + v50.market);
   check('Migration: team ratings and ranks follow the new boosts', v50.ratingMoved && v50.ranked);
 
@@ -1367,9 +1367,14 @@ function startServer() {
     // rather than poaching a 4★ from blue-bloods that Phase 37's winning-rival boosts can keep contested to NSD)
     const tgt = S.recruiting.pool.find(r => r.stars === 3 && r.iv[me] != null && !r.committedTo)
       || S.recruiting.pool.find(r => r.iv[me] != null && !r.committedTo) || S.recruiting.pool.find(r => r.stars === 4 && r.iv[me] == null);
-    offerRecruit(tgt);
+    offerRecruit(tgt);                       // free — the board is who you are going after
+    extendOffer(tgt);                        // Phase 62.3: the scholarship is what lets him commit
     let guard = 0, repSeen = 0, repTonesAllOk = true, windowSeen = false, finalistSeen = false;   // Phase 34/35/36
     while (S.phase === 'Regular Season' && guard++ < 40) {
+      // Keep the rest of the board signable too, or the class check below measures the gate rather
+      // than the cycle: a prospect can only commit to a programme that has offered him.
+      S.recruiting.board.map(recById).filter(Boolean)
+        .forEach(r => { if (!hasOffer(r) && S.recruiting.points > RECRUIT_COSTS.offer) extendOffer(r); });
       // Phase 33: queue one action per week on the target — it resolves on advance (maximal push)
       if (tgt.committedTo !== me) {
         if (!tgt.promise) setRecIntent(tgt, 'promise', { type: 'playingTime' });
@@ -1451,6 +1456,28 @@ function startServer() {
   check('Recruiting cycle: an aggressively recruited target commits to you (or you lead him into Signing Day)', cycle.tgtWon);
   check('Recruiting cycle: the controlled team builds a class', cycle.mine > 0, cycle.mine + ' commits');
   check('Recruiting cycle: class rank is valid (1–134)', cycle.rank >= 1 && cycle.rank <= 134, '#' + cycle.rank);
+  /* Phase 62.3 — the scholarship gate. The board is who you are chasing and is free; the OFFER is a
+     spend, and it is the only way a prospect can commit to you. Checked at the engine, because that
+     is where it is enforced and because the UI path is the thing most likely to drift away from it. */
+  const gate = await page.evaluate(() => {
+    const ME = '_me', RIVAL = '_rv', teams = [{ id: ME, prestige: 70 }, { id: RIVAL, prestige: 40 }];
+    const mk = () => { const p = []; for (let i = 0; i < 60; i++)
+      p.push({ id: 'g' + i, pos: 'WR', st: 'TX', stars: 3, iv: { [ME]: 96, [RIVAL]: 20 }, committedTo: null, signed: false }); return p; };
+    // identical pools; the only difference is whether the player has offered
+    const noOffer = mk(); advanceRecruiting(noOffer, teams, 99, 99, 7, true, 30, undefined, ME, 50, new Set());
+    const offered = mk(); advanceRecruiting(offered, teams, 99, 99, 7, true, 30, undefined, ME, 50, new Set(offered.map(r => r.id)));
+    // and with the argument omitted entirely it must behave exactly as it always did
+    const legacy = mk(); advanceRecruiting(legacy, teams, 99, 99, 7, true, 30, undefined, ME, 50);
+    return { won: noOffer.filter(r => r.committedTo === ME).length,
+             wonOffered: offered.filter(r => r.committedTo === ME).length,
+             wonLegacy: legacy.filter(r => r.committedTo === ME).length };
+  });
+  check('Phase 62.3: a prospect cannot commit to a program that never offered him',
+    gate.won === 0, gate.won + ' committed with no scholarship out');
+  check('Phase 62.3: the same prospects commit once the scholarship is offered',
+    gate.wonOffered > 0, gate.wonOffered + ' committed after offering');
+  check('Phase 62.3: omitting the offer list is a no-op (every other caller unchanged)',
+    gate.wonLegacy === gate.wonOffered, `legacy ${gate.wonLegacy} vs offered ${gate.wonOffered}`);
   // ---------- PHASE 16: decommits (verbal flips) ----------
   const flip = await page.evaluate(() => {
     const A = '_fa', B = '_fb', teams = [{ id: A, prestige: 60 }, { id: B, prestige: 85 }];
@@ -1746,7 +1773,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 50', roPost.version === 50, 'v' + roPost.version);
+  check('Rollover: save version bumped to 51', roPost.version === 51, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);
