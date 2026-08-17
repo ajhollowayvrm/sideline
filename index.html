@@ -7281,7 +7281,13 @@ function setRecIntent(rec,action,opt){
      engine's flip pass skips a non-finalist either way, so the points bought a rising interest number
      that could never win him. Being cut is permanent; the guard has to be too. */
   if(rec.finalists&&rec.committedTo!==S.teamId&&rec.finalists.indexOf(S.teamId)<0){toast('✂️ You’ve been cut from his finalists');return false;}
-  if(!onBoard(rec)){toast('Offer a scholarship first');return false;}
+  /* SCOUT is the one action that does not need a board slot. Evaluating a prospect is your staff
+     watching film; offering him a scholarship is a relationship, and everything else here (a pitch,
+     a promise, an official visit, NIL) only means something once that relationship exists. Requiring
+     the offer first had it backwards — it made you commit one of eight slots to a player precisely
+     while you still knew nothing about him, which is the decision scouting exists to inform.
+     Points remain the limiter: `RECRUIT_COSTS.scout` is charged the same either way. */
+  if(action!=='scout'&&!onBoard(rec)){toast('Offer a scholarship first');return false;}
   const arr=intentsFor(rec), exIdx=arr.findIndex(x=>x.action===action);
   if(exIdx>=0){removeIntentAt(rec,exIdx);return true;}                 // toggle OFF a queued action
   if(action==='promise'&&rec.promise){toast('Already made a promise');return false;}
@@ -9613,63 +9619,121 @@ function visitBookSheet(week){
 }
 function recruitProspects(v){
   const R=S.recruiting, t=controlled();
+  /* Filter state lives on UI, not on the DOM nodes. It used to live only in the <select> values, and
+     every action rebuilt the screen — offering a scholarship or queueing a scout calls render() — so
+     the filter you had just set was wiped along with your place in the list. `shown` is kept for the
+     same reason: paging back to a prospect after every click is the same defect wearing a hat. */
+  // Opens on 'targets', not on the star ranking: the star board is the one every rival already has,
+  // and it is a list of players you mostly cannot get. Change the sort and it sticks.
+  const F=UI.recFilter||(UI.recFilter={q:'',pos:'',star:'',st:'',avail:'',sort:'targets',shown:80,open:false});
   const wrap=el('div');
+
   const search=el('input','search');search.placeholder='Search prospects…';search.dataset.tid='rec-search';
-  const fbar=el('div','row');fbar.style.cssText='gap:8px;margin-bottom:10px;flex-wrap:wrap';
-  const posSel=el('select');posSel.dataset.tid='rec-pos';
-  [['','All pos'],...POS.map(([c])=>[c,c])].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l+((val&&t.needs&&t.needs[val])?' ●':'');o.selected=false;posSel.append(o);});
-  const starSel=el('select');[['','All ★'],['5','5★'],['4','4★ +'],['3','3★ +'],['2','2★ +']].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;starSel.append(o);});
-  // Phase 17: with the full national class, a home-state + an availability filter keep the board usable.
-  const stSel=el('select');stSel.dataset.tid='rec-state';
-  [['','All states'],...STATES.map(s=>[s,s])].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;stSel.append(o);});
-  const availSel=el('select');availSel.dataset.tid='rec-avail';
-  [['','Available + mine'],['open','Uncommitted only'],['verbal','Verbals (flippable)'],['mine','My commits'],['board','My board']].forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;availSel.append(o);});
+  search.value=F.q;
+  const mk=(tid,opts,val)=>{const sl=el('select');if(tid)sl.dataset.tid=tid;
+    opts.forEach(([v2,l])=>{const o=el('option');o.value=v2;o.textContent=l;if(v2===val)o.selected=true;sl.append(o);});return sl;};
+  const posSel=mk('rec-pos',[['','All pos'],...POS.map(([c])=>[c,c+((t.needs&&t.needs[c])?' ●':'')])],F.pos);
+  const starSel=mk(null,[['','All ★'],['5','5★'],['4','4★ +'],['3','3★ +'],['2','2★ +']],F.star);
+  const stSel=mk('rec-state',[['','All states'],...STATES.map(x=>[x,x])],F.st);
+  const availSel=mk('rec-avail',[['','Available + mine'],['open','Uncommitted only'],['verbal','Verbals (flippable)'],['mine','My commits'],['board','My board']],F.avail);
   // Phase 58: sort by what he'd be in YOUR system, not by what the services think of him generally.
-  // The board has always ranked by star, which is the one view every rival also has.
-  const sortSel=el('select');sortSel.dataset.tid='rec-sort';
-  [['stars','Services rank'],['system','Best in my system'],['interest','My interest']]
-    .forEach(([val,l])=>{const o=el('option');o.value=val;o.textContent=l;sortSel.append(o);});
-  fbar.append(posSel,starSel,stSel,availSel,sortSel);
+  // Phase 62.2 adds "Best targets", which is the list you actually work from — see targetScore below.
+  const sortSel=mk('rec-sort',[['targets','Best targets'],['stars','Services rank'],['system','Best in my system'],['interest','My interest']],F.sort);
+
+  /* The five selects collapse. On a phone they were ~150px of permanent chrome above a list you are
+     there to scroll, and four of them are set once and left alone. The toggle carries a summary, so
+     a filter is never hidden state — you can always see what is narrowing the list. */
+  const panel=el('div');panel.dataset.tid='rec-filter-panel';
+  const fbar=el('div','row');fbar.style.cssText='gap:8px;margin-bottom:10px;flex-wrap:wrap';
+  [posSel,starSel,stSel,availSel].forEach(x=>{x.style.flex='1 1 0';x.style.minWidth='120px';});
+  fbar.append(posSel,starSel,stSel,availSel);
+  panel.append(search,fbar);
+
+  const bar=el('div','row');bar.style.cssText='gap:8px;margin-bottom:10px';
+  const toggle=el('button','btn sm ghost');toggle.dataset.tid='rec-filters';
+  toggle.style.cssText='flex:1 1 0;min-width:0;justify-content:space-between;text-align:left';
+  sortSel.style.cssText='flex:1 1 0;min-width:130px';
+  bar.append(toggle,sortSel);
+
+  const activeBits=()=>{const b=[];
+    if(F.q)b.push('“'+F.q+'”'); if(F.pos)b.push(F.pos); if(F.star)b.push(F.star+'★+');
+    if(F.st)b.push(F.st); if(F.avail)b.push(({open:'uncommitted',verbal:'verbals',mine:'my commits',board:'my board'})[F.avail]);
+    return b.filter(Boolean);};
+  function paintToggle(){
+    const bits=activeBits();
+    toggle.innerHTML=`<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">`
+      +(bits.length?'Filters · <span class="accent">'+bits.join(' · ')+'</span>':'Filters')
+      +`</span><span class="dim" style="flex:none;margin-left:6px">${F.open?'▴':'▾'}</span>`;
+    panel.style.display=F.open?'':'none';
+  }
+  toggle.onclick=()=>{F.open=!F.open;paintToggle();};
+
   const list=el('div');list.dataset.tid='rec-list';
   const cnt=el('div','hint center');
-  const PAGE=80; let shown=PAGE;
+  const PAGE=80;
   const moreBtn=el('button','btn line','Load more');moreBtn.style.marginTop='10px';
-  moreBtn.onclick=()=>{shown+=PAGE;draw();};
+  moreBtn.onclick=()=>{F.shown+=PAGE;draw();};
+
   function avail(r){
-    const v=availSel.value, mine=r.committedTo===S.teamId;
-    if(v==='open')return !r.committedTo;
-    if(v==='verbal')return r.committedTo&&!r.signed&&!mine;
-    if(v==='mine')return mine;
-    if(v==='board')return onBoard(r);
+    const vv=F.avail, mine=r.committedTo===S.teamId;
+    if(vv==='open')return !r.committedTo;
+    if(vv==='verbal')return r.committedTo&&!r.signed&&!mine;
+    if(vv==='mine')return mine;
+    if(vv==='board')return onBoard(r);
     return !r.signed||mine;            // default: anything still gettable (incl. flippable verbals) + my commits
   }
+  /* His value in your scheme. Fogged prospects sort on the same fogged read the sheet shows, so the
+     order cannot leak ability you have not scouted — an unscouted board sorts nearly by star, and
+     sharpens into a genuinely different ranking as you evaluate. */
+  const val=r=>{const sc=mySchemeFor(r.pos);if(!sc)return ovrBase(r);
+    const sp=recAttrSpread(r), vv=ovrIn(r,sc);
+    return sp>=1?vv+((hashStr(r.id+'sys')%(2*Math.round(sp)+1))-Math.round(sp))*0.35:vv;};
+  /* "Best targets" — the working list. Value alone is the board every rival already has; interest
+     alone surfaces two-stars who love you. This is the PRODUCT: what he would be worth in your
+     system, discounted by how much of the race you actually hold, then adjusted for the three things
+     that decide whether chasing him is rational at all. */
+  const cutOutOf=r=>!!(r.finalists&&r.committedTo!==S.teamId&&r.finalists.indexOf(S.teamId)<0);
+  const targetScore=r=>{
+    let x=val(r)*(0.30+0.70*(myInterest(r)/100));       // interest is most of it, but never all of it
+    if(t.needs&&t.needs[r.pos])x*=1.10;                 // a position you flagged is worth more to you
+    if(r.committedTo&&r.committedTo!==S.teamId)x*=0.60; // a verbal elsewhere is a flip, not a get
+    if(cutOutOf(r))x*=0.20;                             // cut from his shortlist — the race is over
+    return x;};
+
+  const why=el('div','meta dim');why.style.cssText='margin:-4px 0 8px;font-size:11px';
+  // One line, because item 1 of this pass was max room for the list. It says what the sort weighs
+  // and what kills a target; the rest is discoverable by using it.
+  why.textContent='Value in your system × your share of the race. Needs count more, a verbal elsewhere less, cut is out.';
+
   function draw(){
     list.innerHTML='';
     let arr=R.pool.filter(avail);
-    const q=search.value.toLowerCase().trim();
+    const q=(F.q||'').toLowerCase().trim();
     if(q)arr=arr.filter(r=>(r.fn+' '+r.ln+' '+r.pos+' '+r.st).toLowerCase().includes(q));
-    if(posSel.value)arr=arr.filter(r=>r.pos===posSel.value);
-    if(starSel.value)arr=arr.filter(r=>r.stars>=+starSel.value);
-    if(stSel.value)arr=arr.filter(r=>r.st===stSel.value);
-    if(sortSel.value==='system'){
-      // His value in your scheme. Fogged prospects sort on the same fogged read the sheet shows, so
-      // the order cannot leak ability you have not scouted — an unscouted board sorts nearly by star,
-      // and sharpens into a genuinely different ranking as you evaluate.
-      const val=r=>{const s=mySchemeFor(r.pos);if(!s)return ovrBase(r);
-        const sp=recAttrSpread(r);const v=ovrIn(r,s);
-        return sp>=1?v+((hashStr(r.id+'sys')%(2*Math.round(sp)+1))-Math.round(sp))*0.35:v;};
-      arr.sort((a,b)=>val(b)-val(a)||b.stars-a.stars||a.ln.localeCompare(b.ln));
-    }else if(sortSel.value==='interest'){
-      arr.sort((a,b)=>myInterest(b)-myInterest(a)||b.stars-a.stars||a.ln.localeCompare(b.ln));
-    }else arr.sort((a,b)=>b.stars-a.stars||myInterest(b)-myInterest(a)||a.ln.localeCompare(b.ln));
-    arr.slice(0,shown).forEach(r=>list.append(recruitRow(r)));
+    if(F.pos)arr=arr.filter(r=>r.pos===F.pos);
+    if(F.star)arr=arr.filter(r=>r.stars>=+F.star);
+    if(F.st)arr=arr.filter(r=>r.st===F.st);
+    if(F.sort==='targets')arr.sort((a,b)=>targetScore(b)-targetScore(a)||myInterest(b)-myInterest(a)||a.ln.localeCompare(b.ln));
+    else if(F.sort==='system')arr.sort((a,b)=>val(b)-val(a)||b.stars-a.stars||a.ln.localeCompare(b.ln));
+    else if(F.sort==='interest')arr.sort((a,b)=>myInterest(b)-myInterest(a)||b.stars-a.stars||a.ln.localeCompare(b.ln));
+    else arr.sort((a,b)=>b.stars-a.stars||myInterest(b)-myInterest(a)||a.ln.localeCompare(b.ln));
+    arr.slice(0,F.shown).forEach(r=>list.append(recruitRow(r)));
     if(!arr.length)list.append(el('div','empty','No prospects match.'));
-    moreBtn.style.display=arr.length>shown?'':'none';
-    cnt.textContent=Math.min(shown,arr.length)+' of '+arr.length+' prospects';
+    moreBtn.style.display=arr.length>F.shown?'':'none';
+    cnt.textContent=Math.min(F.shown,arr.length)+' of '+arr.length+' prospects';
+    why.style.display=F.sort==='targets'?'':'none';   // it explains one sort, so it lives and dies with it
+    paintToggle();
   }
-  const reset=()=>{shown=PAGE;draw();};
-  search.oninput=reset;posSel.onchange=reset;starSel.onchange=reset;stSel.onchange=reset;availSel.onchange=reset;sortSel.onchange=reset;
-  wrap.append(search,fbar,list,moreBtn,cnt);v.append(wrap);draw();
+  const reset=()=>{F.shown=PAGE;draw();};
+  search.oninput=()=>{F.q=search.value;reset();};
+  posSel.onchange=()=>{F.pos=posSel.value;reset();};
+  starSel.onchange=()=>{F.star=starSel.value;reset();};
+  stSel.onchange=()=>{F.st=stSel.value;reset();};
+  availSel.onchange=()=>{F.avail=availSel.value;reset();};
+  sortSel.onchange=()=>{F.sort=sortSel.value;reset();};
+
+  wrap.append(bar,panel,why,list,moreBtn,cnt);
+  v.append(wrap);draw();
 }
 function recruitClass(v,rank,grade){
   const cls=myClass();
@@ -9757,7 +9821,17 @@ function recruitSheet(rec){
         closeSheet();render();recruitSheet(rec);
         toast(ct2?'Offer extended — out-recruit '+ct2.abbr+' to flip him':'Offer extended');};
       body.append(off);
-      body.append(el('div','hint center','Offering opens this recruit on your board (uses 1 of '+boardSlots()+' slots).'));
+      /* Scout him WITHOUT spending a board slot. This is the order the decision actually runs in:
+         evaluate, then decide whether he is worth one of your eight. The queued scout survives the
+         offer, so evaluating now and offering later costs nothing extra. */
+      const scouted=hasIntent(rec,'scout');
+      const sc0=el('button','btn sm'+(scouted?'':' line'),
+        (scouted?'✓ Scout queued · ':'🔎 Scout him · ')+RECRUIT_COSTS.scout+' pts');
+      sc0.style.marginTop='9px';sc0.dataset.tid='rec-scout-off';
+      sc0.onclick=()=>{if(setRecIntent(rec,'scout',{})){closeSheet();render();recruitSheet(rec);
+        toast(scouted?'Scout removed':'Queued: Scout — no board slot used');}};
+      body.append(sc0);
+      body.append(el('div','hint center','Scouting costs points, not a slot. Offering opens him on your board (1 of '+boardSlots()+').'));
     }else{
       // Phase 33/35: set queued action(s) — one per recruit, or two via a weekly DOUBLE-DOWN (⚡). They
       // resolve at the week change alongside every rival's actions; clicking a queued action toggles it off.
