@@ -3995,7 +3995,22 @@ const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.22,GEO_FIT:0.02,
   TIER5:88,TIER4:70,TIER3:50,TIER2:32,PULL_W:21,OVER_W:60,OVER_FLOOR:0.3,SUIT_NOISE:1.1,
   PASSIVE_RATE:0.10,CEIL_BASE:60,TGT_MEAN:19.2,TGT_SD:5.5,TGT_PRES:1.15,TGT_MIN:12,AI_VALUE:0.06,AI_PIVOT:14,
   FOG_ATTR:10,FOG_ARCH:35,FOG_PUR:70,
-  COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,SLOTS:8,DECOMMIT_GAP:18,
+  COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,DECOMMIT_GAP:18,
+  /* SLOTS — scholarship offers you can have open at once. Eight was tight against a 25-man class,
+     and it is not free to raise: `decayNeglect` bleeds an unworked BOARD recruit at NEGLECT_DECAY
+     3.5/wk against REC_DRIFT_DECAY 2.2/wk for one you never boarded, so a slot you cannot service is
+     worse than no slot. Swept on tools/cfb-data/28-receffort.js (3 seeds x 3 bands), effort's value
+     peaks here and then reverses as you spread too thin —
+
+       SLOTS      8      12      16      20
+       mid      +49%    +57%    +54%    +44%
+       bottom  +104%   +120%   +124%   +130%
+
+     — and the IGNORED arm is identical at every setting, so this only ever pays an engaged coach.
+     Twelve takes the mid-band peak without entering the too-thin regime 20 is already in. Recruiting
+     staff add more on top (recStaffCap idx 4) and add weekly POINTS with them, which is what keeps
+     the two in step. */
+  SLOTS:12,
   /* SIGN_BAR_PLAYER — what the player's signature has to clear on Signing Day, against the league's
      30. Chosen off a measured survival curve (tools/cfb-data/28-receffort.js): a signee's interest is
      bimodal, clustering ~35-45 where the relationship was only ever seeded and ~65-85 where it was
@@ -9623,9 +9638,9 @@ function recruitProspects(v){
      every action rebuilt the screen — offering a scholarship or queueing a scout calls render() — so
      the filter you had just set was wiped along with your place in the list. `shown` is kept for the
      same reason: paging back to a prospect after every click is the same defect wearing a hat. */
-  // Opens on 'targets', not on the star ranking: the star board is the one every rival already has,
-  // and it is a list of players you mostly cannot get. Change the sort and it sticks.
-  const F=UI.recFilter||(UI.recFilter={q:'',pos:'',star:'',st:'',avail:'',sort:'targets',shown:80,open:false});
+  // Opens on the national board — the #1 prospect in the country is the first row, the way a
+  // recruiting site opens. 'Best targets' is one tap away and, like every filter here, it sticks.
+  const F=UI.recFilter||(UI.recFilter={q:'',pos:'',star:'',st:'',avail:'',sort:'stars',shown:80,open:false});
   const wrap=el('div');
 
   const search=el('input','search');search.placeholder='Search prospects…';search.dataset.tid='rec-search';
@@ -9638,7 +9653,7 @@ function recruitProspects(v){
   const availSel=mk('rec-avail',[['','Available + mine'],['open','Uncommitted only'],['verbal','Verbals (flippable)'],['mine','My commits'],['board','My board']],F.avail);
   // Phase 58: sort by what he'd be in YOUR system, not by what the services think of him generally.
   // Phase 62.2 adds "Best targets", which is the list you actually work from — see targetScore below.
-  const sortSel=mk('rec-sort',[['targets','Best targets'],['stars','Services rank'],['system','Best in my system'],['interest','My interest']],F.sort);
+  const sortSel=mk('rec-sort',[['stars','National ranking'],['targets','Best targets'],['system','Best in my system'],['interest','My interest']],F.sort);
 
   /* The five selects collapse. On a phone they were ~150px of permanent chrome above a list you are
      there to scroll, and four of them are set once and left alone. The toggle carries a summary, so
@@ -9692,6 +9707,18 @@ function recruitProspects(v){
      alone surfaces two-stars who love you. This is the PRODUCT: what he would be worth in your
      system, discounted by how much of the race you actually hold, then adjusted for the three things
      that decide whether chasing him is rational at all. */
+  /* The services' published national board — a real ordinal, so the #1 prospect in the country is
+     row one. It used to sort by star TIER with ties broken on your own interest, which meant the top
+     of the board was ~200 five-stars in an order only you saw, and no two programs agreed on who #1
+     was. Tier first (`svc`, which already over-rates a big ceiling by a tier per Phase 51), then the
+     services' read within it: ability, weighted toward the ceiling the way a service weights it, plus
+     the error every service carries. Deterministic per prospect and IDENTICAL for all 134 programs —
+     this is the public board, which is exactly why it is not your private scouted read, and why
+     'Best in my system' remains a different list. */
+  // The miss is deliberately SMALL. Within a tier the evaluation spans ~10 points, so an error of
+  // +/-3.5 shuffled the top of the board into noise — a 89-overall sat above a 97. +/-1.2 leaves the
+  // best prospect in the country at row one and still lets the services disagree at the margin.
+  const svcRank=r=>recStars(r)*1000+(r.ov+(r.pot-r.ov)*0.55)+(((hashStr(r.id+'svc')%25)-12)*0.10);
   const cutOutOf=r=>!!(r.finalists&&r.committedTo!==S.teamId&&r.finalists.indexOf(S.teamId)<0);
   const targetScore=r=>{
     let x=val(r)*(0.30+0.70*(myInterest(r)/100));       // interest is most of it, but never all of it
@@ -9716,7 +9743,7 @@ function recruitProspects(v){
     if(F.sort==='targets')arr.sort((a,b)=>targetScore(b)-targetScore(a)||myInterest(b)-myInterest(a)||a.ln.localeCompare(b.ln));
     else if(F.sort==='system')arr.sort((a,b)=>val(b)-val(a)||b.stars-a.stars||a.ln.localeCompare(b.ln));
     else if(F.sort==='interest')arr.sort((a,b)=>myInterest(b)-myInterest(a)||b.stars-a.stars||a.ln.localeCompare(b.ln));
-    else arr.sort((a,b)=>b.stars-a.stars||myInterest(b)-myInterest(a)||a.ln.localeCompare(b.ln));
+    else arr.sort((a,b)=>svcRank(b)-svcRank(a)||a.ln.localeCompare(b.ln));
     arr.slice(0,F.shown).forEach(r=>list.append(recruitRow(r)));
     if(!arr.length)list.append(el('div','empty','No prospects match.'));
     moreBtn.style.display=arr.length>F.shown?'':'none';

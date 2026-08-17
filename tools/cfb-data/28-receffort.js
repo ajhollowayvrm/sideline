@@ -52,6 +52,7 @@ async (cfg) => {
   window.writeSlot = () => {}; window.autosave = () => {}; window.setActiveSlot = () => {};
   window.toast = () => {};
 
+  if (cfg.slots) REC.SLOTS = cfg.slots;      // sweep the board size
   const ng = freshNewGame();
   ng.seed = cfg.seed; ng.coach.first = 'Probe'; ng.coach.last = 'Coach';
   ng.world = genWorld(cfg.seed);
@@ -158,7 +159,7 @@ async (cfg) => {
         let r;
         // A STRING handed to page.evaluate is an expression, not a callable — pass the argument by
         // building the call, or Playwright silently drops it and hands back undefined.
-        try { r = await page.evaluate(`(${RUN})(${JSON.stringify({ seed, lo, hi, arm })})`); }
+        try { r = await page.evaluate(`(${RUN})(${JSON.stringify({ seed, lo, hi, arm, slots: +opt('slots', 0) })})`); }
         catch (e) { r = { ERROR: e.message.split('\n')[0] }; }
         if (!r) r = { ERROR: 'evaluate returned nothing' };
         await ctx.close();
