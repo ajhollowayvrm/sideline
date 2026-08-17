@@ -7076,7 +7076,6 @@ function canBookVisit(rec){const R=S.recruiting;
   if(!R||R.signed||rec.signed)return false;
   if(rec.committedTo===S.teamId||rec.visited||isVisitBooked(rec))return false;
   if(rec.finalists&&!rec.committedTo&&rec.finalists.indexOf(S.teamId)<0)return false;   // cut from his shortlist
-  if(!onBoard(rec))return false;
   return visitsLeft()>0&&homeWeekends().some(w=>weekendCap()-(visitPlan()[w.week]||[]).length>0);}
 // Book a recruit onto a home weekend (reserves a season-visit slot). Returns true on success.
 function bookVisit(rec,week){const R=S.recruiting;
@@ -7296,13 +7295,13 @@ function setRecIntent(rec,action,opt){
      engine's flip pass skips a non-finalist either way, so the points bought a rising interest number
      that could never win him. Being cut is permanent; the guard has to be too. */
   if(rec.finalists&&rec.committedTo!==S.teamId&&rec.finalists.indexOf(S.teamId)<0){toast('✂️ You’ve been cut from his finalists');return false;}
-  /* SCOUT is the one action that does not need a board slot. Evaluating a prospect is your staff
-     watching film; offering him a scholarship is a relationship, and everything else here (a pitch,
-     a promise, an official visit, NIL) only means something once that relationship exists. Requiring
-     the offer first had it backwards — it made you commit one of eight slots to a player precisely
-     while you still knew nothing about him, which is the decision scouting exists to inform.
-     Points remain the limiter: `RECRUIT_COSTS.scout` is charged the same either way. */
-  if(action!=='scout'&&!onBoard(rec)){toast('Offer a scholarship first');return false;}
+  /* NOTHING here needs a board slot. Recruiting a player is what earns the offer, not the other way
+     round: you evaluate him, you call him, you get him on campus, and THEN you decide he is worth one
+     of your scholarships. Requiring the offer first ran the whole sequence backwards.
+     Points are the limiter, and they always were — `RECRUIT_COSTS` is charged the same either way, so
+     working twelve prospects you have not offered costs exactly what working twelve you have does.
+     What the offer still buys: a one-time interest floor (`offerRecruit`), a standing order your
+     staff can hold, and a place on the board that `decayNeglect` treats as an active pursuit. */
   const arr=intentsFor(rec), exIdx=arr.findIndex(x=>x.action===action);
   if(exIdx>=0){removeIntentAt(rec,exIdx);return true;}                 // toggle OFF a queued action
   if(action==='promise'&&rec.promise){toast('Already made a promise');return false;}
@@ -7370,9 +7369,13 @@ function decayNeglect(actedOn){
     if(rec.committedTo&&rec.committedTo!==me)return;
     rec.iv[me]=clamp(rec.iv[me]-REC.NEGLECT_DECAY,0,100);
   });
-  // …and every prospect who rates you but whom you have never put on the board.
+  // …and every prospect who rates you but whom you have never put on the board. `actedOn` counts
+  // here too: now that every action works without an offer, a prospect you actually pitched this week
+  // would otherwise have been docked the drift anyway, quietly cancelling part of what you just paid
+  // for. Neglect is the thing being modelled, and working him is the opposite of neglect.
   R.pool.forEach(rec=>{
     if(rec.signed||rec.iv[me]==null||R.board.includes(rec.id))return;
+    if(actedOn.has(rec.id))return;                   // you worked him — that is not neglect
     if(rec.committedTo)return;                       // his own verbal (to anyone) is a different story
     rec.iv[me]=clamp(rec.iv[me]-REC_DRIFT_DECAY,0,100);
   });
@@ -9840,6 +9843,9 @@ function recruitSheet(rec){
   }
   if(canAct){
     body.append(el('hr','div'));
+    /* The offer is an ACTION here, not a gate. It is what you do once recruiting him has convinced
+       you he is worth a scholarship — so it sits with the rest of the work rather than in front of
+       it, and everything below is available whether you have offered or not. */
     if(!onB){
       const off=el('button','btn','Offer scholarship');off.dataset.tid='rec-offer';
       // Only report success when the offer landed; offerRecruit has already said why if it didn't.
@@ -9848,18 +9854,10 @@ function recruitSheet(rec){
         closeSheet();render();recruitSheet(rec);
         toast(ct2?'Offer extended — out-recruit '+ct2.abbr+' to flip him':'Offer extended');};
       body.append(off);
-      /* Scout him WITHOUT spending a board slot. This is the order the decision actually runs in:
-         evaluate, then decide whether he is worth one of your eight. The queued scout survives the
-         offer, so evaluating now and offering later costs nothing extra. */
-      const scouted=hasIntent(rec,'scout');
-      const sc0=el('button','btn sm'+(scouted?'':' line'),
-        (scouted?'✓ Scout queued · ':'🔎 Scout him · ')+RECRUIT_COSTS.scout+' pts');
-      sc0.style.marginTop='9px';sc0.dataset.tid='rec-scout-off';
-      sc0.onclick=()=>{if(setRecIntent(rec,'scout',{})){closeSheet();render();recruitSheet(rec);
-        toast(scouted?'Scout removed':'Queued: Scout — no board slot used');}};
-      body.append(sc0);
-      body.append(el('div','hint center','Scouting costs points, not a slot. Offering opens him on your board (1 of '+boardSlots()+').'));
-    }else{
+      body.append(el('div','hint center','Not offered yet — you can still work him below. Offering sets a floor '
+        +'under his interest, lets your staff hold a standing order, and uses 1 of '+boardSlots()+' board slots.'));
+    }
+    {
       // Phase 33/35: set queued action(s) — one per recruit, or two via a weekly DOUBLE-DOWN (⚡). They
       // resolve at the week change alongside every rival's actions; clicking a queued action toggles it off.
       const arr=intentsFor(rec), sel=a=>hasIntent(rec,a);
@@ -9904,16 +9902,20 @@ function recruitSheet(rec){
       else sc2='One action/week; stack a 2nd with a ⚡ double-down.';
       // Phase 60: hand him to a staffer. A standing order keeps him warm every week without spending
       // your points — but the staffer pitches blind, so he holds serve rather than gaining ground.
-      const cur=orderStaff(rec), cap=orderCap();
-      const ob=el('button','btn sm '+(cur?'':'line'),
-        cur?('🤖 '+cur.title+' — '+cur.name):(cap?'Delegate to staff ('+orderCount()+'/'+cap+')':'No recruiting staff to delegate to'));
-      ob.style.marginTop='9px';ob.dataset.tid='rec-delegate';
-      if(!cap&&!cur)ob.disabled=true;
-      ob.onclick=()=>{if(cur){setRecOrder(rec,null);closeSheet();render();recruitSheet(rec);toast('Order cleared');}else orderSheet(rec);};
-      body.append(ob);
-      const drop=el('button','btn sm line','Drop from board');drop.style.marginTop='9px';drop.dataset.tid='rec-drop';
-      drop.onclick=()=>{dropRecruit(rec);closeSheet();render();toast('Dropped from board');};
-      body.append(drop,el('div','hint center',sc2+'\n'+(R.points||0)+' pts · ⚡'+(R.doubles||0)+' · 🏟️ '+visitsLeft()+' visits left ('+totalBooked()+' booked)'));
+      // A standing order is a staffer assigned to a recruit you are PURSUING, and dropping is a board
+      // operation — both need him on the board. Everything above does not.
+      if(onB){
+        const cur=orderStaff(rec), cap=orderCap();
+        const ob=el('button','btn sm '+(cur?'':'line'),
+          cur?('🤖 '+cur.title+' — '+cur.name):(cap?'Delegate to staff ('+orderCount()+'/'+cap+')':'No recruiting staff to delegate to'));
+        ob.style.marginTop='9px';ob.dataset.tid='rec-delegate';
+        if(!cap&&!cur)ob.disabled=true;
+        ob.onclick=()=>{if(cur){setRecOrder(rec,null);closeSheet();render();recruitSheet(rec);toast('Order cleared');}else orderSheet(rec);};
+        const drop=el('button','btn sm line','Drop from board');drop.style.marginTop='9px';drop.dataset.tid='rec-drop';
+        drop.onclick=()=>{dropRecruit(rec);closeSheet();render();toast('Dropped from board');};
+        body.append(ob,drop);
+      }
+      body.append(el('div','hint center',sc2+'\n'+(R.points||0)+' pts · ⚡'+(R.doubles||0)+' · 🏟️ '+visitsLeft()+' visits left ('+totalBooked()+' booked)'));
     }
   }else if(R.signed&&!committed){
     body.append(el('div','hint center','Signing Day has passed — this prospect went unsigned.'));
