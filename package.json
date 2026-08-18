@@ -26,6 +26,7 @@
     "realignlab": "node test/realignlab.js",
     "identitylab": "node test/identitylab.js",
     "cloudlab": "node test/cloudlab.js",
+    "sidelab": "node test/sidelab.js",
     "lambdalab": "node test/lambdalab.js",
     "ios:project": "cd ios && xcodegen generate",
     "ios:deploy": "node tools/ios/deploy.js",

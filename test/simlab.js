@@ -937,6 +937,83 @@ function withTraits(w, seed) { const tr = rng(seed);
   check('Phase 46: mixing in Play Action beats a one-dimensional ground game through the air', paY > runY, `${(paY / N).toFixed(0)} vs ${(runY / N).toFixed(0)} pass yd/g`);
 }());
 
+// Phase 64 — sideline moments. The engine's half of the feature is two things: it TAGS notable snaps in
+// the play log (so the app knows who to pull aside) and it honours a `plan.sit` benching. Both are
+// opt-in/log-only, so an AI game draws the same rng and produces the same box — asserted below, and
+// asserted again by the summary line at the foot of this file, which must not move.
+(function () {
+  const w = genWorld(4747), O = w.teams[4], D = w.teams[11];
+  const base = ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : ctx.ocCall;
+
+  // --- the log carries sideline tags, each with the play number it happened on ---
+  const kinds = {}; let taggedLines = 0, badPn = 0, tdWithCov = 0, tdTotal = 0;
+  for (let s = 0; s < 30; s++) {
+    const res = simEngine(O, D, (hashStr('sl' + s) ^ 3) >>> 0, { log: true });
+    res.log.forEach(e => { const g = e.sl; if (!g) return; taggedLines++; kinds[g.sl] = (kinds[g.sl] || 0) + 1;
+      if (typeof g.pn !== 'number' || g.pn < 1) badPn++;
+      if (g.sl === 'td') { tdTotal++; if (g.cvid) tdWithCov++; } });
+  }
+  check('Phase 64: the play log tags sideline moments (turnovers, scores, misses, flags)', taggedLines > 100, JSON.stringify(kinds));
+  check('Phase 64: every tagged moment carries the play number it happened on', badPn === 0);
+  check('Phase 64: interceptions + fumbles are both tagged', kinds.int > 0 && kinds.fum > 0, `${kinds.int} int / ${kinds.fum} fum`);
+  check('Phase 64: a passing TD names the beaten cover man (cvid) too', tdWithCov > 0 && tdWithCov < tdTotal, `${tdWithCov}/${tdTotal} TDs with a cover man`);
+  check('Phase 64: a missed field goal is a sideline moment', (kinds.miss || 0) > 0, `${kinds.miss || 0} misses`);
+  check('Phase 64: flag trouble is a moment about the unit, not a man (no pid)', (kinds.pen || 0) > 0, `${kinds.pen || 0} flag-trouble moments`);
+
+  // --- the tags are LOG-ONLY: the score + box are identical with logging off (no rng consumed) ---
+  const lit = simEngine(O, D, 8181, { log: true }), dark = simEngine(O, D, 8181);
+  check('Phase 64: tagging is log-only — score + box identical with the log off', lit.hs === dark.hs && lit.as === dark.as && JSON.stringify(lit.box) === JSON.stringify(dark.box));
+
+  // --- plan.sit: an EMPTY / already-expired benching is byte-identical to no plan at all ---
+  const none = simEngine(O, D, 3131);
+  const empty = simEngine(O, D, 3131, { adjustFor: O.id, adjusts: [{ at: 1, plan: { shadow: {}, boost: {}, sit: {} } }] });
+  const expired = simEngine(O, D, 3131, { adjustFor: O.id, adjusts: [{ at: 1, plan: { shadow: {}, boost: {}, sit: { [O.roster[0].id]: 0 } } }] });
+  check('Phase 64: an empty benching plan is byte-identical to no plan (rng-neutral)', none.hs === empty.hs && none.as === empty.as && JSON.stringify(none.box) === JSON.stringify(empty.box));
+  check('Phase 64: an expired benching is byte-identical to no plan', none.hs === expired.hs && none.as === expired.as && JSON.stringify(none.box) === JSON.stringify(expired.box));
+
+  // --- a real benching takes the man off the field and gives his snaps to the next man up ---
+  const rbs = O.roster.filter(p => p.pos === 'RB').sort((a, b) => a.so - b.so);
+  const rb1 = rbs[0], rb2 = rbs[1];
+  let onCar = 0, offCar = 0, backupOn = 0, backupOff = 0;
+  for (let s = 0; s < 25; s++) {
+    const seed = (hashStr('sit' + s) ^ 4) >>> 0;
+    const free = simEngine(O, D, seed);
+    const sat = simEngine(O, D, seed, { adjustFor: O.id, adjusts: [{ at: 1, plan: { shadow: {}, boost: {}, sit: { [rb1.id]: 999 } } }] });
+    onCar += (free.box[rb1.id] || {}).rAtt || 0; offCar += (sat.box[rb1.id] || {}).rAtt || 0;
+    backupOff += (free.box[rb2.id] || {}).rAtt || 0; backupOn += (sat.box[rb2.id] || {}).rAtt || 0;
+  }
+  check('Phase 64: a benched player takes no snaps while he sits', onCar > 0 && offCar === 0, `${onCar} → ${offCar} carries`);
+  check('Phase 64: his backup gets the work (next man up)', backupOn > backupOff, `${backupOff} → ${backupOn} carries`);
+
+  // --- and it EXPIRES by drive, so he is back on the field afterwards. Drives ALTERNATE, which is why
+  //     the expiry is counted in drives at all: a play-count sit taken out on a pick would run out
+  //     while his offence was still on the bench and cost him nothing.
+  let lateCar = 0;
+  for (let s = 0; s < 25; s++) { const seed = (hashStr('sit' + s) ^ 4) >>> 0;
+    const brief = simEngine(O, D, seed, { adjustFor: O.id, adjusts: [{ at: 1, plan: { shadow: {}, boost: {}, sit: { [rb1.id]: 3 } } }] });
+    lateCar += (brief.box[rb1.id] || {}).rAtt || 0; }
+  check('Phase 64: a one-series benching expires — he returns for the rest of the game', lateCar > 0 && lateCar < onCar, `${lateCar} vs ${onCar} carries`);
+
+  // --- a benching replays exactly (watch == commit), like every other Phase 24 adjustment ---
+  const plan = [{ at: 1, plan: { shadow: {}, boost: { [rb2.id]: 3 }, sit: { [rb1.id]: 4 } } }];
+  const a1 = simEngine(O, D, 9090, { decideFor: O.id, adjustFor: O.id, adjusts: plan, decide: base });
+  const a2 = simEngine(O, D, 9090, { decideFor: O.id, adjustFor: O.id, adjusts: plan, decide: base });
+  check('Phase 64: a sideline benching + pep-talk replays deterministically (watch == commit)', a1.hs === a2.hs && a1.as === a2.as && JSON.stringify(a1.box) === JSON.stringify(a2.box));
+
+  // --- the plan only ever touches the team it belongs to ---
+  const dOnly = simEngine(O, D, 3131, { adjustFor: D.id, adjusts: [{ at: 1, plan: { shadow: {}, boost: {}, sit: { [rb1.id]: 999 } } }] });
+  check('Phase 64: a benching on one team never reaches the other team’s roster', JSON.stringify(dOnly.box) === JSON.stringify(none.box));
+
+  // --- the decision context carries the drive, which is what the app sets the expiry against ---
+  let sawDrive = true, maxDrive = 0, prev = 0, monotonic = true;
+  simEngine(O, D, 5252, { decideFor: O.id, decide: ctx => {
+    if (typeof ctx.drive !== 'number' || ctx.drive < 1) sawDrive = false;
+    if (ctx.drive < prev) monotonic = false;
+    prev = ctx.drive; maxDrive = Math.max(maxDrive, ctx.drive); return base(ctx); } });
+  check('Phase 64: the decision context carries the drive number', sawDrive && maxDrive > 5, `${maxDrive} drives seen`);
+  check('Phase 64: the drive number only ever goes forward', monotonic);
+}());
+
 // statistical realism across a full season
 const R = simSeason(2026);
 const meanPts = avg(R.scores);

@@ -589,6 +589,89 @@ function startServer() {
     check('Phase 22: leaving Coach mode does not commit the game', bailed);
   }
 
+  // ---------- PHASE 64: sideline moments ----------
+  // Coach a real game on full control until one of YOUR players walks off from something — a pick, a
+  // fumble, a score, a coverage bust — then handle him and prove the whole loop: the moment is about a
+  // player of yours, the response resolves through the pure engine, its mechanical half banks onto the
+  // Phase 24 timeline (so commit reproduces the coached game) and its locker-room half lands once.
+  const sd1 = await page.evaluate(() => {
+    const me = S.teamId, g = S.schedule.games.find(x => !x.played && (x.home === me || x.away === me));
+    if (!g) return { skip: true };
+    UI.game = Object.assign(buildGameLog(g.id) || {}, { replay: false, mode: 'full' });
+    UI.view = 'game'; enterInteractive();
+    let guard = 0;
+    while (UI.game && !UI.game.done && !UI.game.sideEvt && guard++ < 900) {
+      if (UI.game.atHalf) { resumeHalf(); continue; }
+      const ctx = UI.game.pending; if (!ctx) break;
+      pickCall(ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : ctx.ocCall);
+    }
+    const G = UI.game, ev = G && G.sideEvt; if (!ev) return { skip: false, fired: false, plays: guard };
+    const t = controlled();
+    return { skip: false, fired: true, kind: ev.kind, known: !!SIDELINE_KINDS[ev.kind],
+      mine: !ev.pid || !!t.roster.find(p => p.id === ev.pid),
+      fresh: G.pending.play - ev.pn, card: !!document.querySelector('[data-tid="sideline"]'),
+      opts: [...document.querySelectorAll('[data-tid="sideline-opts"] [data-opt]')].map(b => b.dataset.opt),
+      screenIsGame: document.querySelector('#app').dataset.screen === 'game', plays: guard };
+  });
+  if (!sd1.skip) {
+    check('Phase 64: a sideline moment fires while you coach a game', sd1.fired, JSON.stringify({ kind: sd1.kind, after: sd1.plays + ' calls' }));
+    check('Phase 64: the moment is a known kind, about one of YOUR players', sd1.known && sd1.mine, sd1.kind);
+    check('Phase 64: he is pulled aside while it is still fresh (within a few snaps)', sd1.fresh >= 0 && sd1.fresh <= 3, `${sd1.fresh} plays later`);
+    check('Phase 64: the sideline takes over the game screen with real options', sd1.card && sd1.opts.length >= 3, JSON.stringify(sd1.opts));
+    await shot(page, '19d-sideline.png');
+  }
+  if (!sd1.skip && sd1.fired) {
+    const sd2 = await page.evaluate(() => {
+      const G = UI.game, ev = G.sideEvt, t = controlled();
+      const p = ev.pid ? t.roster.find(x => x.id === ev.pid) : null;
+      const offered = sidelineOptions(ev.kind, t, p);
+      const choice = offered.includes('sit') ? 'sit' : offered[0];      // exercise the benching when it's on the table
+      const before = JSON.stringify(G.adjusts || []);
+      pickSideline(choice);
+      const r = G.sideEvt.res, st = G.side;
+      const plan = (G.adjusts || []).length ? G.adjusts[G.adjusts.length - 1].plan : null;
+      return { choice, note: r.note, boost: r.boost, sit: r.sit, calm: r.calm, mood: r.mood,
+        needsBank: !!(r.boost || r.sit || r.calm), banked: JSON.stringify(G.adjusts || []) !== before,
+        planSit: !!(plan && plan.sit && p && plan.sit[p.id] > 0),
+        result: !!document.querySelector('[data-tid="sideline-result"]'),
+        logPanel: !!document.querySelector('[data-tid="sideline-log"]'),
+        optsGone: !document.querySelector('[data-tid="sideline-opts"]'),
+        count: st.count, feed: st.feed.length, queuedMood: (st.mood || []).length + (st.team ? 1 : 0) };
+    });
+    check('Phase 64: answering the moment resolves it into a reaction you can read', sd2.result && sd2.optsGone && sd2.note.length > 12, sd2.choice + ': ' + sd2.note);
+    check('Phase 64: the mechanical half banks onto the Phase 24 adjustment timeline', sd2.banked === sd2.needsBank, JSON.stringify({ choice: sd2.choice, boost: sd2.boost, sit: sd2.sit, banked: sd2.banked }));
+    check('Phase 64: a benching rides in the plan as a self-expiring sit', sd2.choice !== 'sit' || sd2.planSit);
+    check('Phase 64: the moment is logged on the sideline panel', sd2.logPanel && sd2.feed === 1 && sd2.count === 1);
+    check('Phase 64: the locker-room half is queued (not applied mid-game)', sd2.queuedMood > 0 || sd2.mood === 0);
+
+    const sd3 = await page.evaluate(() => {
+      const G = UI.game;
+      sidelineContinue();
+      const refired = !!(G.sideEvt && G.sideEvt.pn === G.side.last);       // the gap rule must stop a re-fire
+      G.simRest = true; runInteractive();                                   // play it out on autopilot
+      const gid = G.gameId, g0 = findAnyGame(gid);
+      const clone = { id: gid, home: G.home, away: G.away, out: g0.out, eng: g0.eng, calls: G.decisions.slice(), adjusts: (G.adjusts || []).slice() };
+      simGame(clone);                                                       // exactly what finishGame commits
+      return { refired, done: !!G.done, watched: G.hs + '-' + G.as, commit: clone.hs + '-' + clone.as, nAdj: (G.adjusts || []).length };
+    });
+    check('Phase 64: the same moment never re-fires after you have handled it', !sd3.refired);
+    check('Phase 64: a coached game with sideline calls commits to the score you watched', sd3.done && sd3.watched === sd3.commit, `${sd3.watched} / ${sd3.commit} (${sd3.nAdj} adjustments)`);
+
+    const sd4 = await page.evaluate(() => {
+      const G = UI.game, t = controlled(), st = G.side, m = (st.mood || [])[0];
+      const before = m ? (t.roster.find(x => x.id === m.pid).morale == null ? 50 : t.roster.find(x => x.id === m.pid).morale) : null;
+      applySidelineMorale(G);
+      const after = m ? t.roster.find(x => x.id === m.pid).morale : null;
+      // clean up: drop the coached game, the real one stays unplayed
+      const me = S.teamId, wk = S.week; UI.game = null; UI.view = 'home'; render();
+      const g = S.schedule.games.find(x => (x.home === me || x.away === me) && x.week === wk);
+      t.roster.forEach(p => { delete p.morale; });
+      return { had: !!m, val: m ? m.val : 0, before, after, unplayed: g ? g.played === false : true };
+    });
+    check('Phase 64: how he took it lands on his morale at commit', !sd4.had || (sd4.val > 0 ? sd4.after > sd4.before : sd4.val < 0 ? sd4.after < sd4.before : sd4.after === sd4.before), JSON.stringify(sd4));
+    check('Phase 64: handling the sideline never commits the game on its own', sd4.unplayed);
+  }
+
   // ---------- PHASE 27: week-to-week injuries ----------
   const inj = await page.evaluate(() => {
     const t = controlled(), opp = S.world.teams.find(x => x.id !== t.id);
@@ -1304,7 +1387,7 @@ function startServer() {
   check('Persistence: in-season schedule + records survive reload', seasonPersist.sched && seasonPersist.week === 4 && seasonPersist.phase === 'Regular Season' && seasonPersist.played > 0, JSON.stringify(seasonPersist));
   check('Persistence: per-player stats survive reload', seasonPersist.statPlayers > 50, `${seasonPersist.statPlayers} players with stats`);
   check('Persistence: recruiting pool + board survive reload', seasonPersist.recruitPool > 200 && seasonPersist.recruitBoard >= 1, JSON.stringify({ pool: seasonPersist.recruitPool, board: seasonPersist.recruitBoard }));
-  check('Persistence: weekly honors survive reload', seasonPersist.version === 51 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
+  check('Persistence: weekly honors survive reload', seasonPersist.version === 52 && seasonPersist.honorWeeks === 3, `v${seasonPersist.version}, ${seasonPersist.honorWeeks} honor weeks`);
 
   // ---------- DELIBERATE EXIT (the other half of the resume contract) ----------
   // Resume must not be stickier than the player's intent: quitting to the menu has to survive a
@@ -1348,7 +1431,7 @@ function startServer() {
   await page.getByRole('button', { name: 'Load', exact: true }).first().click();   // slot 2 is now the only save
   await page.waitForTimeout(150);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
-  check('Migration: v1 save upgrades to current version (v51)', mig.v === 51, 'version=' + mig.v);
+  check('Migration: v1 save upgrades to current version (v52)', mig.v === 52, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
   check('Migration: draft backfilled (null until first rollover, v14→v15)', mig.draft === null, JSON.stringify(mig.draft));
   check('Migration: year counter backfilled (v6→v7)', mig.year === 2026, 'year=' + mig.year);
@@ -1381,7 +1464,7 @@ function startServer() {
     };
   });
   check('Migration: v49 save re-derives every stored coach boost onto the new ladder',
-    v50.v === 51 && v50.correct && JSON.stringify(v50.stale) !== JSON.stringify(v50.fresh), JSON.stringify({ v: v50.v, correct: v50.correct }));
+    v50.v === 52 && v50.correct && JSON.stringify(v50.stale) !== JSON.stringify(v50.fresh), JSON.stringify({ v: v50.v, correct: v50.correct }));
   check('Migration: the stored coach market re-derives too', v50.market === 6, 'an 88-rated OC → +' + v50.market);
   check('Migration: team ratings and ranks follow the new boosts', v50.ratingMoved && v50.ranked);
 
@@ -1886,7 +1969,7 @@ function startServer() {
   check('Rollover: lands in Preseason, week reset to 0', roPost.phase === 'Preseason' && roPost.week === 0);
   check('Rollover: season fields cleared (schedule + recruiting null, honors empty)', roPost.sched === null && roPost.recruiting === null && roPost.honors === 0);
   check('Phase 18: the transfer portal is cleared at rollover', roPost.portalCleared);
-  check('Rollover: save version bumped to 51', roPost.version === 51, 'v' + roPost.version);
+  check('Rollover: save version bumped to 52', roPost.version === 52, 'v' + roPost.version);
   check('Phase 32: training camp recorded in the offseason recap', !!(roPost.report && roPost.report.camp && /Grueling/.test(roPost.report.camp.name)), roPost.report && roPost.report.camp ? roPost.report.camp.name : 'none');
   check('Phase 32: camp applied to the rollover (grueling)', roPost.campApplied && roPost.campPlan === 'grueling', 'plan ' + roPost.campPlan);
   check('Phase 32: camp dev boost flows through devRateFor for the controlled team', roPost.campDevFelt);
