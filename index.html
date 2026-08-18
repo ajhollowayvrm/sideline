@@ -3008,6 +3008,176 @@ function aiOffPassAdj(d){
   const tot=(d.base||0)+(d.blitz||0)+(d.cover||0)+(d.run||0); if(tot<3)return 0;
   return clamp((((d.run||0)-(d.cover||0)-(d.blitz||0))/tot)*0.4,-0.18,0.18);
 }
+// === Phase 63 — the call sheet ===============================================================
+/* A play call stops being a drawn concept off a card and becomes the four things a coordinator
+   actually decides with the headset on: WHAT (run or pass), HOW FAR (how deep the throw is, or
+   which gap the run attacks), WHO gets the ball, and WHOM you are going at. Drawing plays was the
+   wrong unit of work — nobody in a booth picks "Curls" off a page, they decide to attack the
+   backside corner with the slot on an in-cut, and the engine already models the pieces of exactly
+   that (a targeted receiver, the man covering him, the front defender the run meets).
+
+   The call is still one STRING, because it banks into `g.calls` and has to replay byte-identically:
+
+       base[:variant[:targets]]
+
+   `base` and `variant` are the Phase 46 tokens, unchanged. An AI call, a "Defer to OC", a save from
+   before this phase, and every already-banked coached game parse the same way and resolve to the
+   same numbers — every delta below is keyed off the THIRD segment, which is absent unless a human
+   composed one. That is what makes this a no-SIM_MODEL-bump change: the engine's output for
+   everything that is not a deliberate new-style call is bit-for-bit what it was.
+
+   Offense — targets is <depth><outlet><attack>, fixed width, '-' meaning "no preference":
+     depth    q quick · s short · m intermediate · d deep        (pass)
+              i inside · t off-tackle · o outside                (run)
+     outlet   W0/W1/W2 receiver by depth · T0 tight end · R0 back
+     attack   C0/C1/C2 corner · S0/S1 safety · L0 linebacker     (pass — whom you isolate)
+              E0/E1 end · D0/D1 tackle · L0 linebacker           (run  — whom you run at)
+   Defense — targets is <depth><key>:
+     depth    p press · u underneath · t two-deep
+     key      the offensive slot you take away (same codes as `outlet`)                            */
+function callParse(pick){
+  const s=''+(pick==null?'':pick), a=s.split(':'), t=a[2]||'';
+  const seg=(i,n)=>{const x=t.substr(i,n);return (x&&x.length===n&&x[0]!=='-')?x:'';};
+  return {base:a[0]||'',variant:a[1]||'',depth:seg(0,1),outlet:seg(1,2),attack:seg(3,2)};
+}
+/* What a pass depth is worth: [vComp, vYds, vSack, vBoom, deepW]. Quick trades yards for
+   completions and a clean pocket, intermediate is the inverse, short is the small version of quick,
+   deep is the lottery ticket.
+
+   `d` STARTED as a copy of the Phase 46 'deep' variant and is no longer one, on purpose. As a card
+   in a playbook the deep shot was one option among ten and nobody called it every down; as an AXIS
+   with four rungs it has to be priced against the other three, and measured at Phase 46's numbers
+   it was not — throwing deep on every snap scored 27.6 a game against 23.7 for letting the OC call
+   it, i.e. the dominant strategy was to stop thinking. The legacy variant is untouched on its own
+   branch above (so 'pass:deep' in an old save still resolves to the old numbers, byte for byte);
+   what changed is the price of the rung. Fitted so the four depths sit within ~1 point of each
+   other over 16 seeds x 12 matchups, which is what makes the DEPTH_VS table below the thing that
+   decides the down rather than a rounding error on top of a free win. */
+const PASS_DEPTH={q:[0.115,-3.1,-0.05,0,0.40],s:[0.035,-1.5,-0.02,0,0.75],
+                  m:[-0.065,1.6,0.02,0,1.15],d:[-0.175,-1.9,0.035,0.90,1.585]};
+/* The run's gap as a SHAPE, not a bonus — [floorMul, tailMul] on the Phase 53 floor and tail terms.
+   Inside is the floor play: the line's push and the back's contact balance decide it, and it does
+   not break sixty. Outside sells that floor for the tail — it is dead before it starts when the
+   edge is set, and it is a touchdown when it is not. Neither is better; that is the point. */
+const RUN_GAP={i:[1.35,0.65],t:[1.00,1.00],o:[0.70,1.55]};
+/* The gap against the call it meets, in yards. Inside dies in a stacked box and eats a light one;
+   outside eats a vacated edge and gets strung out by a defence already sitting on the run.
+   The flat term (+0.4 / -0.4) is a MEASURED correction, not a preference. The floor/tail reshape
+   above is mean-zero across the league by construction — `floorAdd` and `tailAdd` both ride on
+   mean-zero contests — but it is not mean-zero for the team taking the snap, because the pools are
+   depth-weighted and the man drawn most is the best one. Measured over 16 seeds x 12 matchups the
+   reshape alone left inside at 5.10 yards a carry and outside at 5.71 against a 5.36 baseline, so
+   "outside" was simply the better call. These two numbers put the three gaps back on top of each
+   other, which is the whole point: the gap is a shape you pick for the situation, not a bonus. */
+function runGapVs(gap,dcall){
+  if(gap==='i')return 0.15+(dcall==='run'?-2:dcall==='cover'?2:dcall==='blitz'?-1:0);
+  if(gap==='o')return -0.15+(dcall==='blitz'?2:dcall==='run'?-1:dcall==='cover'?1:0);
+  return 0;
+}
+/* Depth against depth — the actual chess of a passing down, and the reason the defensive call now
+   has a second axis at all. Rows are how the defence is playing it, columns how far the ball is
+   going; each cell is [comp, yards] FROM THE OFFENCE'S SIDE. Press strangles the quick game and is
+   a touchdown waiting to happen behind it, two-deep is the mirror of that, and underneath owns the
+   middle and concedes both ends.
+
+   These numbers are DOUBLE-CENTRED, and that is the whole reason they look like they do. The
+   hand-written version read cleanly and was badly unbalanced in play: measured, pressing every snap
+   gave up 14.6 points a game against 37.4 for playing two-deep, because the two implied mixes are
+   nowhere near uniform — the offence's implied depth is 60% `s` and never `d`, and the defence's is
+   54% `u`. A table whose ROWS sum to nothing over a uniform column mix therefore hands out a large
+   average bonus over the real one. So each row is centred against the measured offensive mix
+   (q .224 / s .602 / m .174 / d 0) and each column against the measured defensive mix
+   (p .238 / u .535 / t .226), which leaves pure INTERACTION: guessing right is worth exactly what
+   guessing wrong costs, and no rung is free. The mixes come from `mix` in the phase's probe.
+
+   The one deliberate departure is the constant added to each row (+1.66 / 0 / −1.66 yards), which
+   pays for `DEF_DEPTH_RUN` below. Pressing stuffs the run by 1.3 a carry over ~37 carries, and that
+   has to be bought somewhere: it is bought through the air, at ~29 attempts, which is what a press
+   defence actually trades. The row constants are themselves centred over the defensive mix, so the
+   columns stay centred too. */
+const DEPTH_VS={
+  p:{q:[-0.065,-0.04],s:[-0.006,1.26],m:[0.104,5.26],d:[0.097,6.46]},
+  u:{q:[0.024,0.64],s:[0.002,-0.06],m:[-0.038,-1.01],d:[0.015,2.14]},
+  t:{q:[0.012,-0.92],s:[0.001,-0.62],m:[-0.019,-2.57],d:[-0.137,-11.02]}};
+const DEF_DEPTH_RUN={p:-1.3,u:0,t:1.3};          // playing the pass deep is playing the run soft
+const DEF_DEPTH_PRESS={p:1.08,u:1.00,t:0.93};    // pressing corners buy the rush a beat; two-deep spends it
+/* The table above needs two depths and only one side of the ball has a coach on it. So the other
+   side's depth is IMPLIED — from the front the defence called (a cover shell is playing it deep, a
+   blitz or a stacked box is pressing) and from the distance the offence has to gain (which is
+   exactly the ladder `deepW` already used before anybody could name a depth).
+
+   The table fires as soon as EITHER side names one, and never when neither does. That last clause
+   is the whole compatibility argument for the second time: an AI game, a deferred call and every
+   token banked in an existing save name no depth on either side, so the table is not consulted at
+   all and the snap resolves to the number it always did. It is also why the AI defence does NOT get
+   a depth of its own — giving it one would change what those banked games resolve to and cost a
+   SIM_MODEL bump, and the implied read buys the same chess for free. */
+function impliedDefDepth(dcall){return dcall==='cover'?'t':dcall==='blitz'?'p':dcall==='run'?'p':'u';}
+function impliedPassDepth(togo,variant){return variant==='deep'?'d':togo>=11?'m':togo>=7?'s':'q';}
+/* Naming a target needs the Phase 22 predictability tax one level down, or the answer to every down
+   is "throw it to the best receiver". Same shape as `keyedPen`: smoothed, nothing while you are
+   balanced, biting once you lean. It reads EVERY snap of yours (not only the ones you named a
+   target on), because a defence keys on where the ball goes, not on what you called it. */
+const TGT_THRESH=0.45, TGT_COMP=0.30, TGT_YDS=8, ATK_COMP=0.24, ATK_YDS=6;
+function tgtPen(n,tot){return Math.max(0,((n+2)/(tot+5))-TGT_THRESH);}
+/* Slot lists. A call names a SLOT ("their number two corner"), never a player id — a slot is stable
+   across a re-run, it is what a coach actually says, and it survives a roster edit between the
+   coached game and its replay. Resolution is deterministic and rng-free; an injured man's slot
+   resolves to nobody and the call falls back to the read, which is what the sideline would have to
+   do anyway. */
+function slotsOff(oP){
+  const g={WR:[],TE:[],RB:[]};
+  (oP.recv||[]).forEach(x=>{const p=x[0];if(g[p.pos])g[p.pos].push(p);});
+  for(const k in g)g[k].sort((a,b)=>(a.so||0)-(b.so||0));
+  const out=[];
+  g.WR.slice(0,3).forEach((p,i)=>out.push(['W'+i,p]));
+  g.TE.slice(0,2).forEach((p,i)=>out.push(['T'+i,p]));
+  g.RB.slice(0,2).forEach((p,i)=>out.push(['R'+i,p]));
+  return out;
+}
+function slotsCov(dP){
+  const out=[];
+  (dP.cb||[]).slice(0,3).forEach((p,i)=>out.push(['C'+i,p]));
+  (dP.saf||[]).slice(0,2).forEach((p,i)=>out.push(['S'+i,p]));
+  (dP.lbk||[]).slice(0,1).forEach((p,i)=>out.push(['L'+i,p]));
+  return out;
+}
+function slotsFront(dP){
+  const g={DE:[],DT:[],LB:[]};
+  (dP.front||[]).forEach(x=>{const p=x[0];if(g[p.pos])g[p.pos].push(p);});
+  for(const k in g)g[k].sort((a,b)=>(a.so||0)-(b.so||0));
+  const out=[];
+  g.DE.slice(0,2).forEach((p,i)=>out.push(['E'+i,p]));
+  g.DT.slice(0,2).forEach((p,i)=>out.push(['D'+i,p]));
+  g.LB.slice(0,1).forEach((p,i)=>out.push(['L'+i,p]));
+  return out;
+}
+function slotFind(list,code,skip){
+  if(!code)return null;
+  for(const e of list)if(e[0]===code&&e[1]&&(!skip||!skip.has(e[1].id)))return e[1];
+  return null;
+}
+function slotOf(list,player){
+  if(!player)return '';
+  for(const e of list)if(e[1]&&e[1].id===player.id)return e[0];
+  return '';
+}
+// The option lists as the coach's screen needs them — slot, name, position and rating, plus (for a
+// coverage defender) the receiver he is matched to. Built only for the controlled team's snaps.
+function callOptions(oP,dP,skip){
+  const off=slotsOff(oP), cov=slotsCov(dP), fr=slotsFront(dP);
+  const one=e=>({slot:e[0],id:e[1].id,pos:e[1].pos,so:e[1].so||0,ov:e[1].ov,fn:e[1].fn,ln:e[1].ln,
+    out:!!(skip&&skip.has(e[1].id))});
+  /* Which receiver each cover man is actually on. `coverDef` is the engine's own answer, so the
+     screen names the same matchup the snap will resolve — the coach is reading the real card, not a
+     plausible-looking one. It is also what makes "attack their third corner" a sentence a person can
+     evaluate: you can see he is the man on your slot receiver before you decide to go at him. */
+  const covOn={};
+  off.forEach(e=>{const c=coverDef(e[1],dP,skip); if(c&&!covOn[c.id])covOn[c.id]=e[0];});
+  return {recv:off.map(one),
+    cov:cov.map(e=>Object.assign(one(e),{on:covOn[e[1].id]||''})),
+    front:fr.map(one)};
+}
 // Phase 31 — special packages. The HEAVY package (extra blockers, a DT lead-blocking) is a power run:
 // it crushes short yardage / the goal line but is dead weight on long downs (no pass threat, defense sits).
 function heavyRunBonus(togo,los){ return (togo<=2||los>=97)?4 : togo<=4?2 : togo>=8?-3 : 0; }
@@ -3344,6 +3514,12 @@ function simEngine(home,away,seed,opts){
                                           // scheming vs the controlled offense no longer desyncs the main play stream (less variance).
   const KEY_THRESH=0.60, RUN_KEY=7.5, PASS_KEY=6.5;
   const keyedPen=(offId,type)=>{const c=usage[offId],tot=c.run+c.pass;return Math.max(0,((c[type]+4)/(tot+8))-KEY_THRESH);};
+  /* Phase 63: where the ball has actually gone, and whom the offence has been going at. Only the
+     controlled offence ever writes to these (`mine`), and they are only READ when a call names a
+     target — so an AI game never touches them and its stream is untouched. Deterministic from the
+     call history, like `usage`: no rng, so replay holds. */
+  const tgtU={n:0,by:{}}, atkU={n:0,by:{}};
+  const bump=(u,k)=>{u.n++; if(k)u.by[k]=(u.by[k]||0)+1;};
   const pen=(opts&&opts.penInto)||{};
   if(!pen[home.id])pen[home.id]={n:0,yds:0}; if(!pen[away.id])pen[away.id]={n:0,yds:0};
   const HFA=PM.hfa;                                           // home-field, in rating points
@@ -3608,9 +3784,14 @@ function simEngine(home,away,seed,opts){
 
       // ---- defensive play-call (Phase 28) — the controlled team, on D, calls the front/coverage as a
       // PRE-SNAP guess (it doesn't see run/pass). Rock-paper-scissors vs the play; AI defense = 'base' (no-op).
-      let dcall='base';
-      if(decide && def.id===decideFor){ const pick=decide({phase:'def',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,def:def.id,offTend:{run:usage[off.id].run,pass:usage[off.id].pass}});   // offTend = the offense's run/pass tendency SO FAR (Phase 46, read it to call your D)
-        if(pick==='blitz'||pick==='cover'||pick==='run')dcall=pick; }
+      let dcall='base', dDepth='', dKey='';
+      if(decide && def.id===decideFor){ const pick=decide({phase:'def',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,def:def.id,offTend:{run:usage[off.id].run,pass:usage[off.id].pass},
+          opts:callOptions(oP,dP,injured)});   // offTend = the offense's run/pass tendency SO FAR (Phase 46, read it to call your D); opts = whom you can key (Phase 63)
+        const C=callParse(pick);
+        if(C.base==='blitz'||C.base==='cover'||C.base==='run')dcall=C.base;
+        if(DEPTH_VS[C.depth])dDepth=C.depth;      // Phase 63: how deep you are playing it
+        dKey=C.outlet;                            // …and whose route you are taking away
+      }
       else if(aiDefVs && off.id===aiDefVs && def.id!==aiDefVs){   // Phase 29: AI DC schemes vs the controlled offense
         const u=usage[off.id], tot=u.run+u.pass, runRate=(u.run+2)/(tot+4);
         dcall=aiDefCall({down,togo,los,runRate},dcR()); }
@@ -3620,7 +3801,9 @@ function simEngine(home,away,seed,opts){
       // double-counted the call and measurably inverted the Phase 29 AI-DC check.
       const dComp =dcall==='cover'?-0.10:dcall==='run'?0.06:dcall==='blitz'?-0.03:0;  // cover takes the pass; stack-box opens it
       const dPassY=dcall==='blitz'?5:dcall==='run'?3:dcall==='cover'?-3:0;            // light coverage → bigger gains
-      const dRunY =dcall==='blitz'?3:dcall==='cover'?1:dcall==='run'?-4:0;            // stack the box stuffs the run; blitz is gashed
+      // Phase 63: the second defensive axis. Playing the pass deep is playing the run soft, and
+      // vice versa — a real cost, so "two-deep every snap" is not an answer. Zero without a depth.
+      const dRunY =(dcall==='blitz'?3:dcall==='cover'?1:dcall==='run'?-4:0)+(dDepth?DEF_DEPTH_RUN[dDepth]:0);
 
       // ---- run / pass ----
       // Phase 53: how urgent the situation is — nothing much in the 1st half, rising through the 2nd.
@@ -3635,8 +3818,11 @@ function simEngine(home,away,seed,opts){
       dusage[def.id][dcall]++;                              // record this snap's defensive call (for the NEXT one's read)
       const ocPass=r()<passProb;                            // OC's call (always drawn → rng stream stays stable)
       let wantPass=ocPass, pkg='normal', variant='';        // Phase 31 package + Phase 46 play-concept variant (player-only)
-      if(mine){const pick=decide({phase:'play',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,ocPass,ocCall:ocPass?'pass':'run',fgDist,inFgRange,defTend:preDef});
-        const base=(''+pick).split(':')[0]; variant=(''+pick).split(':')[1]||'';
+      let oDepth='', oOutlet='', oAttack='';               // Phase 63: how far, to whom, at whom (player-only)
+      if(mine){const pick=decide({phase:'play',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,ocPass,ocCall:ocPass?'pass':'run',fgDist,inFgRange,defTend:preDef,
+          opts:callOptions(oP,dP,injured)});   // Phase 63: the men a call can name, resolved against tonight's two-deeps
+        const C=callParse(pick), base=C.base; variant=C.variant;
+        oDepth=C.depth; oOutlet=C.outlet; oAttack=C.attack;
         if(base==='fg'){ if(inFgRange) return doFG(dd,fgDist); }  // Phase 46: FG on any down (out of range → ignore, play on)
         else if(base==='pass')wantPass=true; else if(base==='run')wantPass=false;
         else if(base==='heavy'){wantPass=false;pkg='heavy';}        // goal-line power run
@@ -3646,10 +3832,38 @@ function simEngine(home,away,seed,opts){
       // every delta below is 0 → the sim is byte-identical to pre-Phase-46 (simlab envelope + determinism hold).
       // They reward reading the defense: Play Action punishes a run-committed front, Screen beats the blitz, etc.
       let vComp=0,vYds=0,vSack=0,vBoom=0;
+      /* Phase 63 keeps its predictability terms OUT of the vComp/vYds channel deliberately. Those
+         are multiplied by `vD` — "a sharp cover man is not fooled by the concept" — which is the
+         right damper for a play-action fake and exactly the wrong one for a tax: it would mean the
+         sharpest defender in the league is the least able to notice you have thrown at him nine
+         times in a row. `tComp`/`tYds` land undamped. */
+      let tComp=0,tYds=0;
       if(variant==='pa'){ if(dcall==='run'){vComp+=0.12;vYds+=7;} else if(dcall==='base'){vComp+=0.06;vYds+=3;} else if(dcall==='cover'){vComp-=0.12;vYds-=5;} else if(dcall==='blitz'){vYds-=3;} vSack+=0.02; }
       else if(variant==='screen'){ vComp+=0.12;vYds-=2;vSack-=0.03; if(dcall==='blitz'){vComp+=0.05;vYds+=9;} }
       else if(variant==='deep'){ vComp-=0.14;vSack+=0.03;vBoom+=1; }
       else if(variant==='draw'){ vYds+=(dcall==='blitz'?6:-2); }
+      /* Phase 63 — the composed call, on top of the concept. Depth is the one that REPLACES rather
+         than stacks: `d` and the legacy 'deep' variant are numerically the same thing, so a call
+         that names its depth must not also collect the card's version of it. Everything else here
+         (the depth-vs-depth table, the gap) is additive, and every term is zero when the coach
+         named nothing — which is the whole compatibility argument. */
+      let gapFloor=1, gapTail=1, pDep='';
+      if(oDepth&&PASS_DEPTH[oDepth]&&variant!=='deep'){
+        pDep=oDepth;
+        const D=PASS_DEPTH[pDep]; vComp+=D[0]; vYds+=D[1]; vSack+=D[2]; vBoom+=D[3];
+      }else if(oDepth&&RUN_GAP[oDepth]){
+        gapFloor=RUN_GAP[oDepth][0]; gapTail=RUN_GAP[oDepth][1];
+        vYds+=runGapVs(oDepth,dcall);
+      }
+      // Depth against depth. It lands on the UNDAMPED channel: `vD` asks whether a sharp defender
+      // is fooled by a fake, which has nothing to do with whether the coverage shell was the right
+      // one for the distance — and on a snap where the DEFENCE is the one being coached, damping the
+      // table by the defender's own awareness would invert it outright.
+      if(pDep||dDepth){
+        const oD=pDep||impliedPassDepth(togo,variant), dD=dDepth||impliedDefDepth(dcall);
+        const M=DEPTH_VS[dD]&&DEPTH_VS[dD][oD];
+        if(M){tComp+=M[0]; tYds+=M[1];}
+      }
       let gain=0, turnover=false, scored=false, tackled=true, txt='';
       let toKind='', toBy=null;                            // Phase 54: what kind of turnover, and who took it
       // Beats are built ONLY when a log is being kept. Advancing a week sims 60+ games with no log,
@@ -3667,8 +3881,39 @@ function simEngine(home,away,seed,opts){
       const MS=()=>milestones(off,{run:mRun,rec:mRec,qb,sk:mSk,lost:mLost,to:turnover,gain});
 
       if(wantPass){                                          // dropback (sacks aren't pass attempts)
-        const rec=wpick(oP.recv,r,injured);                  // intended target (pre-snap read; skip the injured)
+        let rec=wpick(oP.recv,r,injured);                    // intended target (pre-snap read; skip the injured)
+        /* Phase 63 — the coach names where the ball is going. The draw above is ALWAYS taken, and
+           only its RESULT is overridden: the rng stream has to be a function of the seed and the
+           call sequence alone, or a re-run diverges and `g.calls` stops reproducing the game. */
+        let named='';
+        if(mine&&(oOutlet||oAttack)){
+          const oL=slotsOff(oP);
+          if(oOutlet){const pick=slotFind(oL,oOutlet,injured); if(pick){rec=pick;named='o';}}
+          /* Attacking a DEFENDER is the other way of saying the same sentence, and it is the one a
+             coordinator actually says: you do not pick a receiver in the abstract, you decide their
+             third corner cannot cover anybody and you go find him. So the call names the defender
+             and the engine finds the route that runs at him. */
+          if(!named&&oAttack){
+            const tgt=slotFind(slotsCov(dP),oAttack,injured);
+            if(tgt){for(const e of oL){const p=e[1];
+              if(p&&!injured.has(p.id)){const c=coverDef(p,dP,injured); if(c&&c.id===tgt.id){rec=p;named='a';break;}}}}
+          }
+        }
         let cov=coverDef(rec,dP,injured);                    // the man on him (deterministic by depth, Phase 23)
+        if(mine){
+          const oL2=slotsOff(oP), rs=slotOf(oL2,rec);
+          // Where the ball has been going. Naming a target is free the first few times and expensive
+          // once it is a tendency — a safety starts cheating that way, which is what the tax IS.
+          if((oOutlet||oAttack)&&rs){const tk=tgtPen(tgtU.by[rs]||0,tgtU.n);tComp-=tk*TGT_COMP;tYds-=tk*TGT_YDS;}
+          // …and whom you have been going AT. Attacking one corner all afternoon buys him help.
+          if(oAttack){const ak=tgtPen(atkU.by[oAttack]||0,atkU.n);tComp-=ak*ATK_COMP;tYds-=ak*ATK_YDS;}
+          bump(tgtU,rs); bump(atkU,oAttack);
+        }
+        /* The defensive key, from the other side of the ball: you took one man away. It is worth a
+           lot against him and a little against you everywhere else, because a bracket is bodies you
+           are not using elsewhere — which is what makes keying a guess rather than a free upgrade. */
+        if(dKey){const rs2=slotOf(slotsOff(oP),rec);
+          if(rs2&&rs2===dKey){tComp-=0.09;tYds-=4;} else {tComp+=0.03;tYds+=1.5;}}
         // Phase 24: a coverage reassignment — you put a specific defender on this receiver slot.
         if(plan&&plan.shadow&&def.id===adjustFor){const did=plan.shadow[rec&&(rec.pos+(rec.so||0))];if(did&&!injured.has(did)){const d=def.roster.find(p=>p.id===did);if(d)cov=d;}}
         const mEdge=matchEdge(bov(rec),oP.recvAvg,bov(cov),dP.covAvg); // mean-zero WR-vs-coverage matchup (pep-talk aware)
@@ -3695,9 +3940,12 @@ function simEngine(home,away,seed,opts){
         // The one-on-one clause: isolated deep or in man, a speed DEFICIT is not something technique
         // covers, so it steepens past the threshold. A surplus is left alone — this is the only
         // deliberately asymmetric channel, and it is what makes speed kill rather than merely count.
-        const iso=(variant==='deep'||togo>=11)&&dcall!=='cover';
+        // Phase 63: a NAMED depth is a better statement of how far the ball is going than the
+        // distance-to-go guess, so it wins where it is given; without one the Phase 51 guess stands.
+        const pDep=(oDepth&&PASS_DEPTH[oDepth]&&variant!=='deep')?oDepth:'';
+        const iso=(variant==='deep'||pDep==='d'||(!pDep&&togo>=11))&&dcall!=='cover';
         if(iso&&dSPD<AT.oneOnOne)dSPD=AT.oneOnOne+(dSPD-AT.oneOnOne)*AT.oneOnOneMul;
-        const deepW=variant==='deep'?1.6:togo>=11?1.3:togo>=7?1.0:0.6;
+        const deepW=pDep?PASS_DEPTH[pDep][4]:(variant==='deep'?1.6:togo>=11?1.3:togo>=7?1.0:0.6);
         // A sharp cover man is not fooled by the play concept (play action, screen); a poor one bites.
         const vD=clamp(1-AT.awrVariant*(av(cov,'awr')-dP.covA.awr),0.4,1.6);
         // SEPARATION as ONE physical quantity, in rating points — his route running, quickness and
@@ -3721,6 +3969,7 @@ function simEngine(home,away,seed,opts){
         const pressP=clamp(AT.pressBase*cx(-(dPRO+AT.iqProt*qIQ+protAwrR),AT.pressK)
             *(dcall==='blitz'?AT.pressBlitz:dcall==='cover'?AT.pressCover:1)
             *(pkg==='spread'?AT.pressSpread:1)*(1+ky*AT.pressKey)
+            *(dDepth?DEF_DEPTH_PRESS[dDepth]:1)          // Phase 63: press buys the rush a beat, two-deep spends one
             +vSack*vD*AT.pressVar,0.04,0.80);
         const pressed=r()<pressP;
         let sacked=false, scrambled=false, rsh=null;
@@ -3759,7 +4008,7 @@ function simEngine(home,away,seed,opts){
         // logit round trip only where dp/dz happens to match — with the matchup terms moving z the
         // realised effect measured 0.68pp against the 3.25pp Phase 50 fitted. Keeping it in
         // probability space preserves the measurement it came from.
-        } else if(r()<clamp(iz(lz(clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)-ky*0.22+dComp+vComp*vD+(pkg==='spread'?0.05:0),0.15,0.92))
+        } else if(r()<clamp(iz(lz(clamp(PM.cmpBase+(los>=PM.rzLos?PM.rzComp:0)-ky*0.22+dComp+vComp*vD+tComp+(pkg==='spread'?0.05:0),0.15,0.92))
             // ---- 2. the completion, composed in LOG-ODDS. The measured situational effects above
             // stay additive in probability (the space they were measured in); the MATCHUP compounds.
             +AT.sepZ*sepR+AT.cpZ*dCTHb+AT.accZ*qTHA+AT.advCmpZ*padv
@@ -3773,7 +4022,7 @@ function simEngine(home,away,seed,opts){
           // (dPassY > 0, from blitz/run-stop) is now conditional on the quarterback having been clean;
           // tight coverage (dPassY < 0) applies either way. Phase 52 paid it out unconditionally, which
           // let a defence be punished for the same call that had just produced the pressure.
-          gain=Math.max(-3,Math.round(qGain(u,PM.recQ[distKey(togo)],vBoom*8)-ky*PASS_KEY+(dPassY>0&&pressed?0:dPassY)+vYds*vD-PC.ya*press+tailAdd(u,dSPD,AT.tailPass)+AT.thpDeep*qTHP*deepW+AT.yacPass*ADX(rec,oP.recvA,'elu',cov,dP.covA,'tkl')+(pkg==='spread'?3:0)));
+          gain=Math.max(-3,Math.round(qGain(u,PM.recQ[distKey(togo)],vBoom*8)-ky*PASS_KEY+(dPassY>0&&pressed?0:dPassY)+vYds*vD+tYds-PC.ya*press+tailAdd(u,dSPD,AT.tailPass)+AT.thpDeep*qTHP*deepW+AT.yacPass*ADX(rec,oP.recvA,'elu',cov,dP.covA,'tkl')+(pkg==='spread'?3:0)));
           if(los+gain>=100)gain=100-los;                   // capped at the goal line (see the run)
           // Separation is a real quantity here (sepR, in rating points), so the receiver's beat can
           // say WHY he was open rather than asserting it.
@@ -3814,8 +4063,17 @@ function simEngine(home,away,seed,opts){
             if(bt)bt[bt.length-1]='INTERCEPTED by '+NM(cov); }
         }
       } else {                                              // run
-        const rb=wpick(oP.rush,r,injured)||qb;
-        const fr=wpick(dP.front,r,injured);                  // the front defender he meets (Phase 23)
+        let rb=wpick(oP.rush,r,injured)||qb;
+        let fr=wpick(dP.front,r,injured);                    // the front defender he meets (Phase 23)
+        /* Phase 63 — same rule as the pass: both draws are always taken and only their results are
+           overridden, so the rng stream stays a function of seed + calls. `outlet` names the back
+           (a slot the offence's list already carries, so 'R0' is the starter and a W-code simply
+           finds nobody and leaves the read alone); `attack` names the man you are running AT, which
+           is what a run call actually is — you do not run "left", you run at their weak three-tech. */
+        if(mine&&oOutlet){const pick=slotFind(slotsOff(oP),oOutlet,injured); if(pick&&pick.pos==='RB')rb=pick;}
+        if(mine&&oAttack){const pick=slotFind(slotsFront(dP),oAttack,injured); if(pick)fr=pick;
+          const ak=tgtPen(atkU.by[oAttack]||0,atkU.n); tYds-=ak*ATK_YDS; }
+        if(mine)bump(atkU,oAttack);
         // Phase 50: the ball-carrier's nerve against the man who has to bring him down
         const pmatR=matchEdge(bov(rb),oP.rushAvg,bov(fr),dP.frontAvg)+(compClutch(rb)-compClutch(fr))*PC.mean*press;   // RB vs front matchup (mean-zero, pep-talk + fatigue aware)
         const padv=adv+pmatR;
@@ -3838,13 +4096,17 @@ function simEngine(home,away,seed,opts){
         const breakR=AT.brkElu*ADX(rb,oP.rushA,'elu',fr,dP.frontA,'tkl')
           +AT.brkBtk*ADX(rb,oP.rushA,'btk',fr,dP.frontA,'tkl');
         const vDr=clamp(1-AT.awrVariant*(av(fr,'awr')-dP.frontA.awr),0.4,1.6);
+        // Keying the back is the run's half of the bracket — you have committed a body to him.
+        if(dKey&&rb&&slotOf(slotsOff(oP),rb)===dKey)tYds-=2.5;
         // Phase 52 added agility and elusiveness FLAT across the whole draw, which §9a forbids —
         // neither should raise the floor and the tail alike. They now enter where they belong: the
         // crease selects the regime, the break lifts the bottom of it.
         const e=regExp(AT.regPush*pushR+AT.regCrease*creaseR+AT.regAdvR*adv+AT.regMatchR*pmatR);
         const u=regime(shapeDraw(r,rb,vAmp,oP.vol-dP.vol),e);  // speed reads the tail, the pile the floor
-        gain=Math.max(-9,Math.round(qGain(u,PM.runQ[distKey(togo)],0)-ky*RUN_KEY+dRunY+vYds*vDr-PC.yc*press
-          +tailAdd(u,dSPDr,AT.tailRun)+floorAdd(u,AT.floorPush*pushR+AT.floorBrk*breakR,AT.strRun)+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
+        // Phase 63: the gap reshapes the draw rather than adding to it — `gapFloor`/`gapTail` are 1
+        // unless a gap was named, so an unnamed run is the Phase 53 run to the byte.
+        gain=Math.max(-9,Math.round(qGain(u,PM.runQ[distKey(togo)],0)-ky*RUN_KEY+dRunY+vYds*vDr+tYds-PC.yc*press
+          +tailAdd(u,dSPDr,AT.tailRun)*gapTail+floorAdd(u,AT.floorPush*pushR+AT.floorBrk*breakR,AT.strRun)*gapFloor+(pkg==='heavy'?heavyRunBonus(togo,los):0)));
         // You cannot gain past the goal line. The box score caps a scoring play at the distance that
         // was actually available, and the sim was crediting the raw draw — a 20-yard run from the
         // opponent's 5 booked 20 rushing yards. Measured against the real per-down/distance table this
@@ -3986,8 +4248,10 @@ const PITCH_ANGLES=[
   ['home','Stay Home','Play close to family and friends.'],
   ['academics','Academics','A degree that sets up life after ball.']];
 // Tuning — tweaked in test/reclab.js.
-// Phase 33: BASE_POINTS is now a small floor; the weekly budget is dominated by the scouting facility
-// (see weeklyPoints / aiBudget). AI_* drive the AI recruiting brain's concentrated weekly effort.
+// BASE_POINTS is the PLAYER's weekly recruiting budget floor, and it is read in exactly one place —
+// the app-layer `weeklyPoints`, never inside this fence. The AI brain's budget is AI_BASE/AI_PER
+// (`aiBudget`) and is untouched by it, which is why the budget can be sized for how a coach actually
+// works a board without moving a single fitted quantity. AI_* drive the AI's concentrated effort.
 // Phase 57a: POOL and the star-tier cutoffs are the MEASURED ranked board (cfb-recruiting.md §1),
 // not hand-set. N5/N4/N3 are cumulative indices into the pool: [0,N5) are 5★, [N5,N4) 4★, etc.
 // GEO_SUIT/GEO_FIT are the home-state pull, and they are FITTED (tools/cfb-data/24-geofit.js) against
@@ -4003,7 +4267,7 @@ const REC={POOL:3692,N5:33,N4:410,N3:2585,GEO_SUIT:0.22,GEO_FIT:0.02,
   TIER5:88,TIER4:70,TIER3:50,TIER2:32,PULL_W:21,OVER_W:60,OVER_FLOOR:0.3,SUIT_NOISE:1.1,
   PASSIVE_RATE:0.10,CEIL_BASE:60,TGT_MEAN:19.2,TGT_SD:5.5,TGT_PRES:1.15,TGT_MIN:12,AI_VALUE:0.06,AI_PIVOT:14,
   FOG_ATTR:10,FOG_ARCH:35,FOG_PUR:70,
-  COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:6,DECOMMIT_GAP:18,
+  COMMIT_THRESH:68,LEAD_GAP:7,CLASS_CAP:25,BASE_POINTS:14,DECOMMIT_GAP:18,
   /* SLOTS — how many prospects you can ACTIVELY RECRUIT at once. Not scholarships: a program carries
      85 of those, signs about 25 a class (`CLASS_CAP`), and extends offers into the hundreds. What is
      scarce here is ATTENTION, and the ceiling is the weekly point budget rather than any NCAA rule.
@@ -7027,11 +7291,24 @@ function declineSeriesOffer(offerId){S.seriesOffers=(S.seriesOffers||[]).filter(
    The pure engine (genRecruits/advanceRecruiting/coachMods/…) lives in the RECRUIT ENGINE
    block above; this layer owns S.recruiting, the points economy, and the five player actions.
    ============================================================ */
-/* `offer` is a scholarship offer and it costs like one. Boarding a prospect is free — that is just
-   who you are chasing — but the offer is the moment you tell a kid you want him, it is the only way
-   he can ever commit to you, and it moves his interest more than anything else here. NIL pays $
-   (Phase 37); visits are a weekend calendar, not a weekly intent (Phase 38). */
-const RECRUIT_COSTS={scout:2,pitch:3,promise:4,alumni:4,nil:0,offer:5};
+/* What each action costs out of the weekly budget.
+
+   `offer` is FREE. A scholarship offer is a piece of paper and a phone call, not a week of a
+   staff's work — a real program extends them by the hundred and the ones that matter are the ones
+   it then goes and recruits. Charging points for it taxed the wrong thing: it made the loudest,
+   cheapest thing a program can say compete for budget with the actual work, and a coach who spent
+   his week offering had nothing left to follow up with. The offer stays a real gate (it is still
+   the only way a prospect can commit to you) and it still lands REC.OFFER_BUMP; what limits it is
+   the BOARD, which is capped at `boardSlots()` and is the thing that costs you something to hold.
+
+   `scout` is 1. Evaluation is not relationship-building, and it is the one action a coach needs to
+   run wide — a national class is thousands of names and the ones who sign in February are decided
+   in November, so you have to be able to look at fifteen or twenty prospects in a week and still
+   have a budget left to recruit the ones worth recruiting. It buys INFORMATION (a sharper read plus
+   the `recScoutMult` payoff on later actions), never interest, so breadth here is cheap on purpose.
+
+   NIL pays $ (Phase 37); visits are a weekend calendar, not a weekly intent (Phase 38). */
+const RECRUIT_COSTS={scout:1,pitch:3,promise:4,alumni:4,nil:0,offer:0};
 // Phase 37 — NIL bid tiers (money → interest). [key, label, $amount]. A bid pays from team.budget, not points.
 const NIL_TIERS=[['modest','Modest',0.6e6],['strong','Strong',1.8e6],['blockbuster','Blockbuster',4.5e6]];
 const SEASON_VISITS=12;   // Phase 37: official-visit calendar — a season-long budget on top of the weekly cap
@@ -7046,9 +7323,19 @@ function myMods(){return coachMods(S.coach);}
 // gap between an unstaffed program and a fully staffed one is the staff. An unstaffed program lands
 // ~10 points a week against the old flat 14 — enough to work a handful of recruits properly, which
 // is the point: you cannot recruit everyone, and buying the ability to costs real money every year.
+/* The budget was sized when a week's work was a handful of pitches, and it made the screen's most
+   basic act — looking at a prospect — the scarce one. A recruiting class is ~25 signatures drawn
+   from a national board of thousands, most of them decide late, and a coach has to be able to
+   evaluate fifteen to twenty names in a week and still afford to recruit the ones he likes. So the
+   floor carries most of the budget now (an unstaffed program lands ~18 against the old ~10) and the
+   scouting facility keeps its slope on top. Paired with `scout` at 1 point, that is ~18 evaluations
+   a week at the bottom, ~22 with the building maxed, and past 30 with a department behind you —
+   while a PITCH still costs 3, so the relationship budget has grown far less than the survey one.
+   `REC.SLOTS` is deliberately NOT raised with it: the board is who you are actively recruiting, it
+   was measured at 12 (see REC.SLOTS), and scouting has never needed a board slot. */
 function weeklyPoints(){const t=controlled(),m=myMods();
   const sc=(t.fac&&t.fac.scouting)||5;
-  return Math.max(4,Math.round(REC.BASE_POINTS+sc*0.8+recStaffCap(t,3)+m.points));}
+  return Math.max(6,Math.round(REC.BASE_POINTS+sc*0.8+recStaffCap(t,3)+m.points));}
 // Likewise the board: how many prospects you can even TRACK is how many people you employ to track
 // them. `REC.SLOTS` dropped 16→8 for this (it is read only here, never inside the fence), so a
 // staffed program lands back around the old 16 and a big department runs past it.
@@ -7206,7 +7493,7 @@ function setRecOrder(rec,staffId){
   if(!R||R.signed)return false;
   if(!staffId){delete O[rec.id];return true;}
   if(rec.signed){toast('Already signed');return false;}
-  if(!onBoard(rec)){toast('Offer him first — orders are for recruits on your board');return false;}
+  if(!onBoard(rec)){toast('Add him to your board first — that is what a staffer holds');return false;}
   if(!O[rec.id]&&orderCount()>=orderCap()){
     toast(orderCap()?'Your staff is at capacity — hire more, or free up an order':'Hire recruiting staff to delegate');return false;}
   O[rec.id]=staffId;return true;
@@ -7492,9 +7779,11 @@ function extendOffer(rec){
   if(!onBoard(rec)){toast('Add him to your board first');return false;}
   if(rec.finalists&&rec.committedTo!==S.teamId&&rec.finalists.indexOf(S.teamId)<0){
     toast('✂️ You’ve been cut from his finalists');return false;}
+  /* Free. The scholarship is a piece of paper — what it costs you is a board slot, which you are
+     already holding for him, and the work you now owe him. See RECRUIT_COSTS. */
   const cost=RECRUIT_COSTS.offer;
-  if((R.points||0)<cost){toast('Not enough recruiting points for an offer');return false;}
-  R.points-=cost;
+  if(cost&&(R.points||0)<cost){toast('Not enough recruiting points for an offer');return false;}
+  if(cost)R.points-=cost;
   recOffers().push(rec.id);
   bumpInterest(rec,REC.OFFER_BUMP*myMods().pitch);
   autosave();return true;
@@ -7913,12 +8202,19 @@ function runInteractive(){
 function enterInteractive(){
   if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} clearBeatTimers();
   const G=UI.game; if(!G)return;
-  Object.assign(G,{interactive:true,mode:G.mode||'key',decisions:[],log:[],pending:null,done:false,simRest:false,halfShown:false,atHalf:false,prevBallX:null,plan:{shadow:{},boost:{}},adjusts:[]});
+  UI.callPrefs=null;   // Phase 63: a fresh call sheet each game — last week's opponent is not this one
+  Object.assign(G,{interactive:true,mode:G.mode||'key',decisions:[],log:[],pending:null,done:false,simRest:false,halfShown:false,atHalf:false,prevBallX:null,plan:{shadow:{},boost:{}},adjusts:[],lastOff:null,lastDef:null});
   runInteractive();
 }
 // Leave halftime → resume into the 2nd half (halfShown blocks it re-firing; the driver picks up the flow).
 function resumeHalf(){const G=UI.game;if(!G)return;G.halfShown=true;G.atHalf=false;G.pending=null;runInteractive();}
-function pickCall(c){const G=UI.game;if(!G||!G.pending)return;haptic('medium');G.pending=null;G.atHalf=false;G.decisions.push(c);runInteractive();}
+function pickCall(c){const G=UI.game;if(!G||!G.pending)return;haptic('medium');
+  // Phase 63: remember the last real call per side, so running it again is one tap. Snap-by-snap
+  // coaching lives or dies on this — a coordinator repeats himself constantly, and making him
+  // re-pick four axes to do it is what would make full control unplayable.
+  const ph=G.pending.phase;
+  if(ph==='play'&&c!=='fg')G.lastOff=c; else if(ph==='def')G.lastDef=c;
+  G.pending=null;G.atHalf=false;G.decisions.push(c);runInteractive();}
 // Phase 24: bank the current adjustment plan onto the timeline at the current play index (so it applies
 // forward + replays on commit), then re-run. Cumulative snapshots — planAt() reads the latest.
 function recordAdjust(){
@@ -7972,91 +8268,168 @@ function adjustSheet(){
 }
 function gameSetMode(m){const G=UI.game;if(!G)return;G.mode=m;G.simRest=false;if(G.done)render();else runInteractive();}
 function interactiveSimRest(){const G=UI.game;if(!G)return;G.simRest=true;G.atHalf=false;runInteractive();}
-// ---- Phase 46: play-art — a compact top-down diagram of the concept (routes/blocks/coverage) ----
-function _phead(x1,y1,x2,y2,c){const a=Math.atan2(y2-y1,x2-x1),L=3.6,w=0.5;
-  const px=(x2-L*Math.cos(a-w)).toFixed(1),py=(y2-L*Math.sin(a-w)).toFixed(1),qx=(x2-L*Math.cos(a+w)).toFixed(1),qy=(y2-L*Math.sin(a+w)).toFixed(1);
-  return `<path d="M${x2} ${y2} L${px} ${py} L${qx} ${qy} Z" fill="${c}"/>`;}
-function _pline(pts,c,dash){const d=pts.map((p,i)=>(i?'L':'M')+p[0]+' '+p[1]).join(' ');const n=pts.length,[a,b]=pts[n-2],[e,f]=pts[n-1];
-  return `<path d="${d}" fill="none" stroke="${c}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"${dash?' stroke-dasharray="2.2 1.6"':''}/>`+_phead(a,b,e,f,c);}
-const _pdot=(x,y,c)=>`<circle cx="${x}" cy="${y}" r="2.3" fill="${c}"/>`;
-const _pX=(x,y)=>`<g stroke="#f0857a" stroke-width="1.2" stroke-linecap="round"><line x1="${x-2.2}" y1="${y-2.2}" x2="${x+2.2}" y2="${y+2.2}"/><line x1="${x-2.2}" y1="${y+2.2}" x2="${x+2.2}" y2="${y-2.2}"/></g>`;
-// defensive shells (drawn from the offense's view: Xs = defenders, dashed circles = zones, red arrows = rush)
-function defArt(kind){const los=40,dl=[54,63,72,81];const front=y=>dl.map(x=>[x,y]);
-  if(kind==='nickel')return {d:[...front(los-5),[54,los-13],[82,los-13],[104,los-12],[42,los-25],[96,los-25]]};
-  if(kind==='zero')return {d:[...front(los-4),[50,los-9],[68,los-9],[86,los-9],[34,los-10],[102,los-10]],rush:[[[50,los-9],[52,los-1]],[[68,los-9],[68,los-1]],[[86,los-9],[84,los-1]]]};
-  if(kind==='fire')return {d:[...front(los-4),[46,los-11],[70,los-12],[90,los-12],[40,los-25],[96,los-25]],rush:[[[46,los-11],[41,los-1]]],zone:[[68,los-16,10]]};
-  if(kind==='c2')return {d:[...front(los-5),[54,los-12],[68,los-12],[82,los-12]],zone:[[38,los-24,12],[96,los-24,12]]};
-  if(kind==='c3')return {d:[...front(los-5),[54,los-12],[82,los-12]],zone:[[26,los-24,10],[68,los-27,10],[110,los-24,10]]};
-  if(kind==='bear')return {d:[[48,los-4],[57,los-4],[66,los-4],[75,los-4],[84,los-4],[54,los-11],[68,los-11],[82,los-11],[68,los-24]]};
-  if(kind==='gl')return {d:[[48,los-3],[56,los-3],[64,los-3],[72,los-3],[80,los-3],[88,los-3],[56,los-9],[68,los-9],[80,los-9]]};
-  return {d:[...front(los-5),[50,los-13],[68,los-13],[86,los-13],[42,los-26],[96,los-26]]};   // base 4-3
+/* ---- Phase 63: the call sheet -----------------------------------------------------------------
+   What replaced the playbook, and why. Phase 46 gave the coach a page of named concepts with a
+   little top-down diagram apiece — Inside Zone, Curls, Mesh — and every one of them had to be drawn
+   by hand as an SVG route tree. That is a lot of work for a card, it does not scale (a real
+   playbook is hundreds of these), and, more damning, three of the five run concepts mapped to the
+   identical engine token: the diagrams differed and the football did not.
+
+   A coordinator does not pick a card. He decides four things: what kind of play, how far it is
+   going, who is getting the ball, and whom he is attacking. Those are the four axes here, and each
+   one now reaches the sim (see `callParse` and the Phase 63 block in the engine) — depth against
+   the defence's depth is a real matchup table, the gap reshapes the run's floor and tail, and
+   naming a target or a defender picks the actual matchup the snap resolves instead of leaving it to
+   the read. So the picker got smaller AND the call got deeper, which is the trade the whole phase
+   is built on.
+
+   The composed call is one string, built by `buildCall`. When nothing has been named it emits the
+   plain Phase 46 token, so "just run it" is byte-identical to what it always was.                */
+const PASS_DEPTHS=[['q','Quick','0–5 · get it out. High completion, small gain, clean pocket.'],
+                   ['s','Short','6–12 · the chains. The default answer.'],
+                   ['m','Intermediate','13–20 · between the levels. More yards, more risk.'],
+                   ['d','Deep','20+ · take the top off. Low percentage, big when it hits.']];
+const RUN_GAPS=[['i','Inside','A/B gap · the floor play. Consistent, and it does not break long.'],
+                ['t','Off-tackle','C gap · balanced.'],
+                ['o','Outside','The edge · nothing or everything.']];
+const PASS_LOOKS=[['pass','','Straight drop','No window dressing.'],
+                  ['pass','pa','Play action','Punishes a front that has committed to the run.'],
+                  ['pass','screen','Screen','Beats pressure. Dies against a defence sitting back.'],
+                  ['spread','','Empty · 4-wide','Stresses the coverage; the rush gets home faster.']];
+const RUN_LOOKS=[['run','','Straight handoff','Block them.'],
+                 ['run','draw','Draw','Lets the rush come, then goes.'],
+                 ['heavy','','Heavy set','Extra blockers. Short yardage and the goal line.']];
+const DEF_FRONTS=[['base','Base','Play it honest.'],
+                  ['blitz','Blitz','Bring pressure. Gashed when it does not get home.'],
+                  ['cover','Cover','Drop into coverage. Light box.'],
+                  ['run','Run stop','Load the box. The pass opens up behind it.']];
+const DEF_DEPTHS=[['','Balanced','No particular depth.'],
+                  ['p','Press','Jam it at the line. Kills the quick game, exposed deep.'],
+                  ['u','Underneath','Sit on the short and intermediate stuff.'],
+                  ['t','Two-deep','Nothing over the top. Soft underneath and against the run.']];
+// One call → one engine token. Nothing named → the plain Phase 46 token, which is the compatibility
+// guarantee stated in the engine's Phase 63 block.
+function buildCall(side,C){
+  const seg=side==='def' ? (C.depth||'-')+(C.key||'--')
+                         : (C.depth||'-')+(C.outlet||'--')+(C.attack||'--');
+  const bare=seg.replace(/-/g,'')==='';
+  if(bare)return C.variant?C.base+':'+C.variant:C.base;
+  return C.base+':'+(C.variant||'')+':'+seg;
 }
-function playDiagram(art){
-  const W=132,H=60,los=40;
-  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;border-radius:8px;background:#123b26" aria-hidden="true">`;
-  s+=`<rect x="0" y="0" width="${W}" height="5" fill="rgba(255,255,255,.05)"/>`;
-  s+=`<line x1="5" y1="${los}" x2="${W-5}" y2="${los}" stroke="rgba(255,255,255,.5)" stroke-width="0.7"/>`;
-  for(let x=13;x<W-5;x+=15)s+=`<line x1="${x}" y1="${los-2}" x2="${x}" y2="${los+2}" stroke="rgba(255,255,255,.16)" stroke-width="0.5"/>`;
-  [50,59,68,77,86].forEach(x=>s+=_pdot(x,los+3,'#c7d2ca'));                 // offensive line
-  ((art&&art.d)||[]).forEach(([x,y])=>s+=_pX(x,y));                          // defenders
-  ((art&&art.zone)||[]).forEach(([x,y,r])=>s+=`<circle cx="${x}" cy="${y}" r="${r||9}" fill="none" stroke="rgba(120,180,255,.5)" stroke-width="0.8" stroke-dasharray="2 1.6"/>`);
-  ((art&&art.block)||[]).forEach(p=>s+=_pline(p,'rgba(255,255,255,.42)'));   // blocks
-  ((art&&art.o)||[]).forEach(([x,y])=>s+=_pdot(x,y,'#e9e2c9'));              // skill players
-  ((art&&art.r)||[]).forEach(p=>s+=_pline(p,'var(--accent)'));              // pass routes
-  ((art&&art.run)||[]).forEach(p=>s+=_pline(p,'#6fd39a'));                   // run / ball path
-  ((art&&art.rush)||[]).forEach(p=>s+=_pline(p,'#f0857a'));                  // pass rush
-  return s+'</svg>';
+// How a player's slot reads on screen. "WR2 J. Alvarez (84)" — the slot first, because the slot is
+// what the call names and what the engine resolves.
+function slotLabel(o){return o?slotName(o.slot)+' '+o.fn[0]+'. '+o.ln+' ('+o.ov+')':'';}
+function slotName(code){
+  const n=+code[1]+1;
+  return ({W:'WR',T:'TE',R:'RB',C:'CB',S:'S',L:'LB',E:'DE',D:'DT'}[code[0]]||code[0])+n;
 }
-// The playbook: each concept keeps the ENGINE token it maps to (plain run/pass/heavy/spread, or a
-// tendency-aware variant — pass:pa/screen/deep, run:draw) + a diagram spec. Buttons open these.
-const PLAYBOOK={
- off:{
-  run:[
-   {id:'iz',name:'Inside Zone',token:'run',tip:'Bread & butter',art:{o:[[68,49],[60,49]],run:[[[60,49],[65,40],[64,17]]]}},
-   {id:'pw',name:'Power',token:'run',tip:'Downhill',art:{o:[[68,49],[61,49]],block:[[[77,44],[70,37]]],run:[[[61,49],[74,40],[80,17]]]}},
-   {id:'oz',name:'Outside Zone',token:'run',tip:'Stretch the edge',art:{o:[[68,49],[60,49]],run:[[[60,49],[96,44],[100,17]]]}},
-   {id:'draw',name:'Draw',token:'run:draw',tip:'Beats the blitz',art:{o:[[68,50],[62,50]],block:[[[68,50],[68,45]]],run:[[[62,50],[64,42],[66,16]]]}},
-   {id:'sneak',name:'QB Sneak',token:'heavy',tip:'Short yardage power',art:{o:[[68,48]],block:[[[59,44],[59,38]],[[77,44],[77,38]]],run:[[[68,48],[68,20]]]}},
-  ],
-  pass:[
-   {id:'slant',name:'Slants',token:'pass',tip:'Quick game',art:{o:[[16,38],[116,38],[40,38],[68,50]],r:[[[16,38],[30,26]],[[116,38],[102,26]],[[40,38],[52,28]]]}},
-   {id:'curl',name:'Curls',token:'pass',tip:'Vs off coverage',art:{o:[[16,38],[116,38],[60,50],[68,50]],r:[[[16,38],[16,22],[22,25]],[[116,38],[116,22],[110,25]]],run:[[[60,50],[44,46]]]}},
-   {id:'pa',name:'Play Action',token:'pass:pa',tip:'Vs a run-committed D',art:{o:[[16,38],[88,38],[60,50],[68,50]],run:[[[68,50],[60,46]]],r:[[[16,38],[18,20],[42,9]],[[88,38],[86,24],[62,22]]]}},
-   {id:'screen',name:'Screen',token:'pass:screen',tip:'Beats the blitz',art:{o:[[68,50],[58,50]],block:[[[46,45],[52,42]],[[74,44],[68,42]]],r:[[[58,50],[38,46]]]}},
-   {id:'deep',name:'Deep Shot',token:'pass:deep',tip:'High risk / reward',art:{o:[[16,38],[116,38],[40,38],[68,50]],r:[[[16,38],[16,8]],[[116,38],[116,8]],[[40,38],[40,16],[58,8]]]}},
-  ],
-  heavy:[
-   {id:'gl',name:'Goal-Line Dive',token:'heavy',tip:'Power at the stripe',art:{o:[[68,48],[63,50]],block:[[[50,44],[50,37]],[[86,44],[86,37]]],run:[[[63,50],[64,40],[64,20]]],d:[[54,35],[60,35],[66,35],[72,35],[78,35],[58,29],[70,29]]}},
-   {id:'fb',name:'FB Lead',token:'heavy',tip:'Lead blocker',art:{o:[[68,49],[64,52],[64,47]],block:[[[64,47],[70,38]]],run:[[[64,52],[72,40],[72,20]]]}},
-  ],
-  spread:[
-   {id:'empty',name:'Empty 4-Wide',token:'spread',tip:'Stress coverage',art:{o:[[14,38],[42,38],[90,38],[118,38],[68,50]],r:[[[14,38],[14,15]],[[42,38],[54,26]],[[90,38],[78,26]],[[118,38],[118,15]]]}},
-   {id:'mesh',name:'Mesh',token:'spread',tip:'Rub underneath',art:{o:[[16,38],[116,38],[40,38],[68,50]],r:[[[16,38],[70,30]],[[116,38],[62,30]],[[40,38],[40,18]]]}},
-  ],
- },
- def:{
-  base:[{id:'43',name:'4-3 Base',token:'base',tip:'Balanced',art:defArt('base')},{id:'nickel',name:'Nickel',token:'base',tip:'Extra DB vs the pass',art:defArt('nickel')}],
-  blitz:[{id:'zero',name:'Zero Blitz',token:'blitz',tip:'Bring the house',art:defArt('zero')},{id:'fire',name:'Fire Zone',token:'blitz',tip:'Edge pressure + zone',art:defArt('fire')}],
-  cover:[{id:'c2',name:'Cover 2',token:'cover',tip:'Two deep',art:defArt('c2')},{id:'c3',name:'Cover 3',token:'cover',tip:'Three deep',art:defArt('c3')}],
-  run:[{id:'bear',name:'Bear Front',token:'run',tip:'Load the box',art:defArt('bear')},{id:'gl',name:'Goal-Line',token:'run',tip:'Sell out vs the run',art:defArt('gl')}],
- }
-};
-const PLAY_CAT_LABEL={run:'Run plays',pass:'Pass plays',heavy:'Heavy — goal-line power',spread:'Spread — empty 4-wide',base:'Base defense',blitz:'Blitz',cover:'Coverage',rundef:'Run stop'};
-// Open the play picker for a category. Each card shows the art; tapping it calls that concept.
-function openPlaySheet(side,cat){
+// The standing call in plain English, for the button that runs it and the line that reports it.
+function callEnglish(side,C,opts){
+  const find=(list,slot)=>((opts&&opts[list])||[]).find(o=>o.slot===slot);
+  if(side==='def'){
+    const f=(DEF_FRONTS.find(x=>x[0]===C.base)||DEF_FRONTS[0])[1];
+    const d=(DEF_DEPTHS.find(x=>x[0]===(C.depth||''))||DEF_DEPTHS[0])[1];
+    const k=C.key?find('recv',C.key):null;
+    return f+(C.depth?' · '+d:'')+(k?' · key '+slotName(k.slot):'');
+  }
+  const pass=C.base==='pass'||C.base==='spread';
+  const looks=pass?PASS_LOOKS:RUN_LOOKS;
+  const lk=looks.find(x=>x[0]===C.base&&x[1]===(C.variant||''));
+  const dep=(pass?PASS_DEPTHS:RUN_GAPS).find(x=>x[0]===C.depth);
+  const o=C.outlet?find('recv',C.outlet):null, a=C.attack?find(pass?'cov':'front',C.attack):null;
+  return [dep?dep[1]:(pass?'Pass':'Run'),lk&&lk[1]?lk[2]:null,
+    o?'to '+slotName(o.slot):null,a?'at '+slotName(a.slot):null].filter(Boolean).join(' · ');
+}
+// Sticky per side, because a coach calls the same kind of play repeatedly and re-picking four axes
+// every snap is the thing that would make snap-by-snap unplayable. Cleared when a game opens.
+function callPrefs(kind){
+  const P=UI.callPrefs||(UI.callPrefs={});
+  if(!P[kind])P[kind]=kind==='pass'?{base:'pass',variant:'',depth:'s',outlet:'',attack:''}
+    :kind==='run'?{base:'run',variant:'',depth:'t',outlet:'',attack:''}
+    :{base:'base',depth:'',key:''};
+  return P[kind];
+}
+/* The composer. One sheet, four sections of chips, and a commit button that says in words what it
+   is about to run. Re-opening the sheet is how it re-renders — same pattern as `adjustSheet`. */
+function callSheet(kind,preset){
   const G=UI.game; if(!G||!G.pending)return;
-  const key=side==='def'?(cat==='rundef'?'run':cat):cat;
-  const plays=(PLAYBOOK[side]||{})[key]||[];
+  const ctx=G.pending, opts=ctx.opts||{recv:[],cov:[],front:[]};
+  const side=kind==='def'?'def':'off', pass=kind==='pass';
+  const C=callPrefs(kind);
+  if(preset)Object.assign(C,preset);
   const body=el('div');
-  body.append(el('div','hint',side==='def'?'A pre-snap guess vs their run/pass. Read their tendency, then dial it up.':'Tap a concept to run it. Watch the defense’s tendency to pick your spot.'));
-  plays.forEach(pl=>{
-    const card=el('button');card.dataset.tid='play-'+pl.id;
-    card.style.cssText='display:block;width:100%;text-align:left;background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:10px;margin-bottom:10px;color:inherit';
-    card.innerHTML=`<div class="row spread" style="align-items:baseline;margin-bottom:5px"><span class="cond" style="font-weight:800;font-size:15px">${pl.name}</span>${pl.tip?`<span class="meta dim">${pl.tip}</span>`:''}</div>`+playDiagram(pl.art);
-    card.onclick=()=>{closeSheet();pickCall(pl.token);};
-    body.append(card);
-  });
-  openSheet(PLAY_CAT_LABEL[cat]||'Plays',body);
+  const again=()=>{closeSheet();callSheet(kind);};
+  /* The commit button goes FIRST, not last. Four sections of options is a long sheet, and the call
+     is sticky between snaps — so the overwhelmingly common action on opening it is "yes, that one
+     again, go". Putting the button under the fold turned every repeat into a scroll, on the screen
+     where pace matters most. It reads as a sentence of what is about to happen, and the axes below
+     are how you change it. */
+  const goBar=el('div');body.append(goBar);
+  const sect=(title,note)=>{body.append(el('h2','sec',title));
+    if(note)body.append(el('div','meta dim',note));
+    const r=el('div','btn-row');r.style.marginTop='6px';body.append(r);return r;};
+  const chip=(row,on,label,tid,onclick)=>{
+    const b=el('button','btn sm'+(on?'':' ghost'),(on?'✓ ':'')+label);
+    b.dataset.tid=tid;b.onclick=onclick;row.append(b);return b;};
+  const pickRow=(title,note,list,cur,set,tidp)=>{
+    body.append(el('h2','sec',title));
+    if(note)body.append(el('div','meta dim',note));
+    const wrap=el('div');wrap.style.marginTop='6px';
+    list.forEach(o=>{
+      const on=cur===o.slot;
+      const b=el('button','lrow');b.dataset.tid=tidp+(o.slot||'none');
+      b.style.cssText='width:100%;text-align:left;margin-top:5px;padding:8px 10px'+(on?';border-color:var(--accent)':'');
+      b.disabled=!!o.out;
+      b.innerHTML=`<div class="row spread" style="flex:1;min-width:0;gap:8px">`
+        +`<span class="nm" style="font-size:13.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${on?'✓ ':''}${o.label}</span>`
+        +(o.sub?`<span class="meta dim" style="flex:none">${o.sub}</span>`:'')+`</div>`;
+      b.onclick=()=>{set(on?'':o.slot);again();};
+      wrap.append(b);});
+    body.append(wrap);
+  };
+
+  if(side==='def'){
+    const fr=sect('Front','What you are doing up front.');
+    DEF_FRONTS.forEach(([k,l,d])=>chip(fr,C.base===k,l,'dfront-'+k,()=>{C.base=k;again();}).title=d);
+    const dp=sect('Depth','How deep you are playing it. Reading their depth right is most of a defensive down.');
+    DEF_DEPTHS.forEach(([k,l,d])=>chip(dp,(C.depth||'')===k,l,'ddepth-'+(k||'none'),()=>{C.depth=k;again();}).title=d);
+    pickRow('Key a man','Take one of them away. He is much harder to reach — and everyone else is a little easier.',
+      [{slot:'',label:'Nobody — play it straight',sub:'No bracket, no soft spot.'}].concat(
+        (opts.recv||[]).map(o=>({slot:o.slot,out:o.out,label:slotLabel(o),sub:o.out?'out':''}))),
+      C.key||'',v=>{C.key=v;},'dkey-');
+  }else{
+    const looks=pass?PASS_LOOKS:RUN_LOOKS;
+    const dl=sect(pass?'How far':'Which gap',
+      pass?'Where the ball is going. It is read against how deep they are playing it.'
+          :'Where the run attacks. Inside is the floor, outside is the tail.');
+    (pass?PASS_DEPTHS:RUN_GAPS).forEach(([k,l,d])=>chip(dl,C.depth===k,l,'odepth-'+k,()=>{C.depth=k;again();}).title=d);
+    body.append(el('div','meta dim',((pass?PASS_DEPTHS:RUN_GAPS).find(x=>x[0]===C.depth)||['','',''])[2]));
+    const lr=sect('Look','');
+    looks.forEach(([b,v,l,d])=>chip(lr,C.base===b&&(C.variant||'')===v,l,'olook-'+b+(v||'x'),
+      ()=>{C.base=b;C.variant=v;again();}).title=d);
+    body.append(el('div','meta dim',((looks.find(x=>x[0]===C.base&&x[1]===(C.variant||'')))||['','','',''])[3]));
+    pickRow(pass?'Outlet':'Carrier',
+      pass?'Who you want the ball to go to. Go back to the same man too often and they start sitting on him.'
+          :'Who carries it.',
+      [{slot:'',label:pass?'Best read — let the progression take it':'Best back available',sub:'No preference.'}].concat(
+        (opts.recv||[]).filter(o=>pass||o.pos==='RB').map(o=>({slot:o.slot,out:o.out,label:slotLabel(o),sub:o.out?'out':''}))),
+      C.outlet||'',v=>{C.outlet=v;},'ooutlet-');
+    const alist=(pass?opts.cov:opts.front)||[];
+    pickRow(pass?'Attack a defender':'Run at a defender',
+      pass?'Go find the man you think cannot cover. The route that runs at him is the one that gets called.'
+          :'Run at the man you think cannot hold his gap.',
+      [{slot:'',label:'Take what’s there',sub:'No particular target.'}].concat(
+        alist.map(o=>({slot:o.slot,out:o.out,label:slotLabel(o),
+          sub:o.out?'out':(pass&&o.on?'on '+slotName(o.on):'')}))),
+      C.attack||'',v=>{C.attack=v;},'oattack-');
+  }
+  const token=buildCall(side,C);
+  const go=el('button','btn','▶ '+callEnglish(side,C,opts));
+  go.dataset.tid='call-go';go.dataset.call=token;
+  go.onclick=()=>{closeSheet();pickCall(token);};
+  goBar.append(go);
+  goBar.append(el('div','meta dim','Tap to run it. Change anything below first — your call carries over to the next snap.'));
+  openSheet(side==='def'?'Call the defense':'Call the play',body);
 }
 // A top-down field, hand-rolled SVG (no deps). Phase 46: fixed orientation — the controlled team defends
 // the LEFT end zone, so YOUR drives animate → (left-to-right) and the opponent's drives animate ← (right-
@@ -8105,28 +8478,61 @@ function defTendHint(ot){
   if(rr<=38)return `They’ve thrown on ${100-rr}% of snaps — get into coverage.`;
   return `Balanced so far (${rr}% run) — stay disciplined.`;
 }
-// Phase 23: the live matchup readout — your receivers' production + your coverage (with a 🔥 when a
-// DB is getting cooked). Built from the running box the driver captured via boxInto.
-function matchupPanel(G){
-  const box=G.box||{}, t=controlled(); if(!t)return null;
-  const me=t.id, oppId=(G.home===me?G.away:G.home);
-  const myPen=(G.pen&&G.pen[me])||{n:0,yds:0}, oppPen=(G.pen&&G.pen[oppId])||{n:0,yds:0};
-  const got=keys=>t.roster.filter(p=>{const b=box[p.id];return b&&keys.some(k=>b[k]);}).map(p=>({p,b:box[p.id]}));
-  const recs=got(['rec','reYds']).sort((a,b)=>(b.b.reYds||0)-(a.b.reYds||0)).slice(0,4);
-  const cov=got(['cvTgt']).sort((a,b)=>(b.b.cvYds||0)-(a.b.cvYds||0)).slice(0,4);
-  const myInj=((G.inj)||[]).filter(i=>i.team===me);
-  if(!recs.length&&!cov.length&&!myPen.n&&!oppPen.n&&!myInj.length)return null;
-  const c=el('div','card');c.dataset.tid='matchups';c.style.padding='10px';
-  const nm=p=>`${p.pos} ${p.fn[0]}.${p.ln}`;
-  let h='<div class="meta dim" style="margin-bottom:6px">Matchups</div>';
-  if(myPen.n||oppPen.n)h+=`<div class="row spread" style="margin:1px 0"><span class="meta">🚩 Penalties</span><span class="meta ${myPen.n>=7?'bad':''}">you ${myPen.n} (${myPen.yds}) · opp ${oppPen.n} (${oppPen.yds})</span></div>`;
-  if(myInj.length)h+=`<div class="row spread" style="margin:1px 0"><span class="meta">🩹 Out</span><span class="meta bad">${myInj.map(i=>i.pos+' '+i.name).join(', ')}</span></div>`;
-  if(recs.length)h+='<div class="meta" style="font-weight:700;margin:2px 0">Your receivers</div>'+recs.map(({p,b})=>
-    `<div class="row spread" style="margin:1px 0"><span class="meta">${nm(p)}</span><span class="meta">${b.rec||0} rec · ${b.reYds||0} yd${b.reTD?' · '+b.reTD+' TD':''}</span></div>`).join('');
-  if(cov.length)h+='<div class="meta" style="font-weight:700;margin:6px 0 2px">Your coverage</div>'+cov.map(({p,b})=>{
-    const cooked=(b.cvYds||0)>=80||(b.cvTD||0)>0;
-    return `<div class="row spread" style="margin:1px 0"><span class="meta">${nm(p)}</span><span class="meta ${cooked?'bad':''}">${b.cvCmp||0}/${b.cvTgt||0} · ${b.cvYds||0} yd${b.cvTD?' · '+b.cvTD+' TD':''}${cooked?' 🔥 cooked':''}</span></div>`;}).join('');
-  c.innerHTML=h;return c;
+/* ---- Phase 63: the matchup sheet, both ways ----------------------------------------------------
+   `matchupPanel` (Phase 23) showed YOUR receivers and YOUR coverage, which is half a game. A coach
+   deciding whom to attack needs to see the other card too: what their receivers are doing to your
+   secondary is the same information from the other side, and it is what tells you whether the
+   answer to the next drive is to score faster or to change the coverage.
+
+   The pairing rule here is `coverDef`'s, restated in the app layer: a WR is covered by the corner
+   at his own depth, a TE by the first safety, a back by the first linebacker. It has to match,
+   because a matchup sheet that names a different defender from the one the snap resolves against is
+   worse than none. Injured men are skipped the same way the engine skips them. */
+function covFor(rec,dt,out){
+  const byso=c=>dt.roster.filter(p=>p.pos===c&&!(out&&out.has(p.id))).sort((a,b)=>(a.so||0)-(b.so||0));
+  const cb=byso('CB'), saf=byso('SS').concat(byso('FS')), lb=byso('LB');
+  if(rec.pos==='WR')return cb[Math.min(rec.so||0,Math.max(0,cb.length-1))]||saf[0]||lb[0]||null;
+  if(rec.pos==='TE')return saf[0]||lb[0]||cb[0]||null;
+  return lb[0]||saf[0]||cb[0]||null;
+}
+function matchupPane(G){
+  const v=el('div','gpane');v.id='g-match';v.dataset.tid='game-matchups';
+  const box=gameBoxAt(G), home=teamById(G.home), away=teamById(G.away), me=S.teamId;
+  const out=new Set(((G.inj)||[]).map(i=>i.id).filter(Boolean));
+  const nm=p=>`${p.pos}${(p.so||0)+1} ${esc(p.fn[0])}. ${esc(p.ln)}`;
+  let h='';
+  [[home,away],[away,home]].forEach(([o,d])=>{
+    const b=id=>box[id]||{};
+    const recs=o.roster.filter(p=>['WR','TE','RB'].includes(p.pos))
+      .filter(p=>(b(p.id).rec||b(p.id).reYds||b(p.id).cvTgt)!=null&&(b(p.id).rec||b(p.id).reYds))
+      .sort((x,y)=>(b(y.id).reYds||0)-(b(x.id).reYds||0)).slice(0,4);
+    const runs=o.roster.filter(p=>b(p.id).rAtt).sort((x,y)=>(b(y.id).rYds||0)-(b(x.id).rYds||0)).slice(0,2);
+    // Sacks are charged to the defender who made them, so "sacks given up" is the OTHER team's.
+    const skGiven=d.roster.reduce((n,p)=>n+(b(p.id).sk||0),0);
+    h+=`<div class="row spread" style="margin:10px 0 3px">
+        <span class="cond" style="font-weight:800;font-size:14px;color:${chartInk(o.color)}">${o.abbr}${o.id===me?' · YOU':''} attacking</span>
+        <span class="meta dim">vs ${esc(d.abbr)}</span></div>`;
+    if(!recs.length&&!runs.length){h+='<div class="meta dim">No production yet.</div>';return;}
+    recs.forEach(p=>{
+      const c=covFor(p,d,out), cb2=c?b(c.id):{}, bb=b(p.id);
+      const cooked=(cb2.cvYds||0)>=80||(cb2.cvTD||0)>0;
+      h+=`<div class="gs-lead" style="align-items:flex-start">
+        <span class="n" style="flex:1">${nm(p)}<span class="meta dim"> vs ${c?nm(c)+' ('+c.ov+')':'—'}${cooked?' 🔥':''}</span></span>
+        <span class="s ${cooked&&o.id!==me?'bad':''}">${bb.rec||0}-${bb.reYds||0}${bb.reTD?'-'+bb.reTD+'TD':''}</span></div>`;
+    });
+    if(runs.length)h+='<div class="meta dim" style="margin-top:5px">'+runs.map(p=>{const bb=b(p.id);
+      return `${nm(p)} ${bb.rAtt}-${bb.rYds||0} (${((bb.rYds||0)/Math.max(1,bb.rAtt)).toFixed(1)} Y/C)${bb.rTD?' · '+bb.rTD+' TD':''}`;
+    }).join(' · ')+'</div>';
+    h+=`<div class="meta dim" style="margin-top:3px">Sacks given up: <b class="${skGiven>=4&&o.id===me?'bad':''}">${skGiven}</b></div>`;
+  });
+  // The two things a coach reacts to that are not a matchup: flags and who has gone down.
+  const pn=t=>(G.pen&&G.pen[t.id])||{n:0,yds:0};
+  h+=`<div class="gs-row" style="margin-top:12px"><span class="v">${pn(home).n}–${pn(home).yds}</span><span class="k">Penalties</span><span class="v r">${pn(away).n}–${pn(away).yds}</span></div>`;
+  const inj=(G.inj)||[];
+  if(inj.length)h+='<div class="meta bad" style="margin-top:6px">🩹 '+inj.map(i=>
+    esc(((teamById(i.team)||{}).abbr||'')+' '+i.pos+' '+i.name)).join(' · ')+'</div>';
+  v.innerHTML=h;
+  return v;
 }
 // Phase 27: the week-to-week injury report on Home — your players currently out, longest first.
 function injuryReport(v,t){
@@ -8170,10 +8576,20 @@ function renderInteractiveGame(app){
       `<div class="row spread" style="margin-top:8px"><span class="cond" style="font-weight:800;font-size:16px">${ctx.down} &amp; ${ddist}</span><span class="meta">${fpos} · ${hash} · ${qc.clk?qc.clk+' ':''}${qc.label}</span></div>`;
     v.append(fld);
     const cr=el('div','btn-row');cr.style.marginTop='8px';cr.dataset.tid='game-call';
+    // Phase 63: one tap runs the last call again. It carries the call in words so it is never a
+    // mystery button, and it is the first thing under the field because it is the common case.
+    const repeat=(last,side)=>{
+      if(!last)return;
+      const b=el('button','btn line','↻ Again · '+callEnglish(side,callParse(last),ctx.opts));
+      b.style.marginTop='8px';b.dataset.tid='game-repeat';b.dataset.call=last;
+      b.onclick=()=>pickCall(last);v.append(b);
+    };
     if(ctx.phase==='def'){                                  // Phase 28: their ball — call your defense
       v.append(el('div','meta',`<b>${defTendHint(ctx.offTend)}</b>`));
-      [['base','Base'],['blitz','Blitz'],['cover','Cover'],['rundef','Run stop']].forEach(([cat,lbl])=>{const b=el('button','btn line',lbl);b.dataset.cat=cat;b.onclick=()=>openPlaySheet('def',cat);cr.append(b);});
+      DEF_FRONTS.forEach(([k,lbl])=>{const b=el('button','btn line',lbl);b.dataset.cat=k;
+        b.onclick=()=>callSheet('def',{base:k});cr.append(b);});
       v.append(cr);
+      repeat(G.lastDef,'def');
       const defer=el('button','btn ghost','Defer to DC');defer.style.marginTop='8px';defer.dataset.tid='game-defer';defer.onclick=()=>pickCall('base');
       v.append(defer);
     }else if(ctx.phase==='fourth'){
@@ -8185,12 +8601,13 @@ function renderInteractiveGame(app){
     }else{                                                  // normal down — call the play (buttons open the playbook)
       v.append(el('div','meta',`<b>${offTendHint(ctx.defTend)}</b>`));
       v.append(el('div','meta dim',`Your ball, ${ctx.down} &amp; ${ddist} at the ${fpos}. OC likes a <b>${ctx.ocCall.toUpperCase()}</b>.`));
-      [['run','Run'],['pass','Pass']].forEach(([cat,lbl])=>{const b=el('button','btn '+(ctx.ocCall===cat?'':'line'),lbl);b.dataset.cat=cat;b.onclick=()=>openPlaySheet('off',cat);cr.append(b);});
+      [['run','🏈 Run'],['pass','🎯 Pass']].forEach(([cat,lbl])=>{const b=el('button','btn '+(ctx.ocCall===cat?'':'line'),lbl);b.dataset.cat=cat;
+        b.onclick=()=>callSheet(cat);cr.append(b);});
       v.append(cr);
-      const cr2=el('div','btn-row');cr2.style.marginTop='7px';
-      ['heavy','spread'].forEach(cat=>{const b=el('button','btn sm line',cat==='heavy'?'Heavy':'Spread');b.dataset.cat=cat;b.onclick=()=>openPlaySheet('off',cat);cr2.append(b);});
-      if(ctx.inFgRange){const fg=el('button','btn sm line','🥅 FG '+ctx.fgDist+'yd');fg.dataset.call='fg';fg.onclick=()=>pickCall('fg');cr2.append(fg);}   // Phase 46: FG on any down
-      v.append(cr2);
+      repeat(G.lastOff,'off');
+      if(ctx.inFgRange){const cr2=el('div','btn-row');cr2.style.marginTop='7px';
+        const fg=el('button','btn sm line','🥅 FG '+ctx.fgDist+'yd');fg.dataset.call='fg';fg.onclick=()=>pickCall('fg');   // Phase 46: FG on any down
+        cr2.append(fg);v.append(cr2);}
       const defer=el('button','btn ghost','Defer to OC ('+ctx.ocCall+')');defer.style.marginTop='8px';defer.dataset.tid='game-defer';defer.onclick=()=>pickCall(ctx.ocCall);
       v.append(defer);
     }
@@ -8200,17 +8617,31 @@ function renderInteractiveGame(app){
   }else if(!G.done){
     v.append(el('div','card','<div class="hint">Resolving…</div>'));
   }
-  const mp=matchupPanel(G); if(mp){mp.style.marginTop='12px';v.append(mp);}
-  // A play is three or four beats now rather than one clause, so a line wraps to 2-3 rows — the
-  // watch view needs the height back to keep a drive's worth on screen.
-  const feed=el('div');feed.id='g-feed';feed.style.cssText='max-height:'+((ctx&&!half)?'26vh':'48vh')+';overflow-y:auto;margin-top:12px';
-  // The coach screen re-runs the engine and rebuilds the whole feed after every call, so history is
-  // shown whole and only the newest line is allowed to develop — which is what Phase 53's beats were
-  // for, and what a wholesale rebuild had been quietly swallowing.
-  let lastLn=null;
-  G.log.forEach(e=>{const ln=gameEventEl(e);if(ln){showBeats(ln);feed.append(ln);lastLn=ln;}});
-  if(lastLn&&!G.done){clearBeatTimers();lastLn.querySelectorAll('span[style*="opacity"]').forEach(s=>s.style.opacity='0');revealBeats(lastLn,false);}
-  v.append(feed);
+  /* Phase 63: the coach screen gets the same three views the watch screen has, because a coordinator
+     calling a game needs the box score of BOTH teams and the state of the individual matchups, not
+     just his own receiving line. The Phase 23 `matchupPanel` was a one-sided summary pinned above
+     the feed; it is now the Matchups tab, and it shows both cards. */
+  const ctab=G.ctab||'log';
+  const paneH=(ctx&&!half)?'26vh':'48vh';
+  const tabs=el('div','tabs');tabs.style.margin='12px 0 8px';tabs.dataset.tid='coach-tabs';
+  [['log','Play-by-play'],['stats','Stats'],['match','Matchups']].forEach(([k,lbl])=>{
+    const b=el('button',ctab===k?'on':'');b.dataset.tab=k;b.textContent=lbl;
+    b.onclick=()=>{G.ctab=k;render();};tabs.append(b);});
+  v.append(tabs);
+  if(ctab==='stats'){const sp=statsPane(G);sp.style.cssText='max-height:'+paneH+';overflow-y:auto';v.append(sp);}
+  else if(ctab==='match'){const mp=matchupPane(G);mp.style.cssText='max-height:'+paneH+';overflow-y:auto';v.append(mp);}
+  else{
+    // A play is three or four beats now rather than one clause, so a line wraps to 2-3 rows — the
+    // watch view needs the height back to keep a drive's worth on screen.
+    const feed=el('div');feed.id='g-feed';feed.style.cssText='max-height:'+paneH+';overflow-y:auto';
+    // The coach screen re-runs the engine and rebuilds the whole feed after every call, so history is
+    // shown whole and only the newest line is allowed to develop — which is what Phase 53's beats were
+    // for, and what a wholesale rebuild had been quietly swallowing.
+    let lastLn=null;
+    G.log.forEach(e=>{const ln=gameEventEl(e);if(ln){showBeats(ln);feed.append(ln);lastLn=ln;}});
+    if(lastLn&&!G.done){clearBeatTimers();lastLn.querySelectorAll('span[style*="opacity"]').forEach(s=>s.style.opacity='0');revealBeats(lastLn,false);}
+    v.append(feed);
+  }
   const ctr=el('div');ctr.style.marginTop='12px';
   if(G.done){
     const cont=el('button','btn',G.replay?'Done':'Continue → commit week');cont.dataset.tid='game-continue';cont.onclick=finishGame;ctr.append(cont);
@@ -9542,8 +9973,14 @@ function renderRecruiting(app){
 function ordersLine(c){
   const cap=orderCap(), n=orderCount();
   const t=el('div','meta dim');t.style.cssText='margin-top:8px;font-size:11px';t.dataset.tid='rec-orders';
+  /* "Delegated recruits hold serve" said what the mechanic does in the vocabulary of the person who
+     wrote it, which is not the same as explaining it. What a standing order actually is: a named
+     staffer calls that recruit every week on your behalf, for free, forever — and because he does
+     not know what the kid is looking for he pitches blind, so his push lands at roughly the size of
+     the interest a neglected recruit bleeds off. Net: the number stops falling. It does not climb.
+     That is the whole trade, and it is worth spelling out every time the word appears. */
   t.innerHTML=cap
-    ?`🤖 Staff orders <span class="accent">${n}/${cap}</span> — delegated recruits hold serve; only you move them.`
+    ?`🤖 Staff orders <span class="accent">${n}/${cap}</span> — a staffer calls that recruit every week for free. He pitches blind, so he holds the interest steady; only your own work raises it.`
     :'✋ No recruiting staff — every recruit on your board is yours to work, every week.';
   c.append(t);
   /* The market only opens in the preseason and the offseason (`canManage`). This button had no such
@@ -9561,28 +9998,27 @@ function ordersLine(c){
     }
   }
 }
+/* The plan card used to re-list every queued action as its own row, one per recruit, with a ✕. That
+   was a second copy of a list the board underneath it was already showing — every board row carries
+   its own "⏳ Scout" / "⏳ Pitch · NIL" tag, and tapping the row is how you clear it. Two lists of the
+   same thing is worse than one: it is twice the scrolling, it grew without bound as the week's plan
+   grew (which is what pushed the tab strip off the screen before Phase 62 moved it), and the copy
+   further from the recruit is the one you cannot act on in context.
+   What is left is the part the board CANNOT show — the totals. What you have left to spend, how full
+   the board is, what the week's plan costs, and who your staff is holding. */
 function planCard(v){
-  const R=S.recruiting, ids=Object.keys(R.intents||{});
+  const R=S.recruiting;
   const c=el('div','card');c.dataset.tid='rec-plan';c.style.marginTop='10px';
   const total=intentCount();
-  // Phase 35: weekly scarcity — points, double-down tokens, and official-visit cap on one line.
-  const caps=`<span class="meta dim">${R.points||0} pts · 📋 ${R.board.length}/${boardSlots()} · ⚡${R.doubles||0} double${(R.doubles||0)===1?'':'s'} · 🏟️ ${totalBooked()} booked · ${visitsLeft()} left</span>`;
-  if(!total){c.innerHTML=`<div class="row spread"><span class="meta dim">This week’s plan</span>${caps}</div>
-    <div class="meta" style="margin-top:4px">No actions queued — open a target and set one. They resolve when you advance.</div>`;
-    ordersLine(c);v.append(c);return;}
-  const reserved=Object.values(R.intents).reduce((s,a)=>s+a.reduce((x,it)=>x+(it.cost||0),0),0);
-  c.innerHTML=`<div class="row spread"><span class="meta dim">This week’s plan · ${total} action${total===1?'':'s'} · ${reserved} pts</span></div><div class="row spread" style="margin-top:2px">${caps}</div>`;
-  ids.map(recById).filter(Boolean).forEach(rec=>{
-    const arr=R.intents[rec.id]||[];
-    const row=el('div','row spread');row.style.cssText='margin-top:7px;gap:8px';
-    row.innerHTML=`<button class="lrow" data-id="plan-${rec.id}" style="flex:1;min-width:0;text-align:left;padding:6px 8px">
-        <div style="min-width:0"><div class="nm" style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rec.fn} ${rec.ln} <span class="dim" style="font-weight:400">${rec.pos}</span></div>
-        <div class="meta accent">${arr.map(it=>it.label).join(' + ')}</div></div></button>`;
-    const x=el('button','btn sm line','✕');x.style.cssText='flex:none;padding:6px 10px';
-    x.onclick=()=>{clearRecIntent(rec);render();toast('Cleared');};
-    row.querySelector('button').onclick=()=>recruitSheet(rec);
-    row.append(x);c.append(row);
-  });
+  const reserved=Object.values(R.intents||{}).reduce((s,a)=>s+a.reduce((x,it)=>x+(it.cost||0),0),0);
+  // The points are the headline of the summary card directly above, so this one leads with what
+  // that card cannot say — what the week's plan actually is — and carries the budget on the caps line.
+  const caps=`<span class="meta dim">${R.points||0} pts left · 📋 ${R.board.length}/${boardSlots()} board · ⚡${R.doubles||0} double${(R.doubles||0)===1?'':'s'} · 🏟️ ${totalBooked()} booked · ${visitsLeft()} left</span>`;
+  c.innerHTML=`<div class="row spread" style="align-items:baseline">
+      <span class="meta dim">This week’s plan</span>
+      <span class="cond ${total?'accent':'dim'}" style="font-weight:800;font-size:15px">${total?total+' action'+(total===1?'':'s')+' · '+reserved+' pts':'nothing queued'}</span></div>
+    <div class="row spread" style="margin-top:4px">${caps}</div>
+    <div class="meta dim" style="margin-top:4px;font-size:11px">${total?'Queued actions show on the rows below — tap a recruit to change or clear his.':'Tap a recruit below, or use 🔍 on a row to queue a scout. Everything resolves when you advance the week.'}</div>`;
   ordersLine(c);
   v.append(c);
 }
@@ -9637,11 +10073,35 @@ function recruitRow(rec){
       ${committed?'':'<div class="bar" style="margin-top:5px"><i style="width:'+mi+'%"></i></div>'}</div>
     <div style="text-align:right;flex:none;margin-left:8px">${status}</div>`;
   row.onclick=()=>recruitSheet(rec);
-  return row;
+  /* A quick-scout chip, right on the row. Scouting is the one recruiting action that has to run WIDE
+     — the class is thousands of names and the read is what tells you which twenty to actually chase —
+     and doing it fifteen times a week meant fifteen round trips through a sheet. At one point apiece
+     (see RECRUIT_COSTS) the budget now supports that many; this is the other half of making it
+     possible. It sets the same intent `setRecIntent` sets, so it queues, costs, refunds and resolves
+     identically — it is a shortcut to the action, not a second version of it.
+     A row is a <button>, and a button cannot contain a button, so the chip is a sibling in a
+     wrapper. `data-id` stays on the row itself, which is what every selector reads. */
+  const done=rec.scout>=100, queued=S.recruiting&&S.recruiting.intents&&hasIntent(rec,'scout');
+  const canScout=!rec.signed&&!(S.recruiting&&S.recruiting.signed)&&rec.committedTo!==S.teamId
+    &&!(rec.finalists&&rec.finalists.indexOf(S.teamId)<0);
+  if(!canScout||done)return row;
+  const wrap=el('div','row');wrap.style.cssText='gap:6px;align-items:stretch';
+  row.style.flex='1 1 auto';row.style.minWidth='0';
+  const sb=el('button','btn sm '+(queued?'':'ghost'));
+  sb.dataset.tid='row-scout-'+rec.id;
+  sb.style.cssText='flex:none;width:48px;padding:0;font-size:15px';
+  sb.title=queued?'Scouting queued — tap to cancel':'Queue a scout ('+RECRUIT_COSTS.scout+' pt)';
+  sb.setAttribute('aria-label',sb.title);
+  sb.textContent=queued?'✓':'🔍';
+  sb.onclick=e=>{e.stopPropagation();
+    const was=queued;
+    if(setRecIntent(rec,'scout',null)){render();toast(was?'Scout cancelled — '+rec.ln:'Scouting '+rec.ln);}};
+  wrap.append(row,sb);
+  return wrap;
 }
 function recruitBoard(v){
   const R=S.recruiting;
-  if(!R.board.length){v.append(el('div','empty','No targets yet.\nOpen the Prospects tab and offer a scholarship to start a board.'));return;}
+  if(!R.board.length){v.append(el('div','empty','No targets yet.\nOpen the Prospects tab and add someone — the board is free, and it is who you are chasing.'));return;}
   const recs=R.board.map(recById).filter(Boolean)
     .sort((a,b)=>(b.committedTo===S.teamId)-(a.committedTo===S.teamId)||myInterest(b)-myInterest(a));
   recs.forEach(rec=>v.append(recruitRow(rec)));
@@ -9684,7 +10144,7 @@ function visitBookSheet(week){
   body.append(el('div','hint','Week '+week+' vs '+(info.opp?info.opp.abbr:'home')+' — '+info.tier+' weekend (×'+info.q.toFixed(2)+'). Pick a recruit to host.'));
   const avail=S.recruiting.board.map(recById).filter(Boolean).filter(canBookVisit)
     .sort((a,b)=>b.stars-a.stars||myInterest(b)-myInterest(a));
-  if(!avail.length){body.append(el('div','empty','No bookable recruits.\nOffer a scholarship + have a free visit + season budget.'));openSheet('Book a visit — Week '+week,body);return;}
+  if(!avail.length){body.append(el('div','empty','No bookable recruits.\nAdd him to your board, and keep a weekend slot and a season visit free.'));openSheet('Book a visit — Week '+week,body);return;}
   const list=el('div');list.style.marginTop='8px';
   avail.forEach(rec=>{const gain=Math.round(20*info.q*m.visit*recScoutMult(rec));
     const b=el('button','lrow');b.style.cssText='width:100%;text-align:left;margin-top:6px';b.dataset.id='vbook-'+rec.id;
@@ -9924,7 +10384,7 @@ function recruitSheet(rec){
         +S.recruiting.board.length+'/'+boardSlots()+'). You can work him either way.'));
     }
     if(!hasOffer(rec)){
-      const sch=el('button','btn','🎓 Offer scholarship · '+RECRUIT_COSTS.offer+' pts');
+      const sch=el('button','btn','🎓 Offer scholarship'+(RECRUIT_COSTS.offer?' · '+RECRUIT_COSTS.offer+' pts':' · free'));
       sch.dataset.tid='rec-scholarship';
       const ct2=rec.committedTo&&rec.committedTo!==S.teamId?teamById(rec.committedTo):null;
       sch.onclick=()=>{if(!extendOffer(rec))return;
@@ -9932,7 +10392,7 @@ function recruitSheet(rec){
         toast(ct2?'Scholarship offered — now out-recruit '+ct2.abbr:'Scholarship offered');};
       sch.style.marginTop='9px';
       body.append(sch);
-      body.append(el('div','hint center','He cannot commit to you until you offer. It is the loudest thing you can say — worth about '+REC.OFFER_BUMP+' interest.'));
+      body.append(el('div','hint center','Free, and he cannot commit to you until you offer. It is the loudest thing you can say — worth about '+REC.OFFER_BUMP+' interest. What it costs you is the board slot.'));
     }else{
       const done=el('div','card');done.style.cssText='margin-top:9px;text-align:center';done.dataset.tid='rec-offered';
       done.innerHTML='<div class="cond good" style="font-weight:800;font-size:15px">🎓 Scholarship offered</div>'
@@ -9993,9 +10453,15 @@ function recruitSheet(rec){
         ob.style.marginTop='9px';ob.dataset.tid='rec-delegate';
         if(!cap&&!cur)ob.disabled=true;
         ob.onclick=()=>{if(cur){setRecOrder(rec,null);closeSheet();render();recruitSheet(rec);toast('Order cleared');}else orderSheet(rec);};
+        // Say what it is on the button's own line, not only inside the sheet it opens — the question
+        // "what does delegating actually do" is asked here, before anything has been tapped.
+        const obh=el('div','meta dim');obh.style.cssText='margin-top:4px;font-size:11px;text-align:center';
+        obh.textContent=cur
+          ?cur.name+' calls him every week for free. Blind pitches — it holds his interest steady, it does not raise it.'
+          :'A staffer calls him every week for free. He pitches blind, so it holds his interest steady rather than raising it.';
         const drop=el('button','btn sm line','Drop from board');drop.style.marginTop='9px';drop.dataset.tid='rec-drop';
         drop.onclick=()=>{dropRecruit(rec);closeSheet();render();toast('Dropped from board');};
-        body.append(ob,drop);
+        body.append(ob,obh,drop);
       }
       body.append(el('div','hint center',sc2+'\n'+(R.points||0)+' pts · ⚡'+(R.doubles||0)+' · 🏟️ '+visitsLeft()+' visits left ('+totalBooked()+' booked)'));
     }
@@ -10018,7 +10484,7 @@ function recruitSheet(rec){
 // choice that matters is WHO, since a better staffer works the recruit harder (recStaffMult).
 function orderSheet(rec){
   const body=el('div'), staff=recStaff(controlled());
-  body.append(el('div','hint','A staffer keeps him warm each week for free — but he pitches blind, so he holds ground rather than gaining it. Work the ones you actually want yourself.'));
+  body.append(el('div','hint','What a standing order does: this staffer calls '+rec.ln+' every week from now on, at his own rating, and it costs you no points. He does not know what the kid is looking for, so he pitches blind — his push comes out about the size of the interest a recruit you ignore bleeds off each week. So the number stops sliding; it does not climb.\n\nDelegate the ones you want to keep alive. Work the ones you actually want to sign.'));
   const choice=el('div','choice');choice.style.marginTop='10px';
   const load={};for(const id in recOrders())load[recOrders()[id]]=(load[recOrders()[id]]||0)+1;
   staff.forEach(c=>{

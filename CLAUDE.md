@@ -8,8 +8,8 @@ web deploy, no PWA and no CI; the browser is a development and test target only.
 > This file is the **working brief** — what you need loaded every session. The full
 > phase-by-phase design records (the "why" behind each system) live in **`docs/phases/`**
 > and are read on demand, not auto-loaded:
-> - `docs/phases/gameday.md` — sim engine + play-calling + the watch screen (Phases 3, 3.5, 21–31, 46, 55, 55.1, 55.2)
-> - `docs/phases/recruiting.md` — recruiting, signing, portal, visits, and the measured talent economy (Phases 4, 14, 16, 17, 33–38, 56, 57a, 57b, 58, 59, 60, 62)
+> - `docs/phases/gameday.md` — sim engine + play-calling + the watch screen (Phases 3, 3.5, 21–31, 46, 55, 55.1, 55.2, 63)
+> - `docs/phases/recruiting.md` — recruiting, signing, portal, visits, and the measured talent economy (Phases 4, 14, 16, 17, 33–38, 56, 57a, 57b, 58, 59, 60, 62, 63)
 > - `docs/phases/offseason.md` — rollover, program, postseason, draft, championships, camp, realignment (Phases 5, 6–9, 12, 13, 15, 18, 32, 39, 43, 44)
 > - `docs/phases/identity-media.md` — traits, morale, media, rivalries, records, contract, legends, identity (Phases 10, 11, 19, 20, 40, 41, 42, 45)
 > - `docs/phases/cloud.md` — cloud saves: AWS backend, career codes, sync/conflict model (Phase 47)
@@ -39,7 +39,7 @@ web deploy, no PWA and no CI; the browser is a development and test target only.
 > band-pass and saturation defects Phase 56 measured. Reproduce with `tools/cfb-data/20–23`
 > (needs a free `CFBD_API_KEY`).
 >
-> **All roadmap phases 1–62 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–63 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -599,6 +599,51 @@ still serves it with zero config.
   against 8 losses with no staff, 5.0 with a department (`29-portalstaff.js`). **No save bump**, no
   `SIM_MODEL` bump. `qa` 359 → **377**. *(→ `docs/phases/recruiting.md`, `docs/phases/ios.md`.)*
 
+- **Phase 63 — the call sheet.** Two halves of one piece of feedback: play-calling stops being a
+  playbook, and recruiting stops charging for the wrong acts. **In-game**, Phase 46's fourteen
+  hand-drawn concepts are gone. They did not scale (every card is an SVG route tree written by hand),
+  the diagrams were doing work the engine was not (Inside Zone, Power and Outside Zone all carried
+  `token:'run'` — three pictures, one call), and picking a card is not the job. A call is now the four
+  things a coordinator decides: **what · how far · who gets it · whom you attack**. Every axis reaches
+  a play — depth against the defence's depth is a real matchup table, the run gap reshapes the Phase 53
+  floor and tail, and naming an outlet or a defender selects the actual matchup the snap resolves
+  (`wpick` is still always drawn and only its RESULT overridden, so the rng stream stays a function of
+  seed + calls). The call is one string, `base[:variant[:targets]]`, with every delta keyed off the new
+  **third** segment — absent unless a human composed one, which is why an AI game, a "defer", and every
+  coached game already banked in a save resolve byte-for-byte to what they did before (**simlab 161/161
+  with an identical summary line**; qa asserts it directly). **No save bump, no `SIM_MODEL` bump** —
+  and that is also why the AI defence does NOT get a depth of its own, since giving it one would change
+  what those banked games replay to; the other side's depth is IMPLIED instead (from the front called,
+  and from distance-to-go). **The tuning is the phase's other half.** The hand-written interaction table
+  read cleanly and measured at a **23-point** spread — pressing every snap gave up 14.6 a game against
+  37.4 for two-deep — because the implied mixes are nowhere near uniform (the offence is in `s` 60% of
+  the time and reaches `d` never). Double-centring each row against the measured offensive mix and each
+  column against the defensive one leaves pure interaction: **defensive spread 23 → 1.5 points, offensive
+  depths within 1.2, gaps within 0.7.** Two traps recorded: measuring an axis by calling it every snap
+  measures the Phase 22 predictability tax instead (all-run football averages 1.67 Y/C), and `d` is
+  deliberately **no longer** the Phase 46 `deep` variant — as a card it was one option among ten, as a
+  rung on an axis it scored 27.6 against 23.7 and the dominant strategy was to stop thinking (the legacy
+  variant is untouched on its own branch). Naming a target carries the Phase 22 tax one level down, on
+  an UNDAMPED channel — `vD` asks whether a sharp defender is fooled by a fake, which would mean the
+  sharpest defender in the league is the least able to notice you have thrown at him nine times running.
+  The coach screen gains the watch screen's three views (**Play-by-play · Stats · Matchups**), because a
+  play-caller needs BOTH teams' box scores; the Phase 23 one-sided panel becomes the Matchups tab and
+  shows each receiver against the defender `coverDef` will actually assign him. **Recruiting**: the
+  scholarship offer is **free** (it is a piece of paper — the BOARD is what costs you, and it is still
+  the only route to a commitment); `scout` 2 → **1** and `REC.BASE_POINTS` 6 → **14**, so ~18 evaluations
+  a week at the bottom against the old ~10 points total, with a **🔍 chip on every row** so eighteen
+  scouts is not eighteen trips through a sheet (`REC.SLOTS` deliberately NOT raised — the board was
+  measured at 12); the plan card's duplicate per-recruit action list is **deleted** (the board rows
+  already carry `⏳ Scout`, and the second copy is the one you cannot act on in context), leaving only
+  the totals; and delegation finally says what it does — *a staffer calls him every week for free, but
+  he pitches blind, so the interest stops sliding and does not climb*. `REC.BASE_POINTS` is read only by
+  the app-layer `weeklyPoints`, never inside the fence, so **`reclab` holds at 87/87 and sign rate at
+  67%**. **Recorded and NOT fixed:** the `ignored` arm of `28-receffort` signs **zero** in every band and
+  has since the offer gate landed (measured identical on the branch head) — a real cliff of exactly the
+  kind Phases 60/62 exist to prevent, left alone because every fix is a design decision about the gate.
+  `qa` 380 → **398** (the gate also stops failing on a browser-build-dependent `/favicon.ico` 404 that
+  had nothing to do with the page). *(→ `docs/phases/gameday.md`, `docs/phases/recruiting.md`.)*
+
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
 stays fast). This is a design choice, not a backlog. Per-doc "Deliberately out of scope"
@@ -924,6 +969,11 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
   nav buttons `data-tid="nav-<view>"`, team tabs `data-tid="tab-<roster|coaches>"`;
   `#app` carries `data-screen` (= `UI.view`) and `data-tab`; sheets `data-tid="sheet"`.
   The watch viewer: `data-tid="game-board"`, `data-tid="game-tabs"` (`[data-tab=log|stats]`),
+  and the coach screen's own strip `data-tid="coach-tabs"` (`[data-tab=log|stats|match]`) over
+  `data-tid="game-stats"` / `data-tid="game-matchups"`. The call sheet (Phase 63) carries
+  `data-tid="call-go"` (with the composed token on `data-call`) and one tid per option —
+  `odepth-*`/`olook-*`/`ooutlet-*`/`oattack-*` on offence, `dfront-*`/`ddepth-*`/`dkey-*` on defence;
+  a recruit row's quick-scout chip is `row-scout-<id>`.
   `#g-feed` (the log), `#g-stats` (the box score), `data-tid="drive-chart"` with `#g-chart`
   (the scrolling rows) inside it.
 - **State access:** it's a classic script, so `S`, `UI`, and `controlled()` are global —
@@ -975,7 +1025,11 @@ recruiting is worth to the PLAYER — two arms (ignored vs worked) over seeds ×
 `29-portalstaff.js` does the same for the portal with and without recruiting staff. Both drive the
 real page in Chromium rather than extracting an engine block, because `reclab` records that the
 player's recruiting path is app-layer and it *"structurally cannot see it"*. Report →
-`tools/cfb-data/receffort-report.txt`.
+`tools/cfb-data/receffort-report.txt`. Phase 63 adds **`30-callsheet.js`** — what each rung of a
+play-calling axis is worth, on simlab's synthetic world (no browser, no real data). It lets the OC
+pick run/pass and supplies only the axis, because measuring a depth by throwing it on every snap
+measures the Phase 22 predictability tax instead; it also prints the two implied-depth mixes that
+`DEPTH_VS` is double-centred against, which must be re-measured before that table is re-centred.
 
 ### Still intentionally inert (deliberate non-goals, not a backlog)
 - Non-controlled games are resolved instantly by `simEngine`; only the controlled team's game

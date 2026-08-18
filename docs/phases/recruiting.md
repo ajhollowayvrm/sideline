@@ -1445,3 +1445,107 @@ and edge-color locked + filled games into weeks together. Phase 3 work should av
 assuming the schedule is fully engine-generated. (`startSeason` will pull each series' leg
 whose `year` matches the season being generated.)
 
+
+---
+
+## Phase 63 (recruiting half) — the week you actually work
+
+Four pieces of feedback, all about the same thing: the screen was charging for the wrong acts and
+hiding the ones it wasn't.
+
+### The scholarship offer is free
+
+> *"Offering a scholarship should be free."*
+
+It cost 5 points, which is a pitch and two-thirds. That taxed the wrong thing. A scholarship offer is
+a piece of paper and a phone call — a real program extends them by the hundred, and the ones that
+matter are the ones it then goes and recruits. Charging for it put the loudest, cheapest thing a
+program can say in competition with the actual work, so a coach who spent his week offering had
+nothing left to follow up with.
+
+Everything else about it holds. It is still a real gate — a prospect cannot commit to a programme
+that never offered him — and it still lands `REC.OFFER_BUMP` (18), the largest single move in the
+screen. What limits it is the **board**, which is capped at `boardSlots()` and is the thing that
+genuinely costs you something to hold. Free plus board-gated is also why it cannot be farmed:
+`dropRecruit` pulls the scholarship *and* deletes your interest, so churning slots to re-collect the
+bump is a net loss.
+
+### Scouting has to run wide
+
+> *"A recruiting class is large and many commit right at the very end so we need to be able to do the
+> scout action on at least 15-20 ppl a week."*
+
+Two changes, because it was two problems.
+
+**Budget.** `scout` drops 2 → **1** and `REC.BASE_POINTS` goes 6 → **14**. An unstaffed program lands
+~18 points a week against the old ~10; the scouting facility keeps its slope on top (~22 maxed) and a
+department pushes past 30. So ~18 evaluations a week at the bottom — while a *pitch* still costs 3,
+so the relationship budget grew far less than the survey one. That split is the point: scouting buys
+**information** (a sharper read, plus the `recScoutMult` payoff on later actions) and never interest,
+so breadth here is cheap on purpose.
+
+`REC.BASE_POINTS` lives inside the RECRUIT ENGINE fence but is read in exactly one place — the
+app-layer `weeklyPoints`, never inside it. The AI's budget is `AI_BASE`/`AI_PER` (`aiBudget`) and is
+untouched, which is why the player's week can be sized for how a coach actually works a board without
+moving a single fitted quantity. **`reclab` finished on 87/87 with sign rate held at 67%.**
+
+**`REC.SLOTS` is deliberately NOT raised with it.** The board is who you are *actively recruiting*, it
+was measured at 12 (see the constant's own note — effort's value peaks there and reverses as you
+spread too thin), and scouting has never needed a board slot.
+
+**Ergonomics.** Eighteen evaluations meant eighteen round trips through a sheet. Every prospect row
+now carries a **🔍 chip** that queues (and un-queues) a scout in place. It calls the same
+`setRecIntent` the sheet does, so it queues, costs, refunds and resolves identically — a shortcut to
+the action, not a second version of it.
+
+### One list, not two
+
+> *"We don't need a second list of what actions we're taking because we have the actions on the main
+> board."*
+
+Right. The plan card re-listed every queued action as its own row with a ✕, directly above a board
+where every row already carries its own `⏳ Scout` / `⏳ Pitch · NIL` tag and where tapping the row is
+how you change it. Two lists of the same thing is worse than one: twice the scrolling, it grew
+without bound as the week's plan grew (which is what pushed the tab strip off the screen before Phase
+62 moved it), and the copy further from the recruit is the one you cannot act on in context.
+
+What is left is the part the board **cannot** show — the totals. Points left, board occupancy,
+double-downs, visits booked and remaining, what the week's plan costs, and who your staff is holding.
+
+### What delegating does
+
+> *"What does delegated recruits do?"*
+
+The line read *"delegated recruits hold serve; only you move them"*, which says what the mechanic does
+in the vocabulary of the person who wrote it. What it actually is:
+
+> A named staffer calls that recruit every week on your behalf, for free, forever. He does not know
+> what the kid is looking for, so he pitches blind — his push comes out about the size of the
+> interest a recruit you ignore bleeds off each week. **So the number stops sliding. It does not
+> climb.**
+
+That is now said in three places, because it is asked in three places: the orders line on the board,
+on the Delegate button's own row before anything has been tapped, and at the top of the sheet it
+opens. Delegate the ones you want to keep alive; work the ones you want to sign.
+
+### Measured
+
+`28-receffort.js`, 3 seeds × 3 bands, before → after: the worked arm goes 17.7 → 18.0 signed at the
+top and 17.3 → 18.0 in the mid band, class score 834 → 851 and 361 → 389. So the bigger budget buys a
+slightly better class and mostly buys the *ability to look*, which is what it was for.
+
+### Recorded and NOT fixed: the ignored arm signs zero
+
+The `ignored` arm — a coach who never opens the recruiting screen — signs **0 in every band**, and
+has since the offer gate landed (measured on the branch head before any of this phase's changes: the
+same 0 / 0 / 0). Making the offer free does not touch it, because that coach never offers anybody.
+
+This is a real cliff and it is exactly what Phase 60 and Phase 62 were built to prevent: Phase 62
+records *"a blue-blood who ignores recruiting still signs 24 for the #4 class, a prestige-35 program
+signs 11 and must work for 22. No cliff."* Zero signees compounds into a hollow roster in four years.
+
+It is left alone here because the fix is a **design decision about the offer gate**, not a bug fix —
+either the gate needs a floor (a prospect whose interest clears the bar signs anyway, offer or not),
+or boarding a recruit should carry the offer with it, or the AD should extend offers you didn't. All
+three change what the previous phase deliberately built, and none of them is what this feedback
+asked for.
