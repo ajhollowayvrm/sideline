@@ -534,6 +534,118 @@ function moraleGameSkew(roster){
 function moralePortalPush(morale){return clamp((50-morale)/50*0.2,0,0.2);}
 // === TRAIT ENGINE (Phase 10) END ===
 
+// === SIDELINE ENGINE (Phase 64) START ===
+// Phase 64 — SIDELINE MOMENTS. The conversation that happens when a player walks off after a notable
+// snap: which moments are worth stopping the game for, what the head coach can say, and how THIS
+// player takes it — read through the temperament you only ever see FOGGED (Motor / Poise / Ego).
+//
+// It is the first system that puts the Phase 10/20 traits in front of you as a LIVE decision rather
+// than a background modifier. Every in-game lever before it was tactical — what play, what coverage,
+// who covers whom. This is the other half of the job: managing men.
+//
+// Pure: depends only on `clamp` (no DOM, no S, no rng), so test/sidelab.js extracts + validates it.
+// Nothing here touches simEngine. The app turns a chosen response into the EXISTING Phase 24
+// adjustment plan — a bounded ±OVR nudge (plan.boost), a one-series benching (plan.sit) or the
+// Phase 49 discipline lever (plan.calm) — which rides on `g.adjusts` and replays on commit.
+const SIDELINE_MAX=6;      // most sideline stoppages in one game (the game still has to breathe)
+const SIDELINE_GAP=8;      // plays between moments
+const SIDELINE_HITS=2;     // how often you can pull the SAME player aside in a game
+const SIDELINE_GOODS=2;    // celebrations are rarer than corrections
+const SIDELINE_FRESH=3;    // plays a tagged moment stays "fresh" (after that he's back in the huddle)
+const SIDELINE_SIT=3;      // DRIVES a benched player sits — drives alternate, so "sit from the drive you're
+                           // standing in, through the next two" costs him exactly one of his own series.
+
+// The moments the engine tags (via the play log) and what you can do about each.
+const SIDELINE_KINDS={
+  int :{tone:'bad', title:'Thrown a pick',  opts:['chew','back','teach','sit','quiet'],
+        head:n=>`${n} forced one into coverage. He’s on the bench with his helmet still on.`},
+  fum :{tone:'bad', title:'Put it on the ground', opts:['chew','back','teach','sit','quiet'],
+        head:n=>`${n} coughed it up. He comes off without looking at anybody.`},
+  burn:{tone:'bad', title:'Beaten for a score', opts:['chew','back','teach','sit','quiet'],
+        head:n=>`${n} got beat for the touchdown. He’s jogging back with his hands on his head.`},
+  miss:{tone:'bad', title:'Missed the kick',opts:['back','teach','sit','quiet'],
+        head:n=>`${n} pushed the field goal wide. Nobody on the bench will look at him.`},
+  hype:{tone:'good',title:'In the end zone', opts:['ride','level','feed'],
+        head:n=>`${n} just put it in the end zone and he’s bouncing down the sideline.`},
+  pen :{tone:'team',title:'Flag trouble',   opts:['calm','fire','quiet'],
+        head:()=>`Another flag. The whole unit is jumpy and the crowd knows it.`}
+};
+// The responses. `hint` is what the COACH knows going in — never the answer (his makeup is fogged).
+const SIDELINE_OPTS={
+  chew :{label:'Get in his face',        hint:'A challenge. Poise takes it; pride bristles.'},
+  back :{label:'Put an arm around him',  hint:'Steady him. Safest with a rattled kid.'},
+  teach:{label:'Walk him through it',    hint:'Coach the mistake. A grinder soaks it up.'},
+  sit  :{label:'Sit him a series',       hint:'He cools off — and his backup takes the snaps.'},
+  quiet:{label:'Say nothing',            hint:'Let him work it out on his own.'},
+  ride :{label:'Ride the wave',          hint:'Feed the emotion. Big swing either way.'},
+  level:{label:'Keep him level',         hint:'Even keel. Small, safe.'},
+  feed :{label:'Tell him it’s coming again',hint:'Promise him the ball. A confident kid soars.'},
+  calm :{label:'Settle them down',       hint:'Cuts pre-snap fouls for the rest of the game.'},
+  fire :{label:'Light a fire under them',hint:'Emotion up — discipline unchanged.'}
+};
+// Is this moment worth stopping for? `st` = {count, gap (plays since the last moment), hits (times
+// you've already grabbed THIS player), goods (celebrations so far)}. Pure gate — the pacing rules.
+function sidelineFires(kind,st){
+  const K=SIDELINE_KINDS[kind]; if(!K)return false;
+  st=st||{};
+  if((st.count||0)>=SIDELINE_MAX)return false;
+  if((st.gap==null?99:st.gap)<SIDELINE_GAP)return false;
+  if((st.hits||0)>=SIDELINE_HITS)return false;
+  if(K.tone==='good'&&(st.goods||0)>=SIDELINE_GOODS)return false;
+  return true;
+}
+// How he takes it. Signed response strength (≈ −2.3 … +2.3) from his TRUE temperament + a per-moment
+// roll `rv` (the same words land differently on different days). No option dominates: the challenge has
+// the widest spread, support is safe but capped, coaching rewards a motor, a benching stings a diva.
+function sidelineResponse(choice,tr,rv){
+  const comp=clamp((tr&&tr.comp!=null)?tr.comp:50,0,100);
+  const ego =clamp((tr&&tr.ego !=null)?tr.ego :50,0,100);
+  const mot =clamp((tr&&tr.mot !=null)?tr.mot :50,0,100);
+  const j=((rv==null?0.5:clamp(rv,0,1))-0.5)*0.5;                        // ±0.25
+  switch(choice){
+    case 'chew' : return (comp-50)/40-(ego-50)/50+j;                     // the gamble — best and worst outcome
+    case 'back' : return 0.40+(50-comp)/120+(ego-50)/200+j*0.5;          // safe; rattled + proud guys need it most
+    case 'teach': return 0.28+(mot-50)/55+j*0.6;                         // the grinder soaks up coaching
+    case 'sit'  : return 0.15+(50-comp)/60-(ego-50)/45+j*0.6;            // a reset for a rattled kid, an insult to a diva
+    case 'quiet': return (comp-50)/90+j*0.8;                             // he's on his own — near-zero either way
+    case 'ride' : return 0.45+(ego-50)/70-(50-comp)/160+j*1.2;           // feed the emotion; widest swing of the good ones
+    case 'level': return 0.26+(comp-50)/110+j*0.4;                       // small and safe
+    case 'feed' : return 0.38+(ego-50)/60+j;                             // a promise lands hardest on a confident kid
+    case 'fire' : return 0.30-(comp-50)/90+j*0.8;                        // an emotional room responds; a stoic one shrugs
+    case 'calm' : return 0.20+j*0.3;
+    default: return 0;
+  }
+}
+function sidelineNote(choice,resp,name){
+  const n=name||'He';
+  if(choice==='calm')return 'You get the unit together and take the emotion out of it. The pre-snap stuff stops.';
+  if(choice==='fire')return resp>=0.3?'You light into the sideline and the bench comes off its feet.':'You light into the sideline. A few of them look at their shoes.';
+  if(resp>=0.85)return `${n} takes it to heart — he’s a different player the rest of the way.`;
+  if(resp>=0.35)return `${n} nods, buckles the chinstrap and gets back to work.`;
+  if(resp>=0.12)return `${n} hears you out. It settles him a little.`;
+  if(resp>-0.12)return `${n} listens. Impossible to tell whether any of it landed.`;
+  if(resp>-0.35)return `${n} isn’t really listening — he’s still somewhere else.`;
+  if(resp>-0.85)return `${n} doesn’t like it one bit. He walks off mid-sentence.`;
+  return `${n} shuts down on you completely. That one went badly.`;
+}
+// The full outcome of a response: the in-game plan deltas + the locker-room aftermath.
+//   boost = ± effective OVR for the rest of the game (Phase 24 plan.boost)
+//   sit   = drives he sits (Phase 24 plan.sit)     calm = the discipline lever (Phase 49)
+//   mood  = his post-game morale valence           team = a team-wide morale valence
+function sidelineResolve(kind,choice,tr,rv,name){
+  const resp=sidelineResponse(choice,tr,rv);
+  const out={kind,choice,resp,boost:0,mood:0,team:0,sit:0,calm:false,
+             tone:resp>=0.2?'good':(resp<=-0.2?'bad':'flat'),note:sidelineNote(choice,resp,name)};
+  if(choice==='calm'){out.calm=true;out.team=-1;return out;}             // they play tight, but clean
+  if(choice==='fire'){out.team=clamp(Math.round(resp*5),-5,5);return out;}
+  if(choice==='quiet'){out.mood=clamp(Math.round(resp*3),-4,4);return out;}
+  out.boost=clamp(Math.round(resp*4),-5,6);
+  out.mood=clamp(Math.round(resp*7),-10,10);
+  if(choice==='sit'){out.sit=SIDELINE_SIT;out.boost=clamp(out.boost,-3,4);}  // he's off the field — the swing is smaller
+  return out;
+}
+// === SIDELINE ENGINE (Phase 64) END ===
+
 // === SCHEME ENGINE (Phase 21) START ===
 // Every team runs an offensive + defensive SCHEME; every player innately PREFERS one on his side
 // (which may NOT be what he's rated for — that's the point). Three MEAN-ZERO effects fold into a
@@ -2146,7 +2258,7 @@ function renderNewGame(app){
 }
 function ensureWorld(ng){if(!ng.world)ng.world=genWorld(ng.seed);}
 function finishNewGame(ng){
-  S={version:51,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
+  S={version:52,seed:ng.seed,createdAt:Date.now(),coach:ng.coach,teamId:ng.teamId,
      year:2026,week:0,phase:'Preseason',world:ng.world,schedule:null,lastPlayedWeek:0,weeklyHonors:[],
      recruiting:null,coachMarket:null,awards:[],series:[],seriesOffers:null,postseason:null,draft:null,camp:null,
      rivalries:null,rivalryHeat:null,records:null,lastRealign:null,
@@ -2561,6 +2673,9 @@ function migrateState(state){
     if(state.recruiting)state.recruiting.offers=(state.recruiting.board||[]).slice();
     state.version=51;
   }
+  if((state.version||1)<52){           // Phase 64: sideline moments. A coached game's optional g.adjusts plan may
+    state.version=52;                  // now carry `sit` ({playerId: untilDrive}) alongside shadow/boost/calm — an
+  }                                    // absent key reads as "nobody sat", so old coached games replay unchanged → no-op.
   return state;
 }
 // Ranking score: preseason (no games) is pure OVR; once games are played it blends in
@@ -3485,7 +3600,7 @@ function simEngine(home,away,seed,opts){
   // commit/replay reproduce it exactly. Deterministic (no rng) → determinism + watch==commit intact.
   const adjusts=(opts&&opts.adjusts)||null, adjustFor=opts&&opts.adjustFor;
   const planAt=pno=>{ if(!adjusts||!adjusts.length)return null; let pl=null; for(const a of adjusts){ if(a.at<=pno)pl=a.plan; else break; } return pl; };
-  let playNo=0;
+  let playNo=0, driveNo=0;   // Phase 64: a benching is measured in DRIVES (see plan.sit)
   // Phase 49: `jr` journals the stat lines a single play wrote, so a play WIPED OUT by a penalty can
   // be un-recorded — a 22-yard run brought back by holding must not survive in the box score. Null
   // outside a play, so nothing else pays for it.
@@ -3559,7 +3674,7 @@ function simEngine(home,away,seed,opts){
   // (`pass to X for N`, `sacked by X for N`, `1ST DOWN`, …), so the machine-readable line is left
   // exactly as it was and the prose lives beside it. Strings only, no rng — `watch == commit` holds.
   const L=(team,kind,text,dd,big,tg,l,bt,x)=>{ if(log)log.push({q:L._q,team:team?team.id:null,kind,text,dd:dd||'',tg,l,bt,
-    mv:x&&x.mv, st:x&&x.st, sm:x&&x.sm, hs:score[home.id],as:score[away.id],big:!!big}); };
+    mv:x&&x.mv, st:x&&x.st, sm:x&&x.sm, sl:x&&x.sl, hs:score[home.id],as:score[away.id],big:!!big}); };
   L._q=1;
   // Phase 55: `mv` is the entry as MOVEMENT — the play reduced to what happened to the BALL, which is
   // the one thing the terse `text` never carried in a machine-readable form. `{o,a,b,k}`: the offense
@@ -3574,7 +3689,13 @@ function simEngine(home,away,seed,opts){
   const LM=(team,kind,text,dd,big,x)=>L(team,kind,text,dd,big,undefined,undefined,undefined,x);
   // `X` bundles the three log-only fields an entry can carry. Calling it DRAINS the stat journal, so
   // it is used exactly where an entry should own the stat lines written since the last one.
-  const X=(mv,sm)=>({mv,st:stTake(),sm:sm&&sm.length?sm:undefined});
+  const X=(mv,sm,sl)=>({mv,st:stTake(),sm:sm&&sm.length?sm:undefined,sl});
+  // `pn` is read at call time, so it is always the play the entry belongs to.
+  const SL=(k,pid,cvid)=>({sl:k,pid:pid||null,cvid:cvid||null,pn:playNo});
+  // Phase 64: `sl` tags an entry with the SIDELINE MOMENT it represents — {sl:kind, pid, cvid} —
+  // so the app can pull the right man aside between snaps. It is exactly the same trick as `mv`,
+  // `st` and `bt`: log-only, built from state the engine already had, no rng. The engine decides
+  // what is worth a conversation; who that player is to YOU, and what you say, is app-layer.
 
   // ---- Phase 55.1: the running story --------------------------------------------------------
   // A box score is a table nobody reads mid-game. These are the handful of numbers a broadcast would
@@ -3700,12 +3821,16 @@ function simEngine(home,away,seed,opts){
     pen[team.id].n++; pen[team.id].yds+=yds;
     (pen[team.id].t=pen[team.id].t||{})[f.F[0]]=((pen[team.id].t||{})[f.F[0]]||0)+1;   // per-type tally
     add(f.who&&f.who.id,'pen'); add(f.who&&f.who.id,'penYds',yds);
-    LM(team,'play','🚩 '+f.F[1]+', '+(team.abbr||'')+(f.who?' — '+nm(f.who)+' ('+f.who.pos+')':'')+' — '+yds+' yards'+(note||''),dd,false,X(mv,flagStory(team,f.who)));
+    // Phase 64: flag trouble is the one sideline moment about a UNIT rather than a man — every third
+    // flag on a team, which is the point at which a coach stops talking to individuals about it.
+    const trouble=pen[team.id].n%3===0;
+    LM(team,'play','🚩 '+f.F[1]+', '+(team.abbr||'')+(f.who?' — '+nm(f.who)+' ('+f.who.pos+')':'')+' — '+yds+' yards'+(note||''),dd,false,X(mv,flagStory(team,f.who),trouble?SL('pen',null):undefined));
   };
 
   // One possession, start at `startLos` (offense's own yard line). Returns the spot the
   // opponent takes over (mutates `score` + `box`); ~drive time charged to the caller's clock.
   function playDrive(off,def,startLos,clk0,half){
+    const dno=++driveNo;                                // Phase 64: drives alternate, so a "sit a series"
     dr=said?{by:{},tot:0,said:0}:null;                  // Phase 55.1: whose possession this has been
     const oP=pools[off.id], dP=pools[def.id];
     let adv=(off.ratings.off-def.ratings.def)+(off===home?HFA/2:-HFA/2)+form[off.id]-form[def.id];
@@ -3725,7 +3850,7 @@ function simEngine(home,away,seed,opts){
     const doFG=(dd,fgDist)=>{ time+=8; add(oP.k&&oP.k.id,'fga');
       const kk=oP.k, slope=0.013*clamp(1-AT.kLeg*tilt(kk,'kpw'),0.55,1.5);
       if(r()<clamp(0.965+AT.kAcc*tilt(kk,'kac')-(fgDist-20)*slope,0.40,0.99)){ add(oP.k&&oP.k.id,'fgm'); score[off.id]+=3; LM(off,'score',nm(oP.k)+' '+fgDist+'-yd field goal is GOOD',dd,true,X(MV(off,los,los,'s'))); return {nextLos:25,time}; }
-      LM(off,'play',nm(oP.k)+' '+fgDist+'-yd field goal MISSED',dd,false,X(MV(off,los,los,'k'))); return {nextLos:flipTo(los),time}; };
+      LM(off,'play',nm(oP.k)+' '+fgDist+'-yd field goal MISSED',dd,false,X(MV(off,los,los,'k'),null,SL('miss',oP.k&&oP.k.id))); return {nextLos:flipTo(los),time}; };
     L(off,'drive',off.abbr?off.abbr+' ball at '+fpos(los):'Ball at '+fpos(los),'',false,undefined,los,undefined,{mv:MV(off,los,los,'d')});
     while(true){
       // Phase 48: the half expired mid-drive — the drive dies here (real football's ~6.5% of drives).
@@ -3737,7 +3862,18 @@ function simEngine(home,away,seed,opts){
       const plan=(adjustFor&&(off.id===adjustFor||def.id===adjustFor))?planAt(pno):null;
       const boost=(plan&&plan.boost)||null;
       const bov=p=>p?(p.ov+((boost&&boost[p.id])||0)-fatg(p)):0;   // effective OVR (pep-talk + fatigue)
-      const qb=(oP.qbList&&(oP.qbList.find(q=>!injured.has(q.id))||oP.qbList[0]))||oP.qb;   // healthy QB (backup if hurt)
+      /* Phase 64: a sideline benching — the coach sat a man for a series (`plan.sit` = {id: untilDrive},
+         self-expiring by drive number, banked on the SAME Phase 24 timeline as a coverage reassignment
+         so it replays on commit). It only changes WHICH player a weighted pick lands on, never how many
+         rng draws happen — `wpick` draws exactly once either way — and `plan` is null for anyone but the
+         controlled team, so an AI game and the validated envelope are byte-identical.
+         Measured in DRIVES, not plays: drives alternate, so a play-count sit taken out on a pick would
+         expire while your offense was still on the bench and cost him nothing. */
+      let sitOff=injured, sitDef=injured;
+      if(plan&&plan.sit){ const sat=[]; for(const id in plan.sit) if(dno<plan.sit[id]) sat.push(id);
+        if(sat.length){ const u=new Set(injured); sat.forEach(id=>u.add(id));
+          if(off.id===adjustFor)sitOff=u; if(def.id===adjustFor)sitDef=u; } }
+      const qb=(oP.qbList&&(oP.qbList.find(q=>!sitOff.has(q.id))||oP.qbList[0]))||oP.qb;   // healthy QB (backup if hurt/sat)
       const dd=(down)+' & '+(togo>=(100-los)?'goal':togo), togo0=togo, losAt=los;   // losAt = the spot this snap starts from (Phase 55 `mv`)
       const fgDist=(100-los)+17, inFgRange=fgDist<=57;    // Phase 46: field-goal distance/range (usable on any down)
       // ---- pre-snap (dead-ball) penalty — Phase 49. ~49% of real flags never involve a snap.
@@ -3761,7 +3897,7 @@ function simEngine(home,away,seed,opts){
         // A flat 24% was bailing out of a quarter of all short-yardage gambles and turning them into
         // field goals, which is where the sim's 26% FG rate on 4th-and-1 came from.
         if(act==='go'&&r()<(togo<=2?0.07:0.30))act=inFgRange?'fg':'punt';
-        if(mine){const pick=decide({phase:'fourth',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,fgDist,inFgRange,ocAct:act});
+        if(mine){const pick=decide({phase:'fourth',q:L._q,play:pno,drive:dno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,fgDist,inFgRange,ocAct:act});
           if(pick==='fg'||pick==='punt'||pick==='go')act=pick;}
         if(act==='fg'&&!inFgRange)act='punt';               // illegal FG (out of range) → fall back to a punt
         if(act==='fg'){                                      // field-goal attempt
@@ -3785,8 +3921,8 @@ function simEngine(home,away,seed,opts){
       // ---- defensive play-call (Phase 28) — the controlled team, on D, calls the front/coverage as a
       // PRE-SNAP guess (it doesn't see run/pass). Rock-paper-scissors vs the play; AI defense = 'base' (no-op).
       let dcall='base', dDepth='', dKey='';
-      if(decide && def.id===decideFor){ const pick=decide({phase:'def',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,def:def.id,offTend:{run:usage[off.id].run,pass:usage[off.id].pass},
-          opts:callOptions(oP,dP,injured)});   // offTend = the offense's run/pass tendency SO FAR (Phase 46, read it to call your D); opts = whom you can key (Phase 63)
+      if(decide && def.id===decideFor){ const pick=decide({phase:'def',q:L._q,play:pno,drive:dno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,def:def.id,offTend:{run:usage[off.id].run,pass:usage[off.id].pass},
+          opts:callOptions(oP,dP,def.id===adjustFor?sitDef:sitOff)});   // offTend = the offense's run/pass tendency SO FAR (Phase 46, read it to call your D); opts = whom you can key (Phase 63); a man you just sat is not on the sheet
         const C=callParse(pick);
         if(C.base==='blitz'||C.base==='cover'||C.base==='run')dcall=C.base;
         if(DEPTH_VS[C.depth])dDepth=C.depth;      // Phase 63: how deep you are playing it
@@ -3819,8 +3955,8 @@ function simEngine(home,away,seed,opts){
       const ocPass=r()<passProb;                            // OC's call (always drawn → rng stream stays stable)
       let wantPass=ocPass, pkg='normal', variant='';        // Phase 31 package + Phase 46 play-concept variant (player-only)
       let oDepth='', oOutlet='', oAttack='';               // Phase 63: how far, to whom, at whom (player-only)
-      if(mine){const pick=decide({phase:'play',q:L._q,play:pno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,ocPass,ocCall:ocPass?'pass':'run',fgDist,inFgRange,defTend:preDef,
-          opts:callOptions(oP,dP,injured)});   // Phase 63: the men a call can name, resolved against tonight's two-deeps
+      if(mine){const pick=decide({phase:'play',q:L._q,play:pno,drive:dno,down,togo,los,clock:clkNow(),hs:score[home.id],as:score[away.id],off:off.id,ocPass,ocCall:ocPass?'pass':'run',fgDist,inFgRange,defTend:preDef,
+          opts:callOptions(oP,dP,sitOff)});   // Phase 63: the men a call can name, resolved against tonight's two-deeps (a man you just sat is not on the sheet)
         const C=callParse(pick), base=C.base; variant=C.variant;
         oDepth=C.depth; oOutlet=C.outlet; oAttack=C.attack;
         if(base==='fg'){ if(inFgRange) return doFG(dd,fgDist); }  // Phase 46: FG on any down (out of range → ignore, play on)
@@ -3877,29 +4013,30 @@ function simEngine(home,away,seed,opts){
       const press=pressNow(), vAmp=1+PC.varAmp*press;
       let hero=null;                                       // whoever made the play, for clutch credit
       let mRun=null,mRec=null,mSk=null,mLost=null;          // Phase 55.1: who this snap's stat lines belong to
+      let mBurn=null,mCulp=null;                            // Phase 64: the man beaten on a score / the man who gave it away
       // Read at call time, so it sees the play as it finally resolved rather than as it started.
       const MS=()=>milestones(off,{run:mRun,rec:mRec,qb,sk:mSk,lost:mLost,to:turnover,gain});
 
       if(wantPass){                                          // dropback (sacks aren't pass attempts)
-        let rec=wpick(oP.recv,r,injured);                    // intended target (pre-snap read; skip the injured)
+        let rec=wpick(oP.recv,r,sitOff);                     // intended target (pre-snap read; skip the injured/sat)
         /* Phase 63 — the coach names where the ball is going. The draw above is ALWAYS taken, and
            only its RESULT is overridden: the rng stream has to be a function of the seed and the
            call sequence alone, or a re-run diverges and `g.calls` stops reproducing the game. */
         let named='';
         if(mine&&(oOutlet||oAttack)){
           const oL=slotsOff(oP);
-          if(oOutlet){const pick=slotFind(oL,oOutlet,injured); if(pick){rec=pick;named='o';}}
+          if(oOutlet){const pick=slotFind(oL,oOutlet,sitOff); if(pick){rec=pick;named='o';}}
           /* Attacking a DEFENDER is the other way of saying the same sentence, and it is the one a
              coordinator actually says: you do not pick a receiver in the abstract, you decide their
              third corner cannot cover anybody and you go find him. So the call names the defender
              and the engine finds the route that runs at him. */
           if(!named&&oAttack){
-            const tgt=slotFind(slotsCov(dP),oAttack,injured);
+            const tgt=slotFind(slotsCov(dP),oAttack,sitDef);
             if(tgt){for(const e of oL){const p=e[1];
-              if(p&&!injured.has(p.id)){const c=coverDef(p,dP,injured); if(c&&c.id===tgt.id){rec=p;named='a';break;}}}}
+              if(p&&!sitOff.has(p.id)){const c=coverDef(p,dP,sitDef); if(c&&c.id===tgt.id){rec=p;named='a';break;}}}}
           }
         }
-        let cov=coverDef(rec,dP,injured);                    // the man on him (deterministic by depth, Phase 23)
+        let cov=coverDef(rec,dP,sitDef);                     // the man on him (deterministic by depth, Phase 23)
         if(mine){
           const oL2=slotsOff(oP), rs=slotOf(oL2,rec);
           // Where the ball has been going. Naming a target is free the first few times and expensive
@@ -3915,7 +4052,7 @@ function simEngine(home,away,seed,opts){
         if(dKey){const rs2=slotOf(slotsOff(oP),rec);
           if(rs2&&rs2===dKey){tComp-=0.09;tYds-=4;} else {tComp+=0.03;tYds+=1.5;}}
         // Phase 24: a coverage reassignment — you put a specific defender on this receiver slot.
-        if(plan&&plan.shadow&&def.id===adjustFor){const did=plan.shadow[rec&&(rec.pos+(rec.so||0))];if(did&&!injured.has(did)){const d=def.roster.find(p=>p.id===did);if(d)cov=d;}}
+        if(plan&&plan.shadow&&def.id===adjustFor){const did=plan.shadow[rec&&(rec.pos+(rec.so||0))];if(did&&!sitDef.has(did)){const d=def.roster.find(p=>p.id===did);if(d)cov=d;}}
         const mEdge=matchEdge(bov(rec),oP.recvAvg,bov(cov),dP.covAvg); // mean-zero WR-vs-coverage matchup (pep-talk aware)
         // Phase 50: the mean nudge, drawn from THIS matchup — his QB and his receiver against their
         // corner. Mean-zero across the league (composure is centred at 50 on both sides), bounded by
@@ -3978,7 +4115,7 @@ function simEngine(home,away,seed,opts){
         if(pressed){
           // the man who beat his block, and the quarterback's own athleticism against him. Awareness
           // belongs here for the Phase 51 reason — a sack taken is a MISTAKE, not lost yardage.
-          rsh=wpick(dP.rush4,r,injured);
+          rsh=wpick(dP.rush4,r,sitDef);
           const esc=AT.escElu*tilt(qb,'elu')+AT.escAgi*tilt(qb,'agi')+AT.escStr*tilt(qb,'str')
             +AT.escBtk*tilt(qb,'btk')+AT.escAwr*qAWR-AT.escPrs*(av(rsh,'prs')-dP.rush4A.prs);
           if(r()<clamp(AT.escBase*cx(esc,AT.escK),0.15,0.96)) scrambled=r()<AT.scrRun;
@@ -3991,7 +4128,7 @@ function simEngine(home,away,seed,opts){
           gain=Math.min(-1,Math.round(qGain(r(),PM.sackQ,0)));
           time+=PM.secSack; add(rsh&&rsh.id,'sk'); mSk=rsh; txt=nm(qb)+' sacked by '+nm(rsh)+' for '+gain;
           beat('dragged down — SACKED for '+gain);
-          if(r()<clamp(PM.sackFumP+AT.carFum*tilt(qb,'car')*2.4,0.01,0.20)){ turnover=true; toKind='fum'; toBy=rsh; mLost=qb; txt=nm(qb)+' STRIP-SACKED by '+nm(rsh)+' — fumble lost'; }   // Phase 48: the strip sack
+          if(r()<clamp(PM.sackFumP+AT.carFum*tilt(qb,'car')*2.4,0.01,0.20)){ turnover=true; toKind='fum'; toBy=rsh; mLost=qb; mCulp=qb; txt=nm(qb)+' STRIP-SACKED by '+nm(rsh)+' — fumble lost'; }   // Phase 48: the strip sack
         } else if(scrambled){
           // He got out and took off. §7: this books as a RUSH, because that is what the box score
           // says — and it is most of why the sim ran 10% light on rush attempts.
@@ -4040,13 +4177,13 @@ function simEngine(home,away,seed,opts){
           add(rec&&rec.id,'rec'); add(rec&&rec.id,'reYds',gain); mRec=rec; if(rec)touches[rec.id]=(touches[rec.id]||0)+1;
           add(cov&&cov.id,'cvTgt'); add(cov&&cov.id,'cvCmp'); add(cov&&cov.id,'cvYds',gain);   // coverage targeted / allowed
           time+=(r()<0.28?PM.secQuick:PM.secPass); txt=nm(qb)+' pass to '+nm(rec)+' for '+gain+(cov?' (vs '+nm(cov)+')':'');
-          if(los+gain>=100){ scored=true; add(qb&&qb.id,'pTD'); add(rec&&rec.id,'reTD'); add(cov&&cov.id,'cvTD'); }
+          if(los+gain>=100){ scored=true; add(qb&&qb.id,'pTD'); add(rec&&rec.id,'reTD'); add(cov&&cov.id,'cvTD'); mBurn=cov; }   // Phase 64: the corner who has to walk back
           // FUMBLE AFTER THE CATCH — his ball security against the man bringing him down. The sim had
           // fumbles on carries and on the strip sack only, so a whole real category was missing and
           // fumbles lost measured 0.40 against 0.56. The reception and its yards still stand, which is
           // the box-score convention.
           if(!scored && r()<clamp(PM.fumCatch*(1+PC.fumMul*press)+AT.carFum*ADX(rec,oP.recvA,'car',cov,dP.covA,'tkl'),0.001,0.05)){
-            turnover=true; toKind='fum'; toBy=cov; mLost=rec; txt=nm(rec)+' FUMBLES after the catch — lost'; }
+            turnover=true; toKind='fum'; toBy=cov; mLost=rec; mCulp=rec; txt=nm(rec)+' FUMBLES after the catch — lost'; }
           if(r()<INJ_RATE*injMul(rec))hurt(rec,off); if(r()<INJ_RATE*0.7*injMul(cov))hurt(cov,def);   // injuries on contact (Phase 26, Phase 51 durability)
         } else {                                            // incomplete (maybe picked)
           time+=PM.secIncomp; tackled=false; add(qb&&qb.id,'pAtt'); add(cov&&cov.id,'cvTgt'); txt=nm(qb)+' incomplete';
@@ -4059,19 +4196,19 @@ function simEngine(home,away,seed,opts){
           // is the whole point of having a state rather than a sack roll.
           if(r()<clamp((PM.intRate-adv*0.0008)*(1+PC.intMul*press)*(pressed?AT.intPress:1)+AT.awrInt*qAWR+AT.iqInt*qIQ+AT.thaInt*qTHA+AT.cthInt*(av(cov,'cth')-dP.covA.cth)+AT.zcvInt*(av(cov,'zcv')-dP.covA.zcv),0.020,0.14)){ turnover=true; add(qb&&qb.id,'pInt'); add(cov&&cov.id,'dInt');
             if(press>=0.5)add(cov&&cov.id,'cl');           // a pick in a big moment is a clutch play
-            toKind='int'; toBy=cov; txt=nm(qb)+' INTERCEPTED by '+nm(cov);
+            toKind='int'; toBy=cov; mCulp=qb; txt=nm(qb)+' INTERCEPTED by '+nm(cov);
             if(bt)bt[bt.length-1]='INTERCEPTED by '+NM(cov); }
         }
       } else {                                              // run
-        let rb=wpick(oP.rush,r,injured)||qb;
-        let fr=wpick(dP.front,r,injured);                    // the front defender he meets (Phase 23)
+        let rb=wpick(oP.rush,r,sitOff)||qb;
+        let fr=wpick(dP.front,r,sitDef);                     // the front defender he meets (Phase 23)
         /* Phase 63 — same rule as the pass: both draws are always taken and only their results are
            overridden, so the rng stream stays a function of seed + calls. `outlet` names the back
            (a slot the offence's list already carries, so 'R0' is the starter and a W-code simply
            finds nobody and leaves the read alone); `attack` names the man you are running AT, which
            is what a run call actually is — you do not run "left", you run at their weak three-tech. */
-        if(mine&&oOutlet){const pick=slotFind(slotsOff(oP),oOutlet,injured); if(pick&&pick.pos==='RB')rb=pick;}
-        if(mine&&oAttack){const pick=slotFind(slotsFront(dP),oAttack,injured); if(pick)fr=pick;
+        if(mine&&oOutlet){const pick=slotFind(slotsOff(oP),oOutlet,sitOff); if(pick&&pick.pos==='RB')rb=pick;}
+        if(mine&&oAttack){const pick=slotFind(slotsFront(dP),oAttack,sitDef); if(pick)fr=pick;
           const ak=tgtPen(atkU.by[oAttack]||0,atkU.n); tYds-=ak*ATK_YDS; }
         if(mine)bump(atkU,oAttack);
         // Phase 50: the ball-carrier's nerve against the man who has to bring him down
@@ -4125,7 +4262,7 @@ function simEngine(home,away,seed,opts){
         beat(gain<0?'STOPPED for '+gain:gain===0?'no gain'
           :gain>=15?(los+gain>=100?nm(rb):NM(rb))+' BREAKS FREE for '+gain:'gains '+gain);
         if(los+gain>=100){ scored=true; add(rb&&rb.id,'rTD'); }
-        if(!scored && r()<clamp(PM.fumRate*(1+PC.fumMul*press)+AT.awrFum*AD(rb,oP.rushA,fr,dP.frontA,'awr')+AT.carFum*ADX(rb,oP.rushA,'car',fr,dP.frontA,'tkl'),0.002,0.05)){ turnover=true; toKind='fum'; toBy=fr; mLost=rb; txt=nm(rb)+' FUMBLES — lost'; }
+        if(!scored && r()<clamp(PM.fumRate*(1+PC.fumMul*press)+AT.awrFum*AD(rb,oP.rushA,fr,dP.frontA,'awr')+AT.carFum*ADX(rb,oP.rushA,'car',fr,dP.frontA,'tkl'),0.002,0.05)){ turnover=true; toKind='fum'; toBy=fr; mLost=rb; mCulp=rb; txt=nm(rb)+' FUMBLES — lost'; }
         if(r()<INJ_RATE*injMul(rb))hurt(rb,off); if(r()<INJ_RATE*0.7*injMul(fr))hurt(fr,def);     // injuries on contact (Phase 26, Phase 51 durability)
       }
 
@@ -4164,7 +4301,7 @@ function simEngine(home,away,seed,opts){
         score[off.id]+=6;
         add(oP.k&&oP.k.id,'xpa'); const xp=r()<0.965; if(xp){ add(oP.k&&oP.k.id,'xpm'); score[off.id]+=1; }
         beat(hero?'TOUCHDOWN — '+NM(hero)+'!':'TOUCHDOWN!');
-        L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true,undefined,los,bt,X(MV(off,losAt,100,'s'),MS()));
+        L(off,'score','TOUCHDOWN — '+txt+(xp?' (XP good)':' (XP no good)'),dd,true,undefined,los,bt,X(MV(off,losAt,100,'s'),MS(),SL('td',hero&&hero.id,mBurn&&mBurn.id)));
         return {nextLos:25,time};
       }
       if(tackled){ const t=wpick(dP.tkl,r); add(t&&t.id,'tkl');
@@ -4177,7 +4314,7 @@ function simEngine(home,away,seed,opts){
         // which the alternating drive loop would otherwise hand to the wrong side.
         const spot=flipTo(clamp(los+gain,1,99));
         if(toBy && r()<(toKind==='int'?PM.pick6:PM.fumb6)){
-          L(off,'play',txt,dd,true,undefined,undefined,bt,X(MV(off,losAt,clamp(los+gain,1,99),'p'),MS()));   // the drive still ended in a turnover
+          L(off,'play',txt,dd,true,undefined,undefined,bt,X(MV(off,losAt,clamp(los+gain,1,99),'p'),MS(),SL(toKind,mCulp&&mCulp.id)));   // the drive still ended in a turnover
           score[def.id]+=6; add(toBy.id,'dTD');
           add(dP.k&&dP.k.id,'xpa'); if(r()<0.965){ add(dP.k&&dP.k.id,'xpm'); score[def.id]+=1; }
           if(press>=0.5)add(toBy.id,'cl');
@@ -4185,7 +4322,7 @@ function simEngine(home,away,seed,opts){
           return {nextLos:25,time,keep:true};
         }
         beat('TURNOVER');
-        L(off,'play',txt,dd,true,undefined,undefined,bt,X(MV(off,losAt,clamp(los+gain,1,99),'p'),MS())); return {nextLos:spot,time}; }
+        L(off,'play',txt,dd,true,undefined,undefined,bt,X(MV(off,losAt,clamp(los+gain,1,99),'p'),MS(),SL(toKind,mCulp&&mCulp.id))); return {nextLos:spot,time}; }
 
       const wasFirst=togo-gain<=0;
       if(wasFirst&&press>=0.5){ add(hero&&hero.id,'cl'); if(wantPass)add(qb&&qb.id,'cl'); }   // Phase 50
@@ -8191,6 +8328,8 @@ function runInteractive(){
       if(!G.simRest){
         // Phase 46: halftime — pause once at the top of the 2nd half so the coach can make major adjustments.
         if(!G.halfShown&&G.mode!=='auto'&&typeof ctx.q==='number'&&ctx.q>=3){G.pending=ctx;G.atHalf=true;throw PAUSE;}
+        // Phase 64: somebody just walked off after a moment — handle him BEFORE the next play call.
+        const sev=sidelineScan(G,ctx); if(sev){G.pending=ctx;G.sideEvt=sev;throw PAUSE;}
         if(shouldPromptCtx(ctx,G.mode)){G.pending=ctx;throw PAUSE;}   // your call → pause here
       }
       const dflt=ctx.phase==='def'?'base':ctx.phase==='fourth'?ctx.ocAct:ctx.ocCall;G.decisions.push(dflt);k++;return dflt;  // OC/DC handles it
@@ -8203,7 +8342,8 @@ function enterInteractive(){
   if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} clearBeatTimers();
   const G=UI.game; if(!G)return;
   UI.callPrefs=null;   // Phase 63: a fresh call sheet each game — last week's opponent is not this one
-  Object.assign(G,{interactive:true,mode:G.mode||'key',decisions:[],log:[],pending:null,done:false,simRest:false,halfShown:false,atHalf:false,prevBallX:null,plan:{shadow:{},boost:{}},adjusts:[],lastOff:null,lastDef:null});
+  Object.assign(G,{interactive:true,mode:G.mode||'key',decisions:[],log:[],pending:null,done:false,simRest:false,halfShown:false,atHalf:false,prevBallX:null,plan:{shadow:{},boost:{}},adjusts:[],lastOff:null,lastDef:null,
+    sideEvt:null,side:{count:0,last:-99,goods:0,hits:{},mood:[],team:0,feed:[]}});   // Phase 64: sideline moments
   runInteractive();
 }
 // Leave halftime → resume into the 2nd half (halfShown blocks it re-firing; the driver picks up the flow).
@@ -8217,14 +8357,169 @@ function pickCall(c){const G=UI.game;if(!G||!G.pending)return;haptic('medium');
   G.pending=null;G.atHalf=false;G.decisions.push(c);runInteractive();}
 // Phase 24: bank the current adjustment plan onto the timeline at the current play index (so it applies
 // forward + replays on commit), then re-run. Cumulative snapshots — planAt() reads the latest.
-function recordAdjust(){
-  const G=UI.game; if(!G||!G.pending)return;
-  const at=G.pending.play||0, snap=JSON.parse(JSON.stringify(G.plan||{shadow:{},boost:{}}));
+// Phase 64 split this in two: a sideline response banks at the same play index without going near a
+// sheet, so the mechanical half of a conversation replays on commit exactly like a coverage change.
+function bankAdjust(at){
+  const G=UI.game; if(!G)return;
+  const snap=JSON.parse(JSON.stringify(G.plan||{shadow:{},boost:{}}));
   G.adjusts=G.adjusts||[];
   const last=G.adjusts[G.adjusts.length-1];
   if(last&&last.at===at)last.plan=snap; else G.adjusts.push({at,plan:snap});
-  closeSheet(); runInteractive();
 }
+function recordAdjust(){
+  const G=UI.game; if(!G||!G.pending)return;
+  bankAdjust(G.pending.play||0); closeSheet(); runInteractive();
+}
+/* ============================================================
+   SIDELINE MOMENTS (Phase 64)
+   The engine tags notable snaps in the play log ({sl,pid,cvid,pn}); between snaps the driver looks
+   back at the last few lines, and if one of YOUR players is walking off from something that just
+   happened, the game stops and you decide how to handle him. The pure SIDELINE ENGINE turns your
+   response into Phase 24 plan deltas (boost / sit / calm) — banked onto g.adjusts, so it replays on
+   commit exactly like a coverage reassignment — plus a locker-room aftermath applied at commit.
+   ============================================================ */
+// Is there a fresh, eligible moment right now? A PURE READ of G (no mutation), so it is safe to call
+// on every re-run of the engine — and it has to be, because the driver replays the whole game from
+// the top after each decision. The moment is only "consumed" when the coach answers it (pickSideline).
+function sidelineScan(G,ctx){
+  if(!G||G.simRest||G.mode==='auto'||!G.side)return null;
+  const t=controlled(); if(!t||!ctx)return null;
+  const st=G.side, mine={}; t.roster.forEach(p=>mine[p.id]=p);
+  for(let i=G.log.length-1;i>=0&&i>=G.log.length-10;i--){
+    const e=G.log[i]; if(!e||!e.sl||e.sl.pn==null)continue;
+    const tag=e.sl;
+    if((ctx.play-tag.pn)>SIDELINE_FRESH)break;                     // stale — he's back in the huddle
+    let kind=null,p=null;
+    // A touchdown is two different conversations depending on which sideline you are standing on:
+    // the scorer bouncing down yours, or the corner he beat jogging back to it.
+    if(tag.sl==='td'){ if(tag.cvid&&mine[tag.cvid]){kind='burn';p=mine[tag.cvid];} else if(mine[tag.pid]){kind='hype';p=mine[tag.pid];} }
+    else if(tag.sl==='pen'){ if(e.team===t.id)kind='pen'; }
+    else if(mine[tag.pid]){ kind=tag.sl; p=mine[tag.pid]; }
+    if(!kind)continue;
+    const key=p?p.id:'_team';
+    if(!sidelineFires(kind,{count:st.count,gap:ctx.play-st.last,hits:st.hits[key]||0,goods:st.goods}))continue;
+    return {kind,pid:p?p.id:null,pn:tag.pn,line:e.text,res:null};
+  }
+  return null;
+}
+// A player is only sittable if somebody else at his position can actually take the snaps.
+function sidelineCanSit(t,p){
+  if(!p)return false;
+  return t.roster.some(x=>x.pos===p.pos&&x.id!==p.id&&!(x.inj>0)&&x.rs!=='on');
+}
+// The options offered for a moment (the engine's list, minus a benching with nobody behind him).
+function sidelineOptions(kind,t,p){
+  const K=SIDELINE_KINDS[kind]; if(!K)return [];
+  return K.opts.filter(o=>o!=='sit'||sidelineCanSit(t,p));
+}
+// The team's average makeup — what a sideline-wide moment (flag trouble) reads against.
+function sidelineTeamTraits(t){
+  const st=t.roster.filter(p=>(p.so||0)<=1); if(!st.length)return {comp:50,ego:50,mot:50};
+  const av=f=>st.reduce((a,p)=>a+f(p),0)/st.length;
+  return {comp:av(compVal),ego:av(egoVal),mot:av(motVal)};
+}
+// Answer the moment. Resolves through the pure engine, banks the mechanical half onto the Phase 24
+// timeline (so the commit reproduces it) and QUEUES the locker-room half for the commit — never
+// applying it live, so bailing out of a coached game leaves no trace and a determinism re-sim can
+// never double-count it.
+function pickSideline(choice){
+  const G=UI.game, ev=G&&G.sideEvt; if(!ev||ev.res)return;
+  const t=controlled(); if(!t)return;
+  haptic('medium');
+  const p=ev.pid?t.roster.find(x=>x.id===ev.pid):null;
+  const tr=p?{comp:compVal(p),ego:egoVal(p),mot:motVal(p)}:sidelineTeamTraits(t);
+  // One deterministic roll per (player, moment, response) — unknowable in advance, identical on a
+  // re-run, and NOT drawn from the engine's rng, which must stay a function of seed + calls alone.
+  const rv=(hashStr((ev.pid||'team')+'|'+ev.pn+'|'+choice)%1000)/1000;
+  const res=sidelineResolve(ev.kind,choice,tr,rv,p?p.fn+' '+p.ln:null);
+  ev.res=res;
+  const at=(G.pending&&G.pending.play)||0, drive=(G.pending&&G.pending.drive)||0;
+  const plan=G.plan=G.plan||{shadow:{},boost:{}};
+  if(p&&res.boost)plan.boost[p.id]=clamp((plan.boost[p.id]||0)+res.boost,-8,8);
+  if(p&&res.sit){plan.sit=plan.sit||{};plan.sit[p.id]=drive+res.sit;}
+  if(res.calm)plan.calm=true;
+  if((p&&(res.boost||res.sit))||res.calm)bankAdjust(at);
+  const st=G.side;
+  st.count++; st.last=at;
+  if(SIDELINE_KINDS[ev.kind].tone==='good')st.goods++;
+  const key=p?p.id:'_team'; st.hits[key]=(st.hits[key]||0)+1;
+  if(p&&res.mood)st.mood.push({pid:p.id,val:res.mood});
+  if(res.team)st.team=(st.team||0)+res.team;
+  st.feed.push({tone:res.tone,text:(p?p.pos+' '+p.fn[0]+'. '+p.ln+' — ':'')+SIDELINE_OPTS[choice].label+'. '+res.note});
+  render();
+}
+// Back to the game after a moment (the gap rule keeps the same one from re-firing).
+function sidelineContinue(){ const G=UI.game; if(!G)return; G.sideEvt=null; runInteractive(); }
+// His day so far, in one line — what you'd actually have in your head walking over to him. Read off
+// the LIVE box the driver is filling, so it is the game as it stands, not the final one.
+function sidelineStatLine(G,p){
+  const b=(G.box||{})[p.id]; if(!b)return 'No numbers yet today.';
+  const bits=[];
+  if(b.pAtt)bits.push(`${b.pCmp||0}/${b.pAtt} · ${b.pYds||0} yd${b.pTD?' · '+b.pTD+' TD':''}${b.pInt?' · '+b.pInt+' INT':''}`);
+  if(b.rAtt)bits.push(`${b.rAtt} car · ${b.rYds||0} yd${b.rTD?' · '+b.rTD+' TD':''}`);
+  if(b.rec)bits.push(`${b.rec} rec · ${b.reYds||0} yd${b.reTD?' · '+b.reTD+' TD':''}`);
+  if(b.cvTgt)bits.push(`coverage ${b.cvCmp||0}/${b.cvTgt} · ${b.cvYds||0} yd${b.cvTD?' · '+b.cvTD+' TD':''}`);
+  if(b.tkl||b.sk)bits.push(`${b.tkl||0} tkl${b.sk?' · '+b.sk+' sk':''}`);
+  if(b.pen)bits.push(`${b.pen} flag${b.pen===1?'':'s'}`);
+  if(b.fga)bits.push(`${b.fgm||0}/${b.fga} FG`);
+  return bits.length?bits.join('  ·  '):'No numbers yet today.';
+}
+// The moment itself: who's in front of you, what you know about him (fogged), and what you can say.
+function sidelineCard(G,ev,t){
+  const K=SIDELINE_KINDS[ev.kind], p=ev.pid?t.roster.find(x=>x.id===ev.pid):null;
+  const c=el('div','card');c.dataset.tid='sideline';c.dataset.kind=ev.kind;c.style.padding='14px';
+  const head=el('div');
+  head.innerHTML=`<div class="cond" style="font-weight:800;font-size:21px">${K.title}</div>
+    <div class="meta" style="margin:6px 0 2px">${K.head(p?p.fn+' '+p.ln:t.name)}</div>
+    <div class="meta dim" style="font-style:italic">${ev.line||''}</div>`;
+  c.append(head);
+  if(p){
+    const pc=el('div');pc.style.cssText='margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08)';
+    pc.innerHTML=`<div class="nm" style="font-size:15px">${p.pos} ${p.fn} ${p.ln} <span class="dim" style="font-weight:400">${p.ov} OVR · ${p.yr}</span></div>
+      <div style="margin-top:5px">${traitChips(p)}${moraleChip(p)}</div>
+      <div class="meta dim" style="margin-top:5px">${sidelineStatLine(G,p)}</div>`;
+    c.append(pc);
+  }
+  if(ev.res){
+    const r=ev.res, cls=r.tone==='good'?'good':r.tone==='bad'?'bad':'';
+    const out=el('div');out.dataset.tid='sideline-result';
+    out.style.cssText='margin-top:12px;padding-top:11px;border-top:1px solid rgba(255,255,255,.08)';
+    const fx=[];
+    if(r.boost)fx.push(`${r.boost>0?'+':''}${r.boost} OVR rest of the game`);
+    if(r.sit)fx.push('sits a series');
+    if(r.calm)fx.push('fewer pre-snap fouls');
+    if(r.mood)fx.push(`morale ${r.mood>0?'▲':'▼'}${Math.abs(r.mood)}`);
+    if(r.team)fx.push(`team morale ${r.team>0?'▲':'▼'}${Math.abs(r.team)}`);
+    out.innerHTML=`<div class="${cls}" style="font-size:14px;font-weight:600">${r.note}</div>`
+      +(fx.length?`<div class="meta dim" style="margin-top:6px">${fx.join(' · ')}</div>`:'');
+    c.append(out);
+  }else{
+    const list=el('div');list.style.marginTop='12px';list.dataset.tid='sideline-opts';
+    sidelineOptions(ev.kind,t,p).forEach(o=>{
+      const b=optEl(SIDELINE_OPTS[o].label,SIDELINE_OPTS[o].hint,false,()=>pickSideline(o));
+      b.dataset.opt=o;b.style.marginBottom='7px';list.append(b);
+    });
+    c.append(list);
+    c.append(el('div','hint','You only ever see his makeup through the fog — the same words land differently on different men.'));
+  }
+  return c;
+}
+// Phase 64: the running record of how you've handled your sideline this game (most recent first).
+function sidelinePanel(G){
+  const st=G&&G.side, f=st&&st.feed; if(!f||!f.length)return null;
+  const c=el('div','card');c.dataset.tid='sideline-log';c.style.padding='10px';
+  c.innerHTML='<div class="meta dim" style="margin-bottom:6px">Sideline</div>'
+    +f.slice(-4).reverse().map(x=>`<div class="meta ${x.tone==='good'?'good':x.tone==='bad'?'bad':''}" style="margin:3px 0">${x.text}</div>`).join('');
+  return c;
+}
+// The locker-room half, applied ONCE when the coached game commits (never on a determinism re-sim).
+function applySidelineMorale(G){
+  const st=G&&G.side; if(!st)return;
+  const t=controlled(); if(!t)return;
+  (st.mood||[]).forEach(m=>{const p=t.roster.find(x=>x.id===m.pid);if(p)p.morale=Math.round(moraleUpdate(moraleVal(p),m.val,egoVal(p)));});
+  if(st.team)t.roster.forEach(p=>{p.morale=Math.round(moraleUpdate(moraleVal(p),st.team,egoVal(p)));});
+}
+
 // The in-game adjustments sheet (Phase 24): reassign coverage onto the opponent's receivers + settle
 // your players. Edits the live G.plan buffer; "Apply" banks it onto the timeline (recordAdjust).
 function adjustSheet(){
@@ -8266,8 +8561,8 @@ function adjustSheet(){
   body.append(apply);
   openSheet('In-game adjustments',body);
 }
-function gameSetMode(m){const G=UI.game;if(!G)return;G.mode=m;G.simRest=false;if(G.done)render();else runInteractive();}
-function interactiveSimRest(){const G=UI.game;if(!G)return;G.simRest=true;G.atHalf=false;runInteractive();}
+function gameSetMode(m){const G=UI.game;if(!G)return;G.mode=m;G.simRest=false;G.sideEvt=null;if(G.done)render();else runInteractive();}
+function interactiveSimRest(){const G=UI.game;if(!G)return;G.simRest=true;G.atHalf=false;G.sideEvt=null;runInteractive();}
 /* ---- Phase 63: the call sheet -----------------------------------------------------------------
    What replaced the playbook, and why. Phase 46 gave the coach a page of named concepts with a
    little top-down diagram apiece — Inside Zone, Curls, Mesh — and every one of them had to be drawn
@@ -8548,9 +8843,10 @@ function renderInteractiveGame(app){
   const G=UI.game,home=teamById(G.home),away=teamById(G.away),t=controlled();
   const cur=G.log.length?G.log[G.log.length-1]:null,chs=cur?cur.hs:0,cas=cur?cur.as:0,ctx=G.pending;
   const half=!!G.atHalf&&!G.done;
+  const side=(!G.done&&!half&&G.sideEvt)?G.sideEvt:null;    // Phase 64: a sideline moment takes the screen
   const v=el('div','view');v.style.paddingBottom='10px';
   const qc=ctx?quarterClock(ctx.q,ctx.clock):null;
-  const sub=half?'🕐 HALFTIME':(ctx?`${qc.label}${qc.clk?' · '+qc.clk:''}`:(G.done?'Final':'Coaching'));
+  const sub=half?'🕐 HALFTIME':side?'🗣 SIDELINE':(ctx?`${qc.label}${qc.clk?' · '+qc.clk:''}`:(G.done?'Final':'Coaching'));
   const sb=el('div','card');sb.dataset.tid='game-board';sb.style.cssText='position:sticky;top:0;z-index:5';
   sb.innerHTML=`<div class="row spread" style="align-items:center">
       <div class="row" style="gap:8px;min-width:0"><span class="dot" style="background:${home.color};flex:none"></span><div class="nm">${home.abbr}${home.id===t.id?' <span class="cap">YOU</span>':''}</div></div>
@@ -8566,6 +8862,8 @@ function renderInteractiveGame(app){
       <div class="meta">${lead}. Make your major adjustments — coverage matchups, settling players down, discipline — then kick off the second half.</div>`;
     v.append(hc);
     const adj=el('button','btn line','🛡 Halftime adjustments'+((G.adjusts||[]).length?' ('+G.adjusts.length+')':''));adj.style.marginTop='10px';adj.dataset.tid='game-adjust';adj.onclick=adjustSheet;v.append(adj);
+  }else if(side){                                           // Phase 64: he's coming off — how do you handle him?
+    v.append(sidelineCard(G,side,t));
   }else if(ctx){
     const def=teamById(ctx.off===G.home?G.away:G.home);
     const hi=hashStr('h'+ctx.los+'_'+ctx.down+'_'+ctx.togo)%3,hash=['◧ left hash','◫ middle','◨ right hash'][hi];
@@ -8617,6 +8915,7 @@ function renderInteractiveGame(app){
   }else if(!G.done){
     v.append(el('div','card','<div class="hint">Resolving…</div>'));
   }
+  const sf=sidelinePanel(G); if(sf){sf.style.marginTop='12px';v.append(sf);}   // Phase 64
   /* Phase 63: the coach screen gets the same three views the watch screen has, because a coordinator
      calling a game needs the box score of BOTH teams and the state of the individual matchups, not
      just his own receiving line. The Phase 23 `matchupPanel` was a one-sided summary pinned above
@@ -8645,6 +8944,9 @@ function renderInteractiveGame(app){
   const ctr=el('div');ctr.style.marginTop='12px';
   if(G.done){
     const cont=el('button','btn',G.replay?'Done':'Continue → commit week');cont.dataset.tid='game-continue';cont.onclick=finishGame;ctr.append(cont);
+  }else if(side){
+    if(side.res){const go=el('button','btn','Back to the game →');go.dataset.tid='sideline-continue';go.onclick=sidelineContinue;ctr.append(go);}
+    else ctr.append(el('div','hint','He’s waiting on you.'));
   }else if(half){
     const go=el('button','btn','Start 2nd half →');go.dataset.tid='half-continue';go.onclick=resumeHalf;ctr.append(go);
   }else{
@@ -8660,7 +8962,8 @@ function finishGame(){
   if(gameTimer){clearTimeout(gameTimer);gameTimer=null;} clearBeatTimers();
   const G=UI.game; if(!G)return; const replay=G.replay, gid=G.gameId, post=G.post, champ=G.champ, interactive=G.interactive, calls=G.decisions, adjusts=G.adjusts; UI.game=null;
   if(replay){ UI.view='season'; render(); return; }
-  if(interactive){const g=findAnyGame(gid); if(g){g.calls=(calls||[]).slice(); if(adjusts&&adjusts.length)g.adjusts=adjusts.slice();}}   // bank calls + adjustments → commit reproduces the coached game
+  if(interactive){const g=findAnyGame(gid); if(g){g.calls=(calls||[]).slice(); if(adjusts&&adjusts.length)g.adjusts=adjusts.slice();}   // bank calls + adjustments → commit reproduces the coached game
+    applySidelineMorale(G);}                                              // Phase 64: how they took it — once, before the week resolves
   UI.view='home';
   if(champ)advanceChampWeek(); else if(post)advancePostseason(); else advanceWeek();   // commit (re-sims deterministically, with g.calls)
   const g=findAnyGame(gid); render();

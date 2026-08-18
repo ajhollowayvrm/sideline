@@ -8,7 +8,7 @@ web deploy, no PWA and no CI; the browser is a development and test target only.
 > This file is the **working brief** — what you need loaded every session. The full
 > phase-by-phase design records (the "why" behind each system) live in **`docs/phases/`**
 > and are read on demand, not auto-loaded:
-> - `docs/phases/gameday.md` — sim engine + play-calling + the watch screen (Phases 3, 3.5, 21–31, 46, 55, 55.1, 55.2, 63)
+> - `docs/phases/gameday.md` — sim engine + play-calling + the watch screen + the sideline (Phases 3, 3.5, 21–31, 46, 55, 55.1, 55.2, 63, 64)
 > - `docs/phases/recruiting.md` — recruiting, signing, portal, visits, and the measured talent economy (Phases 4, 14, 16, 17, 33–38, 56, 57a, 57b, 58, 59, 60, 62, 63)
 > - `docs/phases/offseason.md` — rollover, program, postseason, draft, championships, camp, realignment (Phases 5, 6–9, 12, 13, 15, 18, 32, 39, 43, 44)
 > - `docs/phases/identity-media.md` — traits, morale, media, rivalries, records, contract, legends, identity (Phases 10, 11, 19, 20, 40, 41, 42, 45)
@@ -39,7 +39,7 @@ web deploy, no PWA and no CI; the browser is a development and test target only.
 > band-pass and saturation defects Phase 56 measured. Reproduce with `tools/cfb-data/20–23`
 > (needs a free `CFBD_API_KEY`).
 >
-> **All roadmap phases 1–63 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–64 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -644,6 +644,36 @@ still serves it with zero config.
   `qa` 380 → **398** (the gate also stops failing on a browser-build-dependent `/favicon.ico` 404 that
   had nothing to do with the page). *(→ `docs/phases/gameday.md`, `docs/phases/recruiting.md`.)*
 
+- **Phase 64 — sideline events.** Every in-game lever up to here was **tactical** — what play, what
+  coverage, who covers whom. This is the other half of the job: **managing men**, and the first system
+  to put the Phase 10/20 temperament traits in front of you as a live decision rather than a background
+  modifier. A player throws a pick, puts it on the ground, gets beat for a score, pushes a kick wide —
+  or walks into the end zone — and the game stops before your next call. You get his name, his
+  **fogged** makeup, his day so far, and a set of responses: **get in his face · put an arm around him ·
+  walk him through it · sit him a series · say nothing**. The design constraint is that *you cannot see
+  the man, only the fog*, and `sidelab` asserts it rather than asserting the prose: over the whole
+  temperament grid **each of challenge / support / coaching / benching is the single best answer
+  somewhere**, and none is right for more than 26% of temperaments — so a later tuning pass cannot
+  quietly turn this into a button you always press. **The engine seam is the one Phase 55 already
+  built**: `X(mv,sm)` is the bundle of log-only fields an entry carries, and the tag rides there as a
+  third member (`sl` = `{sl,pid,cvid,pn}`) — strings and ids, no rng, so simlab's summary line is
+  **unchanged to the digit** and an AI game is byte-identical. Two tags earn their design: a **touchdown
+  is two different conversations** depending on which sideline you stand on (the scorer, or the corner
+  he beat — `pid` and `cvid`, and the app takes whichever is yours), and **flag trouble is the one
+  moment about a UNIT** — Phase 49 knows exactly who committed the foul, but a coach watching his third
+  flag of the afternoon is not talking to an individual, so it fires on every third team flag with a
+  null `pid` and reads the two-deep's average makeup. A response converts into the **existing Phase 24
+  plan** (`boost` / `calm` / the new `sit`) and banks onto `g.adjusts`, so **watch == commit** holds
+  with no new game-object field. `plan.sit` is safe for a precise reason: it changes WHICH player a
+  weighted pick lands on, never HOW MANY rng draws happen (`wpick` draws once either way), and `plan`
+  is null for anyone but the controlled team. It is measured in **DRIVES, not plays** — drives
+  alternate, so a play-count sit taken out on a pick would expire while its owner was still on the
+  bench and cost him nothing. The locker-room half is **queued, not applied live**, landing once in
+  `finishGame`, so bailing out of a coached game leaves no trace and a determinism re-sim cannot
+  double-count it. Save **v52** (structural no-op — an absent `sit` reads as "nobody sat"), **no
+  `SIM_MODEL` bump**. New gate **`sidelab` 54**, `simlab` 161 → **177**, `qa` 398 → **411**.
+  *(→ `docs/phases/gameday.md`.)*
+
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
 stays fast). This is a design choice, not a backlog. Per-doc "Deliberately out of scope"
@@ -719,14 +749,16 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
   stored inside `state`. The pure decision (`cloudResolve`) is fenced as the CLOUD ENGINE and
   gated by `cloudlab`; the backend is `infra/` (SAM). See `docs/phases/cloud.md`.
 - `migrateState(state)` runs on load and upgrades old saves to the current `version`
-  (currently **51**). Each step backfills the fields its phase added and re-derives
+  (currently **52**). Each step backfills the fields its phase added and re-derives
   ratings/ranks where needed; most recent steps are structural no-ops (sparse per-player
   fields / derived data read as their defaults) — **v47/v48/v50 are the exceptions**: v47/v48
   mutate every player, deriving an attribute profile re-centred onto the `ov` he already had (v48
   also splits `S` into `FS`/`SS` and packs the row into `p.at`), and **v50** re-derives the stored
   `boost` on every coach (and in `coachMarket`) after the staff ladder was re-cut, then re-derives
   ratings and ranks off it. **v51** splits the scholarship offer away from the recruiting board (`recruiting.offers`),
-  backfilling it from `board` so an in-flight class survives. The full v1→v51 migration ladder is
+  backfilling it from `board` so an in-flight class survives. **v52** is Phase 64's sideline benching —
+  a coached game's `g.adjusts` plan may now carry `sit`, and an absent key reads as "nobody sat".
+  The full v1→v52 migration ladder is
   documented inline in `migrateState` in `index.html`, and each phase's design doc in
   `docs/phases/` records its save-shape change. **Bump `version` + extend `migrateState`
   on any save-shape change.**
@@ -793,7 +825,9 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 // Game: { id, week, home: teamId, away: teamId, played, hs, as, calls?, adjusts?, out?, rivalry?, series? }   // hs/as = home/away score
 //   out? = ids that sat (injured) at kickoff, frozen so a past game replays faithfully (Phase 27).
 //   calls? = the coach's ordered play calls if he coached it (Phase 22); adjusts? = his in-game
-//   adjustment timeline [{at:playNo, plan:{shadow,boost}}] (Phase 24, coverage reassignment + pep-talks).
+//   adjustment timeline [{at:playNo, plan:{shadow,boost,calm?,sit?}}] (Phase 24, coverage reassignment +
+//   pep-talks; `calm` is the Phase 49 discipline lever, `sit` the Phase 64 sideline benching
+//   {playerId: untilDrive} — self-expiring, and measured in DRIVES because drives alternate).
 //   Both replay on commit/replay (simGame/buildGameLog via gameDecideOpts) so watch == commit. Absent = a pure AI game.
 //   rivalry? = a locked cross-conf rivalry leg (Phase 40); series? = a booked non-conf series leg (Phase 8).
 
@@ -973,7 +1007,9 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
   `data-tid="game-stats"` / `data-tid="game-matchups"`. The call sheet (Phase 63) carries
   `data-tid="call-go"` (with the composed token on `data-call`) and one tid per option —
   `odepth-*`/`olook-*`/`ooutlet-*`/`oattack-*` on offence, `dfront-*`/`ddepth-*`/`dkey-*` on defence;
-  a recruit row's quick-scout chip is `row-scout-<id>`.
+  a recruit row's quick-scout chip is `row-scout-<id>`. The sideline (Phase 64) carries
+  `data-tid="sideline"` (with `data-kind`), `sideline-opts` (one `data-opt` per response),
+  `sideline-result`, `sideline-log` and `sideline-continue`.
   `#g-feed` (the log), `#g-stats` (the box score), `data-tid="drive-chart"` with `#g-chart`
   (the scrolling rows) inside it.
 - **State access:** it's a classic script, so `S`, `UI`, and `controlled()` are global —
@@ -982,10 +1018,10 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
 ### Gates (all must be green each phase)
-**Twenty-three green gates** via `npm run <name>`: `simlab` · `reclab` · `rolllab` · `econlab` ·
+**Twenty-four green gates** via `npm run <name>`: `simlab` · `reclab` · `rolllab` · `econlab` ·
 `awardlab` · `traitlab` · `schemelab` · `legacylab` · `postlab` · `draftlab` · `champlab` ·
 `portallab` · `medialab` · `camplab` · `visitlab` · `rivalrylab` · `recordlab` · `contractlab` ·
-`realignlab` · `identitylab` · `cloudlab` · `lambdalab` · `qa`. Each pure engine has an offline node lab
+`realignlab` · `identitylab` · `cloudlab` · `lambdalab` · `sidelab` · `qa`. Each pure engine has an offline node lab
 that extracts the fenced block from `index.html`; `qa` is the in-browser end-to-end. `lambdalab` is the
 odd one out — it runs the cloud backend (`infra/lambda/index.mjs`, the only code that doesn't run in the
 browser) against in-memory DynamoDB/S3 stubs. Add per-phase checks to the relevant lab + `qa` on any

@@ -1043,3 +1043,140 @@ The AI offence does not name targets or depths (it has never needed to — `wpic
 distance ladder are its read), and the AI defence does not name a depth, for the replay reason
 above. Left/right is not an axis: the engine has no lateral model, and adding one as a fifth
 dimension that resolves to nothing would be exactly the "drawing" problem in a new costume.
+
+## Phase 64 design — sideline events
+
+The ask, verbatim: *"Can we introduce events during a game? Like a player makes a bad play and you get
+options on how to address him when he's coming back to the sideline."* Until now every in-game lever
+was **tactical** — what play (22, 46, 63), what coverage (28), who covers whom (23, 24). This adds the
+other half of the job: **managing men**. It is the first system that puts the Phase 10/20 temperament
+traits in front of you as a live decision rather than a background modifier.
+
+### The shape of a moment
+
+The play engine already knew when something notable happened; it just never said *who it happened to*.
+Phase 55 had already built the seam for exactly this kind of thing — `X(mv,sm)`, the bundle of
+log-only fields an entry carries — so the tag rides there as a third member: **`sl` =
+`{sl:kind, pid, cvid, pn}`**, the moment's kind, the man it is about, the man he beat on a scoring
+pass, and the play it happened on. Tagged: `int` · `fum` · `td` · `miss` · `pen`.
+
+It is **log-only**, the same discipline as `bt`, `l`, `mv`, `st` and `sm` before it: strings and ids
+built from state the engine already had, no rng drawn. `simlab` asserts log-on/off parity, and the
+gate's summary line — 24.3 pts/team, 55% home, 3576/1953/1135 — is **unchanged to the digit**, which
+is the real proof that an AI game is byte-identical.
+
+Two of the five tags are worth a note:
+
+- **A touchdown is two different conversations** depending on which sideline you are standing on: the
+  scorer bouncing down yours (`hype`), or the corner he beat jogging back to it (`burn`). One tag
+  carries both — `pid` is the hero, `cvid` is the man `coverDef` had on him — and the app picks
+  whichever of them is yours. On a rushing score there is no beaten cover man and `cvid` is null.
+- **Flag trouble is the one moment about a UNIT rather than a man.** Phase 49 knows exactly who
+  committed a foul (that is the phase's whole point — one man commits 44.7% of a team's false starts),
+  but a coach who has just watched his third flag of the afternoon is not talking to an individual.
+  So `pen` fires on every third team flag with a null `pid`, and reads against the two-deep's average
+  makeup rather than one player's.
+
+Between snaps the interactive driver looks back over the last few log lines. If one of **your** players
+is walking off from something that happened within `SIDELINE_FRESH` (3) plays, the game stops before
+you call the next play. Pacing is a pure gate (`sidelineFires`): ≤6 moments a game, ≥8 plays apart,
+≤2 per player, ≤2 celebrations.
+
+Detection (`sidelineScan`) is a **pure read of `G`** with no mutation, and it has to be: the driver
+replays the whole game from the top after every decision, so a scan that consumed anything would fire
+the same moment again on the next re-run. The moment is consumed only when you answer it.
+
+### The decision (the actual football)
+
+Five responses, three to five offered per moment: **get in his face** · **put an arm around him** ·
+**walk him through it** · **sit him a series** · **say nothing** (plus **ride the wave / keep him
+level / tell him it's coming again** on a touchdown, and **settle them down / light a fire** on flag
+trouble). `sidelineResponse` reads his **true** Poise, Ego and Motor; the card shows only the
+**fogged** trait chips. So you are reading a man, not memorising a rule:
+
+- **Challenge** — the widest spread of any response (+1.8 on a poised, egoless player; −1.8 on a
+  rattled diva). It is the gamble.
+- **Support** — safe, capped, worth most to a rattled kid; never a disaster.
+- **Coach him up** — monotone in Motor; the grinder soaks it up.
+- **Bench him** — resets a rattled, humble kid; insults a diva. And it costs you: he is actually off
+  the field, and the option is withheld entirely when nobody behind him can take the snaps.
+- **Say nothing** — near-zero either way, and it never touches the football at all.
+
+`sidelab` asserts the design constraint directly rather than trusting the prose: over the whole
+temperament grid, **each of challenge / support / coaching / benching is the single best answer
+somewhere**, and no response is right for more than 26% of temperaments. If a later tuning pass made
+one of them dominant the gate fails, which is the only thing that keeps this from collapsing into a
+button you always press.
+
+The per-moment roll is `hashStr(pid|play|choice)`, **not** a draw from the engine's rng — that stream
+has to stay a function of seed + calls alone, or a re-run diverges and `g.calls` stops reproducing the
+game. It is unknowable in advance and identical on every replay, which is what the situation actually
+wants.
+
+### Wiring it in without touching the pure sim
+
+Same constraint as every phase since 21: `simEngine` stays byte-identical for AI games. A response is
+converted into the **existing Phase 24 adjustment plan** and banked onto `g.adjusts`:
+
+- `plan.boost[pid]` — a bounded ±OVR nudge (−5…+6, clamped to ±8 total alongside a Phase 24 pep-talk);
+- `plan.calm` — the Phase 49 discipline lever ("settle them down");
+- `plan.sit[pid]` — **new**: a self-expiring benching. This is the one engine change with teeth, and
+  it is safe for a specific reason: the per-snap skip set unions the sat ids in, which changes *which*
+  player a weighted pick lands on and never *how many* rng draws happen — `wpick` draws exactly once
+  either way. `plan` is null for anyone but the controlled team, so AI games and the validated
+  envelope never see it.
+
+Benchings are measured in **drives, not plays**, and that is not a detail. Drives alternate, so a pick
+that puts your offence on the bench would make a play-count sit expire before its owner ever returned
+to the field — the punishment would land entirely on the opponent's possession and cost him nothing.
+`SIDELINE_SIT = 3` drives costs him exactly one of his own series whichever side of the ball the moment
+came from. The engine exposes `drive` on every decide ctx so the app can set the expiry.
+
+`recordAdjust` split into `bankAdjust(at)` + a thin wrapper, so a sideline response banks at the
+current play index without going near the adjustments sheet. Because it all rides on `g.adjusts`, the
+commit re-sim reproduces the coached game exactly (**watch == commit**) and a replay stays faithful.
+
+One small thing that falls out for free: a man you have just sat is dropped from `callOptions`, so the
+Phase 63 call sheet cannot offer you a target who is standing next to you.
+
+### The aftermath
+
+The locker-room half (`mood` per player, `team` for a sideline-wide moment) is **queued, not applied
+live**, and lands once in `finishGame` via `applySidelineMorale`. Two reasons, both load-bearing:
+bailing out of a coached game must leave no trace, and a determinism re-sim must never double-count
+it. It flows into the existing Phase 20 morale loop (dev multiplier, portal push, spotlight skew),
+so a coach who reads his room well compounds it across a season.
+
+### Save & validation
+
+Save **v52** — a coached game's `g.adjusts` plan may now carry `sit`; an absent key reads as "nobody
+sat", so old coached games replay unchanged and `migrateState` v51→v52 is a structural no-op.
+**No `SIM_MODEL` bump**: a banked game with no `sit` resolves to exactly what it did before, which is
+the same argument Phase 24 made for the plan itself.
+
+New gate **`sidelab` → 54** (registry, pacing, bounded + deterministic responses, the temperament
+reads, no-dominant-option, resolve bounds, and the notes agreeing with the outcome — a great reaction
+must never read as a bad one, or the feedback loop teaches the wrong lesson).
+
+`simlab` **161 → 177**: the log tags and their play numbers, a passing TD naming the beaten cover man,
+flag trouble carrying no `pid`, tagging being log-only, an empty *and* an already-expired benching
+being byte-identical to no plan at all, a benched player taking no snaps while his backup gets the
+work, the sit expiring, a benching replaying deterministically, a plan on one team never reaching the
+other, and the decide ctx carrying a monotonic drive number.
+
+`qa` **398 → 411**, over a real coached game: a moment fires while you coach, it is a known kind about
+one of your players and still fresh, the screen takes over with real options, the response banks onto
+the timeline, a benching rides as a self-expiring sit, the moment never re-fires, the coached game
+commits to the score you watched, the morale lands at commit, and handling the sideline never commits
+the game on its own. **Twenty-four gates.**
+
+### Deliberately out of scope
+
+Only the controlled team's game is coachable, so sideline moments are yours alone — the AI never gets
+them, and that is what keeps the envelope safe. No coordinator or position-coach voices handling a
+moment for you; no moment history persisted onto the player or the game object (the mechanical half is
+in `g.adjusts`, the narrative is transient); no medical-tent moment, because Phase 26/27 already
+resolve injuries without a decision to make; no press or teammate reaction to how you handled someone.
+Those are follow-ups.
+
+---
