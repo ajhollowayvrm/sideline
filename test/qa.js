@@ -1327,26 +1327,37 @@ function startServer() {
   check('Loading a slot from the Menu opens the career', (await screen(page)) === 'home');
 
   // ---------- MIGRATION (inject a v1 save) ----------
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
+    await SAVE_READY;
     const w = genWorld(424242);
     w.teams.forEach(t => t.staff.forEach(c => { delete c.tier; delete c.groups; delete c.scope; delete c.boost; }));
     const team = w.teams[0];
     const state = { version: 1, seed: 424242, createdAt: 7, coach: { first: 'Old', last: 'Timer', homeState: 'TX', archetype: 'Manager', history: 'Lifer' }, teamId: team.id, week: 0, phase: 'Preseason', world: w, task: { type: 'x', label: 'x', note: 'x' } };
     const meta = { coach: 'Old Timer', team: team.name, teamAbbr: team.abbr, color: team.color, week: 0, phase: 'Preseason', savedAt: 7 };
     // This fixture is deliberately RAW (not columnar) because a genuine v1 save was — that is the
-    // path being tested. A raw 134-team world is ~5MB on its own, so it cannot coexist with the
-    // mid-season save in slot 1 inside the ~5MB origin quota; free the other slots first. Nothing
-    // after this block needs them (the next section reloads with ?reset=1).
-    localStorage.removeItem('sideline_slot_1');
-    localStorage.removeItem('sideline_slot_3');
+    // path being tested, and it is now ALSO the Phase 65 legacy-import path: the fixture is planted
+    // in localStorage exactly where a pre-Phase-65 career sat, and boot has to lift it into the
+    // database on the way past. Every slot is emptied first so it is the only save on the reload
+    // (and so the import has slot 2 to itself). Nothing after this block needs the others.
+    [1, 2, 3].forEach(n => deleteSlot(n));
+    await SAVEDB.flush();
     localStorage.setItem('sideline_slot_2', JSON.stringify({ meta, state }));
-    localStorage.removeItem('sideline_active');   // this fixture wants the Menu, not a resumed session
+    setActiveSlot(null);   // this fixture wants the Menu, not a resumed session
   });
   await page.goto(BASE, { waitUntil: 'networkidle' }); // clean reload (no ?reset)
+  const imported = await page.evaluate(async () => {
+    await SAVE_READY;
+    return { imported: SAVEDB.imported, mode: SAVEDB.mode, left: localStorage.getItem('sideline_slot_2'),
+             owns: !!slotMeta(2), createdAt: slotMeta(2) && slotMeta(2).createdAt };
+  });
+  check('Phase 65: a legacy localStorage career is imported into the database on boot',
+    imported.mode === 'idb' && imported.imported === 1 && imported.owns && imported.createdAt === 7,
+    JSON.stringify(imported));
+  check('Phase 65: the imported career releases its localStorage key', imported.left === null);
   await page.getByRole('button', { name: 'Load Game' }).click();
   await page.waitForTimeout(150);
   await page.getByRole('button', { name: 'Load', exact: true }).first().click();   // slot 2 is now the only save
-  await page.waitForTimeout(150);
+  await page.waitForTimeout(250);
   const mig = await page.evaluate(() => ({ v: S.version, year: S.year, tier: S.world.teams[0].staff[0].tier, boost: S.world.teams[0].staff[0].boost, rec: S.world.teams[0].rec, sched: S.schedule, honors: S.weeklyHonors, recruiting: S.recruiting, coachMarket: S.coachMarket, lastFinances: S.world.teams[0].lastFinances, awards: S.awards, series: S.series, seriesOffers: S.seriesOffers, homeState: S.world.teams[0].homeState, legends: S.world.teams[0].legends, postseason: ('postseason' in S) ? S.postseason : 'missing', draft: ('draft' in S) ? S.draft : 'missing' }));
   check('Migration: v1 save upgrades to current version (v51)', mig.v === 51, 'version=' + mig.v);
   check('Migration: postseason backfilled (null until regular season ends, v13→v14)', mig.postseason === null, JSON.stringify(mig.postseason));
@@ -1386,7 +1397,7 @@ function startServer() {
   check('Migration: team ratings and ranks follow the new boosts', v50.ratingMoved && v50.ranked);
 
   // ---------- DELETE with confirm ----------
-  await page.evaluate(() => localStorage.removeItem('sideline_active'));   // leave the career so the reload lands on the Menu
+  await page.evaluate(() => setActiveSlot(null));   // leave the career so the reload lands on the Menu
   await page.goto(BASE, { waitUntil: 'networkidle' }); // clean reload (no ?reset)
   await page.getByRole('button', { name: 'Load Game' }).click();
   await page.waitForTimeout(150);
@@ -1394,8 +1405,16 @@ function startServer() {
   await page.waitForTimeout(120);
   await page.getByRole('button', { name: /Yes, continue/ }).click();
   await page.waitForTimeout(150);
-  const slotsLeft = await page.evaluate(() => [1, 2, 3].map(n => !!localStorage.getItem('sideline_slot_' + n)).filter(Boolean).length);
-  check('Delete (with confirm) removes a save', slotsLeft < 3, `${slotsLeft} slots remain`);
+  const slotsLeft = await page.evaluate(async () => {
+    await SAVEDB.flush();
+    const store = await new Promise(res => { const rq = indexedDB.open('sideline_saves', 1);
+      rq.onsuccess = () => { const db = rq.result, tx = db.transaction('saves', 'readonly'), g = tx.objectStore('saves').getAllKeys();
+        tx.oncomplete = () => res(g.result); }; rq.onerror = () => res(null); });
+    return { mirror: [1, 2, 3].filter(n => slotMeta(n)).length, store: store ? store.length : -1 };
+  });
+  check('Delete (with confirm) removes a save', slotsLeft.mirror < 3, `${slotsLeft.mirror} slots remain`);
+  check('Phase 65: deleting a slot removes the record from the database too, not just the mirror',
+    slotsLeft.store === slotsLeft.mirror, JSON.stringify(slotsLeft));
 
   // ---------- PHASE 4: full recruiting cycle (fast-forward a fresh season) ----------
   // Start a clean deterministic game, aggressively recruit one target all season, run to Signing
@@ -2075,27 +2094,43 @@ function startServer() {
   check('Phase 9: encode tags the blob, decode strips the tag', codec.encMarker && codec.decClean);
 
   // ---------- STORAGE: the save has to actually FIT (the check that was missing) ----------
-  // Every codec check above passes on a save that localStorage then REFUSES, which is exactly what
-  // shipped: an in-season autosave threw QuotaExceededError every week, writeSlot swallowed it into
-  // a toast, and the career stayed frozen at its preseason state. So assert the write, and assert
-  // the slot on disk holds the live week — a codec round-trip in memory proves neither.
-  const store = await page.evaluate(() => {
+  // Every codec check above passes on a save the store then REFUSES, which is exactly what shipped:
+  // an in-season autosave threw QuotaExceededError every week, writeSlot swallowed it into a toast,
+  // and the career stayed frozen at its preseason state. So assert the write, and assert the slot
+  // ON DISK holds the live week — a codec round-trip in memory proves neither.
+  // Phase 65 moved that disk from localStorage to IndexedDB, so the reads below go through the real
+  // database; the quota arithmetic that used to be the point of this block is now asserted against
+  // the FALLBACK writer, which is the only path still charged for it.
+  const store = await page.evaluate(async () => {
     const n = findSlotFor(S) || 1;
     const wrote = writeSlot(n, S);
-    const raw = localStorage.getItem(slotKey(n)) || '';
-    const back = readSlot(n);
-    return { wrote, chars: raw.length, ascii: /^[\x00-\x7f]*$/.test(raw),
-             savedWeek: back && back.state ? back.state.week : null, liveWeek: S.week };
+    await SAVEDB.flush();
+    const back = await loadSlot(n);
+    // what the localStorage fallback WOULD write for this same career, measured not estimated
+    const raw = asciiJSON({ meta: slotMeta(n), state: encodeState(S) });
+    let free = null;
+    try { const e = await navigator.storage.estimate(); free = { quota: e.quota, usage: e.usage }; } catch (err) {}
+    return { wrote, mode: SAVEDB.mode, err: SAVEDB.err ? String(SAVEDB.err) : null,
+             chars: raw.length, ascii: /^[\x00-\x7f]*$/.test(raw), lsEmpty: !localStorage.getItem(slotKey(n)),
+             savedWeek: back && back.state ? back.state.week : null, liveWeek: S.week,
+             teams: back && back.state ? back.state.world.teams.length : 0,
+             columnar: !!(back && back.state && back.state._sv), free };
   });
   const mb = n => (n / 1048576).toFixed(2) + 'MB';
-  check('Storage: an in-season save is written, not refused', store.wrote && store.chars > 2e6, mb(store.chars));
+  check('Storage: an in-season save is written, not refused', store.wrote && !store.err, store.mode + (store.err || ''));
   check('Storage: the slot holds the LIVE week, not a stale preseason one',
     store.savedWeek === store.liveWeek, `saved week ${store.savedWeek}, live ${store.liveWeek}`);
-  // Non-ASCII doubles the cost of the WHOLE value, because the quota is charged against the
-  // string's backing store rather than its content. One en dash is enough to do it.
-  check('Storage: the stored save is pure ASCII (one byte a character)', store.ascii);
-  check('Storage: headroom left under the ~5MB origin quota', store.chars < 4.2e6,
-    mb(store.chars) + ' of ~4.97MB');
+  check('Phase 65: the database record holds the whole columnar 134-team world',
+    store.teams === 134 && store.columnar, `${store.teams} teams, columnar=${store.columnar}`);
+  check('Phase 65: nothing is left behind in localStorage', store.lsEmpty);
+  check('Phase 65: the database has room this save never had — quota well past the career',
+    !!store.free && store.free.quota > 20e6, store.free ? mb(store.free.quota) + ' quota, ' + mb(store.free.usage) + ' used' : 'no estimate');
+  // The fallback writer is still charged one byte a character: non-ASCII doubles the cost of the
+  // WHOLE value, because the quota is charged against the string's backing store rather than its
+  // content. One en dash is enough to do it, and a career carries about 59 of them.
+  check('Storage: what the localStorage fallback would write is pure ASCII (one byte a character)', store.ascii);
+  check('Storage: and it is the size that made Phase 65 necessary', store.chars > 2e6,
+    mb(store.chars) + ' against a ~4.97MB origin quota shared by all three slots');
 
   // ---------- TOUCH: 44pt targets and press feedback ----------
   // Both are invisible in a screenshot, which is how the app came to suppress the iOS tap highlight

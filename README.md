@@ -1,7 +1,7 @@
 # SIDELINE — College Football Coach Sim
 
 A mobile-first head-coach career sim. One self-contained `index.html` — pure static HTML/CSS/JS,
-every save in `localStorage`. No backend, no accounts.
+every save in an in-browser database (IndexedDB). No backend, no accounts.
 
 It ships as a **native iOS app**: a thin WKWebView shell around that same file. There is no web
 build to visit, no progressive web app to add to a home screen, and no CI — you build on a Mac and

@@ -1,7 +1,7 @@
 # SIDELINE — College Football Coach Sim
 
-A mobile-first, single-page head-coach career sim. Pure static HTML/CSS/JS, all state saved to
-`localStorage`. No backend, no accounts. It **ships as a native iOS app** — a WKWebView shell around
+A mobile-first, single-page head-coach career sim. Pure static HTML/CSS/JS, all state saved to an
+in-browser database (IndexedDB — Phase 65; `localStorage` is the fallback). No backend, no accounts. It **ships as a native iOS app** — a WKWebView shell around
 the same `index.html`, installed straight onto a paired iPhone with `npm run ios:deploy`. There is no
 web deploy, no PWA and no CI; the browser is a development and test target only.
 
@@ -10,7 +10,7 @@ web deploy, no PWA and no CI; the browser is a development and test target only.
 > and are read on demand, not auto-loaded:
 > - `docs/phases/gameday.md` — sim engine + play-calling + the watch screen (Phases 3, 3.5, 21–31, 46, 55, 55.1, 55.2, 63)
 > - `docs/phases/recruiting.md` — recruiting, signing, portal, visits, and the measured talent economy (Phases 4, 14, 16, 17, 33–38, 56, 57a, 57b, 58, 59, 60, 62, 63)
-> - `docs/phases/offseason.md` — rollover, program, postseason, draft, championships, camp, realignment (Phases 5, 6–9, 12, 13, 15, 18, 32, 39, 43, 44)
+> - `docs/phases/offseason.md` — rollover, program, postseason, draft, championships, camp, realignment, and the save store (Phases 5, 6–9, 12, 13, 15, 18, 32, 39, 43, 44, 65)
 > - `docs/phases/identity-media.md` — traits, morale, media, rivalries, records, contract, legends, identity (Phases 10, 11, 19, 20, 40, 41, 42, 45)
 > - `docs/phases/cloud.md` — cloud saves: AWS backend, career codes, sync/conflict model (Phase 47)
 > - `docs/phases/possession.md` — the possession model: clock, halves, 4th down, gain shape (Phase 48)
@@ -39,7 +39,7 @@ web deploy, no PWA and no CI; the browser is a development and test target only.
 > band-pass and saturation defects Phase 56 measured. Reproduce with `tools/cfb-data/20–23`
 > (needs a free `CFBD_API_KEY`).
 >
-> **All roadmap phases 1–63 are DONE.** When a task touches a system, open its design doc for
+> **All roadmap phases 1–65 are DONE.** When a task touches a system, open its design doc for
 > the detailed rationale, constraints, and validation notes.
 
 ---
@@ -65,7 +65,7 @@ Currently a single self-contained file: `index.html`. To work on it:
 app's `sideline://` scheme are *separate* save stores. This is expected. **Cloud saves (Phase 47)**
 are the way across that line *and* across devices — optional, off until you deploy `infra/`
 (one `sam deploy`) and paste the endpoint + a career code into Menu → Cloud saves. With no
-endpoint the game is exactly what it was: static, offline, `localStorage` only.
+endpoint the game is exactly what it was: static, offline, local only.
 
 If/when this is split into modules, keep the build output as plain static files so Pages
 still serves it with zero config.
@@ -644,6 +644,37 @@ still serves it with zero config.
   `qa` 380 → **398** (the gate also stops failing on a browser-build-dependent `/favicon.ico` 404 that
   had nothing to do with the page). *(→ `docs/phases/gameday.md`, `docs/phases/recruiting.md`.)*
 
+- **Phase 65 — DB saves.** Careers move off `localStorage` and into a real in-browser **database**
+  (IndexedDB, `sideline_saves`). Still no backend and no accounts — the *store* changes, the
+  architecture doesn't. **The case is one measurement, and it is not close.** Phase 61.1 weighed a real
+  career: **3.1 MB at kickoff, 3.5 MB by week 16**, against a `localStorage` origin quota of **~4.97 MB
+  shared by all three slots**, with `world` (2.1 MB) and `recruiting` (1.2 MB) both roughly flat year to
+  year. One career fits; **two never could**, so the three-slot save system in the feature spec was not
+  actually available — and an over-cap `setItem` **throws**, which is exactly the failure Phase 61.1
+  found shipped (an autosave lost every week, swallowed into a toast, the career frozen at its preseason
+  state). `asciiJSON` bought headroom for one career; it did not change the shape of the problem.
+  **The design problem is that IndexedDB is async and half the app reads saves inside a render path.**
+  Hence two stores, not one: `saves` `{n,meta,state}` carries the career, `slotmeta` `{n,meta}` carries
+  only the load-screen card, and boot mirrors **just the metas** into `SAVEDB.meta` — so `slotMeta` /
+  `anySave` / `findSlotFor` stay synchronous exactly as they were, and the multi-MB state is fetched only
+  on a real load. That forces `meta` to carry everything a sync caller used to dig out of `state`:
+  `createdAt` (what `findSlotFor`/`autosave` key off — previously a whole decoded save per autosave) and
+  `careerId` + `savedAt`, because Phase 47's `cloudSlotStatus` ran on every render of the Load screen and
+  now takes the meta instead of the record. Writes stay **sync at the call site and coalesce underneath**
+  — a burst of autosaves in one interaction becomes ONE write, with `encodeState` at flush time so the
+  newest state wins. Nobody loses a career: a pre-Phase-65 `localStorage` slot is imported on boot and its
+  key released (with `careerId` backfilled, or an imported career would badge as "not uploaded" against a
+  cloud copy it is already in sync with); a failed import stays readable from `localStorage`; no IndexedDB
+  at all falls back to the old path, **`asciiJSON` included** — which is why Phase 61.1's escaping stays in
+  the file and stays gated even though a normal save no longer goes near it. **The one visible seam is
+  boot**: it paints the menu, then opens the database and re-renders, and **Load Game is genuinely
+  `disabled` for those few ms** (New Game needs nothing from the store) rather than opening onto three
+  slots the app hasn't read — which is also what a test driver waits on instead of racing. Phase 61's
+  `resumeSession` returns a promise now and runs inside that chain. **No save-version bump — v51
+  unchanged**: this changes the container, not the schema, and a v1 save still walks the whole ladder
+  after being imported. New gate **`dblab` → 69** (an in-memory IndexedDB shim; its instantiation list is
+  the phase's dependency audit), `qa` 398 → **404**. *(→ `docs/phases/offseason.md`.)*
+
 **Deliberate non-goals** (out of scope unless revisited): no live viewer for *arbitrary*
 games (only the controlled team's game is watchable/replayable/coachable, so advancing a week
 stays fast). This is a design choice, not a backlog. Per-doc "Deliberately out of scope"
@@ -710,8 +741,21 @@ Globals (classic script, no bundler yet). Key pieces in `index.html`:
 - `genWorld(seed)` → `{ teams: [...] }`. Builds every team: prestige, roster, ratings,
   facilities, finances, staff, then assigns `natRank` / `confRank` / `divRank`.
 - `recomputeRanks(world)` — re-sorts ranks after edits/imports.
-- Save system: `readSlot`/`writeSlot`/`deleteSlot`, keys `sideline_slot_1..3`.
-  Each slot stores `{ meta, state }`; `meta` powers the load screen.
+- Save system (Phase 65): careers live in an **IndexedDB database** `sideline_saves`, fenced as
+  `// === SAVE STORE (Phase 65) START/END ===` and gated by `dblab`. Two stores keyed by slot
+  number — `saves` `{n, meta, state}` (the career; `state` is `encodeState()` output) and
+  `slotmeta` `{n, meta}` (just the load-screen card). **The split is what keeps the UI
+  synchronous:** boot mirrors only the metas into `SAVEDB.meta`, so `slotMeta(n)` / `anySave()` /
+  `findSlotFor` read a sync mirror in render paths exactly as they read `localStorage` before, and
+  the multi-MB state is fetched only on a real load (`loadSlot`, async). `meta` therefore carries
+  `createdAt` (what `findSlotFor`/`autosave` key off), `careerId` + `savedAt` (what the Phase 47
+  cloud badges read), `year` and `version`. `writeSlot` is sync at the call site and **coalesced**
+  underneath — a burst of autosaves in one interaction becomes one write carrying the newest state,
+  with `encodeState` running at flush time; `SAVEDB.flush()` awaits "on disk". Pre-Phase-65
+  `localStorage` careers are imported on boot and their keys released; with no IndexedDB at all
+  `SAVEDB.mode='local'` takes the old path (`asciiJSON` included). Boot paints the menu, then opens
+  the database and re-renders — `SAVE_READY` is the awaitable form, and **Load Game is genuinely
+  disabled until it resolves** (New Game needs nothing from the store).
 - **Cloud sync (Phase 47)** hangs off that same seam: `writeSlot` queues a debounced push
   (`cloudQueue` → `cloudFlush`), never blocking the local write. Config lives in its own key
   `sideline_cloud` (`{endpoint, code, auto, device, careers:{careerId:{rev,savedAt}}}`) — a
@@ -939,17 +983,24 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
   `decodeState` around `writeSlot`/load). The codec is pure serialization (no seed dependency), so
   it's deploy-safe. **Measured (Phase 61.1), not estimated:** an in-season save is **3.1 MB at
   kickoff and 3.5 MB by week 16** — the old "~1.4 MB" figure predated the Phase 17 national board
-  and the Phase 57a pool — against an origin quota of **~4.97 MB**. `world` (2.1 MB) and
-  `recruiting` (1.2 MB) are the whole of it, and both are roughly flat year to year.
+  and the Phase 57a pool — against a `localStorage` origin quota of **~4.97 MB** shared by all
+  three slots. `world` (2.1 MB) and `recruiting` (1.2 MB) are the whole of it, and both are roughly
+  flat year to year, which is why **Phase 65 moved the store into IndexedDB**: one career fitted,
+  two never could, and the three-slot save system in the feature spec was not actually available.
 - **A stored value is charged against its string's BACKING STORE, not its content.** WebKit holds a
   string at one byte a character only while every character fits Latin-1. A career carries ~59 that
   don't — all en dashes, from score lines — and those 59 doubled a 3.4 M-character save to ~6.9 MB,
   so **every in-season autosave failed** and `writeSlot` swallowed it into a toast. `asciiJSON`
   escapes them AND rebuilds the string through `JSON.parse`, because a string returned by
   `.replace()` keeps its source's 16-bit backing even when its content is now pure ASCII. Both steps
-  are load-bearing and measured. Four `qa` checks hold the line: an in-season save must be written
-  rather than refused, the slot must hold the LIVE week, the value must be pure ASCII, and it must
-  stay under 4.2 MB. Anything that grows the save is now on a budget.
+  are load-bearing and measured. **Phase 65 moved the normal save off this path** — IndexedDB
+  stores a structured clone and is charged nothing for a wide character — but `asciiJSON` stays,
+  and stays gated, because the `localStorage` FALLBACK (`SAVEDB.mode==='local'`) is still real and
+  is still charged exactly as before. `qa` holds the line on both: the write must land and the slot
+  must hold the LIVE week, the database record must carry the whole columnar 134-team world with
+  nothing left in `localStorage`, the browser's real quota is measured, and what the fallback
+  *would* write must still be pure ASCII. Anything that grows the save is still on a budget — it is
+  just a much larger one.
 - After any roster/ratings/staff edit, call `teamRatings(roster, staff)` then
   `recomputeRanks(S.world)` (staff boosts feed into the rating, so pass the team's staff).
 - `autosave()` writes to the slot matching `S.createdAt`; explicit "Save game" is in the
@@ -964,7 +1015,11 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
 
 ### Testing hooks (for headless/browser-driven tests)
 - **Deterministic world:** `?seed=N` makes New Game use seed `N` (reproducible roster for
-  screenshots/assertions). `?reset=1` clears all save slots on load.
+  screenshots/assertions). `?reset=1` clears all save slots on load — the `localStorage` half
+  synchronously at parse time (so the Phase 65 legacy import can't pick a stale key back up), the
+  database half in boot once it is open. **Await `SAVE_READY` before touching saves**: it resolves
+  when the store is mirrored and any resume has run, and until it does `Load Game` is `disabled`
+  (which a driver waits on rather than races).
 - **Stable selectors:** dynamic rows carry `data-id` (player id / coach `role` / team id);
   nav buttons `data-tid="nav-<view>"`, team tabs `data-tid="tab-<roster|coaches>"`;
   `#app` carries `data-screen` (= `UI.view`) and `data-tab`; sheets `data-tid="sheet"`.
@@ -976,19 +1031,21 @@ color** (crimson for Alabama, green for Oregon…). Spend boldness there; keep t
   a recruit row's quick-scout chip is `row-scout-<id>`.
   `#g-feed` (the log), `#g-stats` (the box score), `data-tid="drive-chart"` with `#g-chart`
   (the scrolling rows) inside it.
-- **State access:** it's a classic script, so `S`, `UI`, and `controlled()` are global —
+- **State access:** it's a classic script, so `S`, `UI`, `controlled()`, `SAVEDB` and `SAVE_READY`
+  are global —
   read them directly from `page.evaluate(() => ...)` instead of scraping the DOM.
 - Don't assert on visible text that has `text-transform` (e.g. `.sec` headers render
   uppercased; `innerText` returns the transformed text). Prefer `data-tid`/`data-id`.
 
 ### Gates (all must be green each phase)
-**Twenty-three green gates** via `npm run <name>`: `simlab` · `reclab` · `rolllab` · `econlab` ·
+**Twenty-four green gates** via `npm run <name>`: `simlab` · `reclab` · `rolllab` · `econlab` ·
 `awardlab` · `traitlab` · `schemelab` · `legacylab` · `postlab` · `draftlab` · `champlab` ·
 `portallab` · `medialab` · `camplab` · `visitlab` · `rivalrylab` · `recordlab` · `contractlab` ·
-`realignlab` · `identitylab` · `cloudlab` · `lambdalab` · `qa`. Each pure engine has an offline node lab
-that extracts the fenced block from `index.html`; `qa` is the in-browser end-to-end. `lambdalab` is the
-odd one out — it runs the cloud backend (`infra/lambda/index.mjs`, the only code that doesn't run in the
-browser) against in-memory DynamoDB/S3 stubs. Add per-phase checks to the relevant lab + `qa` on any
+`realignlab` · `identitylab` · `cloudlab` · `lambdalab` · `dblab` · `qa`. Each pure engine has an offline
+node lab that extracts the fenced block from `index.html`; `qa` is the in-browser end-to-end. Two are
+odd ones out — `lambdalab` runs the cloud backend (`infra/lambda/index.mjs`, the only code that doesn't
+run in the browser) against in-memory DynamoDB/S3 stubs, and `dblab` runs the Phase 65 save store
+against an in-memory IndexedDB shim, so persistence is testable with no browser at all. Add per-phase checks to the relevant lab + `qa` on any
 change; bump the save `version` + `migrateState` on any save-shape change.
 
 **Non-gate build scripts** (Phase 61): `npm run fonts` re-embeds `assets/fonts/*.woff2` into
