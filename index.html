@@ -1377,7 +1377,6 @@ function decodeState(s){
   }
   return out;
 }
-function readSlot(n){try{const raw=localStorage.getItem(slotKey(n));return raw?JSON.parse(raw):null;}catch(e){return null;}}
 /* JSON, rewritten into a string the storage layer charges ONE byte a character for.
    WebKit holds a JS string in an 8-bit backing store while every character fits Latin-1, and a
    16-bit one the moment one does not — and a localStorage value is charged against the BACKING
@@ -1393,22 +1392,202 @@ function readSlot(n){try{const raw=localStorage.getItem(slotKey(n));return raw?J
         backing store of the string it came from even when every character it now holds is ASCII.
         The escaped string alone is still refused; the rebuilt one is accepted.
 
-   `readSlot` needs no partner: `\uXXXX` is ordinary JSON, so JSON.parse restores the exact string,
-   old saves still load, and a save written here still loads in a build without this. */
+   `readSlotLocal` needs no partner: `\uXXXX` is ordinary JSON, so JSON.parse restores the exact
+   string, old saves still load, and a save written here still loads in a build without this.
+
+   Phase 65 moved careers into IndexedDB, which stores a structured clone and is charged nothing
+   for a wide character — so this is no longer on the path a normal save takes. It stays because
+   the localStorage FALLBACK is still real (no IndexedDB → SAVEDB.mode='local'), and a save
+   written on that path is charged exactly as it was before. */
 function asciiJSON(v){const esc=JSON.stringify(v).replace(/[^\x00-\x7f]/g,c=>'\\u'+c.charCodeAt(0).toString(16).padStart(4,'0'));return JSON.parse(JSON.stringify(esc));}
+// === SAVE STORE (Phase 65) START ===
+/* Careers live in an IndexedDB database, not in localStorage.
+
+   Why the move, in one measurement: Phase 61.1 weighed a real career and found an in-season save
+   is 3.1 MB at kickoff and 3.5 MB by week 16, against an origin quota of ~4.97 MB — for ALL THREE
+   SLOTS TOGETHER, because localStorage budgets per origin and not per key. One career fits. Two do
+   not. That is not a cap the game can grow into; `world` (2.1 MB) and `recruiting` (1.2 MB) are
+   both roughly flat year to year, so there is no version of this where three careers co-exist.
+   And an over-cap `setItem` THROWS: the shipped failure was an autosave lost every week with
+   nothing to show for it but a toast, the career frozen at its preseason state.
+
+   IndexedDB is quota-based (hundreds of MB), stores structured clones rather than one enormous
+   string, and persists across visits identically. Two stores, both keyed by slot number (1..3):
+
+     saves     { n, meta, state }   the career; `state` is encodeState() output, unchanged
+     slotmeta  { n, meta }          just the card the Load screen draws (a few hundred bytes)
+
+   That split is what keeps the UI SYNCHRONOUS. IndexedDB is async and half the app reads saves
+   inside a render path, so boot mirrors only the metas into `SAVEDB.meta`, and `slotMeta` /
+   `anySave` / `findSlotFor` read that mirror exactly as they read localStorage before. The
+   multi-MB state is fetched only on a real load (`loadSlot`, async). Nothing ever holds three
+   decoded worlds in memory.
+
+   `meta` therefore has to carry everything a synchronous caller used to dig out of `state`:
+   `createdAt` (findSlotFor/autosave key off it), `careerId` and `savedAt` (Phase 47 cloud
+   status), plus `year`/`version` for the card.
+
+   Writes are SYNC at the call site and coalesced underneath: `writeSlot` stamps the mirror, tells
+   Phase 47 to queue its cloud push, and hands the live state to a microtask flush. Pending writes
+   coalesce per slot and `encodeState` runs at flush time, so a burst of autosaves inside one
+   interaction becomes ONE write carrying the newest state. `SAVEDB.flush()` awaits "on disk".
+
+   Nobody loses a career. Boot imports any localStorage slot the database does not already own and
+   releases the key; a failed import leaves the slot readable from localStorage (`SAVEDB.legacy`).
+   With no IndexedDB at all (private-mode quirks, some file:// contexts) `SAVEDB.mode` flips to
+   'local' and every call takes the old path — including `asciiJSON`, which is still load-bearing
+   there. The store never throws at a caller: failures land in `SAVEDB.err` and a toast, and the
+   queue keeps draining. */
+const DB_NAME='sideline_saves', DB_VER=1, ST_SAVES='saves', ST_META='slotmeta';
+const SAVE_DEL={del:true};                 // sentinel queued for a slot the player deleted
+const SAVEDB={mode:'idb',ready:false,db:null,meta:{},legacy:{},pending:{},flushing:null,imported:0,err:null};
+
+/* --- raw IndexedDB plumbing (promise wrappers; every rejection is handled by its caller) --- */
+function idbOpen(){
+  return new Promise((res,rej)=>{
+    let rq;try{rq=indexedDB.open(DB_NAME,DB_VER);}catch(e){return rej(e);}
+    rq.onupgradeneeded=()=>{const db=rq.result;
+      if(!db.objectStoreNames.contains(ST_SAVES))db.createObjectStore(ST_SAVES,{keyPath:'n'});
+      if(!db.objectStoreNames.contains(ST_META))db.createObjectStore(ST_META,{keyPath:'n'});};
+    rq.onsuccess=()=>res(rq.result);
+    rq.onerror=()=>rej(rq.error||new Error('open failed'));
+    rq.onblocked=()=>rej(new Error('blocked'));
+  });
+}
+function idbRun(stores,mode,fn){
+  return new Promise((res,rej)=>{
+    if(!SAVEDB.db)return rej(new Error('no db'));
+    let tx;try{tx=SAVEDB.db.transaction(stores,mode);}catch(e){return rej(e);}
+    let rq;
+    try{rq=fn.apply(null,[].concat(stores).map(s=>tx.objectStore(s)));}
+    catch(e){try{tx.abort();}catch(_){}return rej(e);}
+    tx.oncomplete=()=>res(rq&&typeof rq==='object'&&'result'in rq?rq.result:undefined);
+    tx.onerror=()=>rej(tx.error||new Error('tx failed'));
+    tx.onabort=()=>rej(tx.error||new Error('tx aborted'));
+  });
+}
+const dbGet=n=>idbRun(ST_SAVES,'readonly',s=>s.get(n));
+const dbAllMeta=()=>idbRun(ST_META,'readonly',s=>s.getAll());
+const dbPut=(n,meta,state)=>idbRun([ST_SAVES,ST_META],'readwrite',(sv,mt)=>{sv.put({n,meta,state});mt.put({n,meta});});
+const dbDel=n=>idbRun([ST_SAVES,ST_META],'readwrite',(sv,mt)=>{sv.delete(n);mt.delete(n);});
+
+/* --- the load-screen card: small enough to keep all three in memory, and the ONLY thing a
+       synchronous caller is allowed to read. Everything a sync path used to reach into `state`
+       for lives here. --- */
+function saveMetaFor(state){
+  const team=state.world.teams.find(t=>t.id===state.teamId);
+  return {coach:state.coach.first+' '+state.coach.last,team:team?team.name:'—',
+    teamAbbr:team?team.abbr:'',color:team?team.color:'#c9a227',
+    week:state.week,phase:state.phase,year:state.year,savedAt:state.lastSaved,
+    createdAt:state.createdAt,version:state.version,
+    careerId:cloudCareerId(state)};   // Phase 47: the cloud's identity for this career
+}
+// A pre-Phase-65 meta lacks createdAt/year/careerId (findSlotFor and the cloud badges need them),
+// so read them off the state being imported.
+function legacyMeta(rec){
+  const m=Object.assign({},rec.meta);
+  if(rec.state){
+    if(m.createdAt==null)m.createdAt=rec.state.createdAt;
+    if(m.year==null)m.year=rec.state.year;
+    if(m.version==null)m.version=rec.state.version;
+    if(m.careerId==null&&rec.state.createdAt!=null)m.careerId=cloudCareerId(rec.state);
+  }
+  return m;
+}
+function saveFailed(){if(typeof toast==='function')toast('Save failed — could not write to storage');}
+
+/* --- public API: sync for the UI (the meta mirror), async only for the big reads --- */
+function slotMeta(n){return SAVEDB.meta[n]||null;}
+function anySave(){return SLOTS.some(n=>SAVEDB.meta[n]);}
 function writeSlot(n,state){
   state.lastSaved=Date.now();
-  const team=state.world.teams.find(t=>t.id===state.teamId);
-  const meta={coach:state.coach.first+' '+state.coach.last,team:team?team.name:'—',
-    teamAbbr:team?team.abbr:'',color:team?team.color:'#c9a227',
-    week:state.week,phase:state.phase,savedAt:state.lastSaved,
-    careerId:cloudCareerId(state)};   // Phase 47: the cloud's identity for this career
-  try{localStorage.setItem(slotKey(n),asciiJSON({meta,state:encodeState(state)}));}
-  catch(e){toast('Save failed — storage full');return false;}
-  if(state===S){setActiveSlot(n);cloudQueue();}   // Phase 47: local write first, cloud push debounced behind it
+  const meta=SAVEDB.meta[n]=saveMetaFor(state);      // the UI is correct immediately, write or no write
+  if(state===S){setActiveSlot(n);cloudQueue();}      // Phase 47: local write first, cloud push debounced behind it
+  if(SAVEDB.mode!=='idb')return writeSlotLocal(n,meta,state);
+  SAVEDB.pending[n]=state;                           // coalesce: the newest live state wins
+  flushSoon();
   return true;
 }
-function deleteSlot(n){localStorage.removeItem(slotKey(n));if(activeSlot()===n)setActiveSlot(null);}
+function deleteSlot(n){
+  delete SAVEDB.meta[n];delete SAVEDB.legacy[n];
+  try{localStorage.removeItem(slotKey(n));}catch(e){}
+  if(activeSlot()===n)setActiveSlot(null);
+  if(SAVEDB.mode==='idb'){SAVEDB.pending[n]=SAVE_DEL;flushSoon();}
+  return true;
+}
+// The one async read: the career itself. Flushes first so a load never races a queued autosave.
+function loadSlot(n){
+  if(SAVEDB.mode!=='idb'||SAVEDB.legacy[n])return Promise.resolve(readSlotLocal(n));
+  return SAVEDB.flush().then(()=>dbGet(n)).then(r=>r?{meta:r.meta,state:r.state}:null,
+    e=>{SAVEDB.err=e;return readSlotLocal(n);});     // a failed read still tries any legacy copy
+}
+function writeSlotLocal(n,meta,state){
+  try{localStorage.setItem(slotKey(n),asciiJSON({meta,state:encodeState(state)}));return true;}
+  catch(e){SAVEDB.err=e;saveFailed();return false;}
+}
+function readSlotLocal(n){try{const raw=localStorage.getItem(slotKey(n));const r=raw?JSON.parse(raw):null;return r&&r.state?r:null;}catch(e){return null;}}
+
+/* --- the write queue: one IndexedDB transaction at a time, drained in a microtask --- */
+function flushSoon(){
+  if(!SAVEDB.flushing)SAVEDB.flushing=Promise.resolve().then(flushPending);
+  return SAVEDB.flushing;
+}
+function flushPending(){
+  const ns=Object.keys(SAVEDB.pending);
+  if(!ns.length){SAVEDB.flushing=null;return;}
+  const n=+ns[0],job=SAVEDB.pending[n];delete SAVEDB.pending[n];
+  const p=job===SAVE_DEL?dbDel(n):dbPut(n,SAVEDB.meta[n]||saveMetaFor(job),encodeState(job));
+  return p.then(()=>{delete SAVEDB.legacy[n];askPersist();},e=>{SAVEDB.err=e;saveFailed();}).then(flushPending);
+}
+// Ask the browser not to evict these saves — once, and only after there is a career worth keeping
+// (some browsers prompt for persistent storage, which nobody wants on a cold page load).
+function askPersist(){
+  if(SAVEDB.persistAsked)return;SAVEDB.persistAsked=true;
+  try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{});}catch(e){}
+}
+// Awaitable "everything is on disk" — used before a read, by cloudFlush, and by the QA gate.
+SAVEDB.flush=function(){
+  if(!SAVEDB.flushing&&!Object.keys(SAVEDB.pending).length)return Promise.resolve();
+  return (SAVEDB.flushing||flushSoon()).then(()=>SAVEDB.flush());
+};
+
+/* --- boot: open the database, mirror the metas, import any legacy localStorage career --- */
+function bootSaves(){
+  return Promise.resolve().then(()=>{
+    if(typeof indexedDB==='undefined'||!indexedDB)throw new Error('no IndexedDB');
+    return idbOpen();
+  }).then(db=>{
+    SAVEDB.db=db;SAVEDB.mode='idb';
+    db.onversionchange=()=>{try{db.close();}catch(e){}SAVEDB.db=null;};
+    return dbAllMeta();
+  }).then(rows=>{
+    (rows||[]).forEach(r=>{if(r&&r.meta)SAVEDB.meta[r.n]=r.meta;});
+    return importLegacySaves();
+  }).catch(e=>{                                   // no database → play on localStorage as before
+    SAVEDB.mode='local';SAVEDB.err=e;SAVEDB.db=null;SAVEDB.meta={};
+    SLOTS.forEach(n=>{const r=readSlotLocal(n);if(r)SAVEDB.meta[n]=legacyMeta(r);});
+  }).then(()=>{SAVEDB.ready=true;return SAVEDB;});
+}
+function importLegacySaves(){
+  let chain=Promise.resolve();
+  SLOTS.forEach(n=>{
+    if(SAVEDB.meta[n])return;                     // the database already owns this slot
+    const rec=readSlotLocal(n);if(!rec)return;
+    const meta=legacyMeta(rec);
+    chain=chain.then(()=>dbPut(n,meta,rec.state)).then(
+      ()=>{SAVEDB.meta[n]=meta;SAVEDB.imported++;try{localStorage.removeItem(slotKey(n));}catch(e){}},
+      e=>{SAVEDB.err=e;SAVEDB.meta[n]=meta;SAVEDB.legacy[n]=true;});   // keep reading it from localStorage
+  });
+  return chain;
+}
+function resetAllSlots(){                          // ?reset=1 test hook — wipes both stores
+  SLOTS.forEach(n=>{try{localStorage.removeItem(slotKey(n));}catch(e){}});
+  SAVEDB.meta={};SAVEDB.legacy={};SAVEDB.pending={};SAVEDB.imported=0;SAVEDB.flushing=null;
+  setActiveSlot(null);
+  if(SAVEDB.mode!=='idb'||!SAVEDB.db)return Promise.resolve();
+  return idbRun([ST_SAVES,ST_META],'readwrite',(sv,mt)=>{sv.clear();mt.clear();}).catch(e=>{SAVEDB.err=e;});
+}
+// === SAVE STORE (Phase 65) END ===
 
 /* ---------- the live session (which slot the player is actually sitting in) ----------
    Boot used to be a bare render() onto the main menu, so any tab eviction — iOS Safari and a
@@ -1422,11 +1601,15 @@ function activeSlot(){try{const n=parseInt(localStorage.getItem(ACTIVE_KEY),10);
 function setActiveSlot(n){try{if(n)localStorage.setItem(ACTIVE_KEY,String(n));else localStorage.removeItem(ACTIVE_KEY);}catch(e){}}
 // The save is the source of truth; this only decides which screen we open on. A slot that fails to
 // decode (e.g. written by a newer build) drops back to the menu rather than trapping the player.
+// Phase 65: reading the career is the one genuinely async call in the save layer, so this returns a
+// promise and boot paints the menu before awaiting it (see the boot block at the foot of the file).
 function resumeSession(){
-  const n=activeSlot();if(!n)return false;
-  const slot=readSlot(n);if(!slot||!slot.state)return false;
-  try{S=migrateState(decodeState(slot.state));UI.view='home';return true;}
-  catch(e){S=null;setActiveSlot(null);return false;}
+  const n=activeSlot();if(!n)return Promise.resolve(false);
+  return loadSlot(n).then(slot=>{
+    if(!slot||!slot.state)return false;
+    try{S=migrateState(decodeState(slot.state));UI.view='home';return true;}
+    catch(e){S=null;setActiveSlot(null);return false;}
+  },()=>false);
 }
 
 /* ============================================================
@@ -1630,12 +1813,14 @@ async function cloudFlush(manual){
   }finally{_cloudBusy=false;}
 }
 // Status for one local slot (what badge the Load screen paints), or null when cloud is off.
-function cloudSlotStatus(slot){
-  if(!cloudLinked()||!slot||!slot.state)return null;
-  const id=(slot.meta&&slot.meta.careerId)||cloudCareerId(slot.state);
+// Phase 65: takes the slot's META, not the whole record. `careerId` and `savedAt` are both stamped
+// into it by saveMetaFor (and backfilled for a legacy import), so a badge never costs a multi-MB read.
+function cloudSlotStatus(meta){
+  if(!cloudLinked()||!meta||!meta.careerId)return null;
+  const id=meta.careerId;
   const c=(UI.cloudCareers||[]).find(x=>x.careerId===id)||null;
   return Object.assign({careerId:id,cloud:c},
-    cloudResolve(cloudMark(id),{savedAt:slot.state.lastSaved||(slot.meta&&slot.meta.savedAt)||0},
+    cloudResolve(cloudMark(id),{savedAt:meta.savedAt||0},
       c?{rev:c.rev,updatedAt:c.updatedAt,meta:c.meta}:null));
 }
 
@@ -1676,12 +1861,12 @@ function cloudCompareCard(title,meta,note){
     ${note?'<div class="meta dim">'+note+'</div>':''}`;
   return c;
 }
-function cloudFirstFreeSlot(){for(const n of SLOTS)if(!readSlot(n))return n;return null;}
+function cloudFirstFreeSlot(){for(const n of SLOTS)if(!slotMeta(n))return n;return null;}
 function cloudPickSlotSheet(title,sub,onPick){
   const body=el('div');body.append(el('div','hint',sub));
   SLOTS.forEach(n=>{
-    const ex=readSlot(n);
-    const b=el('button','btn '+(ex?'line':'ghost'),'Slot '+n+(ex?' — replace '+ex.meta.team:' — empty'));
+    const ex=slotMeta(n);
+    const b=el('button','btn '+(ex?'line':'ghost'),'Slot '+n+(ex?' — replace '+ex.team:' — empty'));
     b.style.marginTop='9px';
     b.onclick=()=>{closeSheet();onPick(n);};
     body.append(b);
@@ -1703,14 +1888,21 @@ async function cloudDownload(careerId,slotNo,thenLoad){
   }catch(e){cloudSetStatus('error',e.message);toast('Download failed — '+e.message);}
 }
 // Loading a slot the cloud has moved past: offer the newer copy instead of silently rewinding.
-function cloudLoadSlot(n,slot){
-  const open=()=>{S=migrateState(decodeState(slot.state));setActiveSlot(n);UI.view='home';render();};
-  const st=cloudSlotStatus(slot);
+// Phase 65: `meta` is what the Load screen already has; the career itself is fetched on the tap.
+// A read that fails or comes back empty leaves the player on the Load screen rather than half-opening
+// a career that isn't there.
+function cloudLoadSlot(n,meta){
+  const open=()=>{loadSlot(n).then(slot=>{
+    if(!slot||!slot.state){toast('Could not read that save');return;}
+    try{S=migrateState(decodeState(slot.state));setActiveSlot(n);UI.view='home';render();}
+    catch(e){toast('Could not read that save');}
+  });};
+  const st=cloudSlotStatus(meta);
   if(!st||st.action!=='pull'||!st.cloud){open();return;}
   const body=el('div');
   body.append(el('div','hint','A newer save for this career is in the cloud.'));
   body.append(cloudCompareCard('In the cloud'+(st.cloud.device?' ('+st.cloud.device+')':''),st.cloud.meta||{},''));
-  body.append(cloudCompareCard('On this device',slot.meta||{},''));
+  body.append(cloudCompareCard('On this device',meta||{},''));
   const go=el('button','btn','Continue from the cloud');go.style.marginTop='14px';
   go.onclick=()=>{closeSheet();cloudDownload(st.careerId,n,true);};
   const local=el('button','btn line','Open this device’s save');local.style.marginTop='9px';
@@ -1721,12 +1913,17 @@ function cloudLoadSlot(n,slot){
 
 /* ---------- test hooks: deterministic seed / slot reset via URL ----------
    ?seed=N  → New Game uses seed N (reproducible world for screenshots/assertions)
-   ?reset=1 → clear all save slots on load (clean state)
+   ?reset=1 → clear all save slots on load (clean state; the database half is cleared in boot,
+              because opening it is async — see SAVE_READY at the foot of the file)
    Rows carry data-id (player id / coach role / team id); nav+tabs carry data-tid;
-   #app carries data-screen / data-tab. S, UI, controlled() are global for evaluate(). */
+   #app carries data-screen / data-tab. S, UI, controlled(), SAVEDB, SAVE_READY are global
+   for evaluate(). */
 const _QS=new URLSearchParams(location.search);
 const TEST_SEED=_QS.has('seed')?((parseInt(_QS.get('seed'),10)||0)>>>0):null;
-if(_QS.get('reset')==='1'){SLOTS.forEach(n=>deleteSlot(n));cloudDisconnect();}   // Phase 47: unlink too, so a test run is hermetic
+const TEST_RESET=_QS.get('reset')==='1';
+// The localStorage half is cleared HERE, synchronously, so the Phase 65 legacy import never picks a
+// stale key back up on its way past; the database half waits for the open (see boot).
+if(TEST_RESET){SLOTS.forEach(n=>{try{localStorage.removeItem(slotKey(n));}catch(e){}});setActiveSlot(null);cloudDisconnect();}   // Phase 47: unlink too, so a test run is hermetic
 
 /* ---------- native shell bridge (iOS) ----------
    ios/Sources/Shell.swift injects window.__SIDELINE_NATIVE__ at document start when the game is
@@ -1830,13 +2027,20 @@ function renderMenu(app){
   nw.onclick=()=>{UI.newgame=freshNewGame();UI.view='newgame';render();};
   const ld=el('button','btn ghost','Load Game');
   ld.onclick=()=>{UI.view='load';render();};
+  // Phase 65: the save database opens async. New Game needs nothing from it, but Load Game does —
+  // so it is genuinely disabled for those few ms rather than opening onto three slots the app
+  // hasn't read yet. (A disabled control is also what a driver waits on, instead of racing it.)
+  ld.disabled=!SAVEDB.ready;
   hero.append(nw,ld);
   const cl=el('button','btn line',cloudLinked()?'Cloud saves — connected':'Cloud saves');   // Phase 47
   cl.style.marginTop='9px';cl.dataset.tid='menu-cloud';
   cl.onclick=()=>{UI.cloudBack='menu';UI.view='cloud';render();};
   hero.append(cl);
-  const any=SLOTS.some(n=>readSlot(n));
-  if(!any){const h=el('div','hint center');h.style.marginTop='22px';h.textContent='No saved careers yet. Start a new game, or pull one down with a career code.';hero.append(h);}
+  const h=el('div','hint center');h.style.marginTop='22px';h.dataset.tid='menu-note';
+  if(!SAVEDB.ready)h.textContent='Opening your saves…';
+  else if(!anySave())h.textContent='No saved careers yet. Start a new game, or pull one down with a career code.';
+  else if(SAVEDB.mode!=='idb')h.textContent='Saves are using this browser’s basic storage — space for about one career.';
+  if(h.textContent)hero.append(h);
   app.append(hero);
 }
 
@@ -1861,10 +2065,10 @@ function renderLoad(app){
   v.append(cbtn);
   const localIds=[];
   SLOTS.forEach(n=>{
-    const slot=readSlot(n);
+    const m=slotMeta(n);
     const c=el('div','card');
-    if(slot){
-      const m=slot.meta,st=cloudSlotStatus(slot);
+    if(m){
+      const st=cloudSlotStatus(m);
       if(st)localIds.push(st.careerId);
       c.innerHTML=`<div class="row spread">
         <div class="row">
@@ -1877,9 +2081,9 @@ function renderLoad(app){
       if(badge){const r=el('div');r.style.marginTop='6px';r.append(badge);c.append(r);}
       const br=el('div','btn-row');
       const load=el('button','btn sm','Load');
-      load.onclick=()=>cloudLoadSlot(n,slot);
+      load.onclick=()=>cloudLoadSlot(n,m);
       const del=el('button','btn sm danger','Delete');
-      del.onclick=()=>cloudDeleteSlotSheet(n,slot,st);
+      del.onclick=()=>cloudDeleteSlotSheet(n,m,st);
       br.append(load,del);c.append(br);
     }else{
       c.innerHTML=`<div class="empty" style="padding:18px">Slot ${n} — empty</div>`;
@@ -1923,8 +2127,7 @@ function cloudCareerCard(x,withDownload){
   return c;
 }
 // Deleting a local slot: when the career is also in the cloud, "delete" is two different acts.
-function cloudDeleteSlotSheet(n,slot,st){
-  const m=slot.meta;
+function cloudDeleteSlotSheet(n,m,st){
   if(!st||!st.cloud){
     confirmSheet('Delete this career?',m.team+' — '+m.coach,()=>{deleteSlot(n);toast('Slot deleted');render();});
     return;
@@ -2070,7 +2273,7 @@ function renderCloud(app){
     }else if(!list.length){
       v.append(el('div','card','<div class="empty" style="padding:18px">Nothing here yet. Play a week — your career uploads automatically.</div>'));
     }else{
-      const localIds=SLOTS.map(n=>readSlot(n)).filter(Boolean).map(s=>(s.meta&&s.meta.careerId)||cloudCareerId(s.state));
+      const localIds=SLOTS.map(n=>slotMeta(n)).filter(Boolean).map(m=>m.careerId).filter(Boolean);
       list.forEach(x=>v.append(cloudCareerCard(x,localIds.indexOf(x.careerId)<0)));
     }
   }
@@ -2171,14 +2374,14 @@ function chooseSlotSheet(isNew){
   const body=el('div');
   body.append(el('div','hint','Choose a slot to save this career to. Saving over a slot replaces what\u2019s there.'));
   SLOTS.forEach(n=>{
-    const ex=readSlot(n);
-    const b=el('button','btn '+(ex?'line':'ghost'),'Slot '+n+(ex?' — replace '+ex.meta.team:' — empty'));
+    const ex=slotMeta(n);
+    const b=el('button','btn '+(ex?'line':'ghost'),'Slot '+n+(ex?' — replace '+ex.team:' — empty'));
     b.style.marginTop='9px';
     b.onclick=()=>{
       const go=()=>{writeSlot(n,S);closeSheet();
         if(isNew){UI.view='home';UI.newgame=null;}
         render();toast(isNew?'Career started':'Saved to slot '+n);};
-      if(ex)confirmSheet('Overwrite Slot '+n+'?',ex.meta.team+' — '+ex.meta.coach,go);else go();
+      if(ex)confirmSheet('Overwrite Slot '+n+'?',ex.team+' — '+ex.coach,go);else go();
     };
     body.append(b);
   });
@@ -11266,9 +11469,16 @@ function menuSheet(){
   const quit=el('button','btn line','Quit to main menu');quit.style.marginTop='9px';
   quit.onclick=()=>{closeSheet();cloudFlush();confirmSheet('Quit to menu?','Unsaved progress is lost.',()=>{S=null;setActiveSlot(null);UI.view='menu';render();});};
   body.append(save,saveAs,cloud,quit);
+  // Phase 65: say where saves actually live — it only matters when the database was refused, and
+  // that is exactly the case the player has no other way of finding out about.
+  const where=el('div','hint');where.style.marginTop='12px';where.dataset.tid='menu-store';
+  where.textContent=SAVEDB.mode==='idb'
+    ? 'Saves live in this browser’s save database — room for all three careers, and autosave keeps up as you go.'
+    : 'This browser refused the save database, so saves fall back to basic storage — smaller, and a deep career may not fit.';
+  body.append(where);
   openSheet('Menu',body);
 }
-function findSlotFor(state){for(const n of SLOTS){const s=readSlot(n);if(s&&s.state&&s.state.createdAt===state.createdAt)return n;}return null;}
+function findSlotFor(state){for(const n of SLOTS){const m=slotMeta(n);if(m&&m.createdAt===state.createdAt)return n;}return null;}
 function autosave(){const n=findSlotFor(S);if(n)writeSlot(n,S);}
 
 /* ============================================================
@@ -11313,13 +11523,24 @@ function confirmSheet(title,sub,onYes){
   body.append(yes,no);openSheet(title,body);
 }
 
-/* ---------- boot ---------- */
-resumeSession();   // walk straight back into the live career if this device has one open
-render();
+/* ---------- boot ----------
+   Phase 65: opening the save database is async, so boot paints FIRST and re-renders once the metas
+   are mirrored. The menu is honest about the gap rather than lying about it — `SAVEDB.ready` is
+   false for those few ms and renderMenu holds New Game / Load Game until it isn't, which is a
+   handful of frames on a warm page and the difference between "no saved careers yet" and the truth
+   on a cold one. `SAVE_READY` is the awaitable form, used by the QA gate and by the iOS loops. */
+render();                                          // the menu, immediately — no blank frame
+const SAVE_READY=bootSaves()
+  .then(()=>TEST_RESET?resetAllSlots():null)       // ?reset=1: the database half, once it is open
+  .then(()=>resumeSession())                       // walk back into the live career, if there is one
+  .then(()=>{
+    if(SAVEDB.imported)toast(SAVEDB.imported+(SAVEDB.imported>1?' careers moved':' career moved')+' into the save database');
+    render();return SAVEDB;},
+        e=>{SAVEDB.err=e;SAVEDB.ready=true;render();return SAVEDB;});
 /* Phase 47: cloud sync is opt-in and never blocks boot. Flush a queued push when the tab
    goes away (the 5s debounce is the only exposure), retry when the network comes back, and
    warm the career list once so the Load screen can badge slots the moment it opens. */
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')cloudFlush();});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){SAVEDB.flush();cloudFlush();}});
 window.addEventListener('online',()=>{if(CLOUD_STATUS.state==='offline'||CLOUD_STATUS.state==='error')cloudFlush();});
 if(cloudLinked())cloudRefresh().then(()=>{if(UI.view==='load'||UI.view==='cloud')render();});
 </script>

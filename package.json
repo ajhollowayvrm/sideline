@@ -27,6 +27,7 @@
     "identitylab": "node test/identitylab.js",
     "cloudlab": "node test/cloudlab.js",
     "lambdalab": "node test/lambdalab.js",
+    "dblab": "node test/dblab.js",
     "ios:project": "cd ios && xcodegen generate",
     "ios:deploy": "node tools/ios/deploy.js",
     "ios:icon": "node tools/ios/make-icon.js",

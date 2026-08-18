@@ -626,3 +626,142 @@ results-only (no brand/market model). This is a balance pass, not new systems.
 
 ---
 
+
+## Phase 65 design — DB saves (persistence in a real database)
+
+**Goal:** move careers off `localStorage` and into a real in-browser **database** (IndexedDB), so a
+long career can't outgrow its own save. Still no backend and no accounts — the store changes, the
+architecture doesn't.
+
+### Why: one measurement, and it is not close
+
+`localStorage` is **one budget for the whole origin**, shared by all three slots, and it only holds
+strings. Phase 9's columnar codec bought room and the ceiling stayed put; Phase 61.1 then weighed a
+real career on the real device and produced the number this phase exists for:
+
+| | measured |
+|---|---|
+| in-season save, at kickoff | **3.1 MB** |
+| in-season save, week 16 | **3.5 MB** |
+| origin quota (all three slots together) | **~4.97 MB** |
+| of which `world` | 2.1 MB |
+| of which `recruiting` | 1.2 MB |
+
+One career fits. **Two do not**, and both of the big components are roughly flat year to year, so
+there is no version of this where three careers co-exist — the three-slot save system in the
+feature spec was never actually available. Worse, an over-cap `setItem` **throws**: the shipped
+failure was an autosave lost every week with nothing to show for it but a toast, the career frozen
+at its preseason state until Phase 61.1's `asciiJSON` fix bought back the 3.4 MB the wide-character
+backing store was doubling. That fix moved the save from ~6.9 MB to 3.5 MB against ~4.97 MB. It
+bought headroom for one career; it did not change the shape of the problem.
+
+IndexedDB is quota-based (a share of free disk — the QA gate measures the real figure and asserts
+it is past 20 MB, and Chromium reports far more), stores **structured clones** rather than one
+enormous string, and persists across visits under exactly the same origin rules — so the
+local-file / server / `sideline://` split in `CLAUDE.md` still applies unchanged, and cloud saves
+(Phase 47) are still the way across it.
+
+### Shape (`// === SAVE STORE (Phase 65) START/END ===`)
+
+Database `sideline_saves`, two stores, both keyed by slot number `1..3`:
+
+| store | record | why |
+|---|---|---|
+| `saves` | `{n, meta, state}` | the career; `state` is `encodeState()` output (Phase 9 codec, unchanged) |
+| `slotmeta` | `{n, meta}` | just the card the Load screen draws (a few hundred bytes) |
+
+The split is what keeps the UI **synchronous**, and that is the whole design problem. IndexedDB is
+async, but the app reads saves inside render paths — `renderMenu`, `renderLoad`, `chooseSlotSheet`,
+`cloudFirstFreeSlot`, `findSlotFor`. So boot reads `slotmeta` — and only `slotmeta` — into
+**`SAVEDB.meta`, a synchronous mirror**; those call sites read the mirror exactly as they read
+`localStorage` before. The multi-MB `state` is fetched only when a career is actually loaded
+(`loadSlot`, async). Nothing ever holds three decoded worlds in memory.
+
+`meta` therefore has to carry everything a synchronous caller used to dig out of `state`, and the
+list is short and load-bearing:
+
+- **`createdAt`** — `findSlotFor`/`autosave` key off it to answer "which slot is this career in",
+  and that used to require reading and decoding a whole save on every autosave;
+- **`careerId`** and **`savedAt`** — Phase 47's `cloudSlotStatus` needs both to badge a slot, and
+  it ran on every render of the Load screen. It now takes the meta rather than the record;
+- `year` / `version` for the card.
+
+### Writes: sync at the call site, coalesced underneath
+
+`autosave()` is called from dozens of places, sometimes several times per interaction. `writeSlot`:
+
+1. stamps `state.lastSaved` and updates the meta mirror **synchronously** — the UI is never wrong,
+   write or no write;
+2. runs the Phase 47 seam unchanged (`setActiveSlot` + `cloudQueue`, and only when the state being
+   written is the live career);
+3. parks the **live state** in `SAVEDB.pending[n]` and schedules a microtask flush.
+
+Pending writes **coalesce per slot**, and `encodeState` runs at *flush* time, so a burst of
+autosaves in one interaction becomes **one** database write carrying the newest state (JS is
+single-threaded, so a flush never observes a half-mutated state). `SAVEDB.flush()` is the awaitable
+"everything is on disk", used by `loadSlot` before a read, on tab-hide, and by the QA gate.
+
+### Nobody loses a career
+
+- **Import:** `bootSaves()` imports any `localStorage` slot the database doesn't already own, then
+  releases the key (handing that quota back). The database always wins over a stale key; a legacy
+  meta gets `createdAt`/`year`/`version`/`careerId` backfilled off the state it is carrying,
+  because a career imported without its `careerId` would badge as "not uploaded" against a cloud
+  copy it is already in sync with.
+- **Import failed?** the slot stays flagged `SAVEDB.legacy[n]` and keeps being read from
+  `localStorage`, so it is still loadable.
+- **No IndexedDB at all** (private-mode quirks, some `file://` contexts) → `SAVEDB.mode='local'`
+  and every call takes the old path, `asciiJSON` included — which is why Phase 61.1's escaping is
+  still in the file and still gated, even though a normal save no longer goes near it. The game
+  still saves, just with the old cap, and the Menu sheet says so rather than failing silently.
+- The store **never throws at a caller**: failures land in `SAVEDB.err` + a toast, and the queue
+  keeps draining, so a later write recovers.
+- `navigator.storage.persist()` is requested **once, after a real save** — not at boot, because
+  some browsers prompt and nobody wants that on a cold page load.
+
+### Boot, which is the one place the player can see the seam
+
+Boot paints the menu first (sync, no saves needed), then opens the database and re-renders.
+**New Game needs nothing from the store, so it stays live; Load Game is genuinely `disabled`** for
+those few ms rather than opening onto three slots the app hasn't read yet — and a disabled control
+is also what a test driver waits on instead of racing. The menu note says "Opening your saves…"
+until it isn't, which is the difference between "No saved careers yet" and the truth on a cold
+start. `SAVE_READY` is the awaitable form of all of it.
+
+Phase 61's session resume now runs inside that chain: `resumeSession()` returns a promise, because
+reading the career is the one genuinely async call in the layer.
+
+`?reset=1` clears the `localStorage` half synchronously at parse time (so the legacy import never
+picks a stale key back up on its way past) and the database half in boot, once it is open.
+
+### Save & validation
+
+**No save-version bump — `version` stays 51.** This changes the *container*, not the state schema:
+`encodeState`/`decodeState`/`migrateState` are untouched, and a v1 `localStorage` save still walks
+the whole v1→v51 ladder after being imported.
+
+New lab **`dblab` → 69**: it extracts the fenced block and runs it against an in-memory IndexedDB
+shim plus a fake `localStorage`, so persistence is testable offline with no browser. The
+instantiation list is the phase's dependency audit — the block is handed exactly `S`,
+`cloudCareerId`, `cloudQueue`, `setActiveSlot`, `activeSlot` and `asciiJSON`, and nothing else, so
+a new coupling to the rest of the app cannot be added without editing that line. Covered: the meta
+mirror, coalescing + newest-state-wins, load/delete round-trip, legacy import including the clobber
+and failed-import cases, both fallback modes, quota + write failures, reset, the Phase 47 seam
+firing for the live career and only the live career, the fallback still writing pure ASCII, and
+three multi-MB careers co-existing.
+
+`qa` **398 → 404**, over the real database: the record holds the full columnar 134-team world,
+nothing is left in `localStorage`, the browser's real quota is measured and asserted past the
+career, the v1 migration fixture now doubles as the legacy-import path (planted in `localStorage`
+exactly where a pre-Phase-65 career sat, lifted into the database on the way past, its key
+released), and a delete removes the record and not just the mirror. **Twenty-four gates.**
+
+### Deliberately out of scope
+
+No save export/import file (the roster JSON importer is unrelated); no more than three slots and no
+autosave *history* or rollback — the database has room for both, but they are product decisions,
+not persistence ones; no Web Worker for encoding (coalescing already removed the repeated-stringify
+cost); no change to the Phase 47 cloud model, which keeps `localStorage` for its own small config
+key by design.
+
+---
