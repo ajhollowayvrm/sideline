@@ -1,0 +1,20 @@
+OFFENSE — the OC calls run/pass, we supply the axis  (30 seeds x 12 matchups)
+  call             pts   att  cmp%  Y/A  pyds  sk   ra   Y/C
+  OC bare          23.39  28.9  59.5  6.59   191 2.29  36.8  5.31
+  gap inside       24.12    29  59.1  6.62   192 2.28  36.8  5.28
+  gap off-tackle   23.39  28.9  59.5  6.59   191 2.29  36.8  5.31
+  gap outside      24.14  28.6  58.6  6.67   191 2.21  36.6  5.49
+  depth quick      23.68  30.9  71.9  6.47   200 1.11  34.6  5.15
+  depth short      24.57  29.8  63.5  6.64   198 1.64  36.1  5.24
+  depth inter      24.44  27.3  53.3  7.24   198 2.81  37.2  5.36
+  depth deep       23.57  26.4  40.5   7.1   188 3.35  35.8  5.49
+
+DEFENSE — points allowed holding one depth all game (lower = better)
+  balanced     24.35
+  press        24.04
+  underneath   25.2
+  two-deep     23.69
+
+implied depth mixes (the DEPTH_VS centring weights)
+  offense: {"q":0.224,"s":0.602,"m":0.174,"d":0}
+  defense: {"p":0.236,"u":0.533,"t":0.231}

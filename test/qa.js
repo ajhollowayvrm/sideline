@@ -30,6 +30,13 @@ function startServer() {
   const server = http.createServer((req, res) => {
     let p = decodeURIComponent(req.url.split('?')[0]);
     if (p === '/') p = '/index.html';
+    /* The browser asks for /favicon.ico on its own, before any page code runs, and the repo has no
+       icon file — so the 404 came back as a console error and failed "No uncaught JS / console
+       errors" for a reason that has nothing to do with the game. It is browser-build dependent
+       (Chromium 1194 asks, some builds do not), which is the worst kind of gate flake: it passes on
+       one machine and fails on another with an error message that points nowhere. Answered with a
+       204 so the gate measures the page and not the harness. */
+    if (p === '/favicon.ico') { res.writeHead(204); res.end(); return; }
     const fp = path.join(ROOT, p);
     fs.readFile(fp, (e, data) => {
       if (e) { res.writeHead(404); res.end('not found'); return; }
@@ -423,6 +430,72 @@ function startServer() {
     return { skip: false, same: clone.hs === driven.hs && clone.as === driven.as, hasSpread: calls.includes('spread'), played: g.played };
   });
   check('Phase 31: special packages are callable + reproduce on commit (watch == commit)', pkg.skip || (pkg.same && pkg.hasSpread && pkg.played === false), JSON.stringify(pkg));
+  // ---------- PHASE 63: the call sheet ----------
+  // The compatibility claim the phase rests on, asserted rather than argued: a call that names
+  // nothing has to resolve to EXACTLY what the Phase 46 token resolved to, because that is what makes
+  // this a no-SIM_MODEL-bump change — every AI game, every "defer", and every already-banked coached
+  // game in every existing save must still reproduce its recorded score.
+  const cs = await page.evaluate(() => {
+    const me = S.teamId, g = S.schedule.games.find(x => !x.played && (x.home === me || x.away === me));
+    if (!g) return { skip: true };
+    const benched = benchedFor(g), { home, away } = simSides(g, benched), seed = gameSeed(g);
+    const drive = dec => { const calls = []; const d = ctx => { const c = dec(ctx); calls.push(c); return c; };
+      const r = simEngine(home, away, seed, { benched, aiDefVs: me, aiOffVs: me, decideFor: me, adjustFor: me, decide: d });
+      return { r, calls }; };
+    // 1. bare vs padded: 'pass' and 'pass::-----' name nothing and must be the same football.
+    const bare = drive(ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : 'pass');
+    const padded = drive(ctx => ctx.phase === 'def' ? 'base:' + ':' + '---' : ctx.phase === 'fourth' ? ctx.ocAct : 'pass::-----');
+    // 2. a composed call is a DIFFERENT football, and it survives the commit path unchanged.
+    const composed = drive(ctx => ctx.phase === 'def' ? 'cover::t--' : ctx.phase === 'fourth' ? ctx.ocAct : 'pass::d--C0');
+    const clone = { id: g.id, home: g.home, away: g.away, calls: composed.calls.slice() };
+    simGame(clone);
+    // 3. the parser round-trips, in both directions, including the legacy tokens.
+    const rt = ['pass', 'pass:pa', 'run:draw', 'heavy', 'pass::dW1C0', 'cover::t--', 'run::o--D1']
+      .map(t => { const C = callParse(t); return [t, C.base, C.variant, C.depth, C.outlet, C.attack].join('|'); });
+    const built = buildCall('off', { base: 'pass', variant: 'pa', depth: 'd', outlet: 'W1', attack: 'C0' });
+    const builtBare = buildCall('off', { base: 'run', variant: '', depth: '', outlet: '', attack: '' });
+    // 4. the option lists the composer renders come out of the engine's own pools.
+    let opts = null;
+    simEngine(home, away, seed, { benched, decideFor: me, decide: ctx => { if (!opts && ctx.opts) opts = ctx.opts; return ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : ctx.ocCall; } });
+    return { skip: false,
+      bareSame: bare.r.hs === padded.r.hs && bare.r.as === padded.r.as,
+      composedDiffers: composed.r.hs !== bare.r.hs || composed.r.as !== bare.r.as,
+      commitSame: clone.hs === composed.r.hs && clone.as === composed.r.as,
+      played: g.played, rt, built, builtBare,
+      hasOpts: !!(opts && opts.recv && opts.recv.length && opts.cov && opts.cov.length && opts.front && opts.front.length),
+      covOn: !!(opts && opts.cov.some(c => c.on)),
+      bareScore: `${bare.r.hs}-${bare.r.as}`, composedScore: `${composed.r.hs}-${composed.r.as}` };
+  });
+  check('Phase 63: a call that names nothing is byte-identical to the Phase 46 token (no engine drift)',
+    cs.skip || cs.bareSame, JSON.stringify({ bare: cs.bareScore }));
+  check('Phase 63: a composed call is a different game from the same seed', cs.skip || cs.composedDiffers,
+    JSON.stringify({ bare: cs.bareScore, composed: cs.composedScore }));
+  check('Phase 63: a composed call reproduces exactly on the commit path (watch == commit)', cs.skip || cs.commitSame);
+  check('Phase 63: the call-sheet check did not commit the real game', cs.skip || cs.played === false);
+  check('Phase 63: buildCall emits the bare token when nothing is named', cs.skip || cs.builtBare === 'run', cs.builtBare);
+  check('Phase 63: buildCall/callParse round-trip a fully composed call', cs.skip || cs.built === 'pass:pa:dW1C0', cs.built);
+  check('Phase 63: the decide ctx carries the option lists the composer renders', cs.skip || cs.hasOpts);
+  check('Phase 63: the option list names the defender actually matched to each receiver', cs.skip || cs.covOn);
+  // The four axes each have to REACH a play, or the composer is a menu of nothing. Measured over many
+  // seeds because one game is noise: each pair is the same slate called two ways.
+  const ax = await page.evaluate(() => {
+    const me = S.teamId, mine = S.schedule.games.filter(x => x.home === me || x.away === me).slice(0, 6);
+    const my = g => (g.home === me ? 'hs' : 'as');
+    const run = call => { let t = 0;
+      mine.forEach(g => { const { home, away } = simSides(g);
+        for (let k = 0; k < 25; k++) { const seed = (gameSeed(g) ^ (k * 0x9e3779b1)) >>> 0;
+          t += simEngine(home, away, seed, { decideFor: me, decide: ctx => ctx.phase === 'def' ? 'base' : ctx.phase === 'fourth' ? ctx.ocAct : call(ctx) })[my(g)]; } });
+      return +(t / (mine.length * 25)).toFixed(2); };
+    return { quick: run(() => 'pass::q----'), deep: run(() => 'pass::d----'),
+      inside: run(() => 'run::i----'), outside: run(() => 'run::o----'),
+      atBest: run(() => 'pass::s--C0'), atWorst: run(() => 'pass::s--C2') };
+  });
+  check('Phase 63: pass depth changes the game (quick vs deep are different offenses)',
+    Math.abs(ax.quick - ax.deep) > 0.5, JSON.stringify(ax));
+  check('Phase 63: the run gap changes the game (inside vs outside are different runs)',
+    Math.abs(ax.inside - ax.outside) > 0.3, JSON.stringify(ax));
+  check('Phase 63: attacking a different defender changes the game',
+    Math.abs(ax.atBest - ax.atWorst) > 0.3, JSON.stringify(ax));
   // (b) UI smoke: open the viewer → Coach this game → Full control surfaces the field + a play call →
   // make a call → bail without committing (interactive never mutates the game until "Continue").
   await page.getByRole('button', { name: /Play Week/ }).click();
@@ -436,17 +509,42 @@ function startServer() {
     const fld = await page.evaluate(() => ({ interactive: !!(UI.game && UI.game.interactive), pending: !!(UI.game && UI.game.pending), hasField: !!document.querySelector('[data-tid="game-board"]') && !!document.querySelector('svg'), hasCall: !!document.querySelector('[data-tid="game-call"] [data-cat],[data-tid="game-call"] [data-call]') }));
     check('Phase 22: Coach mode renders the SVG field + a play-call prompt', fld.interactive && fld.pending && fld.hasField && fld.hasCall, JSON.stringify(fld));
     await shot(page, '19b-coach-field.png');
-    // Phase 46: the play buttons open a playbook picker (with play-art); tapping a concept advances the drive
+    // Phase 63: the play buttons open the CALL SHEET — four axes, no play-art — and committing it
+    // advances the drive. The sheet has to offer all four or the composer is a menu of nothing.
     const before = await page.evaluate(() => UI.game.decisions.length);
     const catBtn = page.locator('[data-tid="game-call"] [data-cat]').first(), directBtn = page.locator('[data-tid="game-call"] [data-call]').first();
     if (await catBtn.count()) {
       await catBtn.click(); await page.waitForTimeout(60);
-      const sheetOK = await page.evaluate(() => !!document.querySelector('[data-tid^="play-"] svg'));
-      check('Phase 46: a play button opens the playbook picker with play-art diagrams', sheetOK);
-      await shot(page, '19b2-playbook.png');
-      await page.locator('[data-tid^="play-"]').first().click();
+      const sheet = await page.evaluate(() => ({
+        depth: document.querySelectorAll('[data-tid^="odepth-"]').length,
+        look: document.querySelectorAll('[data-tid^="olook-"]').length,
+        outlet: document.querySelectorAll('[data-tid^="ooutlet-"]').length,
+        attack: document.querySelectorAll('[data-tid^="oattack-"]').length,
+        go: !!document.querySelector('[data-tid="call-go"]'),
+        art: !!document.querySelector('[data-tid^="play-"]') }));
+      check('Phase 63: a play button opens the call sheet with all four axes',
+        sheet.depth >= 3 && sheet.look >= 3 && sheet.outlet > 1 && sheet.attack > 1 && sheet.go, JSON.stringify(sheet));
+      check('Phase 63: the hand-drawn playbook is gone', !sheet.art);
+      // Name a target and a defender, then run it — the committed token must carry both. Row 0 of
+      // each list is always the "no preference" option, so the named one is nth(1). Which list it is
+      // depends on whether the first call button was Run or Pass, and the check must not care:
+      // "attack a defender" is corners on a pass and the front seven on a run, by design.
+      await page.locator('[data-tid^="ooutlet-"]').nth(1).click(); await page.waitForTimeout(50);
+      await page.locator('[data-tid^="oattack-"]').nth(1).click(); await page.waitForTimeout(50);
+      await shot(page, '19b2-callsheet.png');
+      const token = await page.evaluate(() => { const b = document.querySelector('[data-tid="call-go"]'); return b && b.dataset.call; });
+      const parsed = await page.evaluate(t => callParse(t), token);
+      check('Phase 63: the composed call carries the depth, the outlet and the defender it attacks',
+        /^\w+:\w*:.{5}$/.test(token || '') && !!parsed.depth && !!parsed.outlet && !!parsed.attack,
+        token + ' → ' + JSON.stringify(parsed));
+      await page.locator('[data-tid="call-go"]').click();
     } else { await directBtn.click(); }
     await page.waitForTimeout(60);
+    const banked = await page.evaluate(() => (UI.game.decisions || []).slice(-1)[0]);
+    check('Phase 63: the composed call is what gets banked onto the decision log', typeof banked === 'string', String(banked));
+    // …and having called it once, one tap runs it again.
+    check('Phase 63: the last call is offered as a one-tap repeat',
+      await page.evaluate(() => !!(UI.game && UI.game.lastOff)));
     const after = await page.evaluate(() => UI.game.decisions.length);
     check('Phase 22: making a call advances the drive (decision recorded)', after > before, `${before}→${after}`);
     // Phase 24: open the in-game adjustments sheet, assign a coverage shadow + a pep-talk, apply
@@ -464,11 +562,26 @@ function startServer() {
       check('Phase 24: applying an adjustment records it on the timeline (coverage + pep-talk)', adj.n > 0 && adj.hasShadow && adj.hasBoost, JSON.stringify(adj));
       check('Phase 25: "calm them down" is recorded on the adjustment timeline', adj.hasCalm);
     }
-    // resolve the rest (Auto) → the live matchup / coverage panel populates from the running box
+    // resolve the rest (Auto) → the coach view's Stats and Matchups tabs populate from the running box
     await page.locator('[data-mode="auto"]').click();
     await page.waitForTimeout(90);
-    const panel = await page.evaluate(() => ({ done: !!(UI.game && UI.game.done), matchups: !!document.querySelector('[data-tid="matchups"]'), boxCov: !!(UI.game && UI.game.box && Object.values(UI.game.box).some(b => b && b.cvYds)), pen: !!(UI.game && UI.game.pen && Object.values(UI.game.pen).some(p => p && p.n > 0)) }));
+    const tabs = await page.evaluate(() => !!document.querySelector('[data-tid="coach-tabs"] [data-tab="stats"]'));
+    check('Phase 63: the coach screen carries the same three views the watch screen has', tabs);
+    await page.evaluate(() => { UI.game.ctab = 'stats'; render(); });
+    await page.waitForTimeout(60);
+    const both = await page.evaluate(() => { const st = document.querySelector('[data-tid="game-stats"]');
+      const home = teamById(UI.game.home), away = teamById(UI.game.away), tx = st ? st.textContent : '';
+      return { pane: !!st, home: tx.includes(home.abbr), away: tx.includes(away.abbr), yards: /Total yards/i.test(tx) }; });
+    check('Phase 63: the play-caller can see BOTH teams’ stats mid-game', both.pane && both.home && both.away && both.yards, JSON.stringify(both));
+    await page.evaluate(() => { UI.game.ctab = 'match'; render(); });
+    await page.waitForTimeout(60);
+    const panel = await page.evaluate(() => ({ done: !!(UI.game && UI.game.done),
+      matchups: !!document.querySelector('[data-tid="game-matchups"]'),
+      bothWays: (document.querySelector('[data-tid="game-matchups"]') || { textContent: '' }).textContent.split('attacking').length - 1,
+      boxCov: !!(UI.game && UI.game.box && Object.values(UI.game.box).some(b => b && b.cvYds)),
+      pen: !!(UI.game && UI.game.pen && Object.values(UI.game.pen).some(p => p && p.n > 0)) }));
     check('Phase 23: the coach view shows a live matchup / coverage panel', panel.matchups && panel.boxCov, JSON.stringify(panel));
+    check('Phase 63: the matchup sheet shows both teams, not only yours', panel.bothWays >= 2, JSON.stringify(panel));
     check('Phase 25: penalties accrue + surface during a game', panel.pen, JSON.stringify(panel));
     await shot(page, '19c-coach-matchups.png');
     // bail without committing — the upcoming game must stay unplayed

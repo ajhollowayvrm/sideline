@@ -868,3 +868,178 @@ The Stats tab is a box score, not analytics — no win probability, no EPA, noth
 output rather than a record of what happened. The running story states numbers and never
 grades a performance — there is no "worst game of his career" line, and no editorialising about a
 player struggling; a threshold crossed is a fact, an opinion about it is not.
+
+---
+
+## Phase 63 — the call sheet
+
+### The complaint
+
+> *"Instead of drawing up actual plays, we should change it to be the type of play, the yardage, the
+> outlet and who we're targeting if we're targeting a defender. Right now drawing up plays is gonna
+> be a lot of work so if we reduce it to who you're trying to attack on the field (which is what OCs
+> or DCs do anyway) it might make more sense."*
+
+Phase 46 gave the coach a playbook: named concepts — Inside Zone, Power, Curls, Mesh, Fire Zone —
+each with a hand-drawn top-down SVG of its routes, blocks and coverage. It looked like a playbook and
+it had three problems.
+
+1. **It does not scale.** Every card is an SVG route tree written by hand. A real playbook is
+   hundreds of these. Fourteen shipped, and adding the fifteenth costs the same as the first.
+2. **The diagrams were doing work the engine was not.** Inside Zone, Power and Outside Zone all
+   carried `token:'run'`. Three different pictures, one identical call. The player was choosing
+   between drawings.
+3. **It is not what the job is.** A coordinator does not pick a card. He decides what kind of play,
+   how far it is going, who is getting the ball, and whom he is going at.
+
+So the picker got smaller and the call got deeper — which is the trade the whole phase rests on.
+
+### Four axes
+
+| axis | offence (pass) | offence (run) | defence |
+|---|---|---|---|
+| **type** | pass · play action · screen · empty | run · draw · heavy | base · blitz · cover · run-stop |
+| **how far** | quick · short · intermediate · deep | inside · off-tackle · outside | press · underneath · two-deep |
+| **who gets it** | WR1–3 · TE1–2 · RB1–2 | RB1–2 | — |
+| **whom you attack** | CB1–3 · S1–2 · LB1 | DE1–2 · DT1–2 · LB1 | key one of their receivers |
+
+Every one of them reaches a play. That is the bar the phase set for itself, and the QA gate asserts
+it: three checks measure that quick-vs-deep, inside-vs-outside and attacking-a-different-defender
+each produce a measurably different game from the same seed.
+
+### The token, and why there is no `SIM_MODEL` bump
+
+A call is one string, because it banks into `g.calls` and has to replay byte-identically:
+
+```
+base[:variant[:targets]]
+```
+
+`base` and `variant` are the Phase 46 tokens, untouched. `targets` is a new **third** segment:
+`<depth><outlet><attack>` on offence (fixed width, `-` for "no preference"), `<depth><key>` on
+defence. Every Phase 63 delta is keyed off that third segment, and it is absent unless a human
+composed one.
+
+That is the entire compatibility argument, and it is asserted rather than argued —
+`Phase 63: a call that names nothing is byte-identical to the Phase 46 token` re-sims the same game
+called `'pass'` and called `'pass::-----'` and requires the identical score. simlab comes back
+**161/161 with a byte-identical summary line** (24.3 pts/team, 55% home, 3576/1953/1135 leaders).
+So every AI game, every "defer to the OC", and every coached game already banked in a save resolves
+to exactly the number it did before.
+
+**This is why the AI defence does NOT get a depth of its own.** Giving it one is the obvious way to
+make the depth-vs-depth table two-sided, and it would change what those banked games resolve to —
+which costs a `SIM_MODEL` bump and refuses replay on every previously coached game in every existing
+save. The implied read below buys the same chess for free.
+
+### Implied depth
+
+`DEPTH_VS` needs two depths and only one side of the ball has a coach on it. So the other side's is
+**implied**: from the front the defence called (a cover shell is playing it deep, a blitz or a
+stacked box is pressing) and from the distance the offence has to gain — which is exactly the ladder
+`deepW` already used before anybody could name a depth.
+
+The table fires as soon as **either** side names one, and never when neither does. Both halves of
+that sentence are load-bearing: the first is what makes the axis a read rather than a menu, the
+second is the compatibility guarantee restated.
+
+### The tables are double-centred, and that is the whole story of the tuning pass
+
+The hand-written interaction table read cleanly and was badly unbalanced in play. Measured
+(`tools/cfb-data/30-callsheet.js`): pressing every snap gave up **14.6 points a game** against
+**37.4** for playing two-deep. Not a rounding error — a 23-point spread on a four-way choice.
+
+The cause is that the two implied mixes are nowhere near uniform. Measured:
+
+```
+offense implied depth mix   q .224  s .602  m .174  d .000
+defense implied depth mix   p .238  u .535  t .226
+```
+
+The offence is in `s` sixty per cent of the time and reaches `d` only when a coach names it. A table
+whose rows sum to nothing over a *uniform* column mix therefore hands out a large average bonus over
+the *real* one. So each row is centred against the measured offensive mix and each column against
+the measured defensive mix, which leaves pure **interaction**: guessing right is worth exactly what
+guessing wrong costs, and no rung is free.
+
+The one deliberate departure is a constant added to each row (+1.66 / 0 / −1.66 yards), which pays
+for `DEF_DEPTH_RUN`. Pressing stuffs the run by 1.3 a carry over ~37 carries and that has to be
+bought somewhere; it is bought through the air, at ~29 attempts, which is what a press defence
+actually trades. The row constants are themselves centred over the defensive mix, so the columns
+stay centred too.
+
+Landed, over 30 seeds × 12 matchups:
+
+```
+OFFENCE (the OC calls run/pass, we supply only the axis)
+  bare 23.4   quick 23.8   short 24.6   inter 24.4   deep 23.6      spread 1.2
+  gaps         inside 24.1   off-tackle 23.4   outside 24.1        spread 0.7
+DEFENCE (points allowed holding one depth all game)
+  balanced 24.4   press 24.0   underneath 25.2   two-deep 23.7      spread 1.5
+```
+
+Against **23 points** for the defensive axis before centring.
+
+### Two measurement traps this phase walked into
+
+**Do not measure an axis by calling it every snap.** The first cut concluded the run gap was worth
+3× what it is, because an all-run offence runs into the Phase 22 predictability tax and averages
+1.67 yards a carry — nothing like football, and every effect measured inside that regime is
+amplified. `30-callsheet.js` lets the OC pick run or pass exactly as it normally would and supplies
+only the axis. That is the regime the axis is actually used in.
+
+**`d` is no longer the Phase 46 `deep` variant, on purpose.** It started as a copy. As a card in a
+playbook the deep shot was one option among ten and nobody called it every down; as an *axis* with
+four rungs it has to be priced against the other three, and at Phase 46's numbers it was not —
+throwing deep on every snap scored 27.6 against 23.7 for letting the OC call it. The dominant
+strategy was to stop thinking. The legacy variant is untouched on its own branch, so `'pass:deep'`
+in an old save still resolves to the old numbers byte for byte; what changed is the price of the
+rung.
+
+### Naming a target
+
+The draw is **always taken** and only its result is overridden. `wpick(oP.recv, r, injured)` runs on
+every dropback whether or not a coach named an outlet, because the rng stream has to be a function of
+the seed and the call sequence alone — override the draw and a re-run diverges and `g.calls` stops
+reproducing the game.
+
+Attacking a **defender** is the same sentence said the way a coordinator says it: you do not pick a
+receiver in the abstract, you decide their third corner cannot cover anybody and you go find him. So
+the call names the defender and the engine walks the receiver list for the one `coverDef` matches to
+him. The composer shows that pairing (`CB2 R. Diaz (74) — on WR2`) off `coverDef` itself, so the
+screen names the same matchup the snap will resolve.
+
+Both come with a **predictability tax**, the Phase 22 rule one level down: nothing while you are
+balanced, biting once you lean. Without it the answer to every down is "throw it to the best
+receiver". It reads every one of your snaps, not only the ones you named a target on, because a
+defence keys on where the ball goes and not on what you called it. The defensive **key** is the
+mirror — worth a lot against the man you keyed and a little against you everywhere else, because a
+bracket is bodies you are not using elsewhere.
+
+The taxes land on `tComp`/`tYds`, deliberately **not** on `vComp`/`vYds`. Those are multiplied by
+`vD` — "a sharp cover man is not fooled by the concept" — which is the right damper for a play-action
+fake and exactly the wrong one for a tax: it would mean the sharpest defender in the league is the
+least able to notice you have thrown at him nine times in a row. The depth-vs-depth table is
+undamped for a stronger reason: on a snap where the *defence* is being coached, damping the table by
+the defender's own awareness inverts it outright.
+
+### The screen
+
+The commit button goes **first**, not last, and reads as a sentence of what is about to happen
+("▶ Off-tackle · to RB1 · at DE1"). Four sections of options is a long sheet and the call is sticky
+between snaps, so the overwhelmingly common action on opening it is "yes, that one again, go" —
+under the fold, that is a scroll on every repeat, on the screen where pace matters most. The main
+screen also carries **↻ Again**, which runs the last call in one tap and says in words what it was.
+
+The coach screen now carries the same three views the watch screen has — **Play-by-play · Stats ·
+Matchups** — because a coordinator calling a game needs the box score of *both* teams. The Phase 23
+matchup panel was a one-sided summary of your own receivers and your own coverage pinned above the
+feed; it is now the Matchups tab and it shows both cards, each receiver against the defender
+`coverDef` will actually assign him, plus the ground game, sacks given up, flags and injuries.
+
+### Deliberately out of scope
+
+The AI offence does not name targets or depths (it has never needed to — `wpick` and the
+distance ladder are its read), and the AI defence does not name a depth, for the replay reason
+above. Left/right is not an axis: the engine has no lateral model, and adding one as a fifth
+dimension that resolves to nothing would be exactly the "drawing" problem in a new costume.
